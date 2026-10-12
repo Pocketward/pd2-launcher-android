@@ -5,8 +5,8 @@ import java.nio.file.Files
 import java.nio.file.attribute.PosixFilePermissions
 
 /**
- * The session's folders under the app's canonical data folder [data] (`/data/data/<package>`,
- * [DeviceCheck.dataDir]) and the environments of the programs it starts.
+ * The session's folders under the app's canonical data folder [data] ([DeviceCheck.dataDir]) and
+ * the environments of the programs it starts.
  */
 class SessionPaths(val data: String) {
     val files = File(data, "files")
@@ -15,17 +15,17 @@ class SessionPaths(val data: String) {
     val tmp = File(files, "tmp")
     val logs = File(files, "logs")
     val userlandRoot = File(files, "userland")
-    /** The stable path every userland program is built for. */
+    /** The path every userland program runs from: the unpack rewrites the userland for it ([Relocation]). */
     val userland = File(userlandRoot, UserlandInstaller.CURRENT)
     val loader = File(userland, "lib/ld-linux-aarch64.so.1")
     val userlandEnvFile = File(userland, "etc/userland.env")
 
     /**
-     * Xvfb's framebuffer folder (`-fbdir`, before Android 11; a memfd since, [Framebuffer]),
+     * Xvfb's framebuffer folder (`-fbdir`, when no memfd can be made, [Framebuffer]),
      * compiled keymaps and the runtime folder for PulseAudio.
      */
     val framebufferDir = File(tmp, "xvfb")
-    /** Screen 0's framebuffer file in [framebufferDir] (Xvfb names it), before Android 11. */
+    /** Screen 0's framebuffer file in [framebufferDir] (Xvfb names it), when no memfd can be made. */
     val framebuffer = File(framebufferDir, "Xvfb_screen0")
     val keymapDir = File(tmp, "xkb")
     val runtimeDir = File(tmp, "run")
@@ -42,6 +42,10 @@ class SessionPaths(val data: String) {
      * host side as `PD2_PRESENT_SOCKET` ([engineEnvironment]).
      */
     val presentSocket = File(runtimeDir, "present.sock")
+    /** PulseAudio's socket (userland.env's PULSE_RUNTIME_PATH), which the game's guests reach. */
+    val pulseSocket = File(runtimeDir, "pulse/native")
+    /** The Unix sockets the session binds below [data]: their paths must fit `sun_path`. */
+    val sockets: List<File> get() = listOf(pulseSocket, presentSocket)
 
     /** The Launcher's managed root, `<launcher home>/game`. */
     val managedRoot = File(launcherHome, "game")

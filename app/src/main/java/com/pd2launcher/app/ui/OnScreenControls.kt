@@ -170,32 +170,39 @@ private fun faceTo(pad: VirtualPad, from: Int, to: Int): Int {
 
 /**
  * One finger's way over a round piece of [radius] pixels: [follow] with its offset from the
- * centre in radii (down positive) on touch and every move, [lift] when it goes.
+ * centre in radii (down positive) on touch and every move, [lift] when it goes, also when the
+ * gesture is cut short (the piece's layout changed and its input started again).
  */
 private fun Modifier.thumb(piece: Piece, radius: Float, follow: (Float, Float) -> Unit, lift: () -> Unit): Modifier = pointerInput(piece, radius) {
     fun at(position: Offset) = follow((position.x - size.width / 2f) / radius, (position.y - size.height / 2f) / radius)
     awaitEachGesture {
         val down = awaitFirstDown()
         down.consume()
-        at(down.position)
-        while (true) {
-            val change = awaitPointerEvent().changes.firstOrNull { it.id == down.id } ?: break
-            if (!change.pressed) break
-            change.consume()
-            at(change.position)
+        try {
+            at(down.position)
+            while (true) {
+                val change = awaitPointerEvent().changes.firstOrNull { it.id == down.id } ?: break
+                if (!change.pressed) break
+                change.consume()
+                at(change.position)
+            }
+        } finally {
+            lift()
         }
-        lift()
     }
 }
 
-/** A button's press while a finger is on it (no focus, no ripple). */
+/** A button's press while a finger is on it (no focus, no ripple); let go also when the gesture is cut short. */
 private fun Modifier.press(piece: Piece, onPress: () -> Unit, onRelease: () -> Unit): Modifier =
     semantics { onClick { onPress(); onRelease(); true } }.pointerInput(piece) {
         awaitEachGesture {
             awaitFirstDown().consume()
             onPress()
-            waitForUpOrCancellation()?.consume()
-            onRelease()
+            try {
+                waitForUpOrCancellation()?.consume()
+            } finally {
+                onRelease()
+            }
         }
     }
 

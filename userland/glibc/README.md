@@ -13,12 +13,12 @@ It runs in a pinned `debian:trixie-slim` container (`Containerfile`), unpacks th
 ## Patches
 
 - `0001-rseq-default-off.patch`: the tunable `glibc.pthread.rseq` has default and maximum 0, so no thread registers rseq.
-- `0002-no-set-robust-list.patch`: `set_robust_list` is never issued; glibc releases a dead thread's robust mutexes itself.
+- `0002-no-set-robust-list.patch`: `set_robust_list` is never issued; glibc releases a dead thread's robust mutexes itself, and a robust process-shared or priority-inheritance mutex's init returns ENOTSUP.
 - `0003-clone3-to-clone.patch`: `pthread_create` and `posix_spawn` use `clone`; `clone3` is never issued.
-- `0004-faccessat2-fchmodat2-fallback.patch`: `faccessat` and `fchmodat` take glibc's existing fallbacks instead of `faccessat2`/`fchmodat2`.
+- `0004-faccessat2-fchmodat2-fallback.patch`: `faccessat` and `fchmodat` take glibc's existing fallbacks instead of `faccessat2`/`fchmodat2`; `faccessat` asks the kernel again for a file that is no symlink.
 - `0005-accept-via-accept4.patch`: `accept()` is `accept4(fd, addr, len, 0)`.
 - `0006-sysv-mq-enosys.patch`: SysV IPC and POSIX message queue functions fail with ENOSYS without a syscall.
 - `0007-setxid-no-syscall.patch`: the set*id calls answer in user space (0 for a no-op, else EPERM); `setresuid` is unchanged.
 - `0008-etc-paths-from-sysconfdir.patch`: the resolver and NSS read their files from sysconfdir (`<U>/etc`) instead of `/etc`.
 - `0009-syscall-blocked-enosys.patch`: `syscall()` returns ENOSYS for any number outside the Android app allowlist.
-- `0010-blocked-wrappers-no-syscall.patch`: the remaining wrappers of blocked syscalls answer EPERM or ENOSYS without a syscall.
+- `0010-blocked-wrappers-no-syscall.patch`: the remaining wrappers of blocked syscalls answer EPERM or ENOSYS without a syscall; reads of the NTP state succeed with an unsynchronised clock's values.

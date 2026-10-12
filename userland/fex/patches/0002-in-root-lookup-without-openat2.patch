@@ -3,18 +3,20 @@ FEX on Android: RootFS lookups without the openat2 syscall.
 Guest open/openat of an absolute path tries the RootFS first with openat2(RESOLVE_IN_ROOT), which
 Android blocks. OpenInRoot (LinuxSyscalls/InRootResolver.cpp) does the same lookup in userspace,
 following openat2(2): one component at a time with openat(O_PATH | O_NOFOLLOW) from RootFSFD;
-absolute paths and links restart at RootFSFD; ".." at the root stays there; procfs magic links fail
-with EXDEV; more than 40 links fail with ELOOP. The last component is opened with the guest's flags
-plus O_NOFOLLOW, so a link created meanwhile is walked again. FileManager::Open and Openat use it;
-the EXDEV and host fallbacks stay. unittests/APITests/InRootResolver.cpp tests it.
+absolute paths and links restart at RootFSFD; ".." at the root stays there, and every ".." must
+lead back to the directory the walk entered at that depth (checked for the first 256 levels), else
+EXDEV; procfs magic links fail with EXDEV; more than 40 links fail with ELOOP. The last component
+is opened with the guest's flags plus O_NOFOLLOW, so a link created meanwhile is walked again.
+FileManager::Open and Openat use it; the EXDEV and host fallbacks stay.
+unittests/APITests/InRootResolver.cpp tests it.
 
  Source/Tools/LinuxEmulation/CMakeLists.txt         |   1 +
  .../LinuxSyscalls/FileManagement.cpp               |  19 +-
- .../LinuxSyscalls/InRootResolver.cpp               | 246 +++++++++++++++++++++
+ .../LinuxSyscalls/InRootResolver.cpp               | 273 +++++++++++++++++++++
  .../LinuxEmulation/LinuxSyscalls/InRootResolver.h  |  24 ++
  unittests/APITests/CMakeLists.txt                  |   8 +
- unittests/APITests/InRootResolver.cpp              | 207 +++++++++++++++++
- 6 files changed, 493 insertions(+), 12 deletions(-)
+ unittests/APITests/InRootResolver.cpp              | 222 +++++++++++++++++
+ 6 files changed, 535 insertions(+), 12 deletions(-)
 
 diff --git a/Source/Tools/LinuxEmulation/CMakeLists.txt b/Source/Tools/LinuxEmulation/CMakeLists.txt
 index 4a4184d..32a3f13 100644
@@ -74,10 +76,10 @@ index 7172460..fb3dbf8 100644
          // just punt and do the access without RESOLVE_IN_ROOT.
 diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/InRootResolver.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/InRootResolver.cpp
 new file mode 100644
-index 0000000..222771b
+index 0000000..c20a707
 --- /dev/null
 +++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/InRootResolver.cpp
-@@ -0,0 +1,246 @@
+@@ -0,0 +1,273 @@
 +/*
 +$info$
 +tags: LinuxSyscalls|common
@@ -136,9 +138,19 @@ index 0000000..222771b
 +    int FD;
 +  };
 +
-+  bool SameFile(const struct stat& A, const struct stat& B) {
-+    return A.st_dev == B.st_dev && A.st_ino == B.st_ino;
++  // A directory's identity, to see that `..` leads back to the directory the walk came from.
++  struct FileId {
++    dev_t Dev;
++    ino_t Ino;
++    bool operator==(const FileId&) const = default;
++  };
++  FileId IdOf(const struct stat& Stat) {
++    return {Stat.st_dev, Stat.st_ino};
 +  }
++
++  // Levels whose identity the walk keeps, the root included. A `..` deeper than that is checked once
++  // the walk climbs back within them.
++  constexpr size_t TrackedDepth = 256;
 +
 +  int Fail(int Error) {
 +    errno = Error;
@@ -168,6 +180,9 @@ index 0000000..222771b
 +  Directory Current {RootFD};
 +  // Components walked below the root. `..` at depth 0 stays in the root.
 +  size_t Depth = 0;
++  // Walked[d]: the directory the walk entered at depth d. Walked[0], the root, is read when needed.
++  FileId Walked[TrackedDepth];
++  bool HaveRootId = false;
 +  int Symlinks = 0;
 +  char Name[NAME_MAX + 1];
 +
@@ -204,16 +219,27 @@ index 0000000..222771b
 +      }
 +      Current.Reset(Parent);
 +      --Depth;
-+      if (Depth == 0) {
-+        // Back at the root by depth: it must be the root itself, or a directory was moved out
-+        // of the root during the walk (openat2 reports such an escape with EXDEV).
-+        struct stat RootStat {}, CurrentStat {};
-+        if (::fstat(RootFD, &RootStat) == -1 || ::fstat(Current.Get(), &CurrentStat) == -1) {
++      if (Depth < TrackedDepth) {
++        // `..` must lead back to the directory the walk entered at this depth (at depth 0, the root
++        // itself). Anything else means a directory on the way was moved during the walk, possibly
++        // out of the root; openat2 reports such an escape with EXDEV.
++        if (Depth == 0 && !HaveRootId) {
++          struct stat RootStat {};
++          if (::fstat(RootFD, &RootStat) == -1) {
++            return -1;
++          }
++          Walked[0] = IdOf(RootStat);
++          HaveRootId = true;
++        }
++        struct stat CurrentStat {};
++        if (::fstat(Current.Get(), &CurrentStat) == -1) {
 +          return -1;
 +        }
-+        if (!SameFile(RootStat, CurrentStat)) {
++        if (!(IdOf(CurrentStat) == Walked[Depth])) {
 +          return Fail(EXDEV);
 +        }
++      }
++      if (Depth == 0) {
 +        Current.ResetToRoot();
 +      }
 +      continue;
@@ -277,6 +303,9 @@ index 0000000..222771b
 +      } else {
 +        Current.Reset(Next);
 +        ++Depth;
++        if (Depth < TrackedDepth) {
++          Walked[Depth] = IdOf(Stat);
++        }
 +        Rest = End;
 +        continue;
 +      }
@@ -375,10 +404,10 @@ index db3ccf1..f1affd6 100644
    USES_TERMINAL
 diff --git a/unittests/APITests/InRootResolver.cpp b/unittests/APITests/InRootResolver.cpp
 new file mode 100644
-index 0000000..276d4a2
+index 0000000..0e3a09a
 --- /dev/null
 +++ b/unittests/APITests/InRootResolver.cpp
-@@ -0,0 +1,207 @@
+@@ -0,0 +1,222 @@
 +// Tests for FEX::HLE::OpenInRoot, the userspace openat2(RESOLVE_IN_ROOT) (LinuxSyscalls/InRootResolver.cpp).
 +// Expected results follow openat2(2): RESOLVE_IN_ROOT treats the root fd as "/", re-roots absolute
 +// symbolic links, clamps ".." at the root, refuses magic links (EXDEV) and stops after 40 links (ELOOP).
@@ -513,6 +542,21 @@ index 0000000..276d4a2
 +  CHECK(T.Read("/usr/lib/../../etc/passwd") == Guest);
 +  CHECK(T.Read("/escape_rel/passwd") == Guest);
 +  CHECK(T.Read("/escape_abs/passwd") == Guest);
++}
++
++TEST_CASE("InRootResolver - dot-dot through a deep tree") {
++  // 300 levels: deeper than the 256 whose identity the walk keeps for its `..` check.
++  Tree T;
++  std::string Dir = T.Root, Down, Up;
++  for (int i = 0; i < 300; ++i) {
++    Dir += "/d";
++    REQUIRE(mkdir(Dir.c_str(), 0755) == 0);
++    Down += "d/";
++    Up += "../";
++  }
++  CHECK(T.Read(("/" + Down + Up + "etc/passwd").c_str()) == Guest);
++  CHECK(T.Read(("/" + Down + "../d/" + Up + "etc/passwd").c_str()) == Guest);
++  CHECK(T.Read(("/" + Down + Up + "../../etc/passwd").c_str()) == Guest);
 +}
 +
 +TEST_CASE("InRootResolver - symlink loops") {

@@ -36,6 +36,7 @@ import com.pd2launcher.app.Tone
  * opens in place; what needs the player (an ask, a warning, a problem) and what still runs stay
  * open. A row Android lets the app fix has its button ([onGrant]); the row follows once the
  * player is back. [onRepair]: the installation's game folder is gone, Repair (Start over) goes on.
+ * [onTryAgain]: the engine or the game support files failed, and this starts them again.
  */
 @Composable
 fun CheckScreen(
@@ -44,6 +45,7 @@ fun CheckScreen(
     onContinue: () -> Unit,
     onRepair: () -> Unit = {},
     onGrant: (Grant) -> Unit = {},
+    onTryAgain: () -> Unit = {},
 ) {
     val action = screen.action
     val focus = remember { FocusRequester() }
@@ -60,6 +62,7 @@ fun CheckScreen(
                 MainAction.Kind.CHECK_AGAIN -> R.string.action_check_again to onCheckAgain
                 MainAction.Kind.CONTINUE -> R.string.action_continue to onContinue
                 MainAction.Kind.REPAIR -> R.string.play_repair to onRepair
+                MainAction.Kind.TRY_AGAIN -> R.string.action_try_again to onTryAgain
             }
             CornerPill(stringResource(label), onClick, Kind.PRIMARY, enabled = action.enabled, focusRequester = focus)
         },

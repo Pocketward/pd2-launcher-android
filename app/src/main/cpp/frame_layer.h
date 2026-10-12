@@ -1,4 +1,4 @@
-// The Game view's child layer (Android 10+, frame_layer.cpp): the frame copy's buffers set on a
+// The Game view's child layer (frame_layer.cpp): the frame copy's buffers set on a
 // child of the window's surface by transactions, not queued through the window, whose
 // queueBuffer some vendors pace below the display's rate.
 #pragma once
@@ -14,7 +14,7 @@ struct frame_layer;
 
 // A child layer of [window] showing [buffer_w]x[buffer_h] RGBX buffers stored turned by
 // [transform] (ANATIVEWINDOW_TRANSFORM_*), scaled to the window's size, asking the display for
-// [frame_rate] frames a second (Android 11+; 0: no vote); NULL when there is none.
+// [frame_rate] frames a second (0: no vote); NULL when there is none.
 struct frame_layer *frame_layer_create(ANativeWindow *window, int buffer_w, int buffer_h, int transform, float frame_rate);
 
 // The next free buffer, locked for writing: its pixels and stride in pixels. False when the

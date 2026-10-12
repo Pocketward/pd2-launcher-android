@@ -4,6 +4,7 @@ import java.io.EOFException
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
+import java.net.SocketTimeoutException
 
 /** A frame over [Frames.MAX_FRAME_BYTES]: a protocol error. */
 class FrameTooLargeException(val length: Long) :
@@ -19,7 +20,9 @@ object Frames {
 
     /**
      * One frame's body, or null at the end of the connection between frames. A
-     * frame over the limit is refused before its body is read.
+     * frame over the limit is refused before its body is read. A read that returns nothing
+     * is not progress but a timeout ([SocketTimeoutException]): Android's FileInputStream
+     * returns 0 when a socket's receive timeout runs out, and looping on it never ends.
      */
     fun read(input: InputStream): ByteArray? {
         val header = ByteArray(4)
@@ -30,6 +33,7 @@ object Frames {
                 if (filled == 0) return null
                 throw EOFException("the connection ended inside a frame header")
             }
+            if (read == 0) throw SocketTimeoutException("a read returned nothing")
             filled += read
         }
         val length = ((header[0].toLong() and 0xff) shl 24) or
@@ -42,6 +46,7 @@ object Frames {
         while (got < body.size) {
             val read = input.read(body, got, body.size - got)
             if (read < 0) throw EOFException("the connection ended inside a frame")
+            if (read == 0) throw SocketTimeoutException("a read returned nothing")
             got += read
         }
         return body

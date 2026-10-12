@@ -7,7 +7,7 @@ local.properties
 .idea/
 .android/
 app/.cxx/
-# The developer's CD keys, which debug builds pre-fill (build.sh).
+# The developer's CD keys, which debug-keys.sh writes into the development build.
 .env.local
 # Signing keys and their passwords never enter the repository (docs/BUILDING.md, Signing a release).
 *.jks

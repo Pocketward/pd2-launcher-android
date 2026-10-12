@@ -1,8 +1,7 @@
 # Checks of every push to main and every pull request: `build.sh check` compiles
-# the debug APK in the pinned build container and runs the app's JVM unit tests
-# (the test suites are developed outside this repository, so the task finds none
-# here, and the build itself is the check). It needs no engine, userland or
-# runtime; release.yml builds the full APK.
+# the debug APK in the pinned build container. It needs no engine, userland or
+# runtime; release.yml builds the full APK. The build image is cached by its
+# Containerfile, as in release.yml.
 name: Checks
 
 on:
@@ -25,12 +24,32 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # The build image (SDK, NDK) needs more room than a hosted runner leaves free.
+      # The build image (SDK, NDK) needs more room than a hosted runner leaves free. In the
+      # background: deleting is slow, and the room is needed only later.
       - name: Make room on the disk
         run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
-            /opt/hostedtoolcache/CodeQL /usr/local/share/powershell /usr/share/swift
           df -h /
+          sudo nohup rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/powershell /usr/share/swift >/dev/null 2>&1 &
+
+      # build.sh's image under the name build.sh gives it: its tag hashes the Containerfile.
+      - name: Name the build image
+        id: image
+        run: |
+          tag=$(sha256sum containers/Containerfile | cut -c1-16)
+          echo "name=localhost/pd2-android-build:$tag" >> "$GITHUB_OUTPUT"
+          echo "key=android-image-$tag" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Restore the build image
+        id: image-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pd2-android/images/android.tar.zst
+          key: ${{ steps.image.outputs.key }}
+
+      - name: Load the build image
+        if: steps.image-cache.outputs.cache-hit == 'true'
+        run: zstd -dc ~/.cache/pd2-android/images/android.tar.zst | podman load
 
       - name: Restore the Gradle cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -41,5 +60,23 @@ jobs:
           key: gradle-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties', 'gradle.properties', 'build.gradle.kts', 'settings.gradle.kts', 'app/build.gradle.kts') }}
           restore-keys: gradle-
 
-      - name: Compile the debug APK and run the unit tests
+      - name: Compile the debug APK
         run: ./build.sh check
+
+      - name: Keep the build image
+        id: image-kept
+        if: ${{ !cancelled() && steps.image-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+        run: |
+          mkdir -p ~/.cache/pd2-android/images
+          podman save "$IMAGE" | zstd -T0 -q -o ~/.cache/pd2-android/images/android.tar.zst
+
+      - name: Save the build image
+        if: ${{ !cancelled() && steps.image-kept.outcome == 'success' }}
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pd2-android/images/android.tar.zst
+          key: ${{ steps.image.outputs.key }}

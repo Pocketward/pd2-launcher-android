@@ -6,6 +6,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStream
+import java.nio.file.AccessDeniedException
 import java.nio.file.FileVisitResult
 import java.nio.file.Files
 import java.nio.file.LinkOption
@@ -15,11 +16,23 @@ import java.nio.file.SimpleFileVisitor
 import java.nio.file.StandardCopyOption
 import java.nio.file.attribute.BasicFileAttributes
 import java.nio.file.attribute.PosixFilePermission
+import java.nio.file.attribute.PosixFilePermissions
 import java.security.MessageDigest
 
 /** userland/pack.sh's manifest.json (the archive's own fields are not needed here). */
 @Serializable
-data class UserlandManifest(val version: String, val prefix: String, val entries: List<ManifestEntry>) {
+data class UserlandManifest(
+    val version: String,
+    /** The data folder every program is built for; the unpack rewrites it to the real one ([Relocation]). */
+    val placeholder: String,
+    /** Where the tree is built to run: [placeholder] followed by the userland's place in the data folder. */
+    val prefix: String,
+    val entries: List<ManifestEntry>,
+    /** The paths checked again before every engine start ([CriticalFiles]), as programs open them. */
+    val critical: List<String>,
+    /** Paths that must not exist in the tree (glibc would read them). */
+    val absent: List<String>,
+) {
     /** Bytes of every regular file, unpacked. */
     val fileBytes: Long get() = entries.sumOf { it.size ?: 0L }
 
@@ -28,7 +41,11 @@ data class UserlandManifest(val version: String, val prefix: String, val entries
     }
 }
 
-/** One path of the tree: `type` is `file` (with size and sha256), `dir` or `symlink` (with target). */
+/**
+ * One path of the tree: `type` is `file` (with size and sha256 as packed), `dir` or `symlink`
+ * (with target). A file that holds the placeholder lists the offset of each copy ([placeholders]);
+ * [text] files get the real data folder exactly, the others in place ([Relocation]).
+ */
 @Serializable
 data class ManifestEntry(
     val path: String,
@@ -37,11 +54,16 @@ data class ManifestEntry(
     val size: Long? = null,
     val sha256: String? = null,
     val target: String? = null,
+    val placeholders: List<Long> = emptyList(),
+    val text: Boolean = false,
 )
 
-/** `<version>/record.json`, written last: the version and the SHA-256 of every file. */
+/**
+ * `<version>/record.json`, written last: the version, the [prefix] it was rewritten for
+ * (`<data>/files/userland/current`) and the SHA-256 of every file as written.
+ */
 @Serializable
-data class UserlandRecord(val version: String, val files: Map<String, String>)
+data class UserlandRecord(val version: String, val prefix: String, val files: Map<String, String>)
 
 /** Whether a program from the App userland runs now; `current` is only switched when none does. */
 fun interface UserlandProcesses {
@@ -56,17 +78,22 @@ data class InstallResult(val outcome: Outcome, val version: String, val detail: 
         SWITCHED,
         /** The version is complete but a userland program runs, so `current` was left as it was. */
         DEFERRED,
-        /** The archive does not match the manifest, or is for another prefix; nothing of it was kept and `current` is unchanged. */
+        /**
+         * The archive does not match the manifest, or this data folder cannot take it; nothing of it
+         * was kept and `current` is unchanged.
+         */
         REFUSED,
     }
 }
 
 /**
- * Unpacks the App userland into `<root>/<version>` and points `<root>/current` at it.
+ * Unpacks the App userland into `<root>/<version>` and points `<root>/current` at it. The root is
+ * `<data>/files/userland` of the app's canonical data folder ([SessionPaths.userlandRoot]).
  *
  * The tar stream unpacks into `<version>.staging`; every entry is checked against the
- * manifest (type, mode, symlink target, SHA-256 of each file), hard links and anything not in
- * the manifest are refused, `record.json` is written last, and the staging folder is renamed
+ * manifest (type, mode, symlink target, SHA-256 of each file as packed), hard links and anything
+ * not in the manifest are refused, each placeholder the manifest lists is rewritten to the data
+ * folder ([Relocation]), `record.json` is written last, and the staging folder is renamed
  * to `<version>`. `current` is a relative symlink replaced by renaming a temporary one over it.
  * The previous version stays until the current one has started once ([markStarted] removes it).
  */
@@ -83,12 +110,128 @@ class UserlandInstaller(
     fun currentVersion(): String? =
         if (Files.isSymbolicLink(current)) Files.readSymbolicLink(current).toString() else null
 
-    /** True when `<version>/record.json` exists and names [version]. */
+    /**
+     * True when `<version>/record.json` names [version] and was written for this root's `current`
+     * (a data folder that moved needs the placeholders rewritten again).
+     */
     fun isComplete(version: String): Boolean = try {
         val record = File(root, "$version/$RECORD")
-        record.isFile && json.decodeFromString(UserlandRecord.serializer(), record.readText()).version == version
+        record.isFile && json.decodeFromString(UserlandRecord.serializer(), record.readText())
+            .let { it.version == version && it.prefix == current.toString() }
     } catch (_: Exception) {
         false
+    }
+
+    /**
+     * Why [manifest] cannot be unpacked here, or null: `<root>/current` must be its prefix with the
+     * placeholder replaced by a data folder [Relocation] takes.
+     */
+    fun refusal(manifest: UserlandManifest): String? {
+        val below = manifest.prefix.removePrefix(manifest.placeholder)
+        if (below == manifest.prefix || !below.startsWith("/")) return "prefix ${manifest.prefix} is not below its placeholder"
+        val here = current.toString()
+        if (!here.endsWith(below)) return "built for <data folder>$below, not $here"
+        return Relocation.problem(here.removeSuffix(below), manifest.placeholder.length)
+    }
+
+    private fun relocation(manifest: UserlandManifest) =
+        Relocation(manifest.placeholder, current.toString().removeSuffix(manifest.prefix.removePrefix(manifest.placeholder)))
+
+    /**
+     * Checks [manifest]'s unpacked version again, as [CriticalFiles] walks it: code under Wine runs
+     * as the app and can reach this tree, and a changed loader, library, userland.env or FEX would
+     * run in every later engine start, the one that gets the CD keys too. Anything that differs
+     * makes the version incomplete (its record goes, or whatever is in its folder's place, a link
+     * say), so [install] unpacks it again through staging, without whatever was added. Nothing is
+     * removed while the way to the versions is not as it must be ([misplaced]): it would lead
+     * through a link; [install] puts that right first. Returns what differed.
+     */
+    fun forgetIfChanged(manifest: UserlandManifest): List<String> {
+        val changed = refusal(manifest)?.let { listOf(it) }
+            ?: CriticalFiles(manifest, relocation(manifest), root.toPath()).problems()
+        if (changed.isNotEmpty()) {
+            log("$changed in ${manifest.version}; it is unpacked again")
+            val tree = File(root, manifest.version).toPath()
+            if (misplaced() != null) {
+                // [install] removes the wrong entry, and with it the way to this version.
+            } else if (Files.isDirectory(tree, LinkOption.NOFOLLOW_LINKS)) {
+                Files.deleteIfExists(tree.resolve(RECORD))
+                syncDirectory(tree)
+            } else if (Files.exists(tree, LinkOption.NOFOLLOW_LINKS)) {
+                deleteTree(tree)
+                syncDirectory(root.toPath())
+            }
+        }
+        return changed
+    }
+
+    /**
+     * Makes [manifest]'s version current and checks it ([forgetIfChanged]) after whatever [install]
+     * did, as the last step before an engine start: `current` must name the version and its
+     * critical files must be the APK's, whatever its record says. A version the check finds
+     * changed is unpacked again and checked once more. Returns the last [install]'s result, or
+     * null when `current` named the version and the check found nothing. Throws, and the engine
+     * must not start, when [install] refuses the version or fails, leaves `current` naming another
+     * (a userland program still runs: [InstallResult.Outcome.DEFERRED]) or the check still finds
+     * changes after the second unpack. A link in place of `files` or `files/userland`, or anything
+     * but a link in `current`'s place, is removed first ([repairPlaces]). [progress] also gets
+     * (0, total) before each [install].
+     */
+    fun prepare(
+        manifest: UserlandManifest,
+        openTar: () -> InputStream,
+        progress: (Long, Long) -> Unit = { _, _ -> },
+    ): InstallResult? {
+        val version = manifest.version
+        if (currentVersion() == version && isComplete(version) && forgetIfChanged(manifest).isEmpty()) return null
+        var changed = emptyList<String>()
+        repeat(2) {
+            progress(0, manifest.fileBytes)
+            val result = install(manifest, openTar, progress)
+            log("${result.outcome} $version ${result.detail}".trim())
+            if (result.outcome == InstallResult.Outcome.REFUSED) throw IOException(result.detail.ifEmpty { "$version refused" })
+            val current = currentVersion()
+            if (current != version) throw IOException("current names ${current ?: "nothing"}, not $version (${result.outcome})")
+            changed = forgetIfChanged(manifest)
+            if (changed.isEmpty()) return result
+        }
+        throw IOException("$version still differs from the APK after unpacking it again: $changed")
+    }
+
+    /**
+     * The entry on the way from the data folder to the versions that is not what it must be, read
+     * without following links: `files` and `files/userland` must be real folders (or missing) and
+     * `current` a link (or missing); null when each is. Below a wrong one nothing is looked at.
+     */
+    private fun misplaced(): Path? {
+        val userland = root.toPath()
+        for (folder in listOf(userland.parent, userland)) {
+            val found = attributes(folder) ?: return null
+            if (!found.isDirectory) return folder
+        }
+        val found = attributes(current) ?: return null
+        return if (found.isSymbolicLink) null else current
+    }
+
+    /**
+     * Removes what [misplaced] finds without following links: a link where a folder belongs goes
+     * itself, never what it leads to, and anything but a link in `current`'s place goes with all it
+     * holds, its links not followed either. It is in the app's own data folder, and the unpack
+     * makes again what went (a `files` link takes the app's other files with it, which their own
+     * code makes again). Returns what was removed, or null.
+     */
+    fun repairPlaces(): String? {
+        val wrong = misplaced() ?: return null
+        log("$wrong is not what it must be; it is removed")
+        deleteTree(wrong)
+        syncDirectory(wrong.parent)
+        return wrong.toString()
+    }
+
+    private fun attributes(path: Path): BasicFileAttributes? = try {
+        Files.readAttributes(path, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)
+    } catch (_: IOException) {
+        null
     }
 
     /**
@@ -104,9 +247,9 @@ class UserlandInstaller(
     /**
      * Makes [manifest]'s version current, unpacking [openTar] (an uncompressed tar stream) unless
      * that version is already complete. [progress] gets the file bytes written and the total.
-     * A userland built for another prefix than `<root>/current` (another app's, such as the
-     * release app's in the development build) is refused before anything is touched, so the root
-     * must be the canonical data folder's ([SessionPaths.userlandRoot]).
+     * A userland this root cannot take ([refusal]) is refused before anything is touched. A
+     * complete version is taken by its record, which sits in the writable tree: an engine start
+     * goes through [prepare], which checks the version afterwards.
      */
     fun install(
         manifest: UserlandManifest,
@@ -115,20 +258,24 @@ class UserlandInstaller(
     ): InstallResult {
         val version = manifest.version
         require(isPlainName(version)) { "bad version: $version" }
-        if (manifest.prefix != current.toString()) {
-            log("refused $version: built for ${manifest.prefix}, not $current")
-            return InstallResult(InstallResult.Outcome.REFUSED, version, "built for ${manifest.prefix}, not $current")
+        refusal(manifest)?.let {
+            log("refused $version: $it")
+            return InstallResult(InstallResult.Outcome.REFUSED, version, it)
         }
+        val relocation = relocation(manifest)
+        repairPlaces()
         root.mkdirs()
         removeLeftovers(version)
 
         if (!isComplete(version)) {
             val target = File(root, version).toPath()
             val staging = File(root, "$version$STAGING").toPath()
-            deleteTree(target) // only an incomplete tree can be here; current never names one
+            // Only an incomplete tree can be here: an interrupted unpack, or the current one whose
+            // files changed ([forgetIfChanged]), which no userland program runs from yet.
+            deleteTree(target)
             Files.createDirectories(staging)
             try {
-                openTar().use { unpack(manifest, it, staging, progress) }
+                openTar().use { unpack(manifest, relocation, it, staging, progress) }
             } catch (error: Exception) {
                 deleteTree(staging)
                 log("refused $version: $error")
@@ -164,7 +311,13 @@ class UserlandInstaller(
         }
     }
 
-    private fun unpack(manifest: UserlandManifest, input: InputStream, staging: Path, progress: (Long, Long) -> Unit) {
+    private fun unpack(
+        manifest: UserlandManifest,
+        relocation: Relocation,
+        input: InputStream,
+        staging: Path,
+        progress: (Long, Long) -> Unit,
+    ) {
         val expected = manifest.entries.associateBy { it.path }
         val seen = HashSet<String>()
         val hashes = sortedMapOf<String, String>()
@@ -172,7 +325,9 @@ class UserlandInstaller(
         val total = manifest.fileBytes
         var written = 0L
         val buffer = ByteArray(1 shl 18)
+        // The file as packed, which the manifest names, and as written.
         val digest = MessageDigest.getInstance("SHA-256")
+        val writtenDigest = MessageDigest.getInstance("SHA-256")
         val tar = TarReader(input)
         val links = HashSet<String>()
 
@@ -197,20 +352,29 @@ class UserlandInstaller(
                 TarReader.FILE, TarReader.FILE_OLD -> {
                     expect(wanted, "file", entry.mode)
                     if (entry.size != wanted.size) throw CorruptUserland("size of $path: ${entry.size}, manifest ${wanted.size}")
+                    relocation.offsetProblem(wanted)?.let { throw CorruptUserland(it) }
                     digest.reset()
+                    writtenDigest.reset()
                     FileOutputStream(out.toFile()).use { file ->
+                        val write = { bytes: ByteArray, offset: Int, length: Int ->
+                            file.write(bytes, offset, length)
+                            writtenDigest.update(bytes, offset, length)
+                        }
+                        val rewriter = wanted.placeholders.takeIf { it.isNotEmpty() }
+                            ?.let { PlaceholderWriter(it, relocation.placeholder, relocation.replacement(wanted), write) }
                         while (true) {
                             val n = tar.read(buffer)
                             if (n < 0) break
                             digest.update(buffer, 0, n)
-                            file.write(buffer, 0, n)
+                            if (rewriter != null) rewriter.write(buffer, n) else write(buffer, 0, n)
                         }
+                        rewriter?.finish()
                         file.fd.sync()
                     }
                     val hash = digest.digest().toHex()
                     if (hash != wanted.sha256) throw CorruptUserland("SHA-256 of $path: $hash, manifest ${wanted.sha256}")
                     Files.setPosixFilePermissions(out, permissions(entry.mode))
-                    hashes[path] = hash
+                    hashes[path] = writtenDigest.digest().toHex()
                     written += entry.size
                     progress(written, total)
                 }
@@ -231,7 +395,8 @@ class UserlandInstaller(
 
         val record = staging.resolve(RECORD).toFile()
         FileOutputStream(record).use {
-            it.write(json.encodeToString(UserlandRecord.serializer(), UserlandRecord(manifest.version, hashes)).toByteArray())
+            val written = UserlandRecord(manifest.version, current.toString(), hashes)
+            it.write(json.encodeToString(UserlandRecord.serializer(), written).toByteArray())
             it.fd.sync()
         }
         // The files are synced; their names live in the folders, deepest first, staging last.
@@ -263,7 +428,10 @@ class UserlandInstaller(
         private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
 
         /** Deletes [path] and everything below it without following symlinks. */
-        fun deleteTree(path: Path) {
+        fun deleteTree(path: Path) = deleteTree(path, unlocked = null)
+
+        /** [unlocked]: the folder just made listable, which is not unlocked again. */
+        private fun deleteTree(path: Path, unlocked: Path?) {
             if (!Files.exists(path, LinkOption.NOFOLLOW_LINKS)) return
             Files.walkFileTree(path, object : SimpleFileVisitor<Path>() {
                 override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
@@ -272,14 +440,25 @@ class UserlandInstaller(
                 }
 
                 override fun preVisitDirectory(dir: Path, attrs: BasicFileAttributes): FileVisitResult {
-                    // A folder unpacked without write permission must be writable to empty it.
-                    dir.toFile().setWritable(true, true)
+                    // A folder without write or search permission must have both to be emptied:
+                    // owner-only, set through the folder opened without following a link.
+                    Files.setAttribute(dir, "posix:permissions", PosixFilePermissions.fromString("rwx------"), LinkOption.NOFOLLOW_LINKS)
                     return FileVisitResult.CONTINUE
                 }
 
                 override fun postVisitDirectory(dir: Path, exc: IOException?): FileVisitResult {
                     if (exc != null) throw exc
                     Files.delete(dir)
+                    return FileVisitResult.CONTINUE
+                }
+
+                override fun visitFileFailed(file: Path, exc: IOException): FileVisitResult {
+                    // A folder without read permission cannot be listed, so preVisitDirectory never
+                    // sees it: a real folder (checked without following links) is made owner-only
+                    // and walked again, once.
+                    if (file == unlocked || exc !is AccessDeniedException || !Files.isDirectory(file, LinkOption.NOFOLLOW_LINKS)) throw exc
+                    Files.setPosixFilePermissions(file, PosixFilePermissions.fromString("rwx------"))
+                    deleteTree(file, unlocked = file)
                     return FileVisitResult.CONTINUE
                 }
             })
@@ -290,7 +469,7 @@ class UserlandInstaller(
 class CorruptUserland(message: String) : IOException(message)
 
 /** fsync on a folder, through Android's `Os` (libcore's FileChannel refuses to open a folder). */
-private fun fsyncDirectory(dir: Path) {
+internal fun fsyncDirectory(dir: Path) {
     val fd = android.system.Os.open(dir.toString(), android.system.OsConstants.O_RDONLY, 0)
     try {
         android.system.Os.fsync(fd)

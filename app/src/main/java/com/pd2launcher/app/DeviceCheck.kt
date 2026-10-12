@@ -3,7 +3,6 @@ package com.pd2launcher.app
 import android.content.Context
 import android.opengl.EGL14
 import android.opengl.GLES20
-import android.os.Build
 import android.os.StatFs
 import android.system.ErrnoException
 import android.system.Os
@@ -12,32 +11,31 @@ import java.io.File
 
 /** What the first-start check measures. */
 data class DeviceFacts(
-    val sdk: Int,
     val pageSize: Long,
+    /** For the check's log only: the check does not look at the kernel version. */
     val kernelRelease: String,
     /** Null when neither `/dev/kgsl-3d0` nor a CSF `/dev/mali0` answers ([HostGpu.probe]). */
     val gpu: HostGpu?,
     /** The app's data folder as [DeviceCheck.dataDir] names it. */
     val dataDir: String,
+    /** The longest data folder path the App userland takes: its placeholder's length ([Relocation]). */
+    val dataDirLimit: Int,
     val freeBytes: Long,
     /** Space the App userland unpack needs; 0 when it is already unpacked. */
     val requiredBytes: Long,
 )
 
 /**
- * One problem the check found; only [Kind.GPU_UNKNOWN_TO_DRIVER] and [Kind.KERNEL_UNTESTED] let
- * the app go on. [message] is for the log; [subject] names what the screen shows (the GPU for
- * the GPU kinds).
+ * One problem the check found; only [Kind.GPU_UNKNOWN_TO_DRIVER] lets the app go on. [message] is
+ * for the log; [subject] names what the screen shows (the GPU for the GPU kinds).
  */
 data class Finding(val kind: Kind, val message: String, val subject: String = "") {
     enum class Kind(val blocks: Boolean) {
         GPU_NOT_SUPPORTED(true),
         GPU_UNKNOWN_TO_DRIVER(false),
         PAGE_SIZE(true),
-        ANDROID_TOO_OLD(true),
-        NOT_PRIMARY_USER(true),
+        DATA_FOLDER(true),
         NO_SPACE(true),
-        KERNEL_UNTESTED(false),
     }
 }
 
@@ -47,18 +45,14 @@ data class DeviceCheckResult(val findings: List<Finding>) {
 
 /** The first-start check, run before anything is unpacked. */
 object DeviceCheck {
-    /** Where the device's primary user keeps each app's data folder, named by its package. */
+    /** Where the device's main user keeps each app's data folder, named by its package. */
     private const val PRIMARY_DATA_ROOT = "/data/data"
     const val PAGE_SIZE = 4096L
-    /** Android 11; 9 and 10 are refused although minSdk is 28. */
-    const val MIN_SDK = 30
     private val SUPPORTED_GENERATIONS = 6..8
-    /** FEX states it needs 5.15; older kernels are untested, not refused. */
-    private const val TESTED_KERNEL = 5 * 1000 + 15
 
     /**
-     * The primary user's data folder of [packageName] (`com.pd2launcher.app`, or the development
-     * build's `com.pd2launcher.app.dev`): the App userland's loader and glibc are built for it.
+     * The main user's data folder of [packageName] (`com.pd2launcher.app`, or the development
+     * build's `com.pd2launcher.app.dev`).
      */
     fun primaryDataDir(packageName: String): String = "$PRIMARY_DATA_ROOT/$packageName"
 
@@ -98,52 +92,47 @@ object DeviceCheck {
         if (facts.pageSize != PAGE_SIZE) {
             findings += Finding(Finding.Kind.PAGE_SIZE, "memory page size ${facts.pageSize}, 4096 is needed")
         }
-        if (facts.sdk < MIN_SDK) {
-            findings += Finding(Finding.Kind.ANDROID_TOO_OLD, "Android SDK ${facts.sdk}, Android 11 (SDK 30) or later is needed")
-        }
-        // An app's data folder is named by its package, so this is the primary user's of the same app.
-        if (facts.dataDir != primaryDataDir(File(facts.dataDir).name)) {
-            findings += Finding(
-                Finding.Kind.NOT_PRIMARY_USER,
-                "data folder ${facts.dataDir}: only the device's primary user is supported",
-            )
-        }
+        // The App userland is rewritten for the data folder as it unpacks, wherever Android keeps it;
+        // the Unix sockets the session makes below it must fit sun_path.
+        (Relocation.problem(facts.dataDir, facts.dataDirLimit) ?: socketProblem(facts.dataDir))
+            ?.let { findings += Finding(Finding.Kind.DATA_FOLDER, it) }
         if (facts.freeBytes < facts.requiredBytes) {
             findings += Finding(
                 Finding.Kind.NO_SPACE,
                 "${facts.freeBytes shr 20} MiB free, ${facts.requiredBytes shr 20} MiB needed to unpack",
             )
         }
-        val kernel = Regex("""^(\d+)\.(\d+)""").find(facts.kernelRelease)?.destructured
-            ?.let { (major, minor) -> major.toInt() * 1000 + minor.toInt() }
-        if (kernel == null || kernel < TESTED_KERNEL) {
-            findings += Finding(
-                Finding.Kind.KERNEL_UNTESTED,
-                "kernel ${facts.kernelRelease} is older than 5.15: the device is untested",
-            )
-        }
         return DeviceCheckResult(findings)
     }
 
-    /** Measures this device; [gpu] comes from [HostGpu.probe]. */
-    fun measure(context: Context, gpu: HostGpu?, requiredBytes: Long): DeviceFacts {
+    /** The longest path a Unix socket takes: `sun_path`'s 108 bytes, its terminating NUL included. */
+    private const val SOCKET_PATH_MAX = 107
+
+    /** Why a session socket below [dataDir] would not fit `sun_path`, or null. */
+    private fun socketProblem(dataDir: String): String? =
+        SessionPaths(dataDir).sockets.map { it.path }.firstOrNull { it.toByteArray().size > SOCKET_PATH_MAX }
+            ?.let { "data folder $dataDir: the socket $it is longer than the $SOCKET_PATH_MAX bytes a Unix socket takes" }
+
+    /** Measures this device; [gpu] comes from [HostGpu.probe], [dataDirLimit] from the App userland's manifest. */
+    fun measure(context: Context, gpu: HostGpu?, requiredBytes: Long, dataDirLimit: Int): DeviceFacts {
         val files = context.filesDir
         return DeviceFacts(
-            sdk = Build.VERSION.SDK_INT,
             pageSize = Os.sysconf(OsConstants._SC_PAGESIZE),
             kernelRelease = Os.uname().release,
             gpu = gpu,
             dataDir = dataDir(context),
+            dataDirLimit = dataDirLimit,
             freeBytes = StatFs(files.path).availableBytes,
             requiredBytes = requiredBytes,
         )
     }
 
     /**
-     * The app's data folder as the App userland reaches it: its [primaryDataDir] when that path is
-     * the same folder as `Context.getDataDir()`, else the latter's canonical path. A path
-     * comparison is not enough: with app data isolation (Android 11+) `/data/user/0` is a bind
-     * mount in the app's mount namespace, not a link to `/data/data`.
+     * The app's data folder, the one the App userland is rewritten for: its [primaryDataDir] when
+     * that path is the same folder as `Context.getDataDir()` (the main user's usual path), else the
+     * latter's canonical path (another user, a work profile, adopted storage). A path comparison is
+     * not enough: with app data isolation (Android 11+) `/data/user/0` is a bind mount in the app's
+     * mount namespace, not a link to `/data/data`.
      */
     fun dataDir(context: Context): String {
         val own = File(context.dataDir.path)

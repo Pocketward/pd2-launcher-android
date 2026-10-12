@@ -14,7 +14,7 @@ import java.nio.file.attribute.PosixFilePermissions
 /**
  * Settings → App → Game files: Import files… (picked files into a folder of the game folder) and
  * Export files… (files and folders of the game folder into a folder the player picks), any file
- * alike. Import refuses while the game runs or the Launcher
+ * alike. Import refuses while the game runs or starts or the Launcher
  * works on the game folder, as [GameFilesProvider] does. Blocking: call off the main thread.
  */
 object FileTransfer {
@@ -54,18 +54,20 @@ object FileTransfer {
 
     /**
      * Copies the picked [uris] into [folderId]; [ask] decides for each one whose name is taken.
-     * A file is written through a temporary name, so the game never sees half of it.
+     * A file is written through a temporary name, so the game never sees half of it. Nothing is
+     * copied when a picked file is a program or library ([DocumentPaths.nameRefusal]).
      */
     suspend fun import(context: Context, uris: List<Uri>, folderId: String, ask: suspend (String) -> Choice): Outcome {
         val documents = GameFilesProvider.documents(context)
         return try {
-            val refusal = documents.refusal(folderId, GameFilesProvider.gameRunning(), GameFilesProvider.busy())
+            val refusal = GameFilesProvider.refusal(documents, folderId)
             if (refusal != null) return Outcome.Refused(refusal)
+            val names = uris.map { uri -> displayName(context, uri) ?: throw IOException("a picked file has no name") }
+            names.firstNotNullOfOrNull(documents::nameRefusal)?.let { return Outcome.Refused(it) }
             val folder = documents.file(folderId)
             var copied = 0
             var skipped = 0
-            for (uri in uris) {
-                val picked = displayName(context, uri) ?: throw IOException("a picked file has no name")
+            for ((uri, picked) in uris.zip(names)) {
                 var name = documents.child(folderId, picked).substringAfterLast('/')
                 if (Files.exists(File(folder, name).toPath(), LinkOption.NOFOLLOW_LINKS)) {
                     when (ask(name)) {
@@ -75,7 +77,7 @@ object FileTransfer {
                     }
                 }
                 // Asked: the game may have started meanwhile.
-                documents.refusal(folderId, GameFilesProvider.gameRunning(), GameFilesProvider.busy())?.let { return Outcome.Refused(it) }
+                GameFilesProvider.refusal(documents, folderId)?.let { return Outcome.Refused(it) }
                 val target = File(folder, name)
                 if (target.isDirectory) throw IOException("$name is a folder")
                 val temporary = File(folder, ".$name$TEMPORARY")
@@ -84,6 +86,8 @@ object FileTransfer {
                     Files.createFile(temporary.toPath(), PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")))
                     val input = context.contentResolver.openInputStream(uri) ?: throw IOException("cannot read $picked")
                     input.use { from -> Files.newOutputStream(temporary.toPath()).use { from.copyTo(it) } }
+                    // Copied: the game may have started meanwhile, and the rename is the change it would see.
+                    GameFilesProvider.refusal(documents, folderId)?.let { return Outcome.Refused(it) }
                     Files.move(temporary.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
                 } finally {
                     Files.deleteIfExists(temporary.toPath())

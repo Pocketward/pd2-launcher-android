@@ -10,11 +10,10 @@ import java.nio.channels.FileChannel
 
 /**
  * The X screen's framebuffer: Xvfb's screen 0 laid out as an XWD file ([XwdHeader], colormap,
- * pixels). On Android 11 and later it is a memfd the app makes and passes to Xvfb as its
- * descriptor 3 (`-fbfd 3`, `userland/patches/xserver/0003`), so the moving picture
- * never reaches flash; on Android 9 and 10, whose system call filter may refuse `memfd_create`,
- * it is Xvfb's `-fbdir` file. Each read opens it anew ([open]), so a closed framebuffer reads as
- * nothing, never as another file.
+ * pixels). It is a memfd the app makes and passes to Xvfb as its descriptor 3 (`-fbfd 3`,
+ * `userland/patches/xserver/0003`), so the moving picture never reaches flash; when no memfd can
+ * be made, it is Xvfb's `-fbdir` file. Each read opens it anew ([open]), so a closed framebuffer
+ * reads as nothing, never as another file.
  */
 class Framebuffer private constructor(
     private val open: () -> FileChannel,
@@ -62,14 +61,13 @@ class Framebuffer private constructor(
             release = {},
         )
 
-        /** The header at the start of [channel] (a positional read), when it is a 32-bit screen's. */
+        /** The header at the start of [channel] (a positional read), when it is a 32-bit screen's of sizes taken ([XwdHeader.plausible]). */
         fun readHeader(channel: FileChannel): XwdHeader? {
             val bytes = ByteBuffer.allocate(XwdHeader.SIZE)
             while (bytes.hasRemaining()) {
                 if (channel.read(bytes, bytes.position().toLong()) < 0) break
             }
-            return XwdHeader.parse(bytes.array().copyOf(bytes.position()))
-                ?.takeIf { it.width > 0 && it.height > 0 && it.bitsPerPixel == 32 }
+            return XwdHeader.parse(bytes.array().copyOf(bytes.position()))?.takeIf { it.plausible }
         }
     }
 }

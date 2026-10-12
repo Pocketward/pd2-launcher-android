@@ -94,8 +94,11 @@ data class FlowNav(val stack: List<FlowPage> = listOf(FlowPage.CHECK)) {
 
 /** Step 1's one main action (the bottom-right corner, `ui/Shell.kt`) and why it waits while disabled. */
 data class MainAction(val kind: Kind, val enabled: Boolean, val hint: Line) {
-    /** [REPAIR]: the installation itself is broken; Repair's Start over is the way on. */
-    enum class Kind { CONTINUE, CHECK_AGAIN, REPAIR }
+    /**
+     * [REPAIR]: the installation itself is broken; Repair's Start over is the way on. [TRY_AGAIN]:
+     * the engine or the game support files failed ([Onboarding.failed]); it starts them again.
+     */
+    enum class Kind { CONTINUE, CHECK_AGAIN, REPAIR, TRY_AGAIN }
 }
 
 /** The native screen the app shows, derived from the device check and the session. */
@@ -486,10 +489,7 @@ object Onboarding {
             action = action(session),
         )
 
-    /**
-     * "Adreno 610 graphics · Android 14": the kernel shows only in the warning that needs it
-     * ([Finding.Kind.KERNEL_UNTESTED]).
-     */
+    /** "Adreno 610 graphics · Android 14", then a warning for each finding that lets the app go on. */
     fun deviceRow(device: DeviceCheckState.Done): CheckRow {
         val facts = device.facts
         val gpu = facts.gpu?.name
@@ -548,9 +548,17 @@ object Onboarding {
      */
     private fun gameFolderGone(snapshot: Snapshot): Boolean = snapshot.gameFolder?.available == false
 
+    /**
+     * The engine gave up restarting or the session could not start (the game support files
+     * failed): nothing starts it again by itself, so the screens offer Try again.
+     */
+    fun failed(session: SessionStatus): Boolean =
+        session.engine == SessionStatus.Engine.FAILED || session.userland is SessionStatus.Userland.Failed
+
     fun action(session: SessionStatus): MainAction {
         val snapshot = session.snapshot
         return when {
+            failed(session) -> MainAction(MainAction.Kind.TRY_AGAIN, true, Line(R.string.hint_try_again))
             snapshot?.host == Host.UNSUPPORTED && !auditing(snapshot) && session.engine == SessionStatus.Engine.CONNECTED ->
                 if (gameFolderGone(snapshot)) {
                     MainAction(MainAction.Kind.REPAIR, true, Line(R.string.hint_game_folder_gone))
@@ -585,10 +593,8 @@ object Onboarding {
             if (finding.subject.isEmpty()) Line(R.string.device_gpu_unknown) else Line(R.string.device_gpu_not_supported, finding.subject)
         Finding.Kind.GPU_UNKNOWN_TO_DRIVER -> Line(R.string.device_gpu_unknown_to_driver, finding.subject)
         Finding.Kind.PAGE_SIZE -> Line(R.string.device_page_size, facts.pageSize)
-        Finding.Kind.ANDROID_TOO_OLD -> Line(R.string.device_android_too_old, facts.sdk)
-        Finding.Kind.NOT_PRIMARY_USER -> Line(R.string.device_not_primary_user)
+        Finding.Kind.DATA_FOLDER -> Line(R.string.device_data_folder)
         Finding.Kind.NO_SPACE -> Line(R.string.device_no_space, facts.freeBytes shr 20, facts.requiredBytes shr 20)
-        Finding.Kind.KERNEL_UNTESTED -> Line(R.string.device_kernel_untested, shortKernel(facts.kernelRelease))
     }
 
     /** What a host finding means, in plain words (the desktop's step 1 list, worded for Android). */
@@ -619,7 +625,4 @@ object Onboarding {
         HostFinding.UNCERTIFIED_BUILD -> R.string.missing_uncertified_build
         HostFinding.UNKNOWN -> R.string.missing_unknown
     }
-
-    /** "5.15.78-android13-8-g1234" -> "5.15.78": the version without the build suffix. */
-    fun shortKernel(release: String): String = release.substringBefore('-')
 }

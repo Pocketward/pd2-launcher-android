@@ -25,7 +25,6 @@ import com.pd2launcher.app.ui.InstallRun
  */
 object DebugPreview {
     const val NOT_SUPPORTED = "not-supported"
-    const val OLD_KERNEL = "old-kernel"
     const val UNPACK = "unpack"
     /**
      * Install over the live session from Blizzard's downloads: before it starts; running at
@@ -270,12 +269,8 @@ object DebugPreview {
         val facts = done.facts
         fun device(injected: DeviceFacts) = DeviceCheckState.Done(injected, DeviceCheck.evaluate(injected) { null }, done.androidRelease)
         return when (name) {
-            // An Adreno 505 on Android 10 with a 4.14 kernel: refused, with the kernel warning.
-            NOT_SUPPORTED -> Onboarding.screen(
-                device(facts.copy(gpu = KgslGpu(0x05000500, 5), sdk = 29, kernelRelease = "4.14.190-perf")),
-                session, notificationsOff,
-            )
-            OLD_KERNEL -> Onboarding.screen(device(facts.copy(kernelRelease = "5.4.210-qgki")), session, notificationsOff)
+            // An Adreno 505: refused.
+            NOT_SUPPORTED -> Onboarding.screen(device(facts.copy(gpu = KgslGpu(0x05000500, 5))), session, notificationsOff)
             CHECK -> Onboarding.screen(done, session, notificationsOff)
             CHECK_GRANTS -> Onboarding.screen(done, session, notificationsOff = true, batteryRestricted = true)
             CHECK_PASSED -> Onboarding.screen(done, session, notificationsOff = false, batteryRestricted = false)

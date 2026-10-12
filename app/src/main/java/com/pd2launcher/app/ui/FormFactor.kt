@@ -2,8 +2,6 @@ package com.pd2launcher.app.ui
 
 import android.app.Activity
 import android.content.pm.ActivityInfo
-import android.graphics.Point
-import android.os.Build
 import androidx.compose.runtime.staticCompositionLocalOf
 
 /**
@@ -34,15 +32,10 @@ enum class FormFactor {
             return if (long / short >= PHONE_RATIO) PHONE else HANDHELD
         }
 
-        /** From the physical display: the window's maximum bounds (the real size before Android 11). */
-        fun of(activity: Activity): FormFactor = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        /** From the physical display: the window's maximum bounds. */
+        fun of(activity: Activity): FormFactor {
             val bounds = activity.windowManager.maximumWindowMetrics.bounds
-            of(bounds.width(), bounds.height())
-        } else {
-            val size = Point()
-            @Suppress("DEPRECATION")
-            activity.windowManager.defaultDisplay.getRealSize(size)
-            of(size.x, size.y)
+            return of(bounds.width(), bounds.height())
         }
     }
 }

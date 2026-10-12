@@ -2,16 +2,18 @@ FEX on Android: faccessat2 without the faccessat2 syscall.
 
 Android blocks faccessat2. Guest faccessat2 is computed as glibc 2.41's faccessat() does without
 it: unknown flags are EINVAL; flags 0 (or AT_EACCESS with equal real and effective ids) use the
-faccessat syscall; otherwise fstatat and the permission bits decide, with the super-user rule for
-X_OK. AT_EMPTY_PATH is passed to fstatat, as the kernel's faccessat2 accepts it.
+faccessat syscall; otherwise fstatat, then the faccessat syscall again when the file is no symlink,
+the path is not empty and the real ids are the ones to check, so read-only and noexec mounts, ACLs
+and SELinux count. Only in the remaining cases do the permission bits decide, with the super-user
+rule for X_OK. AT_EMPTY_PATH is passed to fstatat, as the kernel's faccessat2 accepts it.
 FileManager::Access uses the faccessat syscall instead of glibc's faccessat(), which tries
 faccessat2 first.
 
- .../LinuxSyscalls/FileManagement.cpp               | 69 +++++++++++++++++++++-
- 1 file changed, 66 insertions(+), 3 deletions(-)
+ .../LinuxSyscalls/FileManagement.cpp               | 78 +++++++++++++++++++++-
+ 1 file changed, 75 insertions(+), 3 deletions(-)
 
 diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/FileManagement.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/FileManagement.cpp
-index fb3dbf8..b550e67 100644
+index fb3dbf8..7780466 100644
 --- a/Source/Tools/LinuxEmulation/LinuxSyscalls/FileManagement.cpp
 +++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/FileManagement.cpp
 @@ -758,7 +758,8 @@ uint64_t FileManager::Access(const char* pathname, [[maybe_unused]] int mode) {
@@ -24,14 +26,15 @@ index fb3dbf8..b550e67 100644
      if (Result != -1) {
        return Result;
      }
-@@ -782,6 +783,68 @@ uint64_t FileManager::FAccessat(int dirfd, const char* pathname, int mode) {
+@@ -782,6 +783,77 @@ uint64_t FileManager::FAccessat(int dirfd, const char* pathname, int mode) {
    return ::syscall(SYS_faccessat, dirfd, SelfPath, mode);
  }
  
-+// faccessat2 without the faccessat2 syscall, which Android's app seccomp policy blocks. The same
-+// computation as glibc 2.41's faccessat() fallback for kernels without faccessat2
++// faccessat2 without the faccessat2 syscall, which Android's app seccomp policy blocks. Based on
++// glibc 2.41's faccessat() fallback for kernels without faccessat2
 +// (sysdeps/unix/sysv/linux/faccessat.c): the faccessat syscall when the flags do not matter,
-+// otherwise fstatat and the permission bits. AT_EMPTY_PATH is passed on to fstatat.
++// otherwise fstatat, then the faccessat syscall after all once the file is known to be no symlink,
++// and the permission bits only where faccessat cannot answer. AT_EMPTY_PATH is passed on to fstatat.
 +// Returns 0, or -1 with errno.
 +static int FAccessat2WithoutSyscall(int dirfd, const char* pathname, int mode, int flags) {
 +  if (flags & ~(AT_SYMLINK_NOFOLLOW | AT_EACCESS | AT_EMPTY_PATH)) {
@@ -55,6 +58,14 @@ index fb3dbf8..b550e67 100644
 +  static_assert(R_OK == S_IROTH && W_OK == S_IWOTH && X_OK == S_IXOTH);
 +  if (mode == F_OK) {
 +    return 0;
++  }
++
++  // Not a symlink, so following the last component changes nothing, and the real ids are the ones to
++  // check (or equal the effective ones): the faccessat syscall answers for the file itself, honouring
++  // read-only and noexec mounts, ACLs and SELinux, which the permission bits below cannot. An empty
++  // path (AT_EMPTY_PATH) names dirfd itself, which faccessat cannot take.
++  if (!S_ISLNK(Stats.st_mode) && ((flags & AT_EACCESS) == 0 || SameIds) && pathname && pathname[0] != '\0') {
++    return ::syscall(SYSCALL_DEF(faccessat), dirfd, pathname, mode);
 +  }
 +
 +  const uid_t uid = (flags & AT_EACCESS) ? ::geteuid() : ::getuid();
@@ -93,7 +104,7 @@ index fb3dbf8..b550e67 100644
  uint64_t FileManager::FAccessat2(int dirfd, const char* pathname, int mode, int flags) {
    auto NewPath = GetSelf(pathname);
    const char* SelfPath = NewPath ? NewPath->data() : nullptr;
-@@ -789,13 +852,13 @@ uint64_t FileManager::FAccessat2(int dirfd, const char* pathname, int mode, int
+@@ -789,13 +861,13 @@ uint64_t FileManager::FAccessat2(int dirfd, const char* pathname, int mode, int
    FDPathTmpData TmpFilename;
    auto Path = GetEmulatedFDPath(dirfd, SelfPath, (flags & AT_SYMLINK_NOFOLLOW) == 0, TmpFilename);
    if (Path.FD != -1) {

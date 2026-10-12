@@ -54,6 +54,7 @@ constexpr int MAX_BUFFERS = 4;
 constexpr size_t PAGE = 4096;
 constexpr size_t WANTED_WORD = 192 / 4;
 constexpr int64_t STATS_NS = 5000000000LL;
+constexpr int64_t ACCEPT_REST_NS = 200000000LL;
 constexpr int MAX_FENCES = 1024;
 
 struct Msg {
@@ -68,13 +69,21 @@ int64_t now_ns() {
     return (int64_t)t.tv_sec * 1000000000LL + t.tv_nsec;
 }
 
-// When a signalled sync_file signalled; 0 while pending, -1 on an error.
+// Whether [fd] is a sync_file (the kernel answers its info query).
+bool is_sync_file(int fd) {
+    sync_file_info info = {};
+    return ioctl(fd, SYNC_IOC_FILE_INFO, &info) == 0;
+}
+
+// When a signalled sync_file signalled; 0 while pending, -1 on an error (a fence that
+// signalled with an error included, so it is closed rather than kept).
 int64_t fence_time(int fd) {
     sync_fence_info fences[4] = {};
     sync_file_info info = {};
     info.num_fences = 4;
     info.sync_fence_info = (uint64_t)(uintptr_t)fences;
     if (ioctl(fd, SYNC_IOC_FILE_INFO, &info) < 0) return -1;
+    if (info.status < 0) return -1;
     if (info.status != 1) return 0;
     int64_t t = 0;
     for (uint32_t i = 0; i < info.num_fences && i < 4; i++) {
@@ -190,7 +199,7 @@ void give_back(BufferSet *set, int index, int fence) {
 }
 
 // Under lock: the layer off the screen (the X screen's copy shows again).
-void hide(Server *s) __INTRODUCED_IN(29) {
+void hide(Server *s) {
     if (!s->visible || s->control == nullptr) return;
     ASurfaceTransaction *t = ASurfaceTransaction_create();
     ASurfaceTransaction_setVisibility(t, s->control, ASURFACE_TRANSACTION_VISIBILITY_HIDE);
@@ -200,7 +209,28 @@ void hide(Server *s) __INTRODUCED_IN(29) {
     showing.store(0);
 }
 
-void on_complete(void *context, ASurfaceTransactionStats *stats) __INTRODUCED_IN(29) {
+// Under lock: the present fences that have signalled count as shown frames (their times give the
+// longest gap) and are closed; only those still pending stay open.
+void collect_fences(Server *s) {
+    int kept = 0;
+    for (int i = 0; i < s->nfences; i++) {
+        int64_t presented = fence_time(s->fences[i]);
+        if (presented == 0) {
+            s->fences[kept++] = s->fences[i];
+            continue;
+        }
+        close(s->fences[i]);
+        if (presented < 0 || presented == s->last_present_time) continue;
+        if (s->last_present_time > 0 && presented - s->last_present_time > s->gap_max_ns) {
+            s->gap_max_ns = presented - s->last_present_time;
+        }
+        s->shown_frames++;
+        s->last_present_time = presented;
+    }
+    s->nfences = kept;
+}
+
+void on_complete(void *context, ASurfaceTransactionStats *stats) {
     auto *done = (Completion *)context;
     Server *s = done->s;
     pthread_mutex_lock(&s->lock);
@@ -209,6 +239,8 @@ void on_complete(void *context, ASurfaceTransactionStats *stats) __INTRODUCED_IN
         if (s->nfences < MAX_FENCES) s->fences[s->nfences++] = present_fence;
         else close(present_fence);
     }
+    // Each completion closes the fences that have signalled since, not the next stats line.
+    collect_fences(s);
     int release = -1;
     if (done->generation == s->generation && s->control != nullptr) {
         ASurfaceControl **controls = nullptr;
@@ -254,7 +286,7 @@ bool place(const Server *s, const BufferSet *set, ARect *source, ARect *destinat
 }
 
 // Under lock: Mesa presents buffer [index] of [set] (its acquire [fence], taken).
-void present(Server *s, BufferSet *set, int index, int fence) __INTRODUCED_IN(29) {
+void present(Server *s, BufferSet *set, int index, int fence) {
     if (index < 0 || index >= set->count || set->at_compositor[index]) {
         if (fence >= 0) close(fence);
         return;
@@ -289,12 +321,10 @@ void present(Server *s, BufferSet *set, int index, int fence) __INTRODUCED_IN(29
         // Above the copy's layer of the X screen.
         ASurfaceTransaction_setZOrder(t, s->control, 1);
         if (s->frame_rate > 0) {
-            if (__builtin_available(android 30, *)) {
-                ASurfaceTransaction_setFrameRate(t, s->control, s->frame_rate, ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT);
-            }
+            ASurfaceTransaction_setFrameRate(t, s->control, s->frame_rate, ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT);
         }
         // Each buffer shown before the next is taken: none dropped, the game paced by the panel.
-        if (__builtin_available(android 31, *)) ASurfaceTransaction_setEnableBackPressure(t, s->control, true);
+        ASurfaceTransaction_setEnableBackPressure(t, s->control, true);
         s->configured = true;
     }
     if (!s->visible) {
@@ -321,17 +351,7 @@ void present(Server *s, BufferSet *set, int index, int fence) __INTRODUCED_IN(29
 
 // Under lock.
 void stats(Server *s, int64_t now) {
-    for (int i = 0; i < s->nfences; i++) {
-        int64_t presented = fence_time(s->fences[i]);
-        close(s->fences[i]);
-        if (presented <= 0 || presented == s->last_present_time) continue;
-        if (s->last_present_time > 0 && presented - s->last_present_time > s->gap_max_ns) {
-            s->gap_max_ns = presented - s->last_present_time;
-        }
-        s->shown_frames++;
-        s->last_present_time = presented;
-    }
-    s->nfences = 0;
+    collect_fences(s);
     double window = (now - s->last_ns) / 1e9;
     if (s->presents > 0) {
         LOG("%ux%u: %.1f presents/s, %.1f shown/s, longest gap %.1f ms, %.1f/s back at once, %s", s->active ? s->active->width : 0,
@@ -344,6 +364,8 @@ void stats(Server *s, int64_t now) {
     s->last_ns = now;
 }
 
+// One message and the descriptors beside it (at most [max] kept in [fds], the rest closed).
+// Negative on an error, with no descriptors: a client whose descriptors did not all fit is one.
 ssize_t receive(int fd, void *data, size_t cap, int *fds, int max, int *nfds) {
     iovec iov = {data, cap};
     union {
@@ -358,7 +380,11 @@ ssize_t receive(int fd, void *data, size_t cap, int *fds, int max, int *nfds) {
     ssize_t n;
     do n = recvmsg(fd, &msg, MSG_CMSG_CLOEXEC); while (n < 0 && errno == EINTR);
     *nfds = 0;
+    // A failed call leaves msg_controllen as it was, over a buffer the kernel never wrote.
+    if (n < 0) return n;
     for (cmsghdr *c = CMSG_FIRSTHDR(&msg); c != nullptr; c = CMSG_NXTHDR(&msg, c)) {
+        // A header shorter than itself would make CMSG_NXTHDR return it again, for ever.
+        if (c->cmsg_len < CMSG_LEN(0)) break;
         if (c->cmsg_level != SOL_SOCKET || c->cmsg_type != SCM_RIGHTS) continue;
         int count = (int)((c->cmsg_len - CMSG_LEN(0)) / sizeof(int));
         int *got = (int *)CMSG_DATA(c);
@@ -366,6 +392,13 @@ ssize_t receive(int fd, void *data, size_t cap, int *fds, int max, int *nfds) {
             if (*nfds < max) fds[(*nfds)++] = got[i];
             else close(got[i]);
         }
+    }
+    if (msg.msg_flags & MSG_CTRUNC) {
+        // Descriptors the kernel had no room for are lost: the message cannot be trusted.
+        for (int i = 0; i < *nfds; i++) close(fds[i]);
+        *nfds = 0;
+        errno = EMSGSIZE;
+        return -1;
     }
     return n;
 }
@@ -427,7 +460,7 @@ BufferSet *welcome(int fd) {
 }
 
 // Under lock: [set] becomes the swapchain whose frames show.
-void activate(Server *s, BufferSet *set) __INTRODUCED_IN(29) {
+void activate(Server *s, BufferSet *set) {
     s->active = set;
     s->unplaced = false;
     update_wanted(s);
@@ -435,7 +468,7 @@ void activate(Server *s, BufferSet *set) __INTRODUCED_IN(29) {
 
 // Under lock: the client has gone (or another replaced it). A pending newer one takes over from
 // an active one that went first.
-void farewell(Server *s, BufferSet *set) __INTRODUCED_IN(29) {
+void farewell(Server *s, BufferSet *set) {
     if (set == nullptr) return;
     if (set->fd >= 0) {
         close(set->fd);
@@ -453,7 +486,7 @@ void farewell(Server *s, BufferSet *set) __INTRODUCED_IN(29) {
 }
 
 // Under lock: a message (or the end) from client [set].
-void message(Server *s, BufferSet *set, ssize_t n, const Msg &m, int *fences, int nfences) __INTRODUCED_IN(29) {
+void message(Server *s, BufferSet *set, ssize_t n, const Msg &m, int *fences, int nfences) {
     bool is_present = n == sizeof(m) && m.magic == MAGIC && m.type == PRESENT;
     if (n <= 0) {
         LOG("%s", set == s->active ? "the game's swapchain has gone" : "a newer swapchain has gone before its first frame");
@@ -467,27 +500,51 @@ void message(Server *s, BufferSet *set, ssize_t n, const Msg &m, int *fences, in
     }
     if (n > 0 && is_present && set == s->active) {
         for (int i = 1; i < nfences; i++) close(fences[i]);
-        present(s, set, (int)m.index, nfences > 0 ? fences[0] : -1);
+        int fence = nfences > 0 ? fences[0] : -1;
+        if (fence >= 0 && !is_sync_file(fence)) {
+            // Handed to the compositor as an acquire fence, anything else would fail the transaction.
+            LOG("a present's descriptor is no fence: dropped");
+            close(fence);
+            fence = -1;
+        }
+        present(s, set, (int)m.index, fence);
     } else {
         for (int i = 0; i < nfences; i++) close(fences[i]);
     }
 }
 
-void serve(Server *s) __INTRODUCED_IN(29) {
+void serve(Server *s) {
+    // An accept that failed (out of descriptors, say) leaves the connection waiting, and poll
+    // would report the listener again at once: it rests until then, the clients served meanwhile.
+    // A run of failures logs once.
+    int64_t accept_after = 0;
+    bool accept_failing = false;
     for (;;) {
         pthread_mutex_lock(&s->lock);
         BufferSet *clients[2] = {s->active, s->pending};
         int fds_of[2] = {clients[0] != nullptr ? clients[0]->fd : -1, clients[1] != nullptr ? clients[1]->fd : -1};
         pthread_mutex_unlock(&s->lock);
+        int64_t now = now_ns();
+        bool resting = now < accept_after;
         // A negative descriptor is not polled.
-        pollfd fds[4] = {{s->wake[0], POLLIN, 0}, {s->listener, POLLIN, 0}, {fds_of[0], POLLIN, 0}, {fds_of[1], POLLIN, 0}};
-        if (poll(fds, 4, -1) < 0) {
+        pollfd fds[4] = {{s->wake[0], POLLIN, 0}, {resting ? -1 : s->listener, POLLIN, 0}, {fds_of[0], POLLIN, 0}, {fds_of[1], POLLIN, 0}};
+        if (poll(fds, 4, resting ? (int)((accept_after - now) / 1000000 + 1) : -1) < 0) {
             if (errno == EINTR) continue;
             break;
         }
         if (fds[0].revents) break;
         if (fds[1].revents & POLLIN) {
             int fd = accept4(s->listener, nullptr, nullptr, SOCK_CLOEXEC);
+            if (fd < 0 && errno != EINTR && errno != EAGAIN && errno != ECONNABORTED) {
+                if (!accept_failing) {
+                    LOG("cannot accept a client: %s; the listener rests %lld ms between tries", strerror(errno),
+                        (long long)(ACCEPT_REST_NS / 1000000));
+                }
+                accept_failing = true;
+                accept_after = now_ns() + ACCEPT_REST_NS;
+            } else if (fd >= 0) {
+                accept_failing = false;
+            }
             BufferSet *set = fd >= 0 ? welcome(fd) : nullptr;
             if (set != nullptr) {
                 pthread_mutex_lock(&s->lock);
@@ -526,12 +583,12 @@ void serve(Server *s) __INTRODUCED_IN(29) {
 }
 
 void *run(void *data) {
-    if (__builtin_available(android 29, *)) serve((Server *)data);
+    serve((Server *)data);
     return nullptr;
 }
 
 // Under lock: the layer goes (the Game view's surface is going); every buffer it held goes back.
-void drop_layer(Server *s) __INTRODUCED_IN(29) {
+void drop_layer(Server *s) {
     if (s->control == nullptr) return;
     ASurfaceTransaction *t = ASurfaceTransaction_create();
     ASurfaceTransaction_reparent(t, s->control, nullptr);
@@ -558,12 +615,18 @@ void drop_layer(Server *s) __INTRODUCED_IN(29) {
 }
 
 Server *start(JNIEnv *env, jstring socket_path, jstring counter_path) {
-    auto *s = new Server();
+    // A null from GetStringUTFChars leaves an OutOfMemoryError pending: no JNI call may follow.
     const char *chars = env->GetStringUTFChars(socket_path, nullptr);
+    if (chars == nullptr) return nullptr;
+    auto *s = new Server();
     snprintf(s->path, sizeof(s->path), "%s", chars);
     env->ReleaseStringUTFChars(socket_path, chars);
     if (counter_path != nullptr) {
         const char *file = env->GetStringUTFChars(counter_path, nullptr);
+        if (file == nullptr) {
+            delete s;
+            return nullptr;
+        }
         int fd = open(file, O_RDWR | O_CLOEXEC);
         struct stat st;
         if (fd >= 0 && fstat(fd, &st) == 0 && st.st_size >= (off_t)PAGE) {
@@ -615,13 +678,12 @@ extern "C" int present_server_showing(void) {
 
 extern "C" JNIEXPORT jlong JNICALL Java_com_pd2launcher_app_PresentServer_nativeStart(
     JNIEnv *env, jclass, jstring socket_path, jstring counter_path) {
-    if (__builtin_available(android 29, *)) return (jlong)(intptr_t)start(env, socket_path, counter_path);
-    return 0;
+    return (jlong)(intptr_t)start(env, socket_path, counter_path);
 }
 
 namespace {
 
-void attach(Server *s, JNIEnv *env, jobject surface, jfloat frame_rate) __INTRODUCED_IN(29) {
+void attach(Server *s, JNIEnv *env, jobject surface, jfloat frame_rate) {
     ANativeWindow *window = ANativeWindow_fromSurface(env, surface);
     if (window == nullptr) return;
     pthread_mutex_lock(&s->lock);
@@ -640,14 +702,16 @@ void attach(Server *s, JNIEnv *env, jobject surface, jfloat frame_rate) __INTROD
     LOG("the Game view: %dx%d, frame rate %.0f", s->dest_w, s->dest_h, frame_rate);
 }
 
-void detach(Server *s) __INTRODUCED_IN(29) {
+// The layer on [surface] goes; one a newer surface was given in the meantime stays.
+void detach(Server *s, JNIEnv *env, jobject surface) {
+    ANativeWindow *window = ANativeWindow_fromSurface(env, surface);
     pthread_mutex_lock(&s->lock);
-    drop_layer(s);
+    if (window == nullptr || window == s->window) drop_layer(s);
     pthread_mutex_unlock(&s->lock);
+    if (window != nullptr) ANativeWindow_release(window);
 }
 
-void set_window(Server *s, bool covered, int32_t x, int32_t y, int32_t w, int32_t h, int32_t screen_w, int32_t screen_h)
-    __INTRODUCED_IN(29) {
+void set_window(Server *s, bool covered, int32_t x, int32_t y, int32_t w, int32_t h, int32_t screen_w, int32_t screen_h) {
     pthread_mutex_lock(&s->lock);
     s->covered = covered;
     s->window_x = x;
@@ -665,7 +729,7 @@ void set_window(Server *s, bool covered, int32_t x, int32_t y, int32_t w, int32_
     }
 }
 
-void stop(Server *s) __INTRODUCED_IN(29) {
+void stop(Server *s) {
     char byte = 1;
     if (write(s->wake[1], &byte, 1) != 1) LOG("cannot wake the server");
     pthread_join(s->thread, nullptr);
@@ -693,18 +757,20 @@ void stop(Server *s) __INTRODUCED_IN(29) {
 // The Game view's surface (a child layer goes on it), asking the display for [frame_rate].
 extern "C" JNIEXPORT void JNICALL Java_com_pd2launcher_app_PresentServer_nativeAttach(
     JNIEnv *env, jclass, jlong handle, jobject surface, jfloat frame_rate) {
-    if (__builtin_available(android 29, *)) attach((Server *)(intptr_t)handle, env, surface, frame_rate);
+    attach((Server *)(intptr_t)handle, env, surface, frame_rate);
 }
 
-extern "C" JNIEXPORT void JNICALL Java_com_pd2launcher_app_PresentServer_nativeDetach(JNIEnv *, jclass, jlong handle) {
-    if (__builtin_available(android 29, *)) detach((Server *)(intptr_t)handle);
+// The Game view's [surface] is going: its layer goes with it.
+extern "C" JNIEXPORT void JNICALL Java_com_pd2launcher_app_PresentServer_nativeDetach(
+    JNIEnv *env, jclass, jlong handle, jobject surface) {
+    detach((Server *)(intptr_t)handle, env, surface);
 }
 
 // x-input-relay's word: [covered], the game's window is not alone on the X screen; else it is at
 // [x], [y], [w] x [h] on the [screen_w] x [screen_h] X screen.
 extern "C" JNIEXPORT void JNICALL Java_com_pd2launcher_app_PresentServer_nativeSetWindow(
     JNIEnv *, jclass, jlong handle, jboolean covered, jint x, jint y, jint w, jint h, jint screen_w, jint screen_h) {
-    if (__builtin_available(android 29, *)) set_window((Server *)(intptr_t)handle, covered, x, y, w, h, screen_w, screen_h);
+    set_window((Server *)(intptr_t)handle, covered, x, y, w, h, screen_w, screen_h);
 }
 
 // The buffer on the screen, locked for reading: its pixels (R8G8B8A8 words), and [size] = width,
@@ -729,8 +795,15 @@ extern "C" JNIEXPORT jobject JNICALL Java_com_pd2launcher_app_PresentServer_nati
     jint values[7] = {(jint)desc.width, (jint)desc.height, (jint)(desc.stride * 4), place[0], place[1],
                       place[2] > 0 ? place[2] : (jint)desc.width, place[3] > 0 ? place[3] : (jint)desc.height};
     env->SetIntArrayRegion(size, 0, 7, values);
+    jobject direct = env->NewDirectByteBuffer(pixels, (jlong)desc.stride * 4 * desc.height);
+    if (direct == nullptr) {
+        // No buffer for Java (its exception pending): nothing stays locked for an unlock that never comes.
+        AHardwareBuffer_unlock(buffer, nullptr);
+        AHardwareBuffer_release(buffer);
+        return nullptr;
+    }
     s->locked = buffer;
-    return env->NewDirectByteBuffer(pixels, (jlong)desc.stride * 4 * desc.height);
+    return direct;
 }
 
 extern "C" JNIEXPORT void JNICALL Java_com_pd2launcher_app_PresentServer_nativeUnlockShown(JNIEnv *, jclass, jlong handle) {
@@ -744,5 +817,5 @@ extern "C" JNIEXPORT void JNICALL Java_com_pd2launcher_app_PresentServer_nativeU
 extern "C" JNIEXPORT void JNICALL Java_com_pd2launcher_app_PresentServer_nativeStop(JNIEnv *, jclass, jlong handle) {
     auto *s = (Server *)(intptr_t)handle;
     if (s == nullptr) return;
-    if (__builtin_available(android 29, *)) stop(s);
+    stop(s);
 }

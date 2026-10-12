@@ -2,10 +2,13 @@ From: User <noreply@users.noreply.github.com>
 Subject: [PATCH 04/10] faccessat, fchmodat: take the existing fallbacks directly
 
 faccessat (and eaccess, euidaccess) does not try faccessat2: it issues
-faccessat when the flags allow, otherwise fstatat with glibc's own
-permission check. fchmodat with a non-zero flag does not try fchmodat2: it
-goes to fchmodat_fallback (O_PATH open, chmod through /proc/self/fd).
-The result does not depend on --enable-kernel.
+faccessat when the flags allow, otherwise fstatat, then faccessat again
+once the file is known to be no symlink and the real ids are the ones to
+check, so read-only and noexec mounts, ACLs and the LSM count; glibc's own
+permission check remains only for a symlink with AT_SYMLINK_NOFOLLOW or
+AT_EACCESS in a secure process. fchmodat with a non-zero flag does not try
+fchmodat2: it goes to fchmodat_fallback (O_PATH open, chmod through
+/proc/self/fd). The result does not depend on --enable-kernel.
 
 faccessat2 and fchmodat2 are not in the Android 13 (API 33) app seccomp
 allowlist; the filter traps them with SIGSYS before glibc sees ENOSYS.
@@ -29,7 +32,22 @@ allowlist; the filter traps them with SIGSYS before glibc sees ENOSYS.
    if (flag & ~(AT_SYMLINK_NOFOLLOW | AT_EACCESS))
      return INLINE_SYSCALL_ERROR_RETURN_VALUE (EINVAL);
  
-@@ -71,6 +67,5 @@
+@@ -51,6 +47,14 @@
+   if (mode == F_OK)
+     return 0;			/* The file exists. */
+ 
++  /* Not a symlink, and the real ids are the ones to check (or equal the
++     effective ones): the faccessat syscall answers for the file itself, and
++     it honours read-only and noexec mounts, ACLs and the LSM, which the mode
++     bits below cannot.  */
++  if (!S_ISLNK (stats.st_mode)
++      && ((flag & AT_EACCESS) == 0 || ! __libc_enable_secure))
++    return INLINE_SYSCALL (faccessat, 3, fd, file, mode);
++
+   uid_t uid = (flag & AT_EACCESS) ? __geteuid () : __getuid ();
+ 
+   /* The super-user can read and write any file, and execute any file
+@@ -71,6 +75,5 @@
      return 0;
  
    return INLINE_SYSCALL_ERROR_RETURN_VALUE (EACCES);

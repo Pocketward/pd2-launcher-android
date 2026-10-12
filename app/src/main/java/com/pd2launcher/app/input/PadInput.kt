@@ -30,9 +30,11 @@ data class PadAxes(
  * [onMenu] instead (the overlay menu); the mode switches when the chord is let go. In pad mode
  * a button may be bound to an X key or mouse button too ([Controls.padMode]).
  *
- * The chord's buttons are buttons of their own too: bound to the pad, the game sees them while
- * they are held, until the chord forms; bound to a key or mouse button, they act once when
- * released without having been part of the chord.
+ * The chord's buttons are buttons of their own too: bound to the pad, the game sees one only once
+ * it has been held alone for [CHORD_WINDOW_MS] (let go sooner, it shows as a press that long), so
+ * the first button of a chord formed within that time never reaches the game; the game sees it
+ * until the chord forms. Bound to a key or mouse button, they act once when released without
+ * having been part of the chord.
  */
 class PadInput(
     private val pad: (PadState) -> Unit,
@@ -60,6 +62,8 @@ class PadInput(
     private var chordHeldMs = 0L
     private var chordMenu = false // this chord opened the menu: its release does not switch the mode
     private val inChord = HashSet<PadButton>() // chord buttons that were part of a chord, until released
+    private val heldBack = HashMap<PadButton, Long>() // pad-bound chord buttons held alone, not shown yet: ms so far
+    private val tapped = HashMap<PadButton, Long>() // ones let go while held back, shown as a press: ms so far
     private var sent: PadState? = null
     private var virtual = PadState.NEUTRAL
 
@@ -88,7 +92,11 @@ class PadInput(
                 chordMenu = false
                 inChord += button
                 inChord += other
+                heldBack.remove(other)
+            } else if (down && !was && controls.action(button, mouseMode) == PadAction.Pad) {
+                heldBack[button] = 0
             } else if (!down && was) {
+                if (heldBack.remove(button) != null) tapped[button] = 0
                 if (chordFormed) {
                     chordFormed = false
                     if (!chordMenu) toggle()
@@ -121,13 +129,18 @@ class PadInput(
     }
 
     /**
-     * Call once per display frame with the time since the last one: the chord held long enough
-     * opens the menu; in mouse mode the sticks move the pointer for [elapsedMs] of deflection
-     * (the left stick fast, the right one slow, for aiming at small targets), times
-     * [Controls.pointerSpeed].
+     * Call once per display frame with the time since the last one: a chord button held back
+     * long enough shows (and a tap of one ends); the chord held long enough opens the menu; in
+     * mouse mode the sticks move the pointer for [elapsedMs] of deflection (the left stick fast,
+     * the right one slow, for aiming at small targets), times [Controls.pointerSpeed].
      */
     fun tick(elapsedMs: Long) {
         if (elapsedMs <= 0) return
+        if (age(heldBack, elapsedMs) or age(tapped, elapsedMs)) {
+            val out = ArrayList<RelayEvent>()
+            update(out)
+            flush(out)
+        }
         if (chordFormed && !chordMenu) {
             chordHeldMs += elapsedMs
             if (chordHeldMs >= MENU_HOLD_MS) {
@@ -168,6 +181,16 @@ class PadInput(
         chordFormed = false
         chordMenu = false
         inChord.clear()
+        heldBack.clear()
+        tapped.clear()
+    }
+
+    /** Adds [elapsedMs] to each of [waits]; removes those that reached [CHORD_WINDOW_MS] and says whether any did. */
+    private fun age(waits: MutableMap<PadButton, Long>, elapsedMs: Long): Boolean {
+        val before = waits.size
+        waits.replaceAll { _, ms -> ms + elapsedMs }
+        waits.values.removeAll { it >= CHORD_WINDOW_MS }
+        return waits.size != before
     }
 
     private fun toggle() {
@@ -187,12 +210,15 @@ class PadInput(
         if (axes.hatY >= HAT_PRESSED) add(PadButton.DOWN)
     }
 
-    /** The pressed buttons that act while held: not chord buttons in a chord, nor ones that act on release. */
+    /**
+     * The pressed buttons that act while held: not chord buttons in a chord or still held back,
+     * nor ones that act on release; and a held-back chord button's tap while it shows.
+     */
     private fun holding(): Set<PadButton> {
         val chord = controls.chord
-        return pressed().filterTo(HashSet()) { button ->
+        return (pressed() + tapped.keys).filterTo(HashSet()) { button ->
             val chordButton = button == chord.first || button == chord.second
-            button !in inChord && (!chordButton || controls.action(button, mouseMode) == PadAction.Pad)
+            button !in inChord && button !in heldBack && (!chordButton || controls.action(button, mouseMode) == PadAction.Pad)
         }
     }
 
@@ -282,6 +308,12 @@ class PadInput(
 
         /** How long the chord is held to open the overlay menu rather than switch mouse mode. */
         const val MENU_HOLD_MS = 600L
+
+        /**
+         * How long a pad-bound chord button is held alone before the game sees it: time for its
+         * partner to come, as a chord pressed by a person forms within a few dozen milliseconds.
+         */
+        const val CHORD_WINDOW_MS = 60L
 
         /** A stick at rest, in XInput thumb units: inside the dead zone. */
         private val REST = (DEAD_ZONE * Short.MAX_VALUE).toInt()

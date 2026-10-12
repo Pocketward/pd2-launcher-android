@@ -17,11 +17,11 @@ Android app (Kotlin, Jetpack Compose)          native screens, input, the game's
 
 ## The app (`app/`)
 
-A Kotlin app with Jetpack Compose and one landscape activity, `com.pd2launcher.app` (debug builds: `com.pd2launcher.app.dev`). It only runs Project Diablo 2.
+A Kotlin app with Jetpack Compose and one activity, `com.pd2launcher.app` (debug builds: `com.pd2launcher.app.dev`). It only runs Project Diablo 2. The manifest lets it turn (`fullUser`); the app holds the launcher screens in portrait on a phone and in landscape on a handheld (`FormFactor`), and the Game view always in landscape.
 
-- **targetSdk 28:** Android lets an app run programs from its own data folder only up to target 28. The app refuses Android 9 and 10 itself.
-- **Fixed prefix:** the Linux programs are built for `/data/data/com.pd2launcher.app/files/userland/current`, so only the device's main user is supported.
-- **First-start check** (`DeviceCheck.kt`): the GPU (an Adreno read from `/dev/kgsl-3d0` by `kgsl_probe.c`, or a CSF Mali on `/dev/mali0` read by `mali_probe.c`), 4 KB pages, Android 11 or later, the kernel version and free space.
+- **minSdk 33, targetSdk 28:** our glibc and FEX answer the system calls Android 13's app seccomp policy blocks, and Android 11 and 12 block more. Android lets an app run programs from its own data folder only up to target 28, so the app targets it, below its minimum.
+- **Any data folder:** the Linux programs are built for a placeholder data folder, which the app rewrites to its own as it unpacks them, so any user, work profile or storage works. Before every engine start it ends the app's other processes and checks the loader, `userland.env`, App-provided FEX's programs and the libraries they and the engine link against the APK's manifest; libraries loaded later with `dlopen` and the rest of the tree are not checked.
+- **First-start check** (`DeviceCheck.kt`): the GPU (an Adreno read from `/dev/kgsl-3d0` by `kgsl_probe.c`, or a CSF Mali on `/dev/mali0` read by `mali_probe.c`), 4 KB pages and free space. It does not look at the kernel version, which only goes into its log line.
 - **Screens** (`ui/`): Check, the Diablo II source, Download, Install, Play, Settings and About, for touch and controller; one column on phones, two panes on squarer handhelds.
 - **The player's files:** characters live in `files/userdata/Save`; the game folder's `Save` is a link to it (`SaveKeeper.kt`), so reinstalling or updating never touches them. `GameFilesProvider.kt` shows the game folder in Android's Files app.
 
@@ -46,7 +46,7 @@ The ARM64 Linux programs the app runs natively, packed as `userland.tar.zst` and
 - a pinned subset of Debian 13 ARM64 (`packages.txt`, `packages.lock`): PulseAudio, X11/XCB libraries, the Vulkan loader, Mesa's Zink, fonts, CA certificates;
 - **our glibc** (`glibc/`): Debian 13's glibc patched so it never makes the system calls Android's app seccomp policy kills a process for, and reads its `/etc` files from the prefix;
 - **our FEX-Emu** (`fex/`): FEX-2609.1 patched to answer the blocked system calls as the kernel would and to work inside the RootFS without `openat2`, built with the GL and 32-bit guest thunks;
-- **Xvfb** from xorg-server 21.1.16 (`patches/xserver/`), with the app's compiled-in paths;
+- **Xvfb** from xorg-server 21.1.25 (`patches/xserver/`), with the app's compiled-in paths;
 - **Mesa Turnip** (KGSL backend, `patches/mesa/`) for Adreno and **Mesa PanVK** with our kbase backend (`mesa-kbase/`, `patches/mesa-panvk/`) for Mali;
 - `pd2-fex` (`fex-entry.c`), FEX's entry point for the engine, and `x-input-relay` (`x-input-relay.c`), which turns the app's touch and keyboard events into X input through XTEST.
 

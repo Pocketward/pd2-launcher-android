@@ -3,17 +3,32 @@
 # Output: build/outputs/app-debug.apk (paths are relative to this script's folder): the
 # development build, com.pd2launcher.app.dev, which installs beside the release app.
 # `build.sh release` builds the signed release APK instead: build/outputs/app-release.apk
-# (com.pd2launcher.app; the release key and engine below; the JVM tests run on the debug variant).
-# `build.sh check` compiles the debug APK without the App userland and runs the JVM tests, the
-# public repository's CI check; it copies no APK to build/outputs, as one without the userland
-# cannot run.
+# (com.pd2launcher.app; the release key and engine below).
+# `build.sh check` compiles the debug APK without the App userland, the CI check; it copies no APK
+# to build/outputs, as one without the userland cannot run. The JVM tests, where the repository
+# has them (app/src/test), run on the debug variant.
 # `build.sh mockup` and `build.sh spike` build development apps that are not part of the
 # public source.
+# `build.sh verification-metadata` writes gradle/verification-metadata.xml again (after a
+# dependency or plugin changes): the SHA-256 of everything Gradle downloads for the debug and
+# release builds and the tests (and the mock-up and spike, where present), which Gradle checks on
+# every build. The release's signing check is skipped there: that run only resolves.
 set -euo pipefail
 
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 target="${1:-app}"
 release_apk=app/build/outputs/apk/release/app-release.apk
 after=""
+# The mock-up and the spike are targets only where their folders are.
+targets="app|release|check"
+for module in mockup spike; do
+    [[ -d "$here/$module" ]] && targets+="|$module"
+done
+targets+="|verification-metadata"
+if [[ ("$target" == mockup || "$target" == spike) && ! -d "$here/$target" ]]; then
+    echo "usage: build.sh [$targets] (there is no $target folder here)" >&2
+    exit 2
+fi
 case "$target" in
     app) tasks=":app:assembleDebug :app:testDebugUnitTest" ;;
     release)
@@ -23,10 +38,20 @@ case "$target" in
     check) tasks=":app:assembleDebug :app:testDebugUnitTest" ;;
     mockup) tasks=":mockup:assembleDebug" ;;
     spike) tasks=":spike:assembleDebug" ;;
-    *) echo "usage: build.sh [app|release|check|mockup|spike]" >&2; exit 2 ;;
+    verification-metadata)
+        tasks="--write-verification-metadata sha256 help :app:assembleDebug :app:testDebugUnitTest :app:assembleRelease -x :app:preReleaseBuild"
+        ;;
+    *) echo "usage: build.sh [$targets]" >&2; exit 2 ;;
 esac
 
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Without unit tests the test task would only compile the debug variant again.
+[[ -d "$here/app/src/test" ]] || tasks="${tasks/ :app:testDebugUnitTest/}"
+if [[ "$target" == verification-metadata ]]; then
+    for module in mockup spike; do
+        if [[ -d "$here/$module" ]]; then tasks+=" :$module:assembleDebug"; fi
+    done
+fi
+
 cache="${PD2_ANDROID_CACHE:-$HOME/.cache/pd2-android}"
 
 if [[ "${PD2_ANDROID_IN_CONTAINER:-}" == 1 ]]; then
@@ -52,7 +77,7 @@ net_args=()
 try_build() {
     "$engine" build --platform linux/amd64 "${net_args[@]}" -t "$image" -f "$here/containers/Containerfile" "$here/containers"
 }
-if ! "$engine" image exists "$image" 2>/dev/null; then
+if ! "$engine" image inspect "$image" >/dev/null 2>&1; then
     if ! try_build; then
         echo "build with default networking failed; retrying with --network host" >&2
         net_args=(--network host)
@@ -64,12 +89,24 @@ mkdir -p "$cache/gradle" "$cache/m2" "$cache/home"
 
 # The Launcher engine (the standalone ARM64 Launcher that engine/build.sh builds from the
 # release engine.lock pins) goes into the APK as a native library. PD2_ENGINE_BINARY names
-# it; the default is the newest build in $cache/engine-out; for a release, the newest in
-# $cache/engine-release-out, which must be a release build (PD2_RELEASE_BUILD=1: no dev CD keys,
+# it; the default is the newest build in $cache/engine-out. A release takes only the executable
+# engine.lock pins, by its name (asset) in $cache/engine-release-out and its SHA-256, whatever
+# PD2_ENGINE_BINARY says, and it must be a release build (PD2_RELEASE_BUILD=1: no dev CD keys,
 # Wine's quiet logs) by its build evidence.
 engine_dir=engine-out
 [[ "$target" == release ]] && engine_dir=engine-release-out
-engine_binary="${PD2_ENGINE_BINARY:-$(ls -t "$cache/$engine_dir"/pd2-launcher-*-aarch64 2>/dev/null | head -n 1 || true)}"
+if [[ "$target" == release ]]; then
+    pin() { sed -n "s/^$1=//p" "$here/engine.lock"; }
+    engine_binary="$cache/$engine_dir/$(pin asset)"
+    if [[ -z "$(pin asset)" || -z "$(pin sha256)" || ! -f "$engine_binary" ||
+        "$(sha256sum < "$engine_binary" | cut -d' ' -f1)" != "$(pin sha256)" ]]; then
+        echo "refusing: a release APK needs the engine engine.lock pins, $(pin asset) with SHA-256 $(pin sha256)," \
+            "in $cache/$engine_dir (PD2_RELEASE_BUILD=1 engine/build.sh); PD2_ENGINE_BINARY is not used for a release" >&2
+        exit 1
+    fi
+else
+    engine_binary="${PD2_ENGINE_BINARY:-$(ls -t "$cache/$engine_dir"/pd2-launcher-*-aarch64 2>/dev/null | head -n 1 || true)}"
+fi
 engine_staged="$here/app/engine/arm64-v8a/libpd2launcher.so"
 if [[ "$target" == release ]] && ! grep -qx 'release_build=1' "$engine_binary.build-evidence.txt" 2>/dev/null; then
     echo "refusing: a release APK needs a release engine, whose build evidence says release_build=1 (PD2_RELEASE_BUILD=1 engine/build.sh); found: ${engine_binary:-none}" >&2
@@ -84,54 +121,44 @@ else
     echo "warning: no engine binary (build one with engine/build.sh, or set PD2_ENGINE_BINARY); the APK has no engine" >&2
 fi
 
-# The App userland is built for one app's data folder (userland/config.sh). A debug APK, the
-# development build com.pd2launcher.app.dev, carries the debug variant's from
-# app/src/debug/assets/userland, which this builds first when it is missing (userland/build.sh
-# with our glibc and FEX); a release APK carries the release app's from app/src/main/assets/userland,
-# which userland/build.sh must have built. Either must name its own app's prefix.
+# The App userland is built for userland/config.sh's placeholder data folder, which the app
+# rewrites to its own as it unpacks it, so the release app and the development build carry the
+# same one, from app/src/main/assets/userland. A debug build makes it first when it is missing
+# (userland/build.sh with our glibc and FEX); a release build needs it built. The engine may need
+# only libraries the userland's critical set covers (its manifest's engine_needed).
 if [[ "$target" == app || "$target" == release ]]; then
-    PD2_USERLAND_VARIANT=debug
-    [[ "$target" == release ]] && PD2_USERLAND_VARIANT=release
-    export PD2_USERLAND_VARIANT
     # shellcheck source=userland/config.sh
     . "$here/userland/config.sh"
     manifest="$USERLAND_ASSETS/manifest.json"
+    # A debug build type's own userland would replace the shared one in a debug APK.
+    if [[ -e "$here/app/src/debug/assets/userland" ]]; then
+        echo "refusing: app/src/debug/assets/userland, from an older build, would replace the userland; remove it" >&2
+        exit 1
+    fi
     if [[ "$target" == app && ! -f "$manifest" ]]; then
-        echo "no userland for $APP_ID in ${USERLAND_ASSETS#"$here/"}: building it (userland/build.sh)"
+        echo "no userland in ${USERLAND_ASSETS#"$here/"}: building it (userland/build.sh)"
         PD2_USERLAND_WITH_GLIBC=1 PD2_USERLAND_WITH_FEX=1 "$here/userland/build.sh"
     fi
     prefix="$(sed -n 's/^ "prefix": "\(.*\)",$/\1/p' "$manifest" 2>/dev/null || true)"
     if [[ "$prefix" != "$USERLAND" ]]; then
-        echo "refusing: the APK needs the userland for $APP_ID in ${USERLAND_ASSETS#"$here/"}" \
-            "(PD2_USERLAND_VARIANT=$PD2_USERLAND_VARIANT userland/build.sh); found one for: ${prefix:-none}" >&2
+        echo "refusing: the APK needs the userland built for $USERLAND in ${USERLAND_ASSETS#"$here/"}" \
+            "(userland/build.sh); found one for: ${prefix:-none}" >&2
         exit 1
     fi
-    echo "userland: $APP_ID, version $(sed -n 's/^ "version": "\(.*\)"$/\1/p' "$manifest")"
+    if [[ -f "$engine_staged" ]]; then
+        command -v readelf >/dev/null || { echo "refusing: readelf (binutils) is needed to read the engine's libraries" >&2; exit 1; }
+        mapfile -t covered < <(sed -n '/^ "engine_needed": \[$/,/^ \],\{0,1\}$/s/^  "\(.*\)",\{0,1\}$/\1/p' "$manifest")
+        for lib in $(readelf -d "$engine_staged" | sed -n 's/.*(NEEDED).*\[\(.*\)\]$/\1/p'); do
+            if [[ " ${covered[*]} " != *" $lib "* ]]; then
+                echo "refusing: the engine needs $lib, which the userland's critical set leaves out (ENGINE_NEEDED in userland/config.sh)" >&2
+                exit 1
+            fi
+        done
+    fi
+    echo "userland: version $(sed -n 's/^ "version": "\(.*\)"$/\1/p' "$manifest")"
 fi
 
-# Debug builds pre-fill the key screen from the developer's .env.local (D2_KEY, D2_LOD_KEY) for
-# device tests. Only those two lines are read; the values travel by environment (-e NAME), never
-# on a command line, and are never printed.
-# The file is PD2_DEBUG_KEYS_FILE, else the first .env.local of: this folder; where this folder is
-# inside a larger Git checkout, that checkout's root, then its main checkout's root (for a linked
-# worktree).
-keys_file="${PD2_DEBUG_KEYS_FILE:-$here/.env.local}"
-if [[ -z "${PD2_DEBUG_KEYS_FILE:-}" && ! -f "$keys_file" ]] &&
-    top="$(git -C "$here" rev-parse --show-toplevel 2>/dev/null)" && [[ "$top" != "$(cd "$here" && pwd -P)" ]]; then
-    common="$(git -C "$here" rev-parse --path-format=absolute --git-common-dir)"
-    keys_file="$top/.env.local"
-    [[ -f "$keys_file" ]] || keys_file="$(dirname "$common")/.env.local"
-fi
-key_args=()
-if [[ "$target" != release && -f "$keys_file" ]]; then
-    PD2_DEBUG_D2_KEY="$(sed -n 's/^D2_KEY=//p' "$keys_file" | head -n 1 | tr -d "\"' \r")"
-    PD2_DEBUG_LOD_KEY="$(sed -n 's/^D2_LOD_KEY=//p' "$keys_file" | head -n 1 | tr -d "\"' \r")"
-    export PD2_DEBUG_D2_KEY PD2_DEBUG_LOD_KEY
-    key_args=(-e PD2_DEBUG_D2_KEY -e PD2_DEBUG_LOD_KEY)
-    echo "debug key prefill: from $keys_file"
-fi
-
-run_args=(--rm -v "$here:/work" -v "$cache:/cache" "${key_args[@]}")
+run_args=(--rm -v "$here:/work" -v "$cache:/cache")
 
 # Release signing (docs/BUILDING.md): the release key's folder, outside the
 # repository, mounted read-only; app/build.gradle.kts reads release-signing.properties there.
@@ -175,7 +202,15 @@ if [[ "$target" == mockup || "$target" == spike ]]; then
     exit 0
 fi
 if [[ "$target" == check ]]; then
-    echo "check passed: the debug APK compiles and the JVM tests pass"
+    if [[ -d "$here/app/src/test" ]]; then
+        echo "check passed: the debug APK compiles and the JVM tests pass"
+    else
+        echo "check passed: the debug APK compiles (this repository has no JVM tests)"
+    fi
+    exit 0
+fi
+if [[ "$target" == verification-metadata ]]; then
+    echo "written: $here/gradle/verification-metadata.xml"
     exit 0
 fi
 

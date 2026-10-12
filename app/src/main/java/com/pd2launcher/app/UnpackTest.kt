@@ -41,7 +41,7 @@ object UnpackTest {
         if (corrupt) manifest = manifest.copy(version = manifest.version + "-corrupttest")
         val installer = UserlandInstaller(SessionPaths(DeviceCheck.dataDir(context)).userlandRoot, OwnedProcesses) { Log.i(TAG, it) }
         val required = if (installer.isComplete(manifest.version)) 0 else DeviceCheck.requiredBytes(manifest.fileBytes)
-        val facts = DeviceCheck.measure(context, gpu, required)
+        val facts = DeviceCheck.measure(context, gpu, required, manifest.placeholder.length)
         Log.i(TAG, "facts: $facts")
         val result = DeviceCheck.evaluate(facts, DeviceCheck::glRenderer)
         result.findings.forEach { Log.i(TAG, "finding ${it.kind}: ${it.message}") }

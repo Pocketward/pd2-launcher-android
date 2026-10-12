@@ -1,7 +1,7 @@
 // The copy path (the base of the Game view): Xvfb's framebuffer (a memfd, or its -fbdir file
-// before Android 11: 32-bit BGRX after the XWD header) copied into a SurfaceView's window through
-// ANativeWindow, on a display frame (AChoreographer on the copy thread's own looper) whose
-// framebuffer changed: a hash of it spares the copy and the compositor a repeat.
+// when no memfd could be made: 32-bit BGRX after the XWD header) copied into a SurfaceView's
+// window through ANativeWindow, on a display frame (AChoreographer on the copy thread's own
+// looper) whose framebuffer changed: a hash of it spares the copy and the compositor a repeat.
 // The game's own frames are counted where it sends them, by the App userland's Mesa (patch
 // 0002: a 32-bit counter in a shared file); the copy reads that count for the fps counter, and
 // hashes only on a display frame that a present came before (or while none come: a picture drawn
@@ -46,6 +46,8 @@
 #define TAG "pd2-gameview"
 #define LOG(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define STATS_INTERVAL_NS 5000000000LL
+// The largest X screen side taken (FrameCopy.kt's XwdHeader.MAX_SIDE).
+#define MAX_SIDE 16384
 // The present counter's page (Mesa patches 0002 and 0003): the presents at byte 0 (Mesa's), the
 // last one the copy has taken at byte 64 and, at byte 128, non-zero while the copy runs.
 #define PACING_PAGE 4096
@@ -65,7 +67,7 @@ struct copy {
     const uint32_t *pixels;
     int width, height, stride; // stride in pixels
     int transform; // the buffers' ANATIVEWINDOW_TRANSFORM_*: 0, or the rotation they are stored in
-    struct frame_layer *layer; // Android 10+: the frames go to a child layer, else through the window
+    struct frame_layer *layer; // the child layer the frames go to; NULL: they go through the window
     int pending; // a changed frame waits for a free layer buffer
     pthread_t thread;
     pthread_mutex_t lock;
@@ -340,7 +342,7 @@ static int put(struct copy *c, int changed, int64_t begin) {
     return 1;
 }
 
-static void on_frame(long frame_time_nanos, void *data) {
+static void on_frame(int64_t frame_time_nanos, void *data) {
     (void)frame_time_nanos;
     struct copy *c = data;
     if (atomic_load(&c->stop)) return;
@@ -371,7 +373,7 @@ static void on_frame(long frame_time_nanos, void *data) {
             if (!put(c, changed, begin)) return;
         }
         if (checked - c->last_ns >= STATS_INTERVAL_NS) stats(c, checked);
-        AChoreographer_postFrameCallback(AChoreographer_getInstance(), on_frame, c);
+        AChoreographer_postFrameCallback64(AChoreographer_getInstance(), on_frame, c);
         return;
     }
     // Without a present since the last display frame the picture changed only if something drew
@@ -403,7 +405,7 @@ static void on_frame(long frame_time_nanos, void *data) {
     if (!c->pending) taken(c, presents);
     int64_t now = now_ns();
     if (now - c->last_ns >= STATS_INTERVAL_NS) stats(c, now);
-    AChoreographer_postFrameCallback(AChoreographer_getInstance(), on_frame, c);
+    AChoreographer_postFrameCallback64(AChoreographer_getInstance(), on_frame, c);
 }
 
 static void *run(void *data) {
@@ -418,7 +420,7 @@ static void *run(void *data) {
     c->start_ns = c->last_ns = now_ns();
     c->last_presents = c->seen_presents = presents_now(c);
     set_paced(c, 1);
-    AChoreographer_postFrameCallback(AChoreographer_getInstance(), on_frame, c);
+    AChoreographer_postFrameCallback64(AChoreographer_getInstance(), on_frame, c);
     while (!atomic_load(&c->stop)) ALooper_pollOnce(-1, NULL, NULL, NULL);
     stats(c, now_ns());
     return NULL;
@@ -476,6 +478,16 @@ JNIEXPORT jlong JNICALL Java_com_pd2launcher_app_FrameCopy_nativeStart(
     c->height = height;
     c->stride = stride / 4;
 
+    // The header is Xvfb's, in memory a guest can write: every size is checked, and the stride
+    // against the width in 64 bits (width * 4 in an int overflows).
+    if (width <= 0 || height <= 0 || width > MAX_SIDE || height > MAX_SIDE || stride <= 0 || stride % 4 != 0 ||
+        (int64_t)stride < (int64_t)width * 4 || offset < 0) {
+        LOG("framebuffer header refused: %dx%d, %d bytes a line at offset %lld", width, height, stride, (long long)offset);
+        if (fd >= 0) close(fd);
+        release(c);
+        return 0;
+    }
+
     struct stat st;
     if (fd < 0 || fstat(fd, &st) != 0) {
         LOG("no framebuffer: %s", fd < 0 ? "no descriptor" : strerror(errno));
@@ -483,7 +495,7 @@ JNIEXPORT jlong JNICALL Java_com_pd2launcher_app_FrameCopy_nativeStart(
         release(c);
         return 0;
     }
-    if ((uint64_t)offset + (uint64_t)stride * (uint64_t)height > (uint64_t)st.st_size || stride < width * 4) {
+    if ((uint64_t)offset + (uint64_t)stride * (uint64_t)height > (uint64_t)st.st_size) {
         LOG("framebuffer of %lld bytes is smaller than %dx%d at offset %lld", (long long)st.st_size, width, height, (long long)offset);
         close(fd);
         release(c);

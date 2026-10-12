@@ -6,14 +6,13 @@ An Android app that installs [Project Diablo 2](https://www.projectdiablo2.com/)
 
 ## What your device needs
 
-- An ARM64 device with Android 11 or later, using 4 KB memory pages (almost every phone and handheld does).
+- An ARM64 device with Android 13 or later, using 4 KB memory pages (almost every phone and handheld does).
 - A supported GPU:
   - Qualcomm Adreno 6xx, 7xx or 8xx (Snapdragon devices), or
   - Arm Mali of the v10 to v13 architectures on Arm's CSF kernel driver, such as the Mali-G310, G610, G615, G715, G720 and G725.
 - About 10 GB of free storage for the app and the installation. Once the game works, the app offers to free about 2.5 GB of installer downloads.
-- The device's main user: secondary users and work profiles are not supported.
 
-The app checks all of this when it first starts and says what is missing. A GPU of a supported family that the bundled graphics driver does not know, or a kernel older than 5.15, gets a warning instead: the game may still run.
+The app checks all of this when it first starts and says what is missing. A GPU of a supported family that the bundled graphics driver does not know gets a warning instead: the game may still run. The check does not look at the kernel version.
 
 ## Install
 
@@ -27,7 +26,7 @@ The app walks you through four steps:
 
 1. **Check:** your device, notifications and battery settings (both optional, but without them Android may stop the game while the app is in the background), and the game's support files, which the app unpacks once.
 2. **Download:** pick **Download** (Diablo II and Lord of Destruction from Blizzard, about 2 GB) or **Import an existing installation** (your Diablo II folder copied from a PC; the app makes its own copy). The installers download and are checked.
-3. **Install:** enter your CD keys and accept Blizzard's terms; the app then runs Blizzard's installers and Project Diablo 2's unattended, with a small live view of their windows. Expect half an hour or more. **Stop** pauses safely and **Resume** continues where it stopped. Your CD keys are passed to Blizzard's installer only and never saved.
+3. **Install:** enter your CD keys and accept Blizzard's terms; the app then runs Blizzard's installers and Project Diablo 2's unattended, with a small live view of their windows. Expect half an hour or more. **Stop** pauses safely and **Resume** continues where it stopped. The app never saves your CD keys: it passes them to Blizzard's installer only. Blizzard's installer stores them in the installed game, as Diablo II requires; **Repair → Start over** removes the installed game and with it the keys.
 4. **Play:** starts Project Diablo 2. When Project Diablo 2 has an update, the button offers **Update** first; you can always play without updating. **Official PD2 launcher** opens Project Diablo 2's own launcher, for example to manage loot filters.
 
 In the game:
@@ -51,7 +50,7 @@ Open an [issue](https://github.com/Pocketward/pd2-launcher-android/issues) with 
 
 ## Building from source
 
-This repository holds the Android app (`app/`), the Linux programs and patches it carries (`userland/`) and the packing of the game's runtime (`runtime/`). The build runs in pinned containers (Podman or Docker): it downloads the engine, the [desktop PD2 Launcher](https://github.com/Pocketward/pd2-launcher) release that [`engine.lock`](engine.lock) pins, and fetches FEX-Emu, glibc, Mesa, the X server, the Debian packages and the game's runtime at pinned versions, with the patches in `userland/` applied on top. See [`docs/BUILDING.md`](docs/BUILDING.md) for the steps and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for how the pieces fit together.
+This repository holds the Android app (`app/`), the Linux programs and patches it carries (`userland/`) and the packing of the game's runtime (`runtime/`). The build runs in pinned containers (Podman or Docker); only the runtime's packing (`runtime/pack.sh`), which downloads and packs files without building anything, runs on the host. The build downloads the engine, the [desktop PD2 Launcher](https://github.com/Pocketward/pd2-launcher) release that [`engine.lock`](engine.lock) pins, and fetches FEX-Emu, glibc, Mesa, the X server, the Debian packages and the game's runtime at pinned versions, with the patches in `userland/` applied on top. See [`docs/BUILDING.md`](docs/BUILDING.md) for the steps and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for how the pieces fit together.
 
 ## Disclaimer
 

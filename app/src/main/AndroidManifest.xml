@@ -21,13 +21,14 @@
         android:label="@string/app_name"
         android:theme="@android:style/Theme.Material.NoActionBar">
         <!-- Follows the device (portrait and landscape) and handles configuration changes itself:
-             Compose lays out again; the step state and key fields are not recreated. -->
+             Compose lays out again; the step state and key fields are not recreated, nor the
+             Game view by a font size, language, text direction or colour mode change mid-game. -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTop"
             android:screenOrientation="fullUser"
-            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|density|keyboard|keyboardHidden|navigation|uiMode"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|density|keyboard|keyboardHidden|navigation|uiMode|fontScale|locale|layoutDirection|colorMode"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

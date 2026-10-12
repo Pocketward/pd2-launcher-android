@@ -42,8 +42,8 @@ object Spawner {
     private external fun nativeMemfd(name: String): Int
 
     /**
-     * A new, empty memfd named [name], close-on-exec (a child gets it only as [spawn]'s `fd3`).
-     * Only on Android 11 and later, where `memfd_create` is in the app's system call filter.
+     * A new, empty memfd named [name], close-on-exec (a child gets it only as [spawn]'s `fd3`), sealed
+     * against shrinking (it may only grow).
      */
     fun memfd(name: String): ParcelFileDescriptor {
         val fd = nativeMemfd(name)

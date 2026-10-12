@@ -343,6 +343,8 @@ fun PlayScreen(
     update: Play.UpdateView = Play.UpdateView(),
     onCommand: (Command) -> Unit = {},
     launching: Boolean = false,
+    /** The engine or the game support files failed: under the [problem], a Try again that starts them again. */
+    onTryAgain: (() -> Unit)? = null,
 ) {
     val focus = remember { FocusRequester() }
     InitialFocus(focus, waiting == null)
@@ -405,6 +407,10 @@ fun PlayScreen(
                         Spacer(Modifier.height(10.dp))
                         if (problem != null) {
                             Text(problem, style = Type.Hint, color = Palette.Red, textAlign = TextAlign.Center)
+                            if (onTryAgain != null) {
+                                Spacer(Modifier.height(4.dp))
+                                TextLink(stringResource(R.string.action_try_again), onTryAgain)
+                            }
                         } else if (facts.isNotEmpty()) {
                             Text(facts.map { text(it) }.joinToString("  ·  "), style = Type.Hint, color = Palette.Muted, textAlign = TextAlign.Center)
                         }

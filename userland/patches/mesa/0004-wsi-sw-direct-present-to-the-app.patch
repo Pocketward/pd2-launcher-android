@@ -100,7 +100,7 @@
     bool                                         has_dri3_modifiers;
     bool                                         has_mit_shm;
     bool                                         has_async_may_tear;
-@@ -1954,6 +1962,607 @@
+@@ -1962,6 +1970,678 @@
  }
  #endif
  
@@ -113,8 +113,9 @@
 + * swapchain image on the GPU into a free buffer instead of reading it back
 + * for PutImage; the queue thread then tells the app which buffer to show,
 + * and the image goes back to the acquire queue at once. The app gives a
-+ * buffer back once the compositor has replaced it on the screen (after its
-+ * release fence). A present waits, at most 100 ms, for a free buffer: with
++ * buffer back once the compositor has replaced it on the screen, with its
++ * release fence; the buffer is free again once that fence has signalled.
++ * A present waits, at most 100 ms, for a free buffer: with
 + * the compositor showing one and holding the next, the game draws at the
 + * panel's rate, its own images free to render ahead. Once set up, the
 + * swapchain names its window in the root window's _PD2_PRESENT_WINDOW
@@ -125,7 +126,9 @@
 + * the present counter's page (zero: PutImage, as while another window shows
 + * on the X screen); a present with no free buffer after the wait goes
 + * through PutImage too. Anything that fails leaves the swapchain on
-+ * PutImage.
++ * PutImage. Once the direct present ends (the app gone, a failed send, the
++ * swapchain closing), the socket is shut down, so the app stops showing
++ * its buffers instead of the last frame staying on the screen.
 + *
 + * The socket is AF_UNIX SOCK_SEQPACKET; every message is one struct
 + * sw_direct_msg, a sync_file beside it as SCM_RIGHTS where there is one.
@@ -145,6 +148,8 @@
 +#define SW_DIRECT_GB01_NUM_FDS 10
 +#define SW_DIRECT_GB01_NUM_INTS 11
 +#define SW_DIRECT_GB01_HEADER 13
++/* The widest row a buffer may have, in pixels (64 KiB of RGBA). */
++#define SW_DIRECT_MAX_STRIDE 16384
 +/* Qualcomm's gralloc: the handle's ints start with its magic, then flags. */
 +#define SW_DIRECT_QCOM_MAGIC 0x676d736d
 +#define SW_DIRECT_QCOM_UBWC 0x08000000
@@ -229,8 +234,12 @@
 +            close(got[i]);
 +      }
 +   }
-+   if (msg.msg_flags & (MSG_TRUNC | MSG_CTRUNC))
++   if (msg.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) {
++      for (int i = 0; i < *nfds; i++)
++         close(fds[i]);
++      *nfds = 0;
 +      return -1;
++   }
 +   return n;
 +}
 +
@@ -245,15 +254,58 @@
 +   return __atomic_load_n(&sw_present_counter[SW_DIRECT_WANTED_WORD], __ATOMIC_ACQUIRE) != 0;
 +}
 +
++/* Marks held buffer [b] free and wakes a present waiting for one. */
++static void
++sw_direct_release(struct sw_direct *d, uint32_t b)
++{
++   mtx_lock(&d->lock);
++   if (d->state[b] == SW_DIRECT_HELD)
++      d->state[b] = SW_DIRECT_FREE;
++   u_cnd_monotonic_broadcast(&d->freed);
++   mtx_unlock(&d->lock);
++}
++
 +/* The app's RELEASE messages: a buffer is free again once its release
-+ * fence has signalled. At the end (the app gone, or the swapchain closing)
-+ * nothing is waited for any more. */
++ * fence has signalled, however long that takes; the fences are polled
++ * beside the socket, so the swapchain closing (which shuts the socket
++ * down) never waits for one. At the end (the app gone, or the swapchain
++ * closing) nothing is waited for any more, and the socket is shut down so
++ * the app knows. */
 +static int
 +sw_direct_reader(void *data)
 +{
 +   struct sw_direct *d = data;
 +   u_thread_setname("WSI direct present");
++   /* Each held buffer's release fence still to signal, or -1. */
++   int fences[SW_DIRECT_MAX_BUFFERS];
++   for (uint32_t b = 0; b < SW_DIRECT_MAX_BUFFERS; b++)
++      fences[b] = -1;
 +   for (;;) {
++      struct pollfd p[1 + SW_DIRECT_MAX_BUFFERS];
++      uint32_t owner[1 + SW_DIRECT_MAX_BUFFERS];
++      nfds_t np = 0;
++      p[np++] = (struct pollfd) { d->sock, POLLIN, 0 };
++      for (uint32_t b = 0; b < d->count; b++) {
++         if (fences[b] >= 0) {
++            owner[np] = b;
++            p[np++] = (struct pollfd) { fences[b], POLLIN, 0 };
++         }
++      }
++      if (poll(p, np, -1) < 0) {
++         if (errno == EINTR)
++            continue;
++         break;
++      }
++      /* A signalled fence (or one in error: the compositor is done either way). */
++      for (nfds_t i = 1; i < np; i++) {
++         if (p[i].revents == 0)
++            continue;
++         close(fences[owner[i]]);
++         fences[owner[i]] = -1;
++         sw_direct_release(d, owner[i]);
++      }
++      if (p[0].revents == 0)
++         continue;
 +      struct sw_direct_msg m;
 +      int fds[4], nfds;
 +      ssize_t n = sw_direct_recv(d->sock, &m, sizeof(m), fds, 4, &nfds);
@@ -265,23 +317,31 @@
 +            close(fds[i]);
 +         continue;
 +      }
-+      if (nfds > 0) {
-+         struct pollfd p = { fds[0], POLLIN, 0 };
-+         while (poll(&p, 1, 1000) < 0 && errno == EINTR) {
-+         }
-+         for (int i = 0; i < nfds; i++)
-+            close(fds[i]);
-+      }
++      for (int i = 1; i < nfds; i++)
++         close(fds[i]);
 +      mtx_lock(&d->lock);
-+      if (d->state[m.index] == SW_DIRECT_HELD)
-+         d->state[m.index] = SW_DIRECT_FREE;
-+      u_cnd_monotonic_broadcast(&d->freed);
++      bool held = d->state[m.index] == SW_DIRECT_HELD;
 +      mtx_unlock(&d->lock);
++      if (!held || nfds == 0) {
++         /* Not ours to wait for, or no fence: free now. */
++         if (nfds > 0)
++            close(fds[0]);
++         sw_direct_release(d, m.index);
++         continue;
++      }
++      if (fences[m.index] >= 0)
++         close(fences[m.index]);
++      fences[m.index] = fds[0];
++   }
++   for (uint32_t b = 0; b < SW_DIRECT_MAX_BUFFERS; b++) {
++      if (fences[b] >= 0)
++         close(fences[b]);
 +   }
 +   mtx_lock(&d->lock);
 +   d->gone = true;
 +   u_cnd_monotonic_broadcast(&d->freed);
 +   mtx_unlock(&d->lock);
++   shutdown(d->sock, SHUT_RDWR);
 +   return 0;
 +}
 +
@@ -361,6 +421,11 @@
 +   wsi->GetImageMemoryRequirements(chain->base.device, d->buffers[b], &reqs);
 +   uint32_t types = reqs.memoryTypeBits & fd_props.memoryTypeBits;
 +   if (types == 0)
++      return false;
++   /* The dma-buf must be as large as the image its layout describes. */
++   off_t size = lseek(fd, 0, SEEK_END);
++   lseek(fd, 0, SEEK_SET);
++   if (size < 0 || (VkDeviceSize)size < reqs.size)
 +      return false;
 +   int import_fd = os_dupfd_cloexec(fd);
 +   if (import_fd < 0)
@@ -548,13 +613,16 @@
 +   for (; received < d->count; received++) {
 +      int32_t words[1024];
 +      ssize_t n = sw_direct_recv(d->sock, words, sizeof(words), fds, 16, &nfds);
++      /* The ints follow the header and must lie within the message. */
 +      bool ok = n >= SW_DIRECT_GB01_HEADER * 4 && words[0] == SW_DIRECT_GB01 && nfds >= 1 &&
 +                nfds == words[SW_DIRECT_GB01_NUM_FDS] &&
-+                n >= (ssize_t)((SW_DIRECT_GB01_HEADER + words[SW_DIRECT_GB01_NUM_INTS]) * 4) &&
++                words[SW_DIRECT_GB01_NUM_INTS] >= 0 &&
++                words[SW_DIRECT_GB01_NUM_INTS] <= n / 4 - SW_DIRECT_GB01_HEADER &&
 +                words[SW_DIRECT_GB01_FORMAT] == SW_DIRECT_AHB_R8G8B8A8 &&
 +                (uint32_t)words[SW_DIRECT_GB01_WIDTH] == chain->extent.width &&
 +                (uint32_t)words[SW_DIRECT_GB01_HEIGHT] == chain->extent.height &&
-+                (uint32_t)words[SW_DIRECT_GB01_STRIDE] >= chain->extent.width;
++                (uint32_t)words[SW_DIRECT_GB01_STRIDE] >= chain->extent.width &&
++                (uint32_t)words[SW_DIRECT_GB01_STRIDE] <= SW_DIRECT_MAX_STRIDE;
 +      for (int f = ok ? 1 : 0; f < nfds; f++)
 +         close(fds[f]);
 +      if (!ok) {
@@ -671,10 +739,13 @@
 +   d->state[b] = SW_DIRECT_HELD;
 +   mtx_unlock(&d->lock);
 +   if (!sw_direct_send(d->sock, SW_DIRECT_PRESENT, (uint32_t)b, chain->extent.width, chain->extent.height, 0)) {
-+      /* The app has gone; the reader ends and the next presents use PutImage. */
++      /* The app has gone, or cannot be told: the next presents use PutImage.
++       * The shutdown ends the reader and tells an app still there to stop
++       * showing its buffers. */
 +      mtx_lock(&d->lock);
 +      d->gone = true;
 +      mtx_unlock(&d->lock);
++      shutdown(d->sock, SHUT_RDWR);
 +   }
 +   sw_present_counted();
 +   wsi_queue_push(&chain->acquire_queue, image_index);
@@ -708,7 +779,7 @@
  /**
   * Send image to X server unaccelerated (software drivers).
   */
-@@ -2200,7 +2809,9 @@
+@@ -2208,7 +2888,9 @@
     x11_capture_trace(chain);
  
     VkResult result;
@@ -719,7 +790,7 @@
        result = x11_present_to_x11_sw(chain, image_index);
     else
  #ifdef HAVE_X11_DRM
-@@ -2665,7 +3276,8 @@
+@@ -2673,7 +3355,8 @@
           }
        }
  
@@ -729,7 +800,7 @@
           sw_present_paced();
  
        mtx_lock(&chain->thread_state_lock);
-@@ -3105,6 +3717,14 @@
+@@ -3113,6 +3796,14 @@
     thrd_join(chain->queue_manager, NULL);
     thrd_join(chain->event_manager, NULL);
  
@@ -744,7 +815,7 @@
     if (!chain->base.image_info.explicit_sync)
        wsi_queue_destroy(&chain->acquire_queue);
     wsi_queue_destroy(&chain->present_queue);
-@@ -3377,6 +3997,9 @@
+@@ -3385,6 +4076,9 @@
  
     chain->base.destroy = x11_swapchain_destroy;
     chain->base.get_wsi_image = x11_get_wsi_image;
@@ -754,7 +825,7 @@
     chain->base.acquire_next_image = x11_acquire_next_image;
     chain->base.queue_present = x11_queue_present;
     chain->base.wait_for_present = x11_wait_for_present;
-@@ -3513,6 +4136,9 @@
+@@ -3521,6 +4215,9 @@
  
     chain->screen_resources = wsi_x11_connection_find_screen_resources(wsi_device, conn, window);
  

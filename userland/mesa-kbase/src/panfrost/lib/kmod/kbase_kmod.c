@@ -600,6 +600,14 @@ kbase_bo_bind(struct kbase_kmod_vm *vm, struct kbase_kmod_bo *bo, uint64_t va)
       return -1;
    }
 
+   /* A BO whose unbind kbase refused still holds this VA (kbase_bo_unbind). */
+   struct kbase_kmod_bo *holder = _mesa_hash_table_u64_search(vm->bound, va);
+   if (holder) {
+      mesa_loge("kbase: 0x%" PRIx64 " is still bound to BO %u", va, holder->base.handle);
+      errno = EBUSY;
+      return -1;
+   }
+
    /* Event memory already has its VA. */
    if (bo->base.fixed_va) {
       if (va != bo->base.fixed_va) {
@@ -640,23 +648,34 @@ kbase_bo_bind(struct kbase_kmod_vm *vm, struct kbase_kmod_bo *bo, uint64_t va)
    return 0;
 }
 
-static void
-kbase_bo_unbind(struct kbase_kmod_bo *bo)
+/* Frees [bo]'s GPU mapping. When kbase refuses (the region, and so the VA, stays), the error is
+ * returned (-1, errno) and the BO stays bound, so that no other BO is bound at that VA and a later
+ * unbind tries again; with [forget], as when the BO itself goes, it is forgotten all the same. */
+static int
+kbase_bo_unbind(struct kbase_kmod_bo *bo, bool forget)
 {
    struct kbase_kmod_dev *kdev = kbase_kmod_dev(bo->base.dev);
    struct kbase_ioctl_mem_free req = { .gpu_addr = bo->gpu_va };
+   int ret = 0;
 
    if (kdev->debug_bo)
       mesa_logi("kbase: bo %u unbind 0x%" PRIx64 "-0x%" PRIx64, bo->base.handle, bo->gpu_va,
                 bo->gpu_va + bo->base.size);
 
    /* Event memory stays until the BO is freed. */
-   if (!bo->base.fixed_va && kbase_kmod_ioctl(kdev->base.fd, KBASE_IOCTL_MEM_FREE, &req))
-      mesa_loge("kbase: MEM_FREE at 0x%" PRIx64 " failed: %s", bo->gpu_va, strerror(errno));
+   if (!bo->base.fixed_va && kbase_kmod_ioctl(kdev->base.fd, KBASE_IOCTL_MEM_FREE, &req)) {
+      int err = errno;
+      mesa_loge("kbase: MEM_FREE at 0x%" PRIx64 " failed: %s", bo->gpu_va, strerror(err));
+      errno = err;
+      ret = -1;
+      if (!forget)
+         return ret;
+   }
 
    _mesa_hash_table_u64_remove(bo->vm->bound, bo->gpu_va);
    bo->gpu_va = 0;
    bo->vm = NULL;
+   return ret;
 }
 
 static void
@@ -667,7 +686,7 @@ kbase_kmod_bo_free(struct pan_kmod_bo *pbo)
    if (bo->gpu_va) {
       struct kbase_kmod_vm *vm = bo->vm;
       simple_mtx_lock(&vm->lock);
-      kbase_bo_unbind(bo);
+      kbase_bo_unbind(bo, true);
       simple_mtx_unlock(&vm->lock);
    }
 
@@ -782,7 +801,7 @@ kbase_kmod_vm_destroy(struct pan_kmod_vm *pvm)
    hash_table_u64_foreach(vm->bound, entry)
       util_dynarray_append(&left, (struct kbase_kmod_bo *)entry.data);
    util_dynarray_foreach(&left, struct kbase_kmod_bo *, bo)
-      kbase_bo_unbind(*bo);
+      kbase_bo_unbind(*bo, true);
    util_dynarray_fini(&left);
 
    pan_kmod_vm_cleanup(pvm);
@@ -794,23 +813,29 @@ kbase_kmod_vm_destroy(struct pan_kmod_vm *pvm)
 static int
 kbase_vm_unmap_range(struct kbase_kmod_vm *vm, uint64_t start, uint64_t size)
 {
-   /* PanVK unmaps a BO's whole range; free every BO bound inside it. */
+   /* PanVK unmaps a BO's whole range; free every BO bound inside it. A refused free fails the
+    * unmap (the others still go). */
    struct kbase_kmod_bo *bo = _mesa_hash_table_u64_search(vm->bound, start);
-   if (bo && bo->base.size >= size) {
-      kbase_bo_unbind(bo);
-      return 0;
-   }
+   if (bo && bo->base.size >= size)
+      return kbase_bo_unbind(bo, false);
 
+   int ret = 0, err = 0;
    struct util_dynarray hits;
    util_dynarray_init(&hits, NULL);
    hash_table_u64_foreach(vm->bound, entry) {
       if (entry.key >= start && entry.key < start + size)
          util_dynarray_append(&hits, (struct kbase_kmod_bo *)entry.data);
    }
-   util_dynarray_foreach(&hits, struct kbase_kmod_bo *, hit)
-      kbase_bo_unbind(*hit);
+   util_dynarray_foreach(&hits, struct kbase_kmod_bo *, hit) {
+      if (kbase_bo_unbind(*hit, false)) {
+         ret = -1;
+         err = errno;
+      }
+   }
    util_dynarray_fini(&hits);
-   return 0;
+   if (ret)
+      errno = err;
+   return ret;
 }
 
 static int

@@ -1,7 +1,6 @@
 package com.pd2launcher.app
 
 import android.content.Context
-import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import com.pd2launcher.app.input.GamepadFile
@@ -19,8 +18,8 @@ class GameInput(val relay: RelaySender, val gamepad: GamepadFile)
 
 /**
  * The Android game environment's own programs:
- * Xvfb with its framebuffer in memory ([Framebuffer]: a memfd, `-fbfd`; a `-fbdir` file before
- * Android 11) at the X screen's size,
+ * Xvfb with its framebuffer in memory ([Framebuffer]: a memfd, `-fbfd`; a `-fbdir` file when no
+ * memfd can be made) at the X screen's size,
  * PulseAudio writing into a FIFO that [GameAudio] plays, and x-input-relay, which takes the
  * Game view's touch and keys into the X screen, beside the gamepad file the game's XInput bridge
  * reads. FEX and Wine are started by the engine, not here. Called from the session's single
@@ -101,6 +100,8 @@ class GameEnvironment(
             _framebuffer.value = framebuffer
 
             val pulseRuntime = File(paths.runtimeDir, "pulse").apply { mkdirs() }
+            // A killed PulseAudio leaves its socket behind: the wait below would take it for the new one's.
+            File(pulseRuntime, "native").delete()
             File(paths.home, ".config/pulse").mkdirs()
             val script = File(paths.runtimeDir, "pulse.pa")
             val fifo = File(paths.runtimeDir, "pulse-sink")
@@ -192,18 +193,12 @@ class GameEnvironment(
         }, "pd2-windows").apply { isDaemon = true }.start()
     }
 
-    /**
-     * The framebuffer's memfd on Android 11 and later; null before (the `-fbdir` file instead) or
-     * when it cannot be made.
-     */
-    private fun framebufferMemory(): ParcelFileDescriptor? {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
-        return try {
-            Spawner.memfd("xvfb-screen0")
-        } catch (error: IOException) {
-            log("no framebuffer in memory, a file instead: $error")
-            null
-        }
+    /** The framebuffer's memfd; null (the `-fbdir` file instead) when it cannot be made. */
+    private fun framebufferMemory(): ParcelFileDescriptor? = try {
+        Spawner.memfd("xvfb-screen0")
+    } catch (error: IOException) {
+        log("no framebuffer in memory, a file instead: $error")
+        null
     }
 
     /** SIGTERM to the relay, PulseAudio and Xvfb, SIGKILL after [UidCleanup.GRACE_MS]; waits for their ends. */

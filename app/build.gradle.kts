@@ -35,9 +35,11 @@ android {
 
     defaultConfig {
         applicationId = "com.pd2launcher.app"
-        minSdk = 28
+        // Android 13, the oldest Android whose app seccomp policy our glibc and FEX answer; above
+        // targetSdk, which the plugin warns about but builds.
+        minSdk = 33
         targetSdk = 28
-        versionName = "0.1.0"
+        versionName = "0.2.0"
         versionCode = versionCodeOf(versionName!!)
     }
 
@@ -51,14 +53,6 @@ android {
         buildConfig = true
     }
 
-    // Debug builds may pre-fill the key screen for device tests: build.sh passes the two
-    // CD keys from the developer's .env.local as PD2_DEBUG_D2_KEY / PD2_DEBUG_LOD_KEY. Release
-    // builds never carry them.
-    fun debugKey(name: String): String {
-        val key = System.getenv(name).orEmpty()
-        require(key.all { it.isLetterOrDigit() || it == '-' }) { "$name is not a CD key" }
-        return "\"$key\""
-    }
     signingConfigs {
         if (releaseSigning != null) {
             val properties = Properties().apply { releaseSigning.inputStream().use { load(it) } }
@@ -71,21 +65,16 @@ android {
         }
     }
     // The debug build type is the development build: its own application id, so it installs
-    // beside the release app, and its own name and launcher mark (src/debug/res). The App
-    // userland is built for the app's data folder, so each build type carries its own
-    // (userland/config.sh, PD2_USERLAND_VARIANT; build.sh). X_DISPLAY is the game environment's
-    // X display, apart for the two apps because Xvfb's abstract socket is device-wide; it matches
-    // config.sh's X_DISPLAY.
+    // beside the release app, and its own name and launcher mark (src/debug/res). Both carry the
+    // same App userland, which each rewrites for its own data folder as it unpacks it.
+    // X_DISPLAY is the game environment's X display, apart for the two apps because Xvfb's
+    // abstract socket is device-wide.
     buildTypes {
         getByName("debug") {
             applicationIdSuffix = ".dev"
-            buildConfigField("String", "DEBUG_D2_KEY", debugKey("PD2_DEBUG_D2_KEY"))
-            buildConfigField("String", "DEBUG_LOD_KEY", debugKey("PD2_DEBUG_LOD_KEY"))
             buildConfigField("String", "X_DISPLAY", "\":1\"")
         }
         getByName("release") {
-            buildConfigField("String", "DEBUG_D2_KEY", "\"\"")
-            buildConfigField("String", "DEBUG_LOD_KEY", "\"\"")
             buildConfigField("String", "X_DISPLAY", "\":0\"")
             signingConfig = signingConfigs.findByName("release")
         }

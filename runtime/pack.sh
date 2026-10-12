@@ -26,7 +26,9 @@
 # The pins are read at run time from the engine's sources, which ../engine/build.sh --source
 # names (the pinned release, or PD2_ENGINE_SOURCE). Downloads and unpacked trees are cached in
 # ~/.cache/pd2-android/guest/.
-# Needs curl, tar, zstd, sha256sum/sha512sum and unsquashfs on the host.
+# `pack.sh --version` prints the version these pins give and packs nothing (the release workflow
+# names its cache by it, so a new engine pin with the same runtime pins reuses the packed runtime).
+# Needs curl, tar, zstd, sha256sum/sha512sum, unsquashfs and readelf (binutils) on the host.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -66,17 +68,35 @@ for v in rootfs_url rootfs_sha256 rootfs_size wine_identity wine_url wine_size w
     dotnet_url dotnet_size dotnet_sha512 dotnet_cache; do
     [[ -n "${!v}" ]] || die "pin $v not found in $engine/src/ (did a pin's format change?)"
 done
+version="$(printf '%s\n' "$rootfs_sha256" "$wine_sha512" "$gecko_sha256" "$mono_sha256" \
+    "$dotnet_sha512" "$wine_identity" "$gecko_cache" "$mono_cache" "$dotnet_cache" "$(sha256sum "$0" | cut -d' ' -f1)" \
+    "$(sha256sum "$here/rootfs-trim.txt" | cut -d' ' -f1)" | sha256sum | cut -c1-16)"
+if [[ "${1:-}" == --version ]]; then
+    echo "$version"
+    exit 0
+fi
+
+# The trim's check below reads every ELF file with readelf: without it the check would pass on
+# nothing.
+for tool in curl tar zstd sha256sum sha512sum unsquashfs readelf; do
+    command -v "$tool" >/dev/null || die "$tool is not installed"
+done
 
 mkdir -p "$cache"
+# Whether [file] has the pinned size and hash.
+pinned() { # file size algo hash
+    [[ "$(stat -c %s "$1")" == "$2" ]] && echo "$4  $1" | "${3}sum" -c --quiet - >/dev/null 2>&1
+}
 fetch() { # url file size algo hash
     local url=$1 file=$2 size=$3 algo=$4 hash=$5
     if [[ ! -f "$file" ]]; then
         say "downloading $url"
         curl -fsSL --retry 3 -o "$file.part" "$url"
+        # Checked before it takes the cached name: a bad download is removed, never kept as good.
+        pinned "$file.part" "$size" "$algo" "$hash" || { rm -f "$file.part"; die "$url: size or $algo differs from the pin"; }
         mv "$file.part" "$file"
     fi
-    [[ "$(stat -c %s "$file")" == "$size" ]] || die "$file: size differs from the pin $size"
-    echo "$hash  $file" | "${algo}sum" -c --quiet - || die "$file: $algo differs from the pin"
+    pinned "$file" "$size" "$algo" "$hash" || die "$file: size or $algo differs from the pin"
 }
 
 rootfs_file="$cache/Ubuntu_24_04-$rootfs_sha256.sqsh"
@@ -85,8 +105,16 @@ if [[ ! -f "$rootfs_tree" ]]; then
     fetch "$rootfs_url" "$rootfs_file" "$rootfs_size" sha256 "$rootfs_sha256"
     tree="$(dirname "$rootfs_tree")/tree"
     rm -rf "$tree" && mkdir -p "$(dirname "$tree")"
-    # As an ordinary user: device nodes cannot be made and are skipped, as the Launcher does.
-    unsquashfs -q -n -no-xattrs -ignore-errors -d "$tree" "$rootfs_file" >/dev/null 2>&1 || true
+    # Any error writing the tree fails the unpack (it is never cached half done), except one: as an
+    # ordinary user, device nodes cannot be made and are skipped, as the Launcher does, which
+    # unsquashfs reports as a non-fatal error (exit 2) of its own wording.
+    log="$(dirname "$tree")/unsquashfs.log"
+    status=0
+    unsquashfs -q -n -no-xattrs -d "$tree" "$rootfs_file" > "$log" 2>&1 || status=$?
+    if [[ "$status" != 0 ]] && { [[ "$status" != 2 ]] || grep -qv "because you're not superuser!$" "$log"; }; then
+        die "RootFS unpack failed (unsquashfs exit $status): $(grep -v "because you're not superuser!$" "$log" | tail -n 5)"
+    fi
+    rm -f "$log"
     [[ -x "$tree/usr/bin/bash" ]] || die "RootFS unpack failed"
     find "$tree" \( -type c -o -type b -o -type p -o -type s \) -delete
     chmod -R ug-s "$tree"
@@ -113,9 +141,6 @@ fetch "$mono_url" "$mono_file" "$mono_size" sha256 "$mono_sha256"
 dotnet_file="$cache/$(basename "$dotnet_url")"
 fetch "$dotnet_url" "$dotnet_file" "$dotnet_size" sha512 "$dotnet_sha512"
 
-version="$(printf '%s\n' "$rootfs_sha256" "$wine_sha512" "$gecko_sha256" "$mono_sha256" \
-    "$dotnet_sha512" "$wine_identity" "$gecko_cache" "$mono_cache" "$dotnet_cache" "$(sha256sum "$0" | cut -d' ' -f1)" \
-    "$(sha256sum "$here/rootfs-trim.txt" | cut -d' ' -f1)" | sha256sum | cut -c1-16)"
 if [[ -f "$assets/runtime.info" && "$(head -1 "$assets/runtime.info")" == "$version" && -f "$assets/runtime.tar.zst" ]]; then
     say "runtime $version already packed"
     exit 0
@@ -134,8 +159,9 @@ wine="$staging/runner/$wine_identity"
 tar -C "$wine" -xzf "$wine_tree"
 rm -rf "$wine/share/wine/gecko" "$wine/share/wine/mono"
 printf '%s' "$wine_sha512" > "$wine/.pd2launcher-archive.sha512"
-# readelf fails on the files that are not ELF; only its output counts. /dev/null first, so that
-# readelf names every file ("File: ...") however find batches them.
+# readelf fails on the files that are not ELF (and on /dev/null); only its output counts, and
+# unresolved() refuses an empty one. /dev/null first, so that readelf names every file
+# ("File: ...") however find batches them.
 # "<ELF class> <name>" for every DT_NEEDED entry of the ELF files under the given folders.
 needed() {
     { find "$@" -type f -exec readelf -hdW /dev/null {} + 2>/dev/null || true; } | awk '
@@ -152,11 +178,14 @@ provided() {
 # The DT_NEEDED names, per class (i386 and x86_64 apart), that no kept library of that class
 # provides: the RootFS's programs and libraries and Wine-GE's own libraries (its lib and lib64,
 # where its FFmpeg and GStreamer pieces link RootFS libraries) against the RootFS's library folders
-# and Wine-GE's. The RootFS ships a few unresolved names already; only new ones count.
+# and Wine-GE's. The RootFS ships a few unresolved names already; only new ones count. Fails when
+# readelf read no entry at all, which would make every check pass.
 unresolved() {
-    comm -23 <(needed "$rootfs/usr/bin" "$rootfs/usr/sbin" "$rootfs/usr/lib" "$rootfs/usr/libexec" \
-        "$wine/lib" "$wine/lib64") \
-        <(provided "$rootfs/usr/lib" "$rootfs/usr/lib64" "$rootfs/usr/lib32" "$wine/lib" "$wine/lib64")
+    local need have
+    need="$(needed "$rootfs/usr/bin" "$rootfs/usr/sbin" "$rootfs/usr/lib" "$rootfs/usr/libexec" "$wine/lib" "$wine/lib64")"
+    have="$(provided "$rootfs/usr/lib" "$rootfs/usr/lib64" "$rootfs/usr/lib32" "$wine/lib" "$wine/lib64")"
+    [[ -n "$need" && -n "$have" ]] || die "readelf read no library or DT_NEEDED entry in the RootFS and Wine-GE"
+    comm -23 <(printf '%s\n' "$need") <(printf '%s\n' "$have")
 }
 say "trimming the RootFS (rootfs-trim.txt)"
 before="$(unresolved)"
@@ -169,7 +198,8 @@ while read -r pattern; do
     for path in "$rootfs"/$pattern; do rm -rf -- "$path"; done
 done < "$here/rootfs-trim.txt"
 shopt -u globstar nullglob
-broken="$(comm -13 <(printf '%s\n' "$before") <(unresolved))"
+after="$(unresolved)"
+broken="$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after"))"
 [[ -z "$broken" ]] || die "rootfs-trim.txt removes libraries the RootFS or Wine-GE still links (class, name): $(tr '\n' ' ' <<<"$broken")"
 mkdir -p "$rootfs/tmp" "$rootfs/var/tmp" "$rootfs/dev/shm"
 chmod 1777 "$rootfs/tmp" "$rootfs/var/tmp" "$rootfs/dev/shm"

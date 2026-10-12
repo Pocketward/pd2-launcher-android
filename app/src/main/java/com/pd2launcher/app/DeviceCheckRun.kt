@@ -4,7 +4,6 @@ import android.content.Context
 import android.os.Build
 import android.os.SystemClock
 import android.util.Log
-import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -30,9 +29,9 @@ object DeviceCheckRun {
         val began = SystemClock.elapsedRealtime()
         val gpu = HostGpu.probe()
         val manifest = UserlandAssets.manifest(context)
-        val installer = UserlandInstaller(File(context.filesDir, "userland"), OwnedProcesses)
+        val installer = UserlandInstaller(SessionPaths(DeviceCheck.dataDir(context)).userlandRoot, OwnedProcesses)
         val required = if (installer.isComplete(manifest.version)) 0 else DeviceCheck.requiredBytes(manifest.fileBytes)
-        val facts = DeviceCheck.measure(context, gpu, required)
+        val facts = DeviceCheck.measure(context, gpu, required, manifest.placeholder.length)
         val result = DeviceCheck.evaluate(facts, DeviceCheck::glRenderer)
         Log.i(TAG, "facts: $facts")
         result.findings.forEach { Log.i(TAG, "finding ${it.kind}: ${it.message}") }

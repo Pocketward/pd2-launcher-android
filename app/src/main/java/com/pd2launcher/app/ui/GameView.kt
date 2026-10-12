@@ -25,9 +25,11 @@ import android.view.inputmethod.InputMethodManager
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.Text
@@ -39,6 +41,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -123,13 +126,16 @@ enum class GameLayer {
  * opens from the glyph, the chord held, or Back; the game keeps running and showing beside it, the on-screen controls stay shown and playable
  * where the rail does not cover them ([GameLayer.padShown]), the controller lets go of the game
  * and drives the rail, and a tap elsewhere on the game closes it. Android's keyboard never pushes
- * the game up. Keeps the screen on.
+ * the game up; it closes as the rail or another overlay opens, so they have the whole height. The
+ * screen stays on as Settings → Keep the screen on says (MainActivity sets the window's flag; a
+ * view of its own would keep it on whatever the setting).
  *
  * [presentCounter]: the game's present counter, for the fps counter ([SessionPaths.presentCounter]).
  * [onSettings] opens the app's settings at a [SettingsNav] tab (null: the menu offers none).
  * [preview] (debug builds): the overlay over an empty screen, as if the game ran, at that layer;
  * [previewLauncher]: as if the official PD2 launcher ran.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun GameView(
     framebuffer: Framebuffer?,
@@ -156,11 +162,12 @@ fun GameView(
     // The rail asks whether to stop; any change of layer forgets the question.
     var asking by remember { mutableStateOf(false) }
     LaunchedEffect(layer) { asking = false }
-    val controller = controllerConnected()
+    val controller = controllerConnected(onRemoved = { surface?.releaseController() })
     val launcher = previewLauncher || Play.officialLauncherRunning(SessionService.status.collectAsState().value)
     // The launcher is a mouse/touch window: no menu/world picture to read.
     val picture = gamePicture(framebuffer, if (running && !launcher) header else null)
-    val keyboard = remember(layer) { surface?.keyboardOn() == true }
+    // Android's keyboard as it is, closed by its own controls too: here it opens only for the game.
+    val keyboard = WindowInsets.isImeVisible
     val buttons = remember { CustomButtons { events -> surface?.send(events) } }
     val virtualPad = remember { VirtualPad { state -> surface?.virtual(state) } }
     val live = running || preview != null
@@ -211,6 +218,7 @@ fun GameView(
                         it.controls = controls
                         it.input = input
                         it.suspended = layer.suspends
+                        it.customButtons = buttons
                     },
                 )
             }
@@ -238,7 +246,7 @@ fun GameView(
                 onKeyboard = { on ->
                     // Typing needs the game: the rail closes as the keyboard opens.
                     if (on) layer = GameLayer.NONE
-                    surface?.toggleKeyboard()
+                    surface?.showKeyboard(on)
                 },
                 onTouchPad = { ControlsStore.save(context, controls.withTouchPad(it, controller)) },
                 onShowFps = { AppSettingsStore.save(context, app.copy(showFps = it)) },
@@ -264,20 +272,25 @@ fun GameView(
 
 /**
  * A controller (a gamepad or joystick device, built in or attached) is there, followed live: a
- * pad that connects or wakes while the game shows counts at once.
+ * pad that connects or wakes while the game shows counts at once. [onRemoved] runs when a
+ * device goes, so what it held is let go.
  */
 @Composable
-private fun controllerConnected(): Boolean {
+private fun controllerConnected(onRemoved: () -> Unit): Boolean {
     val context = LocalContext.current
     fun now() = InputDevice.getDeviceIds().any { id ->
         InputDevice.getDevice(id)?.let { isController(it.sources, it.isVirtual) } == true
     }
     var connected by remember { mutableStateOf(now()) }
+    val removed by rememberUpdatedState(onRemoved)
     DisposableEffect(context) {
         val manager = context.getSystemService(InputManager::class.java)
         val listener = object : InputManager.InputDeviceListener {
             override fun onInputDeviceAdded(deviceId: Int) { connected = now() }
-            override fun onInputDeviceRemoved(deviceId: Int) { connected = now() }
+            override fun onInputDeviceRemoved(deviceId: Int) {
+                connected = now()
+                removed()
+            }
             override fun onInputDeviceChanged(deviceId: Int) { connected = now() }
         }
         manager.registerInputDeviceListener(listener, Handler(Looper.getMainLooper()))
@@ -290,7 +303,10 @@ private fun controllerConnected(): Boolean {
 /**
  * What PD2 shows ([GamePicture]), read from the X screen's frames every [PICTURE_MS] while a
  * [screen] is known and steadied ([PictureDebounce]); unknown otherwise. A few sampled pixels
- * of the framebuffer, mapped once, off the main thread.
+ * of the framebuffer, mapped once, off the main thread. Only the X screen: while the game
+ * presents its own buffers the X screen misses their frames, but [Controls.onScreenShown] does
+ * not use the picture, so the game's buffer ([PresentServer.readShown]) is not locked for it
+ * four times a second.
  */
 @Composable
 private fun gamePicture(framebuffer: Framebuffer?, screen: XwdHeader?): GamePicture {
@@ -302,10 +318,7 @@ private fun gamePicture(framebuffer: Framebuffer?, screen: XwdHeader?): GamePict
             val pixels = framebuffer.map()?.takeIf { it.header == screen } ?: return@withContext
             val steady = PictureDebounce()
             while (isActive) {
-                // The game's own buffer while it shows (the X screen then misses its frames).
-                val seen = PresentServer.current.value?.readShown { shown -> GamePicture.of(shown.width, shown.height, shown::pixel) }
-                    ?: GamePicture.of(screen.width, screen.height, pixels::pixel)
-                val next = steady.sample(seen)
+                val next = steady.sample(GamePicture.of(screen.width, screen.height, pixels::pixel))
                 if (next != picture) withContext(Dispatchers.Main) { picture = next }
                 delay(PICTURE_MS)
             }
@@ -337,9 +350,13 @@ private class GameSurface(
     private var callback: Window.Callback? = null
     private var sends = Executors.newSingleThreadExecutor { Thread(it, "pd2-input") }
     private val handler = Handler(Looper.getMainLooper())
+    /** The token of a tap's click still to come on [handler] ([TouchGestures.later]). */
+    private val pendingClick = Any()
     private var pad: PadInput? = null
     private var touch: TouchGestures? = null
     private var touchId = -1
+    /** The keyboard keys sent to X as pressed and not yet released (keysyms). */
+    private val keysDown = HashSet<Int>()
     private var lastFrameNanos = 0L
     private var keyboard = false
     private val longPress = Runnable { touch?.longPressDue(SystemClock.uptimeMillis()) }
@@ -351,6 +368,9 @@ private class GameSurface(
 
     /** The chord was held: open the overlay menu. */
     var onMenu: () -> Unit = {}
+
+    /** The on-screen controls' custom buttons, let go when the view leaves its window. */
+    var customButtons: CustomButtons? = null
 
     var controls: Controls = Controls()
         set(value) {
@@ -374,10 +394,36 @@ private class GameSurface(
             field = value
             if (value) {
                 pad?.releaseAll()
+                // Keys go to the native screens from now on, their releases too: X lets go now.
+                releaseKeys()
                 handler.removeCallbacks(longPress)
                 touch?.cancel()
+                // Android's keyboard types into the game, so it closes too, and the overlay gets the
+                // whole height.
+                if (keyboard) showKeyboard(false)
             }
         }
+
+    /** A device went: what the controller held is let go (Android sends no release for it). */
+    fun releaseController() {
+        pad?.releaseAll()
+    }
+
+    /** Lets go of the keyboard keys X holds down from here. */
+    private fun releaseKeys() {
+        if (keysDown.isEmpty()) return
+        send(keysDown.map { RelayEvent.Key(it, false) })
+        keysDown.clear()
+    }
+
+    override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
+        super.onWindowFocusChanged(hasWindowFocus)
+        // The game runs on in the background: nothing stays held there (a running character).
+        if (!hasWindowFocus) {
+            pad?.releaseAll()
+            releaseKeys()
+        }
+    }
 
     private val frame = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
@@ -388,7 +434,6 @@ private class GameSurface(
     }
 
     init {
-        keepScreenOn = true
         isFocusable = true
         isFocusableInTouchMode = true
         // Android draws a translucent white over a focused view once a key leaves touch mode (a
@@ -412,7 +457,7 @@ private class GameSurface(
                 PresentServer.current.value?.attach(holder.surface, rate)
             }
             override fun surfaceDestroyed(holder: SurfaceHolder) {
-                PresentServer.current.value?.detach()
+                PresentServer.current.value?.detach(holder.surface)
                 copy?.stop()
                 copy = null
             }
@@ -442,18 +487,18 @@ private class GameSurface(
         handler.removeCallbacksAndMessages(null)
         touch?.cancel()
         pad?.releaseAll()
+        releaseKeys()
+        // The on-screen custom buttons' keys go through [sends] too: released while it still takes them.
+        customButtons?.releaseAll()
         sends.shutdown()
         super.onDetachedFromWindow()
     }
 
-    /** Android's keyboard is open for the game. */
-    fun keyboardOn(): Boolean = keyboard && keyboardShown()
-
-    fun toggleKeyboard() {
+    /** Android's keyboard opens for the game ([on]), or closes and the view is no editor again. */
+    fun showKeyboard(on: Boolean) {
         val manager = context.getSystemService(InputMethodManager::class.java)
-        // Shown is what counts: Android's keyboard may have been closed by its own Back.
-        keyboard = !keyboardShown()
-        if (keyboard) {
+        keyboard = on
+        if (on) {
             requestFocus()
             manager.restartInput(this)
             manager.showSoftInput(this, 0)
@@ -481,18 +526,34 @@ private class GameSurface(
         if (KeyEvent.isGamepadButton(code) || event.isFromSource(InputDevice.SOURCE_GAMEPAD) ||
             event.isFromSource(InputDevice.SOURCE_JOYSTICK)
         ) {
+            // A cancelled key (focus lost, the device reset) was not let go by the player: it
+            // must neither act as a release (a cancelled Select + Start would switch mouse
+            // mode) nor leave anything held.
+            if (event.isCanceled) {
+                pad?.releaseAll()
+                return true
+            }
             if (event.repeatCount == 0) pad?.onKey(code, down)
             return true
         }
         val sym = Keys.keysym(code) ?: return false
-        if (event.repeatCount == 0) send(listOf(RelayEvent.Key(sym, down)))
+        if (event.repeatCount == 0) {
+            if (down) keysDown += sym else keysDown -= sym
+            send(listOf(RelayEvent.Key(sym, down)))
+        }
         return true
     }
 
     /** A controller's sticks, triggers and hat. */
     private fun onGameMotion(event: MotionEvent): Boolean {
-        if (suspended) return false
-        if (!event.isFromSource(InputDevice.SOURCE_JOYSTICK) || event.action != MotionEvent.ACTION_MOVE) return false
+        if (suspended || !event.isFromSource(InputDevice.SOURCE_JOYSTICK)) return false
+        if (event.action == MotionEvent.ACTION_CANCEL) {
+            // Android ends the motion (focus lost, the device reset or removed): the sticks,
+            // triggers and hat rest, or the game would keep the last values.
+            pad?.onAxes(PadAxes())
+            return true
+        }
+        if (event.action != MotionEvent.ACTION_MOVE) return false
         pad?.onAxes(
             PadAxes(
                 lx = event.getAxisValue(MotionEvent.AXIS_X),
@@ -514,7 +575,11 @@ private class GameSurface(
         // A finger may wander this far, in X screen pixels, and still tap.
         val slop = ViewConfiguration.get(context).scaledTouchSlop.toFloat() * screen.width / width.coerceAtLeast(1)
         val gestures = touch ?: input?.let {
-            TouchGestures(slop, ::send) { delayMs, events -> handler.postDelayed({ send(events) }, delayMs) }
+            TouchGestures(
+                slop, ::send,
+                later = { delayMs, click -> handler.postDelayed({ click() }, pendingClick, delayMs) },
+                dropLater = { handler.removeCallbacksAndMessages(pendingClick) },
+            )
         }?.also { touch = it } ?: return true
         val time = event.eventTime
         when (event.actionMasked) {
@@ -525,6 +590,12 @@ private class GameSurface(
                 handler.postDelayed(longPress, TouchGestures.LONG_PRESS_MS)
             }
             MotionEvent.ACTION_POINTER_DOWN -> gestures.secondDown(time)
+            // The followed finger lifts while another stays: its gesture ends (the other
+            // finger's moves are not followed).
+            MotionEvent.ACTION_POINTER_UP -> if (event.getPointerId(event.actionIndex) == touchId) {
+                handler.removeCallbacks(longPress)
+                gestures.primaryUp(time)
+            }
             MotionEvent.ACTION_MOVE -> {
                 val index = event.findPointerIndex(touchId)
                 if (index >= 0) gestures.move(screenX(event.getX(index)), screenY(event.getY(index)), time)
@@ -558,7 +629,7 @@ private class GameSurface(
             }
 
             override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
-                send(List(beforeLength) { tap(Keys.XK_BACKSPACE) }.flatten() + List(afterLength) { tap(Keys.XK_DELETE) }.flatten())
+                send(Keys.deleteText(beforeLength, afterLength))
                 return true
             }
 

@@ -2,9 +2,10 @@
 # Installs our glibc (glibc/) into the staging tree in place of Debian's
 # libc6. build.sh calls it only with PD2_USERLAND_WITH_GLIBC=1, after fetch-debian.sh and before
 # relocate.sh.
-#   - reuses glibc/out/install when glibc/out/BUILDINFO names the current Debian version, the prefix
-#     and the SHA-256 of every glibc/patches/*.patch; otherwise runs glibc/build.sh (the debug
-#     variant, config.sh: glibc/out-debug/, for the development build's prefix)
+#   - reuses glibc/out/install when glibc/out/BUILDINFO names the current Debian version,
+#     config.sh's Debian image and snapshot (the build image's base and packages), the prefix and
+#     the SHA-256 of glibc/build.sh, glibc/Containerfile and every glibc/patches/*.patch;
+#     otherwise runs glibc/build.sh
 #   - the loader becomes the real file usr/lib/ld-linux-aarch64.so.1 (= <U>/lib, glibc's rtlddir,
 #     the interpreter relocate.sh sets); Debian's usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1
 #     becomes a symlink to it
@@ -25,26 +26,31 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # --- on the host: build or reuse, then install in the tools container --------------------------
 if [[ "${PD2_USERLAND_IN_CONTAINER:-}" != 1 ]]; then
     g="$here/glibc"
-    out="$g/out$VARIANT_SUFFIX"
+    out="$g/out"
+    # build.sh holds the configure flags and CFLAGS, the Containerfile the compiler: a change to
+    # either is a different glibc, even with the same Debian version and patches.
     expected() {
         echo "glibc_debian_version=$(sed -n 's/^GLIBC_DEB_VERSION=//p' "$g/build.sh")"
+        echo "debian_image=$DEBIAN_IMAGE"
+        echo "debian_snapshot=$DEBIAN_SNAPSHOT"
         echo "prefix=$USERLAND"
+        for i in build.sh Containerfile; do echo "input=$i $(sha256sum < "$g/$i" | cut -d' ' -f1)"; done
         for p in "$g"/patches/*.patch; do echo "patch=$(basename "$p") $(sha256sum < "$p" | cut -d' ' -f1)"; done
     }
-    recorded() { grep -E '^(glibc_debian_version|prefix|patch)=' "$out/BUILDINFO" 2>/dev/null || true; }
+    recorded() { grep -E '^(glibc_debian_version|debian_image|debian_snapshot|prefix|input|patch)=' "$out/BUILDINFO" 2>/dev/null || true; }
     if [[ -f "$out/install/lib/ld-linux-aarch64.so.1" && "$(recorded)" == "$(expected)" ]]; then
-        echo "reusing ${out#"$here/"}/install (BUILDINFO matches the prefix and the patches)"
+        echo "reusing ${out#"$here/"}/install (BUILDINFO matches the prefix, the patches and build files)"
     else
         echo "building glibc (glibc/build.sh)"
         "$g/build.sh"
-        [[ "$(recorded)" == "$(expected)" ]] || { echo "${out#"$here/"}/BUILDINFO does not match the prefix and the patches" >&2; exit 1; }
+        [[ "$(recorded)" == "$(expected)" ]] || { echo "${out#"$here/"}/BUILDINFO does not match the inputs" >&2; exit 1; }
     fi
     run_in_tools build-glibc.sh "$@"
     exit
 fi
 
 # --- inside the tools container ----------------------------------------------------------------
-inst=/src/glibc/out$VARIANT_SUFFIX/install
+inst=/src/glibc/out/install
 root=/cache/work/staging
 ma="$root/usr/lib/aarch64-linux-gnu"
 record=/cache/work/glibc.json
@@ -81,22 +87,23 @@ while IFS= read -r -d '' f; do
 done < <(find "$inst/usr/lib/aarch64-linux-gnu/gconv" -type f -print0 | sort -z)
 
 put "$inst/etc/rpc" etc/rpc
-# Read only by ldconfig, which does not run here; it names the device's /usr/lib paths.
+# Read only by ldconfig, which does not run here; it names Debian's /usr/lib paths.
 rm -f "$root/etc/ld.so.conf.d/aarch64-linux-gnu.conf"
 rmdir --ignore-fail-on-non-empty "$root/etc/ld.so.conf.d" 2>/dev/null || true
 
-python3 - "$root" "/src/glibc/out$VARIANT_SUFFIX/BUILDINFO" "$record" "${installed[@]}" <<'EOF'
+python3 - "$root" /src/glibc/out/BUILDINFO "$record" "${installed[@]}" <<'EOF'
 import hashlib, json, sys
 root, buildinfo, record, *paths = sys.argv[1:]
-info, patches = {}, {}
+info, patches, inputs = {}, {}, {}
 for line in open(buildinfo):
     key, _, value = line.rstrip('\n').partition('=')
-    if key == 'patch':
+    if key in ('patch', 'input'):
         name, sha = value.split()
-        patches[name] = sha
+        (patches if key == 'patch' else inputs)[name] = sha
     elif key:
         info[key] = value
 info['patches'] = patches
+info['inputs'] = inputs
 files = {p: hashlib.sha256(open(f'{root}/{p}', 'rb').read()).hexdigest() for p in sorted(paths)}
 json.dump({'buildinfo': info, 'files': files}, open(record, 'w'), indent=1, sort_keys=True)
 print(f"glibc {info.get('glibc_debian_version')} + {len(patches)} patches: {len(files)} files installed")

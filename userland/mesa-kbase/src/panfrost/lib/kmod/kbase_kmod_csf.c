@@ -92,7 +92,12 @@ struct kbase_csf {
    simple_mtx_t lock;
    struct kbase_group *groups[256];
    uint64_t heaps[KBASE_CSF_MAX_HEAPS]; /* tiler heap context VAs; 0: free */
+   /* Sync pages of destroyed groups (uint64_t *), kept mapped until the device goes: fences in
+    * syncobjs still point into them. Under lock. */
+   struct util_dynarray retired_pages;
 };
+
+static void kbase_csf_group_fatal(void *data, uint8_t handle);
 
 static struct kbase_csf *
 csf_state(struct kbase_kmod_dev *kdev)
@@ -102,9 +107,13 @@ csf_state(struct kbase_kmod_dev *kdev)
       if (!csf)
          return NULL;
       simple_mtx_init(&csf->lock, mtx_plain);
+      util_dynarray_init(&csf->retired_pages, NULL);
       if (p_atomic_cmpxchg(&kdev->csf, NULL, csf) != NULL) {
+         util_dynarray_fini(&csf->retired_pages);
          simple_mtx_destroy(&csf->lock);
          free(csf);
+      } else {
+         kbase_sync_set_fatal_hook(kdev->sync, kbase_csf_group_fatal, kdev);
       }
    }
    return kdev->csf;
@@ -116,8 +125,10 @@ static void *
 same_va_alloc(struct kbase_kmod_dev *kdev, uint64_t size, uint64_t flags)
 {
    uint64_t pages = DIV_ROUND_UP(size, kdev->page_size);
+   /* SAME_VA asked for, not left to kbase's default for a 64-bit process: the rings' and sync
+    * objects' CPU addresses are used as their GPU addresses. */
    union kbase_ioctl_mem_alloc req = {
-      .in = { .va_pages = pages, .commit_pages = pages, .flags = flags },
+      .in = { .va_pages = pages, .commit_pages = pages, .flags = flags | BASE_MEM_SAME_VA },
    };
 
    if (kbase_kmod_ioctl(kdev->base.fd, KBASE_IOCTL_MEM_ALLOC, &req)) {
@@ -233,6 +244,40 @@ kbase_queue_fini(struct kbase_kmod_dev *kdev, struct kbase_queue *q, bool regist
    q->ring = NULL;
 }
 
+/* Sets every queue's sync object of [g] to the highest value, which ends every wait on it: CPU
+ * waits through fences, GPU waits in other groups' rings. Only for a group that runs nothing more
+ * (fatal, or terminated). */
+static void
+kbase_group_end_waits(struct kbase_group *g)
+{
+   for (uint32_t i = 0; i < g->queue_count; i++) {
+      if (g->queues[i].sync)
+         __atomic_store_n(g->queues[i].sync, UINT64_MAX, __ATOMIC_RELEASE);
+   }
+}
+
+/* The fatal hook (kbase_kmod_sync.c): group [handle] hit a fatal error and runs nothing more. Its
+ * sync objects end every wait on them, and kbase re-evaluates the suspended groups' waits
+ * (CS_EVENT_SIGNAL), so another group's ring waiting on this one carries on instead of waiting
+ * for ever. Under the CSF lock, so the group cannot be freed meanwhile. */
+static void
+kbase_csf_group_fatal(void *data, uint8_t handle)
+{
+   struct kbase_kmod_dev *kdev = data;
+   struct kbase_csf *csf = kdev->csf;
+   if (!csf)
+      return;
+
+   simple_mtx_lock(&csf->lock);
+   struct kbase_group *g = csf->groups[handle];
+   if (g)
+      kbase_group_end_waits(g);
+   simple_mtx_unlock(&csf->lock);
+
+   if (g && kbase_kmod_ioctl(kdev->base.fd, KBASE_IOCTL_CS_EVENT_SIGNAL, NULL))
+      mesa_loge("kbase: CS_EVENT_SIGNAL failed: %s", strerror(errno));
+}
+
 static void
 kbase_group_free(struct kbase_kmod_dev *kdev, struct kbase_group *g, bool created)
 {
@@ -243,7 +288,18 @@ kbase_group_free(struct kbase_kmod_dev *kdev, struct kbase_group *g, bool create
    }
    for (uint32_t i = 0; i < g->queue_count; i++)
       kbase_queue_fini(kdev, &g->queues[i], true);
-   same_va_free(kdev, g->sync_page, kdev->page_size);
+   /* Fences in syncobjs still point into the sync page (a syncobj keeps its last payload), and
+    * the group's work has ended, done or not: the page stays mapped until the device goes, at the
+    * highest value, so every wait on it ends. */
+   kbase_group_end_waits(g);
+   struct kbase_csf *csf = kdev->csf;
+   if (csf && g->sync_page) {
+      simple_mtx_lock(&csf->lock);
+      util_dynarray_append(&csf->retired_pages, g->sync_page);
+      simple_mtx_unlock(&csf->lock);
+   } else {
+      same_va_free(kdev, g->sync_page, kdev->page_size);
+   }
    simple_mtx_destroy(&g->lock);
    free(g);
 }
@@ -589,11 +645,12 @@ kbase_queue_retire(struct kbase_queue *q)
    }
 }
 
-/* Copies the staged instructions into the ring (whole cache lines, as the prefetcher wants), moves
- * the insert pointer and kicks the queue. */
-static int
-kbase_queue_commit(struct kbase_kmod_dev *kdev, struct kbase_group *g, struct kbase_queue *q,
-                   const struct ring_regs *regs)
+/* Makes the staged batch whole (its increment, padding to whole cache lines, as the prefetcher
+ * wants) and waits until the ring has room for it; nothing reaches the ring yet. Returns the
+ * batch's size in bytes (0: nothing staged), or -1 with the batch discarded. */
+static int64_t
+kbase_queue_prepare(struct kbase_kmod_dev *kdev, struct kbase_group *g, struct kbase_queue *q,
+                    const struct ring_regs *regs)
 {
    unsigned count = util_dynarray_num_elements(&q->staged, uint64_t);
    if (!count)
@@ -646,7 +703,21 @@ kbase_queue_commit(struct kbase_kmod_dev *kdev, struct kbase_group *g, struct kb
       usleep(100);
    }
    q->full_waits += waited;
+   /* A group gone fatal has its sync objects at the highest value, which frees its whole ring:
+    * nothing more goes into it. */
+   if (kbase_sync_group_fatal(kdev->sync, g->handle)) {
+      kbase_queue_discard(q);
+      errno = EIO;
+      return -1;
+   }
+   return (int64_t)bytes;
+}
 
+/* Copies a prepared batch of [bytes] into the ring (its room found by kbase_queue_prepare: room
+ * only grows while the group's lock is held), moves the insert pointer and kicks the queue. */
+static int
+kbase_queue_write(struct kbase_kmod_dev *kdev, struct kbase_queue *q, uint64_t bytes)
+{
    const uint8_t *src = util_dynarray_begin(&q->staged);
    uint64_t start = q->insert_off & (q->ring_size - 1);
    uint64_t first = MIN2(bytes, q->ring_size - start);
@@ -780,11 +851,20 @@ kbase_csf_group_submit(struct kbase_kmod_dev *kdev, struct drm_panthor_group_sub
       }
    }
 
+   /* Every queue's batch is made whole and finds ring space before any is written: a queue
+    * without room fails the submit with none of it running (another queue's half would wait for
+    * ever on work that never came, and its signals would be lost). */
+   int64_t bytes[KBASE_CSF_MAX_QUEUES] = { 0 };
+   for (uint32_t i = 0; i < g->queue_count && !ret; i++) {
+      bytes[i] = kbase_queue_prepare(kdev, g, &g->queues[i], &regs);
+      if (bytes[i] < 0)
+         ret = -1;
+   }
    for (uint32_t i = 0; i < g->queue_count; i++) {
       if (ret) {
          /* Nothing staged reaches the ring: forget its increments too. */
          kbase_queue_discard(&g->queues[i]);
-      } else if (kbase_queue_commit(kdev, g, &g->queues[i], &regs)) {
+      } else if (bytes[i] > 0 && kbase_queue_write(kdev, &g->queues[i], (uint64_t)bytes[i])) {
          ret = -1;
       }
    }
@@ -948,10 +1028,14 @@ kbase_csf_dev_finish(struct kbase_kmod_dev *kdev)
    if (!csf)
       return;
 
+   kbase_sync_set_fatal_hook(kdev->sync, NULL, NULL);
    for (unsigned i = 0; i < ARRAY_SIZE(csf->groups); i++) {
       if (csf->groups[i])
          kbase_group_free(kdev, csf->groups[i], true);
    }
+   util_dynarray_foreach(&csf->retired_pages, uint64_t *, page)
+      same_va_free(kdev, *page, kdev->page_size);
+   util_dynarray_fini(&csf->retired_pages);
    for (unsigned h = 0; h < KBASE_CSF_MAX_HEAPS; h++) {
       if (csf->heaps[h]) {
          struct kbase_ioctl_cs_tiler_heap_term term = { .gpu_heap_va = csf->heaps[h] };

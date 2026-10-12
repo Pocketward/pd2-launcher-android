@@ -9,6 +9,9 @@
 #   platforms=x11              Vulkan X11 WSI (Zink on Xvfb, the Launcher's wgpu window)
 #   prefix=$USERLAND/usr       the ICD JSON's library_path is prefix/libdir (meson.build:2524)
 # and our patches/mesa/*.patch (see patches/mesa/README.md) on the unpacked source.
+# The build goes to the cache's turnip-out/ with its
+# BUILDINFO (build_identity in config.sh: image, package lock, prefix, Mesa pin, this script, the
+# patches), which a later run with the same identity installs without building.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,39 +27,53 @@ work=/cache/work
 sysroot="$work/sysroot"
 build="$work/turnip-build"
 dest="$work/turnip-dest"
+out=/cache/turnip-out
 [[ -d "$sysroot/usr/include" ]] || { echo "no sysroot: run fetch-debian.sh first" >&2; exit 1; }
 
-tarball="$(fetch_source "$MESA_URL" "$MESA_SHA256")"
-rm -rf "$build" "$dest"
-mkdir -p "$build"
-tar -xJf "$tarball" -C "$build"
-for p in "$here"/patches/mesa/*.patch; do
-    patch -d "$build/mesa-$MESA_VERSION" -p1 --forward --quiet < "$p"
-    echo "applied $(basename "$p")"
-done
-write_cross_file "$build/cross.ini" "$sysroot"
-
 libdir=lib/aarch64-linux-gnu
-meson setup "$build/out" "$build/mesa-$MESA_VERSION" --cross-file "$build/cross.ini" \
-    --prefix="$USERLAND/usr" --libdir="$libdir" \
-    --buildtype=release -Db_ndebug=true \
-    -Dvulkan-drivers=freedreno -Dfreedreno-kmds=kgsl -Dallow-kcmp=disabled \
-    -Dgallium-drivers= -Dplatforms=x11 \
-    -Dopengl=false -Dgles1=disabled -Dgles2=disabled -Dglx=disabled -Degl=disabled -Dgbm=disabled \
-    -Dllvm=disabled -Dvalgrind=disabled -Dlibunwind=disabled -Dlmsensors=disabled \
-    -Dvulkan-layers= -Dtools= -Dbuild-tests=false -Dhtml-docs=disabled \
-    -Dexpat=enabled -Dzstd=enabled -Dshader-cache=enabled
+lib="$USERLAND/usr/$libdir/libvulkan_freedreno.so"
+identity="$(build_identity "mesa=$MESA_VERSION $MESA_SHA256" "$here/build-turnip.sh" "$here"/patches/mesa/*.patch)"
+if [[ -f "$out/libvulkan_freedreno.so" && "$(cat "$out/BUILDINFO" 2>/dev/null)" == "$identity" ]]; then
+    echo "reusing ${out#/cache/} (BUILDINFO matches)"
+else
+    tarball="$(fetch_source "$MESA_URL" "$MESA_SHA256")"
+    rm -rf "$build" "$dest" "$out"
+    mkdir -p "$build"
+    tar -xJf "$tarball" -C "$build"
+    for p in "$here"/patches/mesa/*.patch; do
+        patch -d "$build/mesa-$MESA_VERSION" -p1 --forward --fuzz=0 --quiet < "$p"
+        echo "applied $(basename "$p")"
+    done
+    write_cross_file "$build/cross.ini" "$sysroot"
 
-ninja -C "$build/out" -j"$(nproc)"
-DESTDIR="$dest" meson install -C "$build/out" --strip --no-rebuild >/dev/null
+    meson setup "$build/out" "$build/mesa-$MESA_VERSION" --cross-file "$build/cross.ini" \
+        --prefix="$USERLAND/usr" --libdir="$libdir" \
+        --buildtype=release -Db_ndebug=true \
+        -Dvulkan-drivers=freedreno -Dfreedreno-kmds=kgsl -Dallow-kcmp=disabled \
+        -Dgallium-drivers= -Dplatforms=x11 \
+        -Dopengl=false -Dgles1=disabled -Dgles2=disabled -Dglx=disabled -Degl=disabled -Dgbm=disabled \
+        -Dllvm=disabled -Dvalgrind=disabled -Dlibunwind=disabled -Dlmsensors=disabled \
+        -Dvulkan-layers= -Dtools= -Dbuild-tests=false -Dhtml-docs=disabled \
+        -Dexpat=enabled -Dzstd=enabled -Dshader-cache=enabled
+
+    ninja -C "$build/out" -j"$(nproc)"
+    DESTDIR="$dest" meson install -C "$build/out" --strip --no-rebuild >/dev/null
+
+    icd="$(find "$dest$USERLAND/usr/share/vulkan/icd.d" -name 'freedreno_icd*.json' | head -n1)"
+    [[ -f "$dest$lib" && -f "$icd" ]] || { echo "Turnip install incomplete" >&2; exit 1; }
+    # Turnip's driconf defaults are compiled in; nothing else of the install is needed at run time.
+    mkdir -p "$out"
+    install -m 0755 "$dest$lib" "$out/libvulkan_freedreno.so"
+    install -m 0644 "$icd" "$out/$(basename "$icd")"
+    echo "$identity" > "$out/BUILDINFO"
+    rm -rf "$build" "$dest"
+fi
 
 staging="$work/staging"
-lib="$USERLAND/usr/$libdir/libvulkan_freedreno.so"
-icd="$(find "$dest$USERLAND/usr/share/vulkan/icd.d" -name 'freedreno_icd*.json' | head -n1)"
-[[ -f "$dest$lib" && -f "$icd" ]] || { echo "Turnip install incomplete" >&2; exit 1; }
-install -D -m 0755 "$dest$lib" "$staging${lib#"$USERLAND"}"
+icd="$(find "$out" -name 'freedreno_icd*.json' | head -n1)"
+[[ -f "$icd" ]] || { echo "no Turnip ICD in ${out#/cache/}" >&2; exit 1; }
+install -D -m 0755 "$out/libvulkan_freedreno.so" "$staging${lib#"$USERLAND"}"
 install -D -m 0644 "$icd" "$staging/usr/share/vulkan/icd.d/$(basename "$icd")"
-# Turnip's driconf defaults are compiled in; nothing else of the install is needed at run time.
 
 got="$(jq -r .ICD.library_path "$icd")"
 [[ "$got" == "$lib" ]] || { echo "ICD library_path is $got, want $lib" >&2; exit 1; }

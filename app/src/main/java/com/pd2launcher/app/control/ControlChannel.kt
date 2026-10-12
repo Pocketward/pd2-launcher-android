@@ -4,12 +4,14 @@ import android.os.ParcelFileDescriptor
 import android.system.ErrnoException
 import android.system.Os
 import android.system.OsConstants
+import android.system.StructPollfd
 import java.io.Closeable
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
+import java.net.SocketTimeoutException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -26,12 +28,15 @@ class ProtocolException(message: String, cause: Throwable? = null) : IOException
  * [send]s and follows [snapshot]. Closing it is what tells the engine to stop safely and exit.
  *
  * [closer] must unblock a read in progress on [input] (for a socket: shut it down
- * before closing it, as [overSocket] does).
+ * before closing it, as [overSocket] does). [readable] waits up to the given milliseconds for
+ * [input] to have data or its end and says whether it has (false also when the wait ended early);
+ * only a [handshake] with a deadline uses it, so the reader thread's reads never time out.
  */
 class ControlChannel(
     private val input: InputStream,
     private val output: OutputStream,
     private val closer: Closeable,
+    private val readable: ((timeoutMs: Int) -> Boolean)? = null,
     private val onCommandError: (EngineMessage.CommandError) -> Unit = {},
 ) : Closeable {
 
@@ -58,20 +63,25 @@ class ControlChannel(
     val snapshot: StateFlow<EngineMessage.SnapshotMessage?> = _snapshot.asStateFlow()
 
     /**
-     * Send `hello` and wait for the engine's answer (blocking). On `welcome` the
+     * Send `hello` and wait for the engine's answer (blocking), for at most [timeoutMs] when
+     * given (then [SocketTimeoutException], and the channel closes). On `welcome` the
      * reader thread starts and the welcome is returned; on `refused` the channel
      * closes and [ProtocolRefusedException] is thrown.
      */
-    fun handshake(appVersion: String, hostFacts: HostFacts): EngineMessage.Welcome {
+    fun handshake(appVersion: String, hostFacts: HostFacts, timeoutMs: Long? = null): EngineMessage.Welcome {
         synchronized(lock) {
             check(_state.value == State.Idle) { "hello is the first message, and only the first" }
             _state.value = State.Handshaking
         }
         try {
             write(AppMessage.Hello(PROTOCOL, appVersion, hostFacts))
-            val frame = Frames.read(input) ?: throw ProtocolException("the engine closed before welcome")
+            val answerInput = timeoutMs?.let { Deadline(input, checkNotNull(readable) { "a deadline needs readable" }, it) } ?: input
+            val frame = Frames.read(answerInput) ?: throw ProtocolException("the engine closed before welcome")
             when (val answer = decode(frame)) {
                 is EngineMessage.Welcome -> {
+                    // An engine that welcomes another protocol than the one hello named would
+                    // read and write messages this app does not.
+                    if (answer.protocol != PROTOCOL) throw ProtocolException("the engine welcomed protocol ${answer.protocol}, not $PROTOCOL")
                     synchronized(lock) {
                         if (_state.value != State.Handshaking) throw ProtocolException("closed during the handshake")
                         _state.value = State.Connected(answer)
@@ -179,6 +189,32 @@ class ControlChannel(
         }
     }
 
+    /**
+     * [input] read only once [readable] says it has something, until [timeoutMs] from now: the
+     * handshake's deadline without a socket receive timeout, which the kernel would still apply
+     * to the reader thread's first read after it was lifted.
+     */
+    private class Deadline(
+        private val input: InputStream,
+        private val readable: (timeoutMs: Int) -> Boolean,
+        private val timeoutMs: Long,
+    ) : InputStream() {
+        private val end = System.nanoTime() / 1_000_000 + timeoutMs
+
+        override fun read(): Int {
+            val one = ByteArray(1)
+            return if (read(one, 0, 1) < 0) -1 else one[0].toInt() and 0xff
+        }
+
+        override fun read(b: ByteArray, off: Int, len: Int): Int {
+            while (true) {
+                val left = end - System.nanoTime() / 1_000_000
+                if (left <= 0) throw SocketTimeoutException("no answer within $timeoutMs ms")
+                if (readable(left.coerceAtMost(Int.MAX_VALUE.toLong()).toInt())) return input.read(b, off, len)
+            }
+        }
+    }
+
     companion object {
         /** A channel over the app's end of the socket pair; it takes ownership of [socket]. */
         fun overSocket(
@@ -186,13 +222,26 @@ class ControlChannel(
             onCommandError: (EngineMessage.CommandError) -> Unit = {},
         ): ControlChannel {
             val descriptor = socket.fileDescriptor
+            val readable = { timeoutMs: Int ->
+                val wanted = StructPollfd().apply {
+                    fd = descriptor
+                    events = OsConstants.POLLIN.toShort()
+                }
+                try {
+                    Os.poll(arrayOf(wanted), timeoutMs) > 0
+                } catch (error: ErrnoException) {
+                    // A signal ended the wait early: the deadline's loop waits again for what is left.
+                    if (error.errno != OsConstants.EINTR) throw IOException(error)
+                    false
+                }
+            }
             return ControlChannel(FileInputStream(descriptor), FileOutputStream(descriptor), {
                 try {
                     Os.shutdown(descriptor, OsConstants.SHUT_RDWR)
                 } catch (_: ErrnoException) {
                 }
                 socket.close()
-            }, onCommandError)
+            }, readable, onCommandError)
         }
     }
 }

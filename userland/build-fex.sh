@@ -2,10 +2,10 @@
 # Installs our FEX (fex/) into the staging tree. build.sh calls it only with
 # PD2_USERLAND_WITH_FEX=1, after build-glibc.sh and before relocate.sh.
 #   - reuses fex/out/userland when fex/out/BUILDINFO names the tag and commit in fex/build.sh,
-#     thunks=ON, the prefix, and the SHA-256 of fex/build.sh, fex/Containerfile,
+#     thunks=ON, config.sh's Debian image and snapshot (the build image's base and packages), the
+#     prefix, and the SHA-256 of fex/build.sh, fex/Containerfile,
 #     fex/toolchain-i686-guest.cmake and every fex/patches/*.patch; otherwise runs
-#     fex/build.sh --thunks (the debug variant, config.sh: fex/out-debug/, for the development
-#     build's prefix)
+#     fex/build.sh --thunks
 #   - installs usr/bin/FEX* , the host thunks (usr/lib/fex-emu/HostThunks{,_32}/), the guest thunks
 #     (usr/share/fex-emu/GuestThunks{,_32}/), ThunksDB.json and AppConfig/ as built (already
 #     stripped or without debug info; interpreter already $USERLAND/lib/ld-linux-aarch64.so.1)
@@ -24,18 +24,20 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # --- on the host: build or reuse, then install in the tools container --------------------------
 if [[ "${PD2_USERLAND_IN_CONTAINER:-}" != 1 ]]; then
     f="$here/fex"
-    out="$f/out$VARIANT_SUFFIX"
+    out="$f/out"
     expected() {
         echo "fex_tag=$(sed -n 's/^FEX_TAG=//p' "$f/build.sh")"
         echo "fex_commit=$(sed -n 's/^FEX_COMMIT=//p' "$f/build.sh")"
         echo "thunks=ON"
+        echo "debian_image=$DEBIAN_IMAGE"
+        echo "debian_snapshot=$DEBIAN_SNAPSHOT"
         echo "prefix=$USERLAND"
         for i in build.sh Containerfile toolchain-i686-guest.cmake; do
             echo "input=$i $(sha256sum < "$f/$i" | cut -d' ' -f1)"
         done
         for p in "$f"/patches/*.patch; do echo "patch=$(basename "$p") $(sha256sum < "$p" | cut -d' ' -f1)"; done
     }
-    recorded() { grep -E '^(fex_tag|fex_commit|thunks|prefix|input|patch)=' "$out/BUILDINFO" 2>/dev/null || true; }
+    recorded() { grep -E '^(fex_tag|fex_commit|thunks|debian_image|debian_snapshot|prefix|input|patch)=' "$out/BUILDINFO" 2>/dev/null || true; }
     if [[ -f "$out/userland/usr/bin/FEX" && "$(recorded)" == "$(expected)" ]]; then
         echo "reusing ${out#"$here/"}/userland (BUILDINFO matches the prefix, the patches and build files)"
     else
@@ -48,7 +50,7 @@ if [[ "${PD2_USERLAND_IN_CONTAINER:-}" != 1 ]]; then
 fi
 
 # --- inside the tools container ----------------------------------------------------------------
-inst=/src/fex/out$VARIANT_SUFFIX/userland
+inst=/src/fex/out/userland
 root=/cache/work/staging
 record=/cache/work/fex.json
 [[ -d "$root/usr" ]] || { echo "no staging tree: run fetch-debian.sh first" >&2; exit 1; }
@@ -68,7 +70,7 @@ for rel in "${installed[@]}"; do
     cp --preserve=mode "$inst/$rel" "$root/$rel"
 done
 
-python3 - "$root" "/src/fex/out$VARIANT_SUFFIX/BUILDINFO" "$record" "${installed[@]}" <<'EOF'
+python3 - "$root" /src/fex/out/BUILDINFO "$record" "${installed[@]}" <<'EOF'
 import hashlib, json, sys
 root, buildinfo, record, *paths = sys.argv[1:]
 info, patches, inputs = {}, {}, {}

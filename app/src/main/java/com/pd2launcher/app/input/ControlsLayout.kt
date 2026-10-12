@@ -287,11 +287,11 @@ data class ControlsLayout(val pieces: List<Piece>) {
          * clear of PD2's bottom HUD ([hudBand]): the stick low in the left corner just above the
          * HUD with the d-pad above it, A/B/X/Y low in the right corner likewise with RB/RT above
          * (clear of the menu button), LT/LB above the d-pad or, where the height is short, beside
-         * it; Back and Start in the bar below the picture where there is one, else in the side
-         * bars' bottom corners, else at the centre above the HUD; L3 and R3 hidden beside the
-         * groups. Sizes follow the shorter side, within bounds that keep them thumb-sized on
-         * phones and handhelds alike; the stick and the d-pad shrink together only when the
-         * height above the HUD cannot hold them.
+         * it; Back and Start in the bar above the picture where there is one, right of the frame
+         * counter, else in the side bars' bottom corners, else at the centre above the HUD; L3 and
+         * R3 hidden beside the groups. Sizes follow the shorter side, within bounds that keep them
+         * thumb-sized on phones and handhelds alike; the stick and the d-pad shrink together only
+         * when the height above the HUD cannot hold them.
          */
         fun default(width: Float, height: Float): ControlsLayout {
             val unit = min(width, height)
@@ -341,14 +341,16 @@ data class ControlsLayout(val pieces: List<Piece>) {
             val rightEnd = if (rightRow - button / 2 < GLYPH) width - GLYPH - 4f else width - edge
 
             // Back and Start: their size and centres.
-            val below = height - picture.bottom
+            val above = picture.top
             val bar = picture.left
+            val topKey = min(button, above - gap) * WIDE
+            val topEnd = width - GLYPH - 4f
             val keys: Triple<Float, Pair<Float, Float>, Pair<Float, Float>> = when {
-                // The bar below the picture (a 4:3 screen).
-                below >= MIN_BUTTON + gap -> {
-                    val b = min(button, below - gap)
-                    val y = picture.bottom + below / 2
-                    Triple(b, width / 2 - gap - b * WIDE / 2 to y, width / 2 + gap + b * WIDE / 2 to y)
+                // The bar above the picture (a 4:3 screen), between the frame counter and the menu
+                // button: PD2's menu screens keep buttons in the bar below, only titles above.
+                above >= MIN_BUTTON + gap && width / 2 + COUNTER + topKey * 2 + gap <= topEnd -> {
+                    val y = above / 2
+                    Triple(topKey / WIDE, topEnd - topKey - gap - topKey / 2 to y, topEnd - topKey / 2 to y)
                 }
                 // The side bars' bottom corners (a 20:9 phone), below the groups.
                 bar >= MIN_BUTTON * WIDE + gap && hud.height >= MIN_BUTTON + 2 * gap -> {

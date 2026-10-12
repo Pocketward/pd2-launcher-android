@@ -9,9 +9,8 @@
 # an arm64 Debian 13 sysroot, install, and run `FEXServer --version` and `FEXGetConfig --version` under
 # qemu-aarch64.
 # The thunks' 32-bit guest libraries are built with toolchain-i686-guest.cmake (clang for i686).
-# The prefix is ../config.sh's USERLAND for PD2_USERLAND_VARIANT; the debug variant's output is
-# out-debug/ instead of out/.
-# Output: out/ (gitignored): out/userland/ is the install tree relative to the device prefix
+# The prefix is ../config.sh's USERLAND.
+# Output: out/ (gitignored): out/userland/ is the install tree relative to the prefix
 # (out/userland/usr/bin/FEX ...), out/build.log the full log, out/RESULTS.txt the checks,
 # out/BUILDINFO the build identity (tag, commit, thunks, pins, SHA-256 of build.sh, Containerfile,
 # toolchain-i686-guest.cmake and each patch), written only when the build succeeds.
@@ -94,7 +93,7 @@ if [[ "${PD2_FEX_IN_CONTAINER:-}" == 1 ]]; then
     build=/cache/fex/build-$thunks
     rm -rf "$build"
     # aarch64 programs run under qemu-user (binfmt, and qemu-aarch64 below) with the sysroot as prefix.
-    # Their interpreter is the device path, so the sysroot gets that path too.
+    # Their interpreter is the prefix's loader, so the sysroot gets that path too.
     export QEMU_LD_PREFIX=/sysroot
     mkdir -p "/sysroot$USERLAND/lib"
     ln -sfr /sysroot/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1 "/sysroot$USERLAND/lib/ld-linux-aarch64.so.1"
@@ -158,17 +157,17 @@ context="$(mktemp -d)"
 trap 'rm -rf "$context"' EXIT
 cp "$here/Containerfile" "$context/"
 snapshot_sources > "$context/snapshot.sources"
-hash="$( (cat "$here/Containerfile"; echo "$DEBIAN_IMAGE $DEBIAN_SNAPSHOT") | sha256sum | cut -c1-16)"
-image="localhost/pd2-userland-fex:$hash"
-if ! "$engine" image exists "$image" 2>/dev/null; then
+image="$(fex_image_name)"
+if ! have_image "$engine" "$image"; then
     "$engine" build --build-arg "DEBIAN_IMAGE=$DEBIAN_IMAGE" --build-arg "DEBIAN_SNAPSHOT=$DEBIAN_SNAPSHOT" \
         -t "$image" -f "$context/Containerfile" "$context" >&2
+    archive_image "$engine" "$image"
 fi
 
-out="$here/out$VARIANT_SUFFIX"
+out="$here/out"
 mkdir -p "$USERLAND_CACHE" "$out"
 "$engine" run --rm --platform linux/amd64 \
     -v "$here/..:/src:ro" -v "$USERLAND_CACHE:/cache" -v "$out:/out" \
-    -e PD2_FEX_IN_CONTAINER=1 -e "PD2_USERLAND_VARIANT=$USERLAND_VARIANT" \
+    -e PD2_FEX_IN_CONTAINER=1 \
     "$image" bash /src/fex/build.sh "$@" 2>&1 | tee "$out/build.log"
 exit "${PIPESTATUS[0]}"

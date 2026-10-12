@@ -34,17 +34,17 @@
  
     return wsi_select_memory_type(wsi, req_props, 0 /* deny_props */, type_bits);
  }
-@@ -3140,6 +3156,10 @@
+@@ -3139,6 +3155,10 @@
+       .memoryTypeIndex =
           info->select_blit_dst_memory_type(wsi, reqs.memoryTypeBits),
     };
- 
++
 +   image->blit.non_coherent =
 +      !(wsi->memory_props.memoryTypes[buf_mem_info.memoryTypeIndex].propertyFlags &
 +        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-+
+ 
     void *sw_host_ptr = NULL;
     if (info->alloc_shm)
-       sw_host_ptr = info->alloc_shm(image, info->linear_size);
 --- a/src/vulkan/wsi/wsi_common.h
 +++ b/src/vulkan/wsi/wsi_common.h
 @@ -232,6 +232,7 @@

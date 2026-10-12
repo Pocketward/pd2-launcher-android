@@ -39,6 +39,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.SecureFlagPolicy
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
@@ -161,10 +162,12 @@ class WindowReader(private val map: () -> ScreenPixels?) {
  * work, cropped to where they are, read from the X screen's [framebuffer] twice a second while
  * the app is on screen (started), as a thumbnail beside the figure's percentage. Nothing shows
  * until something is drawn. A tap (or A) enlarges it (turned to fill a portrait screen); a tap
- * closes it again. It takes no input.
+ * closes it again. It takes no input. Blizzard's installer may show a CD key in its windows, so
+ * the screen stays out of screenshots while this is there ([KeepSecure]).
  */
 @Composable
 fun InstallWindow(framebuffer: Framebuffer) {
+    KeepSecure()
     var picture by remember { mutableStateOf<ImageBitmap?>(null) }
     var enlarged by remember { mutableStateOf(false) }
     val interaction = remember { MutableInteractionSource() }
@@ -205,7 +208,7 @@ fun InstallWindow(framebuffer: Framebuffer) {
         )
     }
     if (enlarged) {
-        Dialog({ enlarged = false }, DialogProperties(usePlatformDefaultWidth = false)) {
+        Dialog({ enlarged = false }, DialogProperties(usePlatformDefaultWidth = false, securePolicy = SecureFlagPolicy.SecureOn)) {
             BoxWithConstraints(Modifier.fillMaxSize().background(Color.Black).clickable { enlarged = false }, contentAlignment = Alignment.Center) {
                 // A wide picture on a portrait screen is turned a quarter to use its length.
                 val turn = maxHeight > maxWidth && shown.width > shown.height

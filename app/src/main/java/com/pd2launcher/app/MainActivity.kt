@@ -7,7 +7,6 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.os.SystemClock
@@ -257,7 +256,7 @@ class MainActivity : ComponentActivity() {
                 Grant.NOTIFICATIONS ->
                     // At targetSdk 28 Android asks by itself only when the first channel is made;
                     // after that only its settings page turns notifications on.
-                    if (Build.VERSION.SDK_INT >= 33 && applicationInfo.targetSdkVersion >= 33) {
+                    if (applicationInfo.targetSdkVersion >= 33) {
                         notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
                     } else {
                         openNotificationSettings()
@@ -323,7 +322,8 @@ class MainActivity : ComponentActivity() {
                 app = app,
                 display = remember { GameResolution.display(this) },
                 highestFrameRate = remember { FrameRateVote.highest(this) },
-                gpu = remember { HostGpu.probe() },
+                // The device check's probe, not another on the main thread (its ioctls) each time.
+                gpu = (device as? DeviceCheckState.Done)?.facts?.gpu,
                 system = SystemState(batteryRestricted.value, notificationsOff.value),
                 nav = settingsNav,
                 fromGame = showGameView,
@@ -426,6 +426,7 @@ class MainActivity : ComponentActivity() {
                     SessionService.send(this@MainActivity, SessionService.ACTION_OFFICIAL_LAUNCHER)
                 }.takeIf { Play.officialLauncherEnabled(status) },
                 launching = launching,
+                onTryAgain = { SessionService.send(this@MainActivity, SessionService.ACTION_RETRY) }.takeIf { Onboarding.failed(status) },
                 destinations = PlayDestinations(
                     onSettings = { openSettings(SettingsNav.GAME) },
                     onControls = { openSettings(SettingsNav.CONTROLLER) },
@@ -464,6 +465,7 @@ class MainActivity : ComponentActivity() {
                 onContinue = { nav.value = nav.value.open(FlowPage.SOURCE) },
                 onRepair = { repairOpen.value = true },
                 onGrant = grant,
+                onTryAgain = { SessionService.send(this, SessionService.ACTION_RETRY) },
             )
             Screen.Source -> Source()
             is Screen.Download -> {

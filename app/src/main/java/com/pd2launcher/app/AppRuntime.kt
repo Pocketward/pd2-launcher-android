@@ -13,7 +13,9 @@ import java.io.FileOutputStream
 import java.io.InputStream
 import java.nio.file.Files
 import java.nio.file.LinkOption
+import java.nio.file.Path
 import java.nio.file.Paths
+import java.nio.file.StandardCopyOption
 import java.nio.file.attribute.PosixFilePermissions
 
 /**
@@ -28,15 +30,24 @@ class AppRuntime(
     private val log: (String) -> Unit,
     /** Sets a mode with its sticky bit (the RootFS's /tmp is 1777); Java's API cannot. */
     private val chmod: (File, Int) -> Unit = { file, mode -> Os.chmod(file.path, mode) },
+    /** Makes a folder's entries durable (fsync on the folder); the JVM tests pass their own. */
+    private val syncDirectory: (Path) -> Unit = ::fsyncDirectory,
 ) {
     private val marker = File(managedRoot, MARKER)
 
     fun isCurrent(version: String): Boolean = marker.isFile && marker.readText() == version
 
-    /** Unpacks [tar] (an uncompressed tar stream); [progress] gets the tar bytes read so far. */
+    /**
+     * Unpacks [tar] (an uncompressed tar stream); [progress] gets the tar bytes read so far. As
+     * the App userland's unpack does, every file is synced, then every folder (deepest first),
+     * and only then is the marker written (a temporary name, synced, renamed, the folder synced):
+     * after a power cut the marker never names a version whose files did not all reach the disk.
+     */
     fun install(version: String, tar: InputStream, progress: (Long) -> Unit = {}) {
         ownerOnly(managedRoot)
+        // Gone for good before any tree goes, or a power cut could bring it back over half a tree.
         marker.delete()
+        syncDirectory(managedRoot.toPath())
         // What an older version (or a stopped unpack) left.
         for (path in PROVIDED) UserlandInstaller.deleteTree(File(managedRoot, path).toPath())
         val reader = TarReader(tar)
@@ -64,6 +75,7 @@ class AppRuntime(
                             if (n < 0) break
                             file.write(buffer, 0, n)
                         }
+                        file.fd.sync()
                     }
                     chmod(out, entry.mode and 0x1ff)
                     read += entry.size
@@ -80,7 +92,18 @@ class AppRuntime(
         for ((dir, mode) in directories.asReversed()) {
             if (!Files.isSymbolicLink(dir.toPath())) chmod(dir, (mode and 0x3ff) or 0x1c0)
         }
-        marker.writeText(version)
+        // The files are synced; their names live in the folders, deepest first, the root last.
+        for ((dir, _) in directories.asReversed()) {
+            if (!Files.isSymbolicLink(dir.toPath())) syncDirectory(dir.toPath())
+        }
+        syncDirectory(managedRoot.toPath())
+        val temporary = File(managedRoot, "$MARKER.tmp")
+        FileOutputStream(temporary).use {
+            it.write(version.toByteArray())
+            it.fd.sync()
+        }
+        Files.move(temporary.toPath(), marker.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+        syncDirectory(managedRoot.toPath())
         log("app runtime $version unpacked")
     }
 
@@ -96,7 +119,10 @@ class AppRuntime(
 
     /**
      * Lays [ARCHIVES] out again from the runtime's [tar], skipping everything else; pack.sh sorts
-     * the tar by name, so `cache/` comes first and the rest is not read. The names restored.
+     * the tar by name, so `cache/` comes first and the rest is not read. Each is written under a
+     * temporary name, synced, checked against the entry's size and only then renamed into place,
+     * so a restore cut short never leaves a short copy where [archivesMissing] (and the engine)
+     * would take it for whole. The names restored.
      */
     fun restoreArchives(tar: InputStream): List<String> {
         val reader = TarReader(tar)
@@ -107,20 +133,27 @@ class AppRuntime(
             val path = entry.name.removePrefix("./")
             if (path !in ARCHIVES || (entry.type != TarReader.FILE && entry.type != TarReader.FILE_OLD)) continue
             val out = File(managedRoot, path)
-            out.parentFile?.let { Files.createDirectories(it.toPath()) }
+            val folder = out.parentFile!!
+            Files.createDirectories(folder.toPath())
+            val temporary = File(folder, ".${out.name}.part")
             try {
-                FileOutputStream(out).use { file ->
+                var written = 0L
+                FileOutputStream(temporary).use { file ->
                     while (true) {
                         val n = reader.read(buffer)
                         if (n < 0) break
                         file.write(buffer, 0, n)
+                        written += n
                     }
+                    file.fd.sync()
                 }
-            } catch (error: Exception) {
-                out.delete()
-                throw error
+                if (written != entry.size) throw CorruptUserland("$path: $written of its ${entry.size} bytes")
+                chmod(temporary, entry.mode and 0x1ff)
+                Files.move(temporary.toPath(), out.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+                syncDirectory(folder.toPath())
+            } finally {
+                temporary.delete()
             }
-            chmod(out, entry.mode and 0x1ff)
             restored += path
         }
         return restored

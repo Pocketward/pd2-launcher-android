@@ -9,7 +9,7 @@
  #endif
  
  #ifndef XCB_PRESENT_OPTION_ASYNC_MAY_TEAR
-@@ -1855,6 +1857,22 @@
+@@ -1855,6 +1857,26 @@
  static uint32_t *sw_present_counter;
  static once_flag sw_present_counter_once = ONCE_FLAG_INIT;
  
@@ -26,13 +26,17 @@
 + */
 +#define SW_PACING_TIMEOUT_NS (100 * 1000 * 1000)
 +static bool sw_pacing_mapped;
-+static bool sw_pacing_stalled;
-+static uint32_t sw_pacing_stalled_taken;
++/* A stalled reader: SW_STALLED with its taken count in the low 32 bits, or
++ * 0. One word, loaded and stored atomically, so the present threads of
++ * several swapchains always see a matching flag and count.
++ */
++#define SW_STALLED (UINT64_C(1) << 32)
++static uint64_t sw_pacing_stall;
 +
  static void
  sw_present_counter_open(void)
  {
-@@ -1866,9 +1884,12 @@
+@@ -1866,9 +1888,12 @@
        return;
     struct stat st;
     if (fstat(fd, &st) == 0 && st.st_size >= (off_t)sizeof(uint32_t)) {
@@ -47,7 +51,7 @@
     }
     close(fd);
  }
-@@ -1881,11 +1902,56 @@
+@@ -1881,11 +1906,60 @@
        return;
     __atomic_fetch_add(sw_present_counter, 1, __ATOMIC_RELEASE);
  }
@@ -76,16 +80,20 @@
 +   while (__atomic_load_n(paced, __ATOMIC_ACQUIRE)) {
 +      uint32_t seen = __atomic_load_n(taken, __ATOMIC_ACQUIRE);
 +      uint32_t presents = __atomic_load_n(sw_present_counter, __ATOMIC_RELAXED);
++      uint64_t stall = __atomic_load_n(&sw_pacing_stall, __ATOMIC_RELAXED);
 +      if ((int32_t)(presents - seen) <= 0) {
-+         sw_pacing_stalled = false;
++         if (stall)
++            __atomic_store_n(&sw_pacing_stall, 0, __ATOMIC_RELAXED);
 +         return;
 +      }
-+      if (sw_pacing_stalled && seen == sw_pacing_stalled_taken)
++      if (stall == (SW_STALLED | seen))
 +         return;
-+      sw_pacing_stalled = false;
++      if (stall)
++         __atomic_store_n(&sw_pacing_stall, 0, __ATOMIC_RELAXED);
 +      if (futex_wait(taken, seen, &deadline) != 0 && errno == ETIMEDOUT) {
-+         sw_pacing_stalled = true;
-+         sw_pacing_stalled_taken = __atomic_load_n(taken, __ATOMIC_ACQUIRE);
++         __atomic_store_n(&sw_pacing_stall,
++                          SW_STALLED | __atomic_load_n(taken, __ATOMIC_ACQUIRE),
++                          __ATOMIC_RELAXED);
 +         return;
 +      }
 +   }
@@ -104,7 +112,7 @@
  #endif
  
  /**
-@@ -2599,6 +2665,9 @@
+@@ -2599,6 +2673,9 @@
           }
        }
  

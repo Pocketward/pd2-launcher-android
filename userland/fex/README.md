@@ -25,3 +25,6 @@ It runs in a pinned container (`Containerfile`), applies `patches/*.patch` in or
 - `0008-thunks-host-glx-errors-not-fatal.patch`: an X error of a GLX request on the host-side display fails the call instead of ending the process.
 - `0009-rootfs-open-create.patch`: `open(O_CREAT)` of a file whose parent exists only in the RootFS creates it there.
 - `0010-guest-tmp-in-rootfs.patch`: the guest's `/tmp` is always the RootFS's tmp.
+- `0011-fexserver-abstract-socket-alone.patch`: FEXServer serves on its abstract socket alone when its filesystem socket's path does not fit `sun_path` (a runtime folder below a long data folder).
+- `0012-own-pages-segv-maperr.patch`: a SIGSEGV on FEX's own PROT_NONE pages (the InterruptFaultPage that delivers deferred signals, the JIT guard page) is taken as FEX's with `SEGV_MAPERR` as well as `SEGV_ACCERR`, the code kernels with speculative page faults give a write to a populated PROT_NONE page of a multithreaded process.
+- `0013-telemetry-exit-without-sync.patch`: the telemetry file (`<program>.telem`) is created when FEX starts and rewritten in place at exit, with no backup rename and no fsync, so an exiting Wine process, which wineserver kills if it still runs half a second after letting go of it, does not wait on storage (directory updates on a dirsync filesystem).

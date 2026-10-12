@@ -46,7 +46,7 @@ static int64_t now_ns() {
     return (int64_t)t.tv_sec * 1000000000LL + t.tv_nsec;
 }
 
-static void free_layer(frame_layer *l) __INTRODUCED_IN(29) {
+static void free_layer(frame_layer *l) {
     for (int i = 0; i < BUFFERS; i++) {
         if (l->buffers[i] != nullptr) AHardwareBuffer_release(l->buffers[i]);
         if (l->release_fence[i] >= 0) close(l->release_fence[i]);
@@ -57,7 +57,7 @@ static void free_layer(frame_layer *l) __INTRODUCED_IN(29) {
     free(l);
 }
 
-static frame_layer *create(ANativeWindow *window, int buffer_w, int buffer_h, int transform, float frame_rate) __INTRODUCED_IN(29) {
+frame_layer *frame_layer_create(ANativeWindow *window, int buffer_w, int buffer_h, int transform, float frame_rate) {
     int dest_w = ANativeWindow_getWidth(window), dest_h = ANativeWindow_getHeight(window);
     if (dest_w <= 0 || dest_h <= 0) return nullptr;
     auto *l = (frame_layer *)calloc(1, sizeof(frame_layer));
@@ -100,7 +100,7 @@ static frame_layer *create(ANativeWindow *window, int buffer_w, int buffer_h, in
     return l;
 }
 
-static int lock(frame_layer *l, uint32_t **pixels, int *stride) __INTRODUCED_IN(29) {
+int frame_layer_lock(frame_layer *l, uint32_t **pixels, int *stride) {
     int i = l->next;
     int64_t now = now_ns();
     int fence = -1;
@@ -134,10 +134,18 @@ static int lock(frame_layer *l, uint32_t **pixels, int *stride) __INTRODUCED_IN(
 }
 
 // The compositor has applied a transaction: the buffer it replaced is free once its fence signals.
-static void on_complete(void *context, ASurfaceTransactionStats *stats) __INTRODUCED_IN(29) {
+static void on_complete(void *context, ASurfaceTransactionStats *stats) {
     auto *done = (completion *)context;
     frame_layer *l = done->layer;
-    int fence = ASurfaceTransactionStats_getPreviousReleaseFenceFd(stats, l->control);
+    // Asked for a layer the stats do not list, the platform aborts the process: only when listed,
+    // as present_server.cpp asks.
+    ASurfaceControl **controls = nullptr;
+    size_t count = 0;
+    ASurfaceTransactionStats_getASurfaceControls(stats, &controls, &count);
+    bool listed = false;
+    for (size_t i = 0; i < count && !listed; i++) listed = controls[i] == l->control;
+    if (controls != nullptr) ASurfaceTransactionStats_releaseASurfaceControls(controls);
+    int fence = listed ? ASurfaceTransactionStats_getPreviousReleaseFenceFd(stats, l->control) : -1;
     pthread_mutex_lock(&l->lock);
     if (done->replaced >= 0) {
         if (l->release_fence[done->replaced] >= 0) close(l->release_fence[done->replaced]);
@@ -152,7 +160,7 @@ static void on_complete(void *context, ASurfaceTransactionStats *stats) __INTROD
     free(done);
 }
 
-static void post(frame_layer *l) __INTRODUCED_IN(29) {
+void frame_layer_post(frame_layer *l) {
     int i = l->locked;
     if (i < 0) return;
     l->locked = -1;
@@ -182,9 +190,7 @@ static void post(frame_layer *l) __INTRODUCED_IN(29) {
         // policy allows (no touch boost against it), not at the rate a heuristic guesses from
         // how often frames come, which never rises above the rate the display already runs at.
         if (l->frame_rate > 0) {
-            if (__builtin_available(android 30, *)) {
-                ASurfaceTransaction_setFrameRate(t, l->control, l->frame_rate, ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT);
-            }
+            ASurfaceTransaction_setFrameRate(t, l->control, l->frame_rate, ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT);
         }
     }
     ASurfaceTransaction_setOnComplete(t, done, on_complete);
@@ -197,7 +203,8 @@ static void post(frame_layer *l) __INTRODUCED_IN(29) {
     l->next = (i + 1) % BUFFERS;
 }
 
-static void destroy(frame_layer *l) __INTRODUCED_IN(29) {
+void frame_layer_destroy(frame_layer *l) {
+    if (l == nullptr) return;
     if (l->locked >= 0) {
         AHardwareBuffer_unlock(l->buffers[l->locked], nullptr);
         l->locked = -1;
@@ -222,23 +229,4 @@ static void destroy(frame_layer *l) __INTRODUCED_IN(29) {
     } else {
         LOG("the compositor did not answer every frame; the layer's state stays allocated");
     }
-}
-
-extern "C" frame_layer *frame_layer_create(ANativeWindow *window, int buffer_w, int buffer_h, int transform, float frame_rate) {
-    if (__builtin_available(android 29, *)) return create(window, buffer_w, buffer_h, transform, frame_rate);
-    return nullptr;
-}
-
-extern "C" int frame_layer_lock(frame_layer *layer, uint32_t **pixels, int *stride) {
-    if (__builtin_available(android 29, *)) return lock(layer, pixels, stride);
-    return 0;
-}
-
-extern "C" void frame_layer_post(frame_layer *layer) {
-    if (__builtin_available(android 29, *)) post(layer);
-}
-
-extern "C" void frame_layer_destroy(frame_layer *layer) {
-    if (layer == nullptr) return;
-    if (__builtin_available(android 29, *)) destroy(layer);
 }

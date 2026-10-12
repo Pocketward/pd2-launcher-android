@@ -36,3 +36,8 @@ int kbase_sync_get_fence(struct kbase_sync *sync, uint32_t handle, uint64_t poin
 
 bool kbase_sync_group_fatal(const struct kbase_sync *sync, uint8_t group);
 void kbase_sync_group_reset(struct kbase_sync *sync, uint8_t group);
+
+/* `hook` is called, by whichever thread reads kbase's notifications and without the provider's
+ * lock, once for each group newly marked fatal (NULL: no hook). */
+void kbase_sync_set_fatal_hook(struct kbase_sync *sync, void (*hook)(void *data, uint8_t group),
+                               void *data);

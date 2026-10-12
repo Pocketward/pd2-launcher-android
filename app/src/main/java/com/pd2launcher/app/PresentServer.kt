@@ -1,6 +1,5 @@
 package com.pd2launcher.app
 
-import android.os.Build
 import android.view.Surface
 import com.pd2launcher.app.input.GameWindow
 import java.io.File
@@ -17,8 +16,8 @@ import kotlinx.coroutines.flow.asStateFlow
  * [SessionPaths.presentSocket] for the game environment's lifetime; the Game view [attach]es its
  * surface, and x-input-relay's word on the X screen's windows ([setGameWindow]) places the layer,
  * or sends the frames back to the X screen while anything else shows there. Where Mesa cannot
- * use it (a GPU that refuses the buffers, a compressed buffer, Android 11 or below) the game
- * presents to the X screen instead.
+ * use it (a GPU that refuses the buffers, a compressed buffer) the game presents to the X screen
+ * instead.
  */
 class PresentServer private constructor(private val handle: Long) {
     private val lock = Any()
@@ -29,9 +28,12 @@ class PresentServer private constructor(private val handle: Long) {
         if (!stopped) nativeAttach(handle, surface, frameRate)
     }
 
-    /** The Game view's surface is going: its layer goes, and every buffer it held goes back to the game. */
-    fun detach() = synchronized(lock) {
-        if (!stopped) nativeDetach(handle)
+    /**
+     * The Game view's [surface] is going: its layer goes, and every buffer it held goes back to the
+     * game; a layer a newer surface was given meanwhile stays.
+     */
+    fun detach(surface: Surface) = synchronized(lock) {
+        if (!stopped) nativeDetach(handle, surface)
     }
 
     /**
@@ -86,9 +88,6 @@ class PresentServer private constructor(private val handle: Long) {
          */
         fun start(socket: File, counter: File?): PresentServer? {
             stopCurrent()
-            // Android 12 and later: back pressure keeps the compositor from dropping a buffer,
-            // which the buffers' bookkeeping (each one given back when it is replaced) relies on.
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return null
             val handle = nativeStart(socket.path, counter?.path)
             return if (handle == 0L) null else PresentServer(handle).also { _current.value = it }
         }
@@ -107,7 +106,7 @@ class PresentServer private constructor(private val handle: Long) {
         private external fun nativeAttach(handle: Long, surface: Surface, frameRate: Float)
 
         @JvmStatic
-        private external fun nativeDetach(handle: Long)
+        private external fun nativeDetach(handle: Long, surface: Surface)
 
         @JvmStatic
         private external fun nativeSetWindow(

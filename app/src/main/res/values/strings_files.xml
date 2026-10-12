@@ -6,7 +6,9 @@
     <string name="files_game">Diablo II</string>
     <string name="files_refused_fixed">This folder cannot be removed, renamed or moved.</string>
     <string name="files_refused_game_running">Diablo II is running: it writes its folder, and the characters when it closes. Change files once it has closed.</string>
+    <string name="files_refused_game_starting">Diablo II is starting: the Launcher is preparing its files. Change files once it has closed, or if it does not start.</string>
     <string name="files_refused_busy">The Launcher is working on the game folder. Change files once it is done.</string>
+    <string name="files_refused_executable">Programs and libraries (such as .exe and .dll files) in the game folder cannot be added, changed, renamed or moved from here.</string>
 
     <!-- Settings → App → Game files. -->
     <string name="settings_section_game_files">Game files</string>

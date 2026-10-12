@@ -38,6 +38,7 @@
  */
 #include <errno.h>
 #include <poll.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -331,6 +332,9 @@ static void inject(const struct relay_event *event) {
 
 int main(int argc, char **argv) {
     (void)argv;
+    /* A write to a socket the app has closed fails (EPIPE) instead of killing the relay before it
+       reads the end and exits 0. */
+    signal(SIGPIPE, SIG_IGN);
     if (argc != 1) {
         fprintf(stderr, "usage: x-input-relay < socket (DISPLAY names the X screen)\n");
         return 1;

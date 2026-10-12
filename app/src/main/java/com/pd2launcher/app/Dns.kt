@@ -7,16 +7,21 @@ import android.net.Network
 import java.io.File
 import java.net.Inet6Address
 import java.net.InetAddress
+import java.nio.file.Files
+import java.nio.file.StandardOpenOption
 
 /**
  * The userland's `resolv.conf`: the default network's DNS servers, written when the session
- * starts and again whenever they change. The userland's glibc reads it from `<userland>/etc`
- * (its SYSCONFDIR patch, userland/glibc/patches); Android itself has none. The same file goes to
- * every one of [targets] whose folder exists: the FEX RootFS's `/etc` too, where Wine's x86 glibc
- * reads it (FEX falls back to Android's `/etc`).
+ * starts, again whenever they change, and again at every later session start ([rewrite]): an
+ * unpack puts back the packed file, which names no server. The userland's glibc reads it from
+ * `<userland>/etc` (its SYSCONFDIR patch, userland/glibc/patches); Android itself has none. The
+ * same file goes to every one of [targets] whose folder exists: the FEX RootFS's `/etc` too, where
+ * Wine's x86 glibc reads it (FEX falls back to Android's `/etc`).
  */
 class Dns(private val context: Context, private val targets: List<File>, private val log: (String) -> Unit) {
     private var callback: ConnectivityManager.NetworkCallback? = null
+    /** The servers Android last gave; null before its first callback. */
+    private var servers: List<InetAddress>? = null
 
     /** Follows the default network until [stop]; Android calls back at once with the current one. */
     fun start() {
@@ -37,15 +42,24 @@ class Dns(private val context: Context, private val targets: List<File>, private
         context.getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(follow)
     }
 
+    /** Writes the servers Android last gave again, to every target that no longer has them. */
+    @Synchronized
+    fun rewrite() {
+        servers?.let(::write)
+    }
+
     @Synchronized
     private fun write(servers: List<InetAddress>) {
+        this.servers = servers
         val text = render(servers)
         for (target in targets) {
             if (target.parentFile?.isDirectory != true) continue
             if (target.isFile && target.readText() == text) continue
             try {
                 val staging = File(target.parentFile, "${target.name}.tmp")
-                staging.writeText(text)
+                // Created anew: a link left at its name goes, and is never written through.
+                Files.deleteIfExists(staging.toPath())
+                Files.write(staging.toPath(), text.toByteArray(), StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)
                 if (!staging.renameTo(target)) throw java.io.IOException("rename failed")
                 log("resolv.conf ${target.path}: ${servers.take(MAX_SERVERS).joinToString(" ") { address(it) }}")
             } catch (error: Exception) {

@@ -2,15 +2,42 @@
 # (vX.Y.Z or vX.Y.Z-betaN), pushed together, so a push to main whose commit
 # carries such a tag builds and publishes that release; workflow_dispatch builds
 # a given tag again. Running on main keeps the build caches where every later
-# release can use them (a tag's own caches serve only that tag).
+# release can use them (a tag's own caches serve only that tag); a candidate's run
+# keeps its caches on the branch candidate, where later candidates use them.
 #
 #   userland  userland/build.sh with our glibc and FEX, unless the cache holds the
-#             archive for these inputs; FEX's and glibc's builds and the Debian
-#             downloads are cached apart, so a change elsewhere reuses them
-#   runtime   runtime/pack.sh, unless the cache holds it for these pins
+#             archive for these inputs. Its parts are cached apart, together: the
+#             FEX, glibc, Xvfb, Turnip and PanVK builds (each reused while its
+#             BUILDINFO names the current inputs), PanVK's host tools, the Debian
+#             packages and the source archives; and so are its build images, which
+#             the scripts load from their archives (PD2_IMAGE_ARCHIVE) instead of
+#             building them again
+#   runtime   runtime/pack.sh, unless the cache holds it for the runtime's pins
+#             (pack.sh --version), which a new engine often leaves as they were
 #   apk       the release executable of the engine that engine.lock pins (its
 #             SHA-256 checked), build.sh release signed with the release key from
-#             the repository's secrets, then the GitHub release with the APK
+#             the secrets of the environment "release", which only this job
+#             names, then the GitHub release with the APK; the build image is
+#             cached by its Containerfile
+#
+# Every job builds the one commit the tag named when the tag job looked, which
+# must be on main and which the tag must still name when the release is
+# published; the APK's versionName must be the tag's, and a release that
+# already has files is not overwritten (a person deletes them first).
+#
+# A release candidate is built in the same way before its tag exists:
+# workflow_dispatch on the branch candidate, whose head is the release's commit on
+# top of main, with candidate set (gh workflow run release.yml --ref candidate -f
+# tag=vX.Y.Z -f candidate=true). Every job builds that head, which must still be on
+# the branch candidate and have main in its history; the tag must still not exist
+# when the APK is published on a draft release of the tag that targets that commit
+# (a draft's files are replaced). The engine that engine.lock pins may be a draft
+# release too: the runtime job then fetches its sources by the pinned commit
+# (PD2_ENGINE_UNRELEASED), and the apk job takes its executable and build evidence
+# from this repository's draft release engine-candidate. To publish it, main moves
+# to that commit and publishing the draft makes the tag there; that push builds
+# nothing, because it finds no tag yet or the tag's release is published with its
+# files.
 #
 # While the engine's repository is private, the secret ENGINE_REPO_TOKEN (read
 # access to its contents) lets Git and the GitHub CLI fetch from it; a public
@@ -25,6 +52,10 @@ on:
       tag:
         description: The release tag to build and publish
         required: true
+      candidate:
+        description: Build the head of the branch candidate as a draft release, before the tag exists
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -39,21 +70,48 @@ jobs:
     timeout-minutes: 5
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
+      commit: ${{ steps.release.outputs.commit }}
+      candidate: ${{ steps.tag.outputs.candidate }}
       userland: ${{ steps.keys.outputs.userland }}
-      fex: ${{ steps.keys.outputs.fex }}
-      glibc: ${{ steps.keys.outputs.glibc }}
-      downloads: ${{ steps.keys.outputs.downloads }}
-      runtime: ${{ steps.keys.outputs.runtime }}
     steps:
+      # The whole history: the release's commit must be on main (a candidate's must have main
+      # in its history).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: Find the release tag
         id: tag
         env:
           INPUT_TAG: ${{ inputs.tag }}
+          INPUT_CANDIDATE: ${{ inputs.candidate }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           pattern='^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
-          if [[ -n $INPUT_TAG ]]; then
+          # The published release of a tag as JSON, nothing when there is none (HTTP 404); any other
+          # error fails. gh writes an error's body to standard output.
+          published() {
+            local body
+            if body=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$1" 2>/dev/null); then
+              echo "$body"
+            elif [[ $(jq -r '.status // empty' <<<"$body" 2>/dev/null) != 404 ]]; then
+              echo "cannot read the release $1: $body" >&2
+              return 1
+            fi
+          }
+          candidate=
+          # A candidate: the head of the branch candidate, before its tag exists.
+          if [[ $INPUT_CANDIDATE == true ]]; then
+            [[ $GITHUB_REF == refs/heads/candidate ]] ||
+              { echo "a candidate is built on the branch candidate, not $GITHUB_REF" >&2; exit 1; }
+            [[ $INPUT_TAG =~ $pattern ]] || { echo "not a release tag: $INPUT_TAG" >&2; exit 1; }
+            refs=$(git ls-remote --tags origin "refs/tags/$INPUT_TAG")
+            [[ -z $refs ]] || { echo "the tag $INPUT_TAG exists; a candidate is built before its tag" >&2; exit 1; }
+            release=$(published "$INPUT_TAG")
+            [[ -z $release ]] || { echo "the release $INPUT_TAG is published" >&2; exit 1; }
+            tag=$INPUT_TAG
+            candidate=true
+          elif [[ -n $INPUT_TAG ]]; then
             [[ $INPUT_TAG =~ $pattern ]] || { echo "not a release tag: $INPUT_TAG" >&2; exit 1; }
             git ls-remote --exit-code --tags origin "refs/tags/$INPUT_TAG" >/dev/null ||
               { echo "no tag $INPUT_TAG" >&2; exit 1; }
@@ -67,42 +125,80 @@ jobs:
               [[ -n $tag || $attempt == 3 ]] && break
               sleep 10
             done
+            # A published candidate: main has moved to its commit, and publishing its draft put the
+            # tag there; the release has its files.
+            if [[ -n $tag ]]; then
+              release=$(published "$tag")
+              files=0
+              [[ -z $release ]] || files=$(jq '.assets | length' <<<"$release")
+              if [[ $files != 0 ]]; then
+                echo "the release $tag is published with $files files: nothing to build"
+                tag=
+              fi
+            fi
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "release tag: ${tag:-none (not a release)}"
+          echo "candidate=$candidate" >> "$GITHUB_OUTPUT"
+          echo "release tag: ${tag:-none (not a release)}${candidate:+ (a candidate)}"
 
+      # The commit the tag names now is the one every job builds, whatever the tag names later;
+      # only a commit on main, where a release is reviewed, is released. A candidate's is the
+      # commit the run started from: still on the branch candidate, with main in its history,
+      # so that main can later move to it by a fast-forward.
       - name: Check out the release
+        id: release
         if: steps.tag.outputs.tag != ''
         env:
           TAG: ${{ steps.tag.outputs.tag }}
+          CANDIDATE: ${{ steps.tag.outputs.candidate }}
         run: |
-          git fetch -q --depth=1 origin "+refs/tags/$TAG:refs/tags/$TAG"
-          git checkout -q --detach "refs/tags/$TAG"
+          if [[ -n $CANDIDATE ]]; then
+            git fetch -q origin "+refs/heads/main:refs/remotes/origin/main" \
+              "+refs/heads/candidate:refs/remotes/origin/candidate"
+            commit=$GITHUB_SHA
+            git merge-base --is-ancestor "$commit" refs/remotes/origin/candidate ||
+              { echo "::error::$commit is no longer on the branch candidate"; exit 1; }
+            git merge-base --is-ancestor refs/remotes/origin/main "$commit" ||
+              { echo "::error::main is not in the history of $commit"; exit 1; }
+          else
+            git fetch -q origin "+refs/tags/$TAG:refs/tags/$TAG" "+refs/heads/main:refs/remotes/origin/main"
+            commit=$(git rev-parse "refs/tags/$TAG^{commit}")
+            git merge-base --is-ancestor "$commit" refs/remotes/origin/main ||
+              { echo "::error::$TAG names $commit, which is not on main"; exit 1; }
+          fi
+          git checkout -q --detach "$commit"
+          echo "commit=$commit" | tee -a "$GITHUB_OUTPUT"
 
-      # The cache keys, from the release's tree before any build writes into it: the
-      # userland's covers every input of its version (userland/pack.sh) and more,
-      # leaving out only the build's out/ folders and the READMEs.
+      # The userland's cache key, from the release's tree before any build writes into it: it
+      # covers every input of its version (userland/pack.sh) and more, leaving out only the
+      # build's out/ folders and the READMEs.
       - name: Name the caches
         id: keys
         if: steps.tag.outputs.tag != ''
         run: |
-          {
-            echo "userland=userland-${{ hashFiles('userland/**', '!userland/**/out*/**', '!userland/README.md', '!userland/fex/README.md', '!userland/glibc/README.md') }}"
-            echo "fex=fex-out-${{ hashFiles('userland/fex/**', '!userland/fex/out*/**', 'userland/config.sh') }}"
-            echo "glibc=glibc-out-${{ hashFiles('userland/glibc/**', '!userland/glibc/out*/**', 'userland/config.sh') }}"
-            echo "downloads=userland-downloads-${{ hashFiles('userland/packages.lock', 'userland/config.sh') }}"
-            echo "runtime=runtime-${{ hashFiles('runtime/**', 'engine.lock') }}"
-          } | tee -a "$GITHUB_OUTPUT"
+          echo "userland=userland-${{ hashFiles('userland/**', '!userland/**/out*/**', '!userland/README.md', '!userland/fex/README.md', '!userland/glibc/README.md') }}" |
+            tee -a "$GITHUB_OUTPUT"
 
   userland:
     needs: tag
     if: needs.tag.outputs.tag != ''
     runs-on: ubuntu-24.04
     timeout-minutes: 340
+    env:
+      PARTS: |
+        userland/fex/out
+        userland/glibc/out
+        ~/.cache/pd2-android/userland/debs
+        ~/.cache/pd2-android/userland/sources
+        ~/.cache/pd2-android/userland/turnip-out
+        ~/.cache/pd2-android/userland/xvfb-out
+        ~/.cache/pd2-android/kbase/sources
+        ~/.cache/pd2-android/kbase/out
+        ~/.cache/pd2-android/kbase/work/host-tools-*
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.tag.outputs.tag }}
+          ref: ${{ needs.tag.outputs.commit }}
 
       - name: Restore the userland
         id: userland
@@ -111,15 +207,15 @@ jobs:
           path: app/src/main/assets/userland
           key: ${{ needs.tag.outputs.userland }}
 
+      # In the background: deleting is slow, and the room is needed only later.
       - name: Make room on the disk
         if: steps.userland.outputs.cache-hit != 'true'
         run: |
           df -h / "$GITHUB_WORKSPACE"
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
-            /opt/hostedtoolcache/CodeQL /usr/local/share/powershell /usr/share/swift
-          df -h /
           nproc
           free -g
+          sudo nohup rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/powershell /usr/share/swift >/dev/null 2>&1 &
 
       - name: Install a static qemu-aarch64 binfmt_misc handler
         if: steps.userland.outputs.cache-hit != 'true'
@@ -129,68 +225,93 @@ jobs:
           grep -q '^flags: .*F' /proc/sys/fs/binfmt_misc/qemu-aarch64
           cat /proc/sys/fs/binfmt_misc/qemu-aarch64
 
-      - name: Restore the Debian packages and source archives
+      # The build images, as archives the scripts load a missing image from and add an image
+      # they build to (PD2_IMAGE_ARCHIVE, config.sh): the tools and PanVK images, and FEX's
+      # and glibc's, which only their builds need. Images are named by tags that hash their
+      # Containerfiles and pins, so the newest archives are safe to restore.
+      - name: Restore the build images
+        id: images
         if: steps.userland.outputs.cache-hit != 'true'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: |
-            ~/.cache/pd2-android/userland/debs
-            ~/.cache/pd2-android/userland/sources
-          key: ${{ needs.tag.outputs.downloads }}
-          restore-keys: userland-downloads-
+          path: ~/.cache/pd2-android/images/userland
+          key: userland-images-${{ needs.tag.outputs.userland }}
+          restore-keys: userland-images-
 
-      # build-fex.sh and build-glibc.sh reuse a restored build only when its
-      # BUILDINFO names the current inputs, so an older one is safe to restore.
-      - name: Restore the FEX build
-        id: fex
+      # The newest parts are safe to restore: build-fex.sh, build-glibc.sh, build-xvfb.sh,
+      # build-turnip.sh and build-panvk.sh reuse a build only while its BUILDINFO names the
+      # current inputs, and every download is checked by SHA-256.
+      - name: Restore the userland's parts
+        id: parts
         if: steps.userland.outputs.cache-hit != 'true'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: userland/fex/out
-          key: ${{ needs.tag.outputs.fex }}
-          restore-keys: fex-out-
-
-      - name: Restore the glibc build
-        id: glibc
-        if: steps.userland.outputs.cache-hit != 'true'
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: userland/glibc/out
-          key: ${{ needs.tag.outputs.glibc }}
-          restore-keys: glibc-out-
+          path: ${{ env.PARTS }}
+          key: userland-parts-${{ needs.tag.outputs.userland }}
+          restore-keys: userland-parts-
 
       - name: Build the userland
         if: steps.userland.outputs.cache-hit != 'true'
         env:
           PD2_USERLAND_WITH_GLIBC: 1
           PD2_USERLAND_WITH_FEX: 1
-        run: userland/build.sh
+        run: PD2_IMAGE_ARCHIVE=~/.cache/pd2-android/images/userland userland/build.sh
 
-      - name: Save the FEX build
-        if: steps.userland.outputs.cache-hit != 'true' && steps.fex.outputs.cache-hit != 'true'
+      # Named by what they hold, so the cache takes them again only when a part changed. Kept
+      # also when a later step failed: a part's BUILDINFO is written only once it is built.
+      - name: Name the userland's parts
+        id: parts-key
+        if: ${{ !cancelled() && steps.userland.outputs.cache-hit != 'true' }}
+        run: |
+          . userland/config.sh
+          # Host tools of another Mesa commit are of no further use.
+          for d in "$PANVK_CACHE"/work/host-tools-*; do
+            if [[ -d $d && $d != */host-tools-$PANVK_MESA_COMMIT ]]; then rm -rf "$d"; fi
+          done
+          key=$({
+            cat userland/fex/out/BUILDINFO userland/glibc/out/BUILDINFO \
+              "$USERLAND_CACHE"/turnip-out/BUILDINFO "$USERLAND_CACHE"/xvfb-out/BUILDINFO \
+              "$PANVK_CACHE"/out/BUILDINFO "$PANVK_CACHE"/work/host-tools-*/IMAGE 2>/dev/null || true
+            find "$USERLAND_CACHE"/debs "$USERLAND_CACHE"/sources "$PANVK_CACHE"/sources \
+              -type f -printf '%P %s\n' 2>/dev/null | sort
+          } | sha256sum | cut -c1-16)
+          echo "key=userland-parts-$key" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Save the userland's parts
+        if: ${{ !cancelled() && steps.parts-key.outputs.key != '' && steps.parts-key.outputs.key != steps.parts.outputs.cache-matched-key }}
         continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: userland/fex/out
-          key: ${{ needs.tag.outputs.fex }}
+          path: ${{ env.PARTS }}
+          key: ${{ steps.parts-key.outputs.key }}
 
-      - name: Save the glibc build
-        if: steps.userland.outputs.cache-hit != 'true' && steps.glibc.outputs.cache-hit != 'true'
+      # Only the current images' archives are kept, and saved again only when one was added.
+      - name: Name the build images
+        id: images-key
+        if: ${{ !cancelled() && steps.userland.outputs.cache-hit != 'true' }}
+        run: |
+          . userland/config.sh
+          PD2_IMAGE_ARCHIVE=~/.cache/pd2-android/images/userland
+          mkdir -p "$PD2_IMAGE_ARCHIVE"
+          current=()
+          for name in "$(tools_image_name)" "$(panvk_image_name)" "$(fex_image_name)" "$(glibc_image_name)"; do
+            current+=("$(image_archive "$name")")
+          done
+          for f in "$PD2_IMAGE_ARCHIVE"/*.tar.zst; do
+            if [[ -f $f && " ${current[*]} " != *" $f "* ]]; then rm -f "$f"; fi
+          done
+          ls -l "$PD2_IMAGE_ARCHIVE"
+          names=$(find "$PD2_IMAGE_ARCHIVE" -maxdepth 1 -name '*.tar.zst' -printf '%f\n' | sort)
+          [[ -n $names ]] || exit 0
+          echo "key=userland-images-$(sha256sum <<<"$names" | cut -c1-16)" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Save the build images
+        if: ${{ !cancelled() && steps.images-key.outputs.key != '' && steps.images-key.outputs.key != steps.images.outputs.cache-matched-key }}
         continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: userland/glibc/out
-          key: ${{ needs.tag.outputs.glibc }}
-
-      - name: Save the Debian packages and source archives
-        if: steps.userland.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        continue-on-error: true
-        with:
-          path: |
-            ~/.cache/pd2-android/userland/debs
-            ~/.cache/pd2-android/userland/sources
-          key: ${{ needs.tag.outputs.downloads }}
+          path: ~/.cache/pd2-android/images/userland
+          key: ${{ steps.images-key.outputs.key }}
 
       - name: Save the userland
         if: steps.userland.outputs.cache-hit != 'true'
@@ -204,31 +325,24 @@ jobs:
     if: needs.tag.outputs.tag != ''
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    outputs:
+      key: ${{ steps.version.outputs.key }}
+    # A candidate's engine may be a draft release, without its tag yet: engine/build.sh --source
+    # (which runtime/pack.sh runs) then fetches the pinned commit by its SHA.
+    env:
+      PD2_ENGINE_UNRELEASED: ${{ needs.tag.outputs.candidate == 'true' && '1' || '' }}
     steps:
       # Not persisted: git would send the checkout's token to the engine repository too,
       # and never ask the credential helper for ENGINE_REPO_TOKEN.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.tag.outputs.tag }}
+          ref: ${{ needs.tag.outputs.commit }}
           persist-credentials: false
 
-      - name: Restore the runtime
-        id: runtime
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: app/src/main/assets/runtime
-          key: ${{ needs.tag.outputs.runtime }}
-
-      - name: Make room on the disk
-        if: steps.runtime.outputs.cache-hit != 'true'
-        run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
-            /opt/hostedtoolcache/CodeQL /usr/local/share/powershell /usr/share/swift
-          df -h /
-
-      # The runtime's pins are in the engine's sources at the release engine.lock pins.
-      - name: Pack the runtime
-        if: steps.runtime.outputs.cache-hit != 'true'
+      # The runtime's pins are in the engine's sources at the release engine.lock pins; the
+      # version they give names the cache.
+      - name: Name the runtime
+        id: version
         env:
           GH_TOKEN: ${{ secrets.ENGINE_REPO_TOKEN }}
           GIT_CONFIG_COUNT: 1
@@ -240,8 +354,30 @@ jobs:
             echo "::error::cannot read $url; while it is private, the secret ENGINE_REPO_TOKEN must give read access to it"
             exit 1
           }
-          sudo apt-get update -qq
-          sudo apt-get install --yes --no-install-recommends squashfs-tools
+          version=$(runtime/pack.sh --version)
+          echo "key=runtime-$version" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Restore the runtime
+        id: runtime
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: app/src/main/assets/runtime
+          key: ${{ steps.version.outputs.key }}
+
+      # A few GB at most, which the runner has free without deleting anything.
+      - name: Pack the runtime
+        if: steps.runtime.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.ENGINE_REPO_TOKEN }}
+          GIT_CONFIG_COUNT: 1
+          GIT_CONFIG_KEY_0: credential.https://github.com.helper
+          GIT_CONFIG_VALUE_0: '!gh auth git-credential'
+        run: |
+          if ! command -v unsquashfs >/dev/null || ! command -v readelf >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install --yes --no-install-recommends squashfs-tools binutils
+          fi
+          df -h /
           runtime/pack.sh
 
       - name: Save the runtime
@@ -249,12 +385,14 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: app/src/main/assets/runtime
-          key: ${{ needs.tag.outputs.runtime }}
+          key: ${{ steps.version.outputs.key }}
 
   apk:
     needs: [tag, userland, runtime]
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    # The release key's secrets are the environment's, so no other job can read them.
+    environment: release
     permissions:
       contents: write
     env:
@@ -263,15 +401,16 @@ jobs:
       # Not persisted, as in the runtime job; the release is published with gh, not git.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.tag.outputs.tag }}
+          ref: ${{ needs.tag.outputs.commit }}
           persist-credentials: false
 
-      # The build image (SDK, NDK) needs more room than a hosted runner leaves free.
+      # The build image (SDK, NDK) needs more room than a hosted runner leaves free. In the
+      # background: deleting is slow, and the room is needed only later.
       - name: Make room on the disk
         run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
-            /opt/hostedtoolcache/CodeQL /usr/local/share/powershell /usr/share/swift
           df -h /
+          sudo nohup rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/powershell /usr/share/swift >/dev/null 2>&1 &
 
       - name: Restore the userland
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -284,8 +423,27 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: app/src/main/assets/runtime
-          key: ${{ needs.tag.outputs.runtime }}
+          key: ${{ needs.runtime.outputs.key }}
           fail-on-cache-miss: true
+
+      # build.sh's image under the name build.sh gives it: its tag hashes the Containerfile.
+      - name: Name the build image
+        id: image
+        run: |
+          tag=$(sha256sum containers/Containerfile | cut -c1-16)
+          echo "name=localhost/pd2-android-build:$tag" >> "$GITHUB_OUTPUT"
+          echo "key=android-image-$tag" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Restore the build image
+        id: image-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pd2-android/images/android.tar.zst
+          key: ${{ steps.image.outputs.key }}
+
+      - name: Load the build image
+        if: steps.image-cache.outputs.cache-hit == 'true'
+        run: zstd -dc ~/.cache/pd2-android/images/android.tar.zst | podman load
 
       - name: Restore the Gradle cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -295,6 +453,30 @@ jobs:
             ~/.cache/pd2-android/gradle/wrapper
           key: gradle-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties', 'gradle.properties', 'build.gradle.kts', 'settings.gradle.kts', 'app/build.gradle.kts') }}
           restore-keys: gradle-
+
+      # A candidate's engine may be a draft release, which only the engine repository's writers
+      # can download: this repository's draft release engine-candidate then holds a copy of its
+      # executable and build evidence. engine/build.sh checks them against engine.lock and
+      # downloads nothing; without the copy it downloads the pinned release.
+      - name: Take the engine from the draft engine-candidate
+        if: needs.tag.outputs.candidate == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          asset=$(sed -n 's/^asset=//p' engine.lock)
+          if ! names=$(gh release view engine-candidate --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' 2>&1); then
+            [[ $names == "release not found" ]] || { echo "::error::cannot read the release engine-candidate: $names"; exit 1; }
+            names=
+          fi
+          if ! grep -qxF "$asset" <<<"$names"; then
+            echo "the draft release engine-candidate holds no $asset: the engine comes from its release"
+            exit 0
+          fi
+          out="$HOME/.cache/pd2-android/engine-release-out"
+          mkdir -p "$out"
+          gh release download engine-candidate --repo "$GITHUB_REPOSITORY" --dir "$out" --clobber \
+            --pattern "$asset" --pattern "$asset.build-evidence.txt"
+          chmod 0755 "$out/$asset"
 
       - name: Download the engine
         env:
@@ -334,11 +516,30 @@ jobs:
         if: always()
         run: rm -rf "$RUNNER_TEMP/signing"
 
+      - name: Keep the build image
+        id: image-kept
+        if: ${{ !cancelled() && steps.image-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+        run: |
+          mkdir -p ~/.cache/pd2-android/images
+          podman save "$IMAGE" | zstd -T0 -q -o ~/.cache/pd2-android/images/android.tar.zst
+
+      - name: Save the build image
+        if: ${{ !cancelled() && steps.image-kept.outcome == 'success' }}
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pd2-android/images/android.tar.zst
+          key: ${{ steps.image.outputs.key }}
+
       - name: Name the APK and describe it
         id: apk
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
         run: |
-          image="localhost/pd2-android-build:$(sha256sum containers/Containerfile | cut -c1-16)"
-          tools() { podman run --rm -v "$PWD/build/outputs:/apk:ro" "$image" "$@"; }
+          tools() { podman run --rm -v "$PWD/build/outputs:/apk:ro" "$IMAGE" "$@"; }
           badging=$(tools aapt2 dump badging /apk/app-release.apk | head -n 1)
           version_name=$(sed -n "s/.* versionName='\([^']*\)'.*/\1/p" <<<"$badging")
           version_code=$(sed -n "s/.* versionCode='\([^']*\)'.*/\1/p" <<<"$badging")
@@ -346,6 +547,8 @@ jobs:
           certificate=$(tools apksigner verify --print-certs /apk/app-release.apk |
             sed -n 's/^Signer #1 certificate SHA-256 digest: //p')
           [[ -n $version_name && -n $version_code && -n $certificate ]]
+          [[ v$version_name == "$TAG" ]] ||
+            { echo "::error::the APK's versionName is $version_name, not the tag's ${TAG#v}"; exit 1; }
           apk=pd2-launcher-android-$version_name.apk
           mkdir -p release
           cp build/outputs/app-release.apk "release/$apk"
@@ -361,15 +564,66 @@ jobs:
           } > release/notes.md
           cat release/notes.md
 
+      # The tag may have moved since the tag job looked: the release is published only while it
+      # still names the commit built.
+      - name: Check the tag still names the release
+        if: needs.tag.outputs.candidate != 'true'
+        env:
+          COMMIT: ${{ needs.tag.outputs.commit }}
+          GH_TOKEN: ${{ github.token }}
+          GIT_CONFIG_COUNT: 1
+          GIT_CONFIG_KEY_0: credential.https://github.com.helper
+          GIT_CONFIG_VALUE_0: '!gh auth git-credential'
+        run: |
+          refs=$(git ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}")
+          # An annotated tag names its commit in the peeled entry, a lightweight one directly.
+          now=$(awk -v ref="refs/tags/$TAG^{}" '$2 == ref { print $1 }' <<<"$refs")
+          [[ -n $now ]] || now=$(awk -v ref="refs/tags/$TAG" '$2 == ref { print $1 }' <<<"$refs")
+          [[ $now == "$COMMIT" ]] ||
+            { echo "::error::$TAG names ${now:-nothing} now, not the commit built ($COMMIT)"; exit 1; }
+
+      # A candidate is published as a draft only while its tag does not exist: publishing the
+      # draft makes it.
+      - name: Check the tag still does not exist
+        if: needs.tag.outputs.candidate == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GIT_CONFIG_COUNT: 1
+          GIT_CONFIG_KEY_0: credential.https://github.com.helper
+          GIT_CONFIG_VALUE_0: '!gh auth git-credential'
+        run: |
+          refs=$(git ls-remote origin "refs/tags/$TAG")
+          [[ -z $refs ]] || { echo "::error::the tag $TAG exists now; a candidate is published before its tag"; exit 1; }
+
       - name: Publish the release
         env:
+          COMMIT: ${{ needs.tag.outputs.commit }}
+          CANDIDATE: ${{ needs.tag.outputs.candidate }}
           GH_TOKEN: ${{ github.token }}
         run: |
           prerelease=()
           [[ $TAG == *-* ]] && prerelease=(--prerelease)
           files=(release/*.apk release/*.apk.sha256)
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+          if [[ -n $CANDIDATE ]]; then
+            # A candidate's files go on a draft release only, which targets the commit built.
+            if draft=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>&1); then
+              [[ $draft == true ]] ||
+                { echo "::error::the release $TAG is published; a candidate replaces the files of a draft only"; exit 1; }
+              gh release upload "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+              gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --target "$COMMIT" --notes-file release/notes.md
+            elif [[ $draft != "release not found" ]]; then
+              echo "::error::cannot read the release $TAG: $draft"
+              exit 1
+            else
+              gh release create "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --draft --target "$COMMIT" \
+                --title "$TAG" --notes-file release/notes.md "${prerelease[@]}"
+            fi
+          elif gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            # A published APK is never replaced by a build: a person deletes it first.
+            assets=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets | length')
+            [[ $assets == 0 ]] ||
+              { echo "::error::the release $TAG already has $assets files; delete them to publish it again"; exit 1; }
+            gh release upload "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY"
             gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file release/notes.md
           else
             gh release create "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --verify-tag \

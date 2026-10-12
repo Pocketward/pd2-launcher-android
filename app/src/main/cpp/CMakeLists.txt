@@ -19,7 +19,7 @@ target_compile_options(maliprobe PRIVATE -Wall -Wextra -Werror)
 
 # The Game view: the copy of the X screen (frame_copy.c, frame_layer.cpp) and the game's direct present (present_server.cpp).
 add_library(framecopy SHARED frame_copy.c frame_layer.cpp present_server.cpp)
-target_compile_options(framecopy PRIVATE -Wall -Wextra -Werror -O3 -D__ANDROID_UNAVAILABLE_SYMBOLS_ARE_WEAK__ -Werror=unguarded-availability)
+target_compile_options(framecopy PRIVATE -Wall -Wextra -Werror -O3)
 target_link_libraries(framecopy android nativewindow log)
 
 # The gamepad file's seqlock fence (input/Gamepad.kt).

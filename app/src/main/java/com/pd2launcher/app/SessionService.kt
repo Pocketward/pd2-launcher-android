@@ -13,7 +13,6 @@ import android.os.SystemClock
 import android.system.ErrnoException
 import android.system.Os
 import android.system.OsConstants
-import android.system.StructTimeval
 import android.util.Log
 import com.pd2launcher.app.control.Command
 import com.pd2launcher.app.control.ControlChannel
@@ -43,6 +42,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -61,6 +61,12 @@ data class SessionStatus(
     val refusal: Refusal? = null,
     /** An update finished and the engine's check after it has not said yet ([Play.recheck]). */
     val updateRecheck: Play.Recheck? = null,
+    /**
+     * When a Play or official PD2 launcher request was taken (elapsed real time), until its game
+     * or session shows or it fails; the game folder takes no other app's changes meanwhile
+     * ([DocumentPaths.gameStarting]).
+     */
+    val launchRequestedAt: Long? = null,
 ) {
     enum class Engine { STOPPED, STARTING, CONNECTED, RESTARTING, FAILED }
 
@@ -79,7 +85,9 @@ data class SessionStatus(
  * The foreground service that owns every process:
  * the Launcher engine always, the Android game environment on demand, and the cleanup after
  * an engine exit (`wineserver -k`, then SIGTERM and SIGKILL after 5 s for every other
- * process of the app's uid) before the engine starts again.
+ * process of the app's uid) before the engine starts again, after a wait that grows with each
+ * failure in a row until it gives up ([RestartPolicy]). Every engine start first ends every other
+ * process of the app's uid with SIGKILL, then checks the App userland ([startSession]).
  *
  * Every process-model step runs on one worker thread; reaper threads only hand over to it.
  */
@@ -98,7 +106,10 @@ class SessionService : Service() {
     private var channel: ControlChannel? = null
     private var snapshots: Job? = null
     private var stopping = false
-    private val restarts = ArrayDeque<Long>()
+    /** How long the engine waits before it starts again after an unexpected end, or whether not at all. */
+    private val restartPolicy = RestartPolicy()
+    /** The engine's start after [RestartPolicy]'s wait, while it waits. */
+    private var restartJob: Job? = null
     /** Keeps the userland's resolv.conf on the default network's DNS servers. */
     private var dns: Dns? = null
     /** The install job running, or ending until the engine settles its outcome ([InstallProgress]). */
@@ -109,11 +120,14 @@ class SessionService : Service() {
     private var xScreenGiven = false
     /** The `seq` of the install start the game environment was started for, until it is refused or another starts. */
     private var installStart: Long? = null
+    /** The game environment runs because an install start started it, until it stops ([sendInstallStart]). */
+    private var installEnvironment = false
     /**
      * The `seq` of the last `LaunchGame` or `OpenOfficialLauncher` sent and when, until the engine
-     * shows the game or the session, or refuses it ([Play.launchBusy]).
+     * shows the game or the session, or refuses it ([Play.launchBusy]). Worker thread only: a
+     * snapshot that shows the launch clears it there, after the launch has set it.
      */
-    @Volatile private var launchSent: Pair<Long, Long>? = null
+    private var launchSent: Pair<Long, Long>? = null
     /** When the Game client began running ([InstallerDownloads.played]); the snapshot collection only. */
     private var gameRunningSince: Long? = null
 
@@ -136,7 +150,21 @@ class SessionService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        worker.execute { if (engine == null && !stopping) startSession() }
+        // The player's Try again: the failures so far no longer count, and it starts now.
+        if (intent?.action == ACTION_RETRY) {
+            worker.execute {
+                restartPolicy.reset()
+                restartJob?.cancel()
+            }
+        }
+        // Any intent starts a session that is not running, but not ahead of a restart's wait; one
+        // that starts it after the restarts gave up counts the failures afresh.
+        worker.execute {
+            if (engine == null && !stopping && restartJob?.isActive != true) {
+                restartPolicy.started()
+                startSession()
+            }
+        }
         when (intent?.action) {
             ACTION_GAME_START -> {
                 val size = intent.getStringExtra(EXTRA_X_SCREEN)?.let(::parseSize)
@@ -172,6 +200,7 @@ class SessionService : Service() {
             serviceLog.line("service stopped")
             serviceLog.close()
         }
+        stoppingWorker = worker
         worker.shutdown()
         super.onDestroy()
     }
@@ -184,12 +213,33 @@ class SessionService : Service() {
         }
     }
 
-    /** Unpacks the App userland if needed, then starts the engine. */
+    /**
+     * Waits for a service stopped just before this one ([awaitPreviousService]), ends every other
+     * process of the app's user ID ([endOtherProcesses]), puts the way to the App userland right
+     * ([UserlandInstaller.repairPlaces]), unpacks the app runtime if needed, makes the App
+     * userland's version current with its critical files as the APK has them ([ensureUserland]),
+     * then starts the engine; every engine start, a restart after an unexpected end too, goes
+     * through here. From the end of the others to the engine's start no other program runs, so
+     * none can change a checked file before the engine loads it.
+     */
     private fun startSession() {
         try {
-            ensureUserland()
+            awaitPreviousService()
+            endOtherProcesses()
+            // Before anything is unpacked through a link in place of `files`; the folders it took
+            // are made again.
+            val repaired = UserlandInstaller(paths.userlandRoot, OwnedProcesses) { log("userland: $it") }.repairPlaces()
+            if (repaired != null) paths.createFolders()
             ensureAppRuntime()
-            if (dns == null) dns = Dns(this, listOf(paths.resolvConf, paths.guestResolvConf), ::log).also { it.start() }
+            ensureUserland()
+            // Started once; on every later start the servers go in again: an unpack puts back the
+            // packed resolv.conf, which names none.
+            val known = dns
+            if (known != null) {
+                known.rewrite()
+            } else {
+                dns = Dns(this, listOf(paths.resolvConf, paths.guestResolvConf), ::log).also { it.start() }
+            }
             startEngine()
         } catch (error: Exception) {
             log("session start failed: $error")
@@ -207,34 +257,88 @@ class SessionService : Service() {
         }
     }
 
+    /**
+     * A service stopped just before this one stops its processes on its own worker ([onDestroy]),
+     * which this process's SIGKILL to the others does not reach: left running, it could start a
+     * program after this start's check, or end the new engine in its cleanup. This start waits for
+     * it, with a fresh status meanwhile, and fails when it has not finished within
+     * [PREVIOUS_STOP_TIMEOUT_MS].
+     */
+    private fun awaitPreviousService() {
+        val previous = stoppingWorker
+        if (previous == null || previous === worker || previous.isTerminated) return
+        log("waiting for the previous session to stop")
+        _status.value = SessionStatus()
+        if (!previous.awaitTermination(PREVIOUS_STOP_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+            throw IOException("the previous session did not stop within $PREVIOUS_STOP_TIMEOUT_MS ms")
+        }
+    }
+
+    /**
+     * SIGKILL to every other process of the app's user ID, before the userland is put right and
+     * checked: one left running (a guest that left its process group, a program a stop did not end)
+     * could change a checked file between the check and the engine's start. `kill(-1)` reaches them all at once,
+     * so none dodges it by forking, and spares the calling process: the app runs in this one
+     * process (the activity, this service and the documents provider; the manifest names no
+     * other). The session keeps nothing running here: the game environment needs a running engine,
+     * and the engine's exit ended what it started. Then whatever /proc still lists is killed again
+     * until none is left and every process the service started has been reaped, for at most
+     * [SWEEP_TIMEOUT_MS]: one still listed then fails the session start. One only not reaped yet
+     * is gone already, so it is logged and the start goes on; the installer does not switch
+     * `current` while the service counts it as running, which fails the start where a switch is
+     * needed ([UserlandInstaller.prepare]).
+     */
+    private fun endOtherProcesses() {
+        val scan = { UidCleanup.scan(File("/proc"), Os.getuid(), Os.getpid(), ::owner) }
+        scan().takeIf { it.isNotEmpty() }?.let { others ->
+            log("before the userland check: SIGKILL to every other process of the uid: ${others.joinToString { "${it.pid} ${it.name}" }}")
+        }
+        try {
+            Os.kill(-1, OsConstants.SIGKILL)
+        } catch (error: ErrnoException) {
+            // ESRCH: no other process to signal.
+            if (error.errno != OsConstants.ESRCH) log("SIGKILL to every other process: ${error.message}")
+        }
+        val left = UidCleanup(scan, ::sendSignal, ::log, now = SystemClock::elapsedRealtime)
+            .killAll(SWEEP_TIMEOUT_MS) { !OwnedProcesses.anyRunning() }
+        if (left.isNotEmpty()) {
+            val reason = "other processes of the app did not end: ${left.joinToString { "${it.pid} ${it.name}" }}"
+            setUserland(SessionStatus.Userland.Failed(reason))
+            throw IOException(reason)
+        }
+        if (OwnedProcesses.anyRunning()) log("/proc lists no other process of the uid, but the service has not seen every end yet")
+    }
+
+    /**
+     * The App userland's version from the APK, current and its critical files as the APK has them
+     * ([UserlandInstaller.prepare]: unpacked, or unpacked again, as needed); anything else fails
+     * the session start, and the engine does not start.
+     */
     private fun ensureUserland() {
-        setUserland(SessionStatus.Userland.Checking)
         val installer = UserlandInstaller(paths.userlandRoot, OwnedProcesses) { log("userland: $it") }
         val manifest = UserlandAssets.manifest(this)
-        if (installer.currentVersion() == manifest.version && installer.isComplete(manifest.version)) {
-            setUserland(SessionStatus.Userland.Ready(manifest.version))
-            return
-        }
+        // A restart's check stays out of sight while it finds the version as it was.
+        if (_status.value.userland != SessionStatus.Userland.Ready(manifest.version)) setUserland(SessionStatus.Userland.Checking)
         val started = SystemClock.elapsedRealtime()
         var shownPercent = -1L
-        // Shown as unpacking from the start (Play: "Updating game files…"), not once the first
-        // file is written after what an older version left has gone.
-        setUserland(SessionStatus.Userland.Unpacking(0, manifest.fileBytes))
-        val result = installer.install(manifest, { UserlandAssets.openTar(this) }) { done, total ->
-            // One screen update per percent.
-            val percent = if (total > 0) done * 100 / total else 0
-            if (percent != shownPercent) {
-                shownPercent = percent
-                setUserland(SessionStatus.Userland.Unpacking(done, total))
+        val result = try {
+            // Shown as unpacking from the start of each unpack (Play: "Updating game files…"), not
+            // once the first file is written after what an older version left has gone.
+            installer.prepare(manifest, { UserlandAssets.openTar(this) }) { done, total ->
+                // One screen update per percent.
+                val percent = if (total > 0) done * 100 / total else 0
+                if (percent != shownPercent) {
+                    shownPercent = percent
+                    setUserland(SessionStatus.Userland.Unpacking(done, total))
+                }
             }
+        } catch (error: Exception) {
+            log("userland ${manifest.version} not ready, so the engine does not start: $error")
+            setUserland(SessionStatus.Userland.Failed(error.message ?: error.toString()))
+            throw error
         }
-        log("userland ${result.outcome} ${result.version} in ${SystemClock.elapsedRealtime() - started} ms ${result.detail}".trim())
-        val current = installer.currentVersion()
-        if (current == null) {
-            setUserland(SessionStatus.Userland.Failed(result.detail.ifEmpty { result.outcome.toString() }))
-            throw IOException("no App userland is current")
-        }
-        setUserland(SessionStatus.Userland.Ready(current))
+        if (result != null) log("userland ${result.outcome} ${result.version} in ${SystemClock.elapsedRealtime() - started} ms")
+        setUserland(SessionStatus.Userland.Ready(manifest.version))
     }
 
     /**
@@ -351,7 +455,10 @@ class SessionService : Service() {
             stopGameEnvironment()
         }
         if (error.seq == installStart) installStart = null
-        if (error.seq == launchSent?.first) launchSent = null
+        if (error.seq == launchSent?.first) {
+            launchSent = null
+            launchRequested(null)
+        }
     }
 
     private fun startEngine() {
@@ -378,30 +485,42 @@ class SessionService : Service() {
 
         val connection = ControlChannel.overSocket(pair.app) { error -> post { onCommandError(error) } }
         channel = connection
-        val socket = pair.app.fileDescriptor
         try {
-            Os.setsockoptTimeval(socket, OsConstants.SOL_SOCKET, OsConstants.SO_RCVTIMEO, StructTimeval.fromMillis(HANDSHAKE_TIMEOUT_MS))
-            val welcome = connection.handshake(appVersion(), HostFacts.collect(this))
-            Os.setsockoptTimeval(socket, OsConstants.SOL_SOCKET, OsConstants.SO_RCVTIMEO, StructTimeval.fromMillis(0))
+            val welcome = connection.handshake(appVersion(), HostFacts.collect(this), HANDSHAKE_TIMEOUT_MS)
             log("engine pid ${process.pid} welcome: protocol ${welcome.protocol}, launcher ${welcome.launcherVersion}")
             // Only an engine that answered proves the userland works; every older version goes now.
             UserlandInstaller(paths.userlandRoot, OwnedProcesses) { log("userland: $it") }.markStarted()
         } catch (error: Exception) {
-            // The engine exits without a valid hello; its exit runs the cleanup.
-            log("engine pid ${process.pid} handshake failed: $error")
+            // An engine that hangs before its welcome would never exit by itself: it and what it
+            // started go, and its exit runs the cleanup and the restart (or gives up).
+            log("engine pid ${process.pid} handshake failed: $error; SIGKILL to its process group")
             connection.close()
+            killProcessGroup(process.pid)
+            _status.update { it.copy(engine = SessionStatus.Engine.RESTARTING) }
             return
         }
+        restartPolicy.connected(SystemClock.elapsedRealtime())
         _status.update { it.copy(engine = SessionStatus.Engine.CONNECTED) }
+        // The reader closes the channel on the engine's end or on a message it cannot decode.
+        scope.launch {
+            connection.state.first { it is ControlChannel.State.Closed }
+            post { onChannelClosed(connection, process) }
+        }
         snapshots?.cancel()
         snapshots = scope.launch {
             connection.snapshot.filterNotNull().collect { message ->
-                log("engine snapshot ${summary(message)}")
                 val next = message.snapshot
                 val now = SystemClock.elapsedRealtime()
+                // A channel that has closed no longer speaks for the engine: a snapshot it delivers
+                // late would put back what the engine's exit cleared. Checked in the same update
+                // that the exit's own follows (it closes the channel first).
+                var stale = false
                 val before = _status.getAndUpdate {
-                    it.copy(snapshotSeq = message.seq, snapshot = next, updateRecheck = Play.recheck(it.updateRecheck, it.snapshot, next))
+                    stale = connection.state.value !is ControlChannel.State.Connected
+                    if (stale) it else it.copy(snapshotSeq = message.seq, snapshot = next, updateRecheck = Play.recheck(it.updateRecheck, it.snapshot, next))
                 }
+                if (stale) return@collect
+                log("engine snapshot ${summary(message)}")
                 val previous = before.snapshot
                 // The engine's check after a finished update shows as Checking at once; were that
                 // snapshot missed (and the check found Available), Play waits at most this long.
@@ -424,8 +543,16 @@ class SessionService : Service() {
                 AppRuntime.sweep(previous, next)?.let { sweep -> post { keepRuntimeArchives(sweep) } }
                 // Diablo II and Lord of Destruction are in, or their install failed: the held keys are done with.
                 if (HeldKeys.spent(previous, next)) heldKeys.clear()
-                // The launch sent has shown: Play and the official PD2 launcher take presses again.
-                if (next.game == Game.RUNNING || next.activeJob == com.pd2launcher.app.control.Job.OFFICIAL_LAUNCHER) launchSent = null
+                // The launch sent has shown: Play and the official PD2 launcher take presses again, and
+                // the running game or session holds the game folder from here (GameFilesProvider).
+                // On the worker: a snapshot quicker than the launch's own return would otherwise be
+                // cleared first and the launch's seq set after it, holding the buttons back.
+                if (next.game == Game.RUNNING || next.activeJob == com.pd2launcher.app.control.Job.OFFICIAL_LAUNCHER) {
+                    post {
+                        launchSent = null
+                        launchRequested(null)
+                    }
+                }
                 if (Play.gameStarted(previous?.game, next.game)) gameRunningSince = now
                 // The Game client exited: the game environment goes with it.
                 if (Play.gameEnded(previous?.game, next.game)) {
@@ -464,6 +591,28 @@ class SessionService : Service() {
         engine = null
     }
 
+    /**
+     * [connection] closed while [process] still counts as the engine and the service did not close
+     * it (that closes or forgets the channel first): no command reaches the engine any more, so
+     * the screens stop showing it as connected at once, and an engine that does not exit by
+     * itself within [ENGINE_STOP_TIMEOUT_MS] goes with its process group; its exit then runs the
+     * cleanup and the restart as any other.
+     */
+    private fun onChannelClosed(connection: ControlChannel, process: OwnedProcess) {
+        if (stopping || channel !== connection || engine?.pid != process.pid) return
+        val cause = (connection.state.value as? ControlChannel.State.Closed)?.cause
+        log("the Control channel closed (${cause ?: "the engine ended it"}); engine pid ${process.pid} has $ENGINE_STOP_TIMEOUT_MS ms to exit")
+        _status.update { it.copy(engine = SessionStatus.Engine.RESTARTING, snapshotSeq = null, snapshot = null) }
+        scope.launch {
+            delay(ENGINE_STOP_TIMEOUT_MS)
+            post {
+                if (engine?.pid != process.pid) return@post
+                log("engine pid ${process.pid} did not exit after its channel closed; SIGKILL to its process group")
+                killProcessGroup(process.pid)
+            }
+        }
+    }
+
     private fun onEngineExit(process: OwnedProcess, status: ExitStatus) {
         if (engine?.pid != process.pid) return
         engine = null
@@ -471,6 +620,7 @@ class SessionService : Service() {
         channel?.close()
         channel = null
         if (stopping) return
+        val ended = SystemClock.elapsedRealtime()
         log("engine pid ${process.pid} ended unexpectedly (${ProcessStarter.describe(status)}); cleaning up before a restart")
         _status.update { it.copy(engine = SessionStatus.Engine.RESTARTING, snapshotSeq = null, snapshot = null) }
         // Awake for the cleanup: with the screen off the device suspends between polls, and the
@@ -479,35 +629,28 @@ class SessionService : Service() {
         wakeLock.acquire(CLEANUP_WAKE_MS)
         try {
             wineserverKill()
-            UidCleanup(
-                list = { UidCleanup.scan(File("/proc"), Os.getuid(), Os.getpid(), ::owner) },
-                signal = ::sendSignal,
-                log = ::log,
-                now = SystemClock::elapsedRealtime,
-            ).run()
+            uidCleanup()
         } finally {
             if (wakeLock.isHeld) wakeLock.release()
         }
         game.forget()
         xScreen = null
         installStart = null
+        installEnvironment = false
         launchSent = null
-        _status.update { it.copy(gameEnvironment = false, refusal = null, updateRecheck = null) }
+        _status.update { it.copy(gameEnvironment = false, refusal = null, updateRecheck = null, launchRequestedAt = null) }
 
-        val now = SystemClock.elapsedRealtime()
-        while (restarts.isNotEmpty() && now - restarts.first() > RESTART_WINDOW_MS) restarts.removeFirst()
-        if (restarts.size >= MAX_RESTARTS) {
-            log("engine ended ${restarts.size + 1} times within ${RESTART_WINDOW_MS / 1000} s; not restarting")
+        val wait = restartPolicy.failed(ended)
+        if (wait == null) {
+            log("engine ended ${RestartPolicy.MAX_FAILURES + 1} times in a row; not restarting until the player tries again")
             _status.update { it.copy(engine = SessionStatus.Engine.FAILED) }
             return
         }
-        restarts.addLast(now)
-        log("restarting the engine")
-        try {
-            startEngine()
-        } catch (error: Exception) {
-            log("engine restart failed: $error")
-            _status.update { it.copy(engine = SessionStatus.Engine.FAILED) }
+        log("restarting the engine in ${wait / 1000} s")
+        restartJob = scope.launch {
+            delay(wait)
+            // The whole session start: the userland's critical files are checked again first.
+            post { if (engine == null && !stopping) startSession() }
         }
     }
 
@@ -515,7 +658,12 @@ class SessionService : Service() {
      * `wineserver -k` for the Managed prefix: the engine binary's `--stop-wine` runs Wine-GE's
      * wineserver through App-provided FEX with the game's Wine environment, as the engine runs
      * its guests, so it works whether or not an engine is running. Waits at most
-     * [WINESERVER_TIMEOUT_MS].
+     * [WINESERVER_TIMEOUT_MS]; after that, what it started goes (its process group), and so does
+     * every other process of the app's user ID but the engine ([uidCleanup]): the wineserver and
+     * the Wine processes it failed to end would outlive it otherwise. It starts from the App
+     * userland as it is, without a check of its own: Wine's processes still run then, so a check
+     * could not keep them from changing a file before the start. It never gets the CD keys, and
+     * whatever it leaves running ends before the next engine start's check ([endOtherProcesses]).
      */
     private fun wineserverKill() {
         val enginePath = File(applicationInfo.nativeLibraryDir, ENGINE_LIBRARY)
@@ -525,12 +673,26 @@ class SessionService : Service() {
                 "stop-wine", loader, listOf(loader, enginePath.path, "--stop-wine"), paths.engineEnvironment(mali = gpu is MaliGpu),
             )
             if (!awaitExit(process, WINESERVER_TIMEOUT_MS)) {
-                log("wineserver -k did not finish within $WINESERVER_TIMEOUT_MS ms; SIGKILL")
-                sendSignal(process.pid, UidCleanup.SIGKILL)
+                log("wineserver -k did not finish within $WINESERVER_TIMEOUT_MS ms; SIGKILL to its process group, then the uid's others")
+                killProcessGroup(process.pid)
+                uidCleanup(except = engine?.pid)
             }
         } catch (error: IOException) {
             log("wineserver -k failed to start: ${error.message}")
         }
+    }
+
+    /**
+     * Ends every other process of the app's user ID but [except] ([UidCleanup]: SIGTERM, then
+     * SIGKILL after its grace).
+     */
+    private fun uidCleanup(except: Int? = null) {
+        UidCleanup(
+            list = { UidCleanup.scan(File("/proc"), Os.getuid(), Os.getpid(), ::owner).filter { it.pid != except } },
+            signal = ::sendSignal,
+            log = ::log,
+            now = SystemClock::elapsedRealtime,
+        ).run()
     }
 
     /**
@@ -606,6 +768,7 @@ class SessionService : Service() {
      */
     private fun play() {
         if (launchBusy("Play")) return
+        launchRequested(SystemClock.elapsedRealtime())
         val settings = AppSettingsStore.load(this)
         if (game.running && !xScreenGiven) {
             val wanted = landscapeSize()
@@ -617,6 +780,7 @@ class SessionService : Service() {
         if (!game.running) startGameEnvironment(null)
         val (width, height) = xScreen?.takeIf { game.running } ?: run {
             log("game not launched: the game environment is not running")
+            launchRequested(null)
             return
         }
         linkSaves()
@@ -627,6 +791,17 @@ class SessionService : Service() {
                 GraphicsProfiles.forPlay(settings.graphicsProfile, gpu),
             ),
         )?.let { it to SystemClock.elapsedRealtime() }
+        // The engine prepares the game's files once it has the command: the wait counts from the
+        // send, and a command not sent holds nothing.
+        launchRequested(launchSent?.second)
+    }
+
+    /**
+     * The status's [SessionStatus.launchRequestedAt]: set from a launch request until its game or
+     * session shows, it is refused, it is not sent or the engine ends.
+     */
+    private fun launchRequested(at: Long?) {
+        _status.update { it.copy(launchRequestedAt = at) }
     }
 
     /**
@@ -638,6 +813,7 @@ class SessionService : Service() {
      */
     private fun officialLauncher() {
         if (launchBusy("official launcher")) return
+        launchRequested(SystemClock.elapsedRealtime())
         val (width, height) = GameResolution.display(this)
         val wanted = GameResolution.forLauncher(width, height, AppSettingsStore.load(this).launcherResolution)
         if (game.running && xScreen != wanted) {
@@ -648,11 +824,19 @@ class SessionService : Service() {
         if (started) startGameEnvironment(wanted, given = false)
         if (!game.running) {
             log("official launcher not opened: the game environment is not running")
+            launchRequested(null)
             return
         }
         val seq = sendCommand(Command.OpenOfficialLauncher)
+        if (seq == null && started) {
+            log("official launcher not sent; stopping the game environment started for it")
+            stopGameEnvironment()
+            launchRequested(null)
+            return
+        }
         installStart = seq?.takeIf { started }
         launchSent = seq?.let { it to SystemClock.elapsedRealtime() }
+        launchRequested(launchSent?.second)
     }
 
     /**
@@ -701,7 +885,9 @@ class SessionService : Service() {
     /**
      * Install runs Wine with the game environment's X screen and sound: the game environment
      * first, then [send]; nothing is sent without it. When the game environment was started for
-     * it, a refusal of the sent command stops it again.
+     * an install ([installEnvironment]: this one, or the Diablo II install that Install Project
+     * Diablo 2 continues), a command that could not be sent, or one the engine refuses, stops it
+     * again: nothing would run in it.
      */
     private fun sendInstallStart(send: () -> Long?): Boolean {
         val started = !game.running
@@ -710,7 +896,14 @@ class SessionService : Service() {
             log("install not sent: the game environment is not running")
             return false
         }
-        installStart = send()?.takeIf { started }
+        if (started) installEnvironment = true
+        val seq = send()
+        if (seq == null && installEnvironment) {
+            log("install not sent; stopping the game environment started for it")
+            stopGameEnvironment()
+            return false
+        }
+        installStart = seq?.takeIf { installEnvironment }
         return true
     }
 
@@ -748,6 +941,7 @@ class SessionService : Service() {
         game.stop()
         xScreen = null
         xScreenGiven = false
+        installEnvironment = false
         _status.update { it.copy(gameEnvironment = false) }
         log("game environment stopped")
     }
@@ -789,7 +983,7 @@ class SessionService : Service() {
     /** The game environment's X display, PulseAudio socket and gamepad file, for the guests the engine starts. */
     private fun gameSessionEnvironment(): List<String> = listOf(
         "DISPLAY=${GameEnvironment.DISPLAY}",
-        "PULSE_SERVER=unix:${File(paths.runtimeDir, "pulse/native").path}",
+        "PULSE_SERVER=unix:${paths.pulseSocket.path}",
         "PD2_GAMEPAD_FILE=${GameEnvironment.gamepadFile(paths).path}",
     )
 
@@ -797,6 +991,18 @@ class SessionService : Service() {
         Os.stat(file.path).st_uid
     } catch (_: ErrnoException) {
         null
+    }
+
+    /**
+     * SIGKILL to the process group of [pid]: every program the service starts leads a session of
+     * its own (the spawner's setsid), so this reaches what it started that stayed in its group.
+     */
+    private fun killProcessGroup(pid: Int) {
+        try {
+            Os.kill(-pid, OsConstants.SIGKILL)
+        } catch (error: ErrnoException) {
+            log("SIGKILL to process group $pid: ${error.message}")
+        }
     }
 
     /** Whether [process] ended within [timeoutMs]. */
@@ -848,6 +1054,8 @@ class SessionService : Service() {
         private const val ENGINE_TAG = "pd2-engine"
         private const val ENGINE_LINE = "pd2-launcher:"
         const val ACTION_START = "com.pd2launcher.app.action.START"
+        /** Try again after the engine or the userland failed: a fresh start, its failures forgotten ([RestartPolicy]). */
+        const val ACTION_RETRY = "com.pd2launcher.app.action.RETRY"
         const val ACTION_GAME_START = "com.pd2launcher.app.action.GAME_ENVIRONMENT_START"
         const val ACTION_GAME_STOP = "com.pd2launcher.app.action.GAME_ENVIRONMENT_STOP"
         /** Step 5, Play: the game environment, then the Game client. */
@@ -875,8 +1083,10 @@ class SessionService : Service() {
         private const val WINESERVER_TIMEOUT_MS = 10_000L
         private const val REMOVE_DOWNLOADS_TIMEOUT_MS = 120_000L
         private const val CLEANUP_WAKE_MS = 30_000L
-        private const val RESTART_WINDOW_MS = 60_000L
-        private const val MAX_RESTARTS = 3
+        /** The longest [endOtherProcesses] waits for the other processes of the uid to go. */
+        private const val SWEEP_TIMEOUT_MS = 10_000L
+        /** The longest a session start waits for the service stopped before it to stop its processes ([awaitPreviousService]). */
+        private const val PREVIOUS_STOP_TIMEOUT_MS = 40_000L
         /** The longest Play waits for the check after a finished update to show ([Play.Recheck.WAITING]). */
         private const val RECHECK_WAIT_MS = 30_000L
 
@@ -895,6 +1105,9 @@ class SessionService : Service() {
 
         /** The running service, for [authorize]: keys never travel in an Intent. */
         @Volatile private var running: SessionService? = null
+
+        /** The worker of the service that stopped last, which may still be stopping its processes ([onDestroy]). */
+        @Volatile private var stoppingWorker: ExecutorService? = null
 
         /** The CD keys entered in this process, for Resume after a stop ([HeldKeys]). */
         private val heldKeys = HeldKeys()

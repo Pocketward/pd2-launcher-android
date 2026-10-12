@@ -15,8 +15,19 @@ import java.nio.ByteOrder
  * ([ncolors] entries of 12 bytes), then the pixels.
  */
 data class XwdHeader(val width: Int, val height: Int, val bitsPerPixel: Int, val bytesPerLine: Int, val pixelOffset: Long) {
+    /**
+     * A 32-bit screen of sizes the copy can take: each side 1 to [MAX_SIDE], lines at least as long
+     * as the width's pixels (counted in 64 bits) and whole pixels long. The header is in memory a
+     * guest can write; frame_copy.c checks the same.
+     */
+    val plausible: Boolean
+        get() = bitsPerPixel == 32 && width in 1..MAX_SIDE && height in 1..MAX_SIDE &&
+            bytesPerLine > 0 && bytesPerLine % 4 == 0 && bytesPerLine.toLong() >= width * 4L
+
     companion object {
         const val SIZE = 100
+        /** The largest X screen side taken (frame_copy.c's MAX_SIDE). */
+        const val MAX_SIDE = 16384
         private const val FILE_VERSION = 7
         private const val COLOR_SIZE = 12
 
@@ -42,8 +53,8 @@ data class XwdHeader(val width: Int, val height: Int, val bitsPerPixel: Int, val
 
 /**
  * Copies the X screen into a Surface on each display frame it changed in (libframecopy.so):
- * on Android 10+ into a child layer of the Surface set by transactions, not through the Surface's
- * buffer queue, which some devices pace to 30 frames a second. While it runs it paces the
+ * into a child layer of the Surface set by transactions, not through the Surface's buffer
+ * queue, which some devices pace to 30 frames a second. While it runs it paces the
  * game's presents to the frames it takes (Mesa patch 0003, [PresentCounter]). The copy
  * thread logs, under the logcat tag `pd2-gameview` every 5 s, the game's presents per second
  * (from the present counter), its own checks (one a display frame), the frames whose content
@@ -128,7 +139,7 @@ class FrameCopy private constructor(private var handle: Long) {
 /**
  * The frame rate the Game view asks the display for: the panel's full rate, or [CAP] when the
  * player limits it (Settings, Game) on a faster screen. The vote
- * (`ASurfaceTransaction_setFrameRate`, Android 11+) lets a 90 or 120 Hz phone leave 60 Hz, where
+ * (`ASurfaceTransaction_setFrameRate`) lets a 90 or 120 Hz phone leave 60 Hz, where
  * the display's own heuristic would keep a layer that posts 60 times a second.
  */
 object FrameRateVote {

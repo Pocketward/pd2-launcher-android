@@ -15,13 +15,17 @@ import kotlin.math.hypot
  *
  * The pointer moves to every finger that goes down, so the game sees hover first, as from a
  * mouse. Diablo II takes a press as aimed at what was under the pointer a frame or two before,
- * so a click comes at least [HOVER_MS] after the pointer got there: a quicker tap's click goes
- * to [later] with the time still to wait.
+ * so a click comes at least [HOVER_MS] after the pointer got there: a quicker tap's click waits
+ * out the rest ([later] calls back then). A new finger sends a click still waiting at once,
+ * before the pointer moves to it: one left to come after would move the pointer back to the old
+ * place in the middle of the new gesture, and one dropped would lose a fast double tap's first
+ * click. A cancel drops it ([dropLater]): no click reaches the game after an overlay took it.
  */
 class TouchGestures(
     private val slop: Float,
     private val emit: (List<RelayEvent>) -> Unit,
-    private val later: (delayMs: Long, events: List<RelayEvent>) -> Unit = { _, events -> emit(events) },
+    private val later: (delayMs: Long, send: () -> Unit) -> Unit = { _, send -> send() },
+    private val dropLater: () -> Unit = {},
 ) {
     private enum class Phase { IDLE, PENDING, DRAG, TWO_FINGERS, DONE }
 
@@ -30,9 +34,12 @@ class TouchGestures(
     private var startY = 0
     private var startTime = 0L
     private var secondTime = 0L
+    /** A tap's click waiting for the hover time ([later]). */
+    private var waiting: List<RelayEvent>? = null
 
     /** The first finger went down. */
     fun down(x: Int, y: Int, timeMs: Long) {
+        sendWaiting()
         cancel()
         phase = Phase.PENDING
         startX = x
@@ -85,15 +92,38 @@ class TouchGestures(
         phase = Phase.IDLE
     }
 
-    /** The gesture was taken away (`ACTION_CANCEL`): a held button is released. */
+    /**
+     * The first finger went up while another is still down: a drag ends there, since the view
+     * follows only the first finger and the button would stay down until the last one lifts; a
+     * two-finger tap still waits for the last finger.
+     */
+    fun primaryUp(timeMs: Long) {
+        if (phase != Phase.TWO_FINGERS) up(timeMs)
+    }
+
+    /** The gesture was taken away (`ACTION_CANCEL`): a held button is released, a click still to come dropped. */
     fun cancel() {
+        waiting = null
+        dropLater()
         if (phase == Phase.DRAG) emit(listOf(RelayEvent.Button(RelayEvent.LEFT, false)))
         phase = Phase.IDLE
     }
 
     private fun clickAfterHover(button: Int, timeMs: Long) {
         val wait = HOVER_MS - (timeMs - startTime)
-        if (wait > 0) later(wait, click(button)) else emit(click(button))
+        if (wait <= 0) {
+            emit(click(button))
+            return
+        }
+        waiting = click(button)
+        later(wait, ::sendWaiting)
+    }
+
+    /** The click still waiting, if any, now. */
+    private fun sendWaiting() {
+        val events = waiting ?: return
+        waiting = null
+        emit(events)
     }
 
     private fun moved(x: Int, y: Int) = hypot((x - startX).toFloat(), (y - startY).toFloat()) > slop

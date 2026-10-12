@@ -7,7 +7,6 @@ import android.content.Intent
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
-import android.os.Build
 import android.text.Editable
 import android.text.InputFilter
 import android.text.InputType
@@ -59,10 +58,12 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.SecureFlagPolicy
 import com.pd2launcher.app.BuildConfig
+import com.pd2launcher.app.DebugKeys
 import com.pd2launcher.app.R
 import com.pd2launcher.app.control.isProductKeyChar
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
+import java.nio.CharBuffer
 import java.util.WeakHashMap
 
 /**
@@ -109,21 +110,9 @@ fun KeysScreen(
     val activity = LocalContext.current as Activity
     // The fields hold the keys; Compose state holds only whether both look like keys.
     val fields = remember { arrayOfNulls<EditText>(2) }
+    if (!layoutPreview) KeepSecure()
     DisposableEffect(Unit) {
-        val window = activity.window
-        val secure = if (layoutPreview) null else secureKeyPages.getOrPut(window) { SecureWhileShown() }
-        if (secure != null) {
-            secure.show()
-            window.setSecure(true)
-        }
-        onDispose {
-            fields.forEach { it?.takeKey()?.fill('\u0000') }
-            // Off only once the screen that follows is on display, so a screenshot just after
-            // Agree and install cannot catch the key page's last frame.
-            secure?.hide()?.let { mayClear ->
-                window.decorView.afterNextFrame { if (mayClear()) window.setSecure(false) }
-            }
-        }
+        onDispose { fields.forEach { it?.takeKey()?.fill('\u0000') } }
     }
     val valid = remember { BooleanArray(2) }
     var ready by remember { mutableStateOf(false) }
@@ -218,8 +207,12 @@ fun KeysScreen(
                             if (layoutPreview) {
                                 field.isEnabled = typingPreview
                             } else if (BuildConfig.DEBUG) {
-                                // Debug builds for device tests carry the developer's keys; release never does.
-                                field.setText(if (index == 0) BuildConfig.DEBUG_D2_KEY else BuildConfig.DEBUG_LOD_KEY)
+                                // Debug builds pre-fill the keys a developer pushed
+                                // ([DebugKeys]); no APK carries any.
+                                DebugKeys.read(context.filesDir)?.let { keys ->
+                                    field.setText(CharBuffer.wrap(keys[index]))
+                                    keys.forEach { it.fill('\u0000') }
+                                }
                             }
                             field
                         },
@@ -295,6 +288,27 @@ class SecureWhileShown {
 private val secureKeyPages = WeakHashMap<Window, SecureWhileShown>()
 
 /**
+ * `FLAG_SECURE` on the activity's window while this is composed, out of screenshots and the
+ * recents thumbnail: the key page, and the Install screen's view of the installer windows, where
+ * Blizzard's installer may show a key. It comes off only once the screen that follows is on
+ * display ([SecureWhileShown]), so a screenshot just after Agree and install cannot catch the key
+ * page's last frame.
+ */
+@Composable
+fun KeepSecure() {
+    val window = (LocalContext.current as Activity).window
+    DisposableEffect(window) {
+        val secure = secureKeyPages.getOrPut(window) { SecureWhileShown() }
+        secure.show()
+        window.setSecure(true)
+        onDispose {
+            val mayClear = secure.hide()
+            window.decorView.afterNextFrame { if (mayClear()) window.setSecure(false) }
+        }
+    }
+}
+
+/**
  * Turns `FLAG_SECURE` on or off through the window's attributes, never Window.addFlags or
  * setFlags: some vendors' Android builds drop FLAG_SECURE in both (addFlags returns for it,
  * setFlags masks it out), which would let the key page be captured.
@@ -312,12 +326,8 @@ fun secureFlags(flags: Int, on: Boolean): Int =
  * and one frame more, so that frame is what shows when it runs.
  */
 private fun View.afterNextFrame(block: () -> Unit) {
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-        viewTreeObserver.registerFrameCommitCallback { Choreographer.getInstance().postFrameCallback { block() } }
-        invalidate()
-    } else {
-        postDelayed(block, 250)
-    }
+    viewTreeObserver.registerFrameCommitCallback { Choreographer.getInstance().postFrameCallback { block() } }
+    invalidate()
 }
 
 /**

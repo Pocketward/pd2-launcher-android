@@ -22,6 +22,8 @@
 # PD2_ENGINE_SOURCE=<folder> builds a local checkout of the Launcher instead, for working on the
 # engine: its committed HEAD, since the container build refuses uncommitted changes.
 # PD2_ENGINE_LOCK names another pin file. $cache is PD2_ANDROID_CACHE or ~/.cache/pd2-android.
+# PD2_ENGINE_UNRELEASED=1 accepts a pin of a release that is still a draft, without its tag:
+# the sources are fetched by the pinned commit, and --pin takes the commit the draft targets.
 set -euo pipefail
 # Never wait for a password prompt.
 export GIT_TERMINAL_PROMPT=0
@@ -47,12 +49,11 @@ tag="$(pinned tag)"
 commit="$(pinned commit)"
 asset="$(pinned asset)"
 sha256="$(pinned sha256)"
+repository="$(sed -E 's#^https://github\.com/##; s#\.git$##' <<<"$url")"
 
 # Downloads one file of a release of the pinned repository into a folder: anonymously (a public
 # repository), else through the GitHub CLI (a private one).
 download() { # release-tag file folder
-    local repository
-    repository="$(sed -E 's#^https://github\.com/##; s#\.git$##' <<<"$url")"
     curl -fsSL --retry 3 -o "$3/$2" "${url%.git}/releases/download/$1/$2" 2>/dev/null && return
     rm -f "$3/$2"
     command -v gh >/dev/null &&
@@ -67,6 +68,13 @@ if [[ "$mode" == pin ]]; then
     # An annotated tag's peeled line (^{}) names its commit; a lightweight tag names it directly.
     found="$(awk -v t="refs/tags/$pin_tag^{}" '$2 == t { print $1 }' <<<"$refs")"
     [[ -n "$found" ]] || found="$(awk -v t="refs/tags/$pin_tag" '$2 == t { print $1 }' <<<"$refs")"
+    # A draft release has no tag yet: the commit it targets, which the GitHub CLI shows its writers.
+    if [[ -z "$found" && -n "${PD2_ENGINE_UNRELEASED:-}" ]]; then
+        found="$(gh release view "$pin_tag" --repo "$repository" --json targetCommitish --jq .targetCommitish)" ||
+            die "$url has no tag $pin_tag, and the GitHub CLI finds no draft release $pin_tag there"
+        [[ "$found" =~ ^[0-9a-f]{40}$ ]] ||
+            die "the draft release $pin_tag of $url targets ${found:-nothing}, not a commit (gh release create --target <commit>)"
+    fi
     [[ "$found" =~ ^[0-9a-f]{40}$ ]] || die "$url has no tag $pin_tag"
     # The release's ARM64 executable: its SHA-256 is computed from the download and must match
     # the release's own .sha256 file.
@@ -144,11 +152,18 @@ or build from a local checkout of the PD2 Launcher with PD2_ENGINE_SOURCE=<folde
         "$(git -C "$src" rev-parse -q --verify HEAD 2>/dev/null)" != "$commit" ||
         -n "$(git -C "$src" status --porcelain --untracked-files=all)" ]]; then
         echo "fetching the engine: $url $tag" >&2
-        git -C "$src" fetch -q --force --no-tags "$url" "refs/tags/$tag:refs/tags/$tag" ||
+        if git -C "$src" fetch -q --force --no-tags "$url" "refs/tags/$tag:refs/tags/$tag"; then
+            local named
+            named="$(git -C "$src" rev-parse "refs/tags/$tag^{commit}")"
+            [[ "$named" == "$commit" ]] || die "tag $tag of $url names $named, not the pinned $commit"
+        elif [[ -n "${PD2_ENGINE_UNRELEASED:-}" ]]; then
+            # A draft release has no tag yet: its commit, by its SHA.
+            echo "fetching the engine: $url has no tag $tag, so the pinned commit $commit" >&2
+            git -C "$src" fetch -q --force --no-tags "$url" "$commit" ||
+                die "cannot fetch commit $commit from $url"
+        else
             die "cannot fetch tag $tag from $url"
-        local named
-        named="$(git -C "$src" rev-parse "refs/tags/$tag^{commit}")"
-        [[ "$named" == "$commit" ]] || die "tag $tag of $url names $named, not the pinned $commit"
+        fi
         git -C "$src" checkout -q --detach --force "$commit"
         git -C "$src" clean -q -ffdx
     fi

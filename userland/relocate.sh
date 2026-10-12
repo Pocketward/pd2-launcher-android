@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Makes the staging tree runnable at the fixed prefix $USERLAND (config.sh), in place:
+# Makes the staging tree runnable at the prefix $USERLAND (config.sh, below the placeholder data
+# folder the app rewrites to its own), in place:
 #   - drops documentation (all of usr/share/doc) and translations
 #   - absolute symlinks become relative; hard links become separate files (SELinux forbids
 #     hard links in app storage); setuid/setgid bits are cleared
@@ -101,7 +102,7 @@ find "$root/usr/share/ca-certificates/mozilla" -name '*.crt' -print0 | sort -z \
     | xargs -0 cat > "$root/etc/ssl/certs/ca-certificates.crt"
 drop_ldpath=()
 [[ "${PD2_USERLAND_WITH_GLIBC:-0}" == 1 ]] && drop_ldpath=(-e '/^LD_LIBRARY_PATH=/d')
-sed -e "s|@USERLAND@|$USERLAND|g" -e "s|@DATA@|$DATA_DIR|g" -e "s|@DISPLAY@|$X_DISPLAY|g" "${drop_ldpath[@]}" \
+sed -e "s|@USERLAND@|$USERLAND|g" -e "s|@DATA@|$DATA_PLACEHOLDER|g" "${drop_ldpath[@]}" \
     "$here/userland.env.in" > "$root/etc/userland.env"
 
 echo "relocated: $(find "$root" -type f | wc -l) files, $(find "$root" -type l | wc -l) symlinks, $(du -sh "$root" | cut -f1)"

@@ -14,18 +14,16 @@
     <string name="device_checking_title">Checking this device…</string>
     <string name="device_checking_body">Nothing is unpacked until the check passes.</string>
     <string name="not_supported_title">This device is not supported</string>
-    <string name="not_supported_body">PD2 Launcher needs an Adreno 6xx, 7xx or 8xx or a Mali-G310, G610, G615, G715, G720 or G725 GPU, Android 11 or later and 4 KB memory pages.</string>
+    <string name="not_supported_body">PD2 Launcher needs an Adreno 6xx, 7xx or 8xx or a Mali-G310, G610, G615, G715, G720 or G725 GPU, Android 13 or later and 4 KB memory pages.</string>
     <string name="not_supported_close">Close</string>
     <string name="device_check_failed">The device check could not run: %1$s</string>
     <string name="device_gpu_not_supported">%1$s is not supported. An Adreno 6xx, 7xx or 8xx or a Mali-G310, G610, G615, G715, G720 or G725 GPU is needed.</string>
     <string name="device_gpu_unknown_to_driver">%1$s is not known to the bundled graphics driver. PD2 may not start on it.</string>
     <string name="device_gpu_unknown">This GPU is not supported. An Adreno 6xx, 7xx or 8xx or a Mali-G310, G610, G615, G715, G720 or G725 GPU is needed.</string>
     <string name="device_page_size">Memory pages are %1$d bytes. 4096 is needed.</string>
-    <string name="device_android_too_old">Android SDK %1$d is too old. Android 11 or later is needed.</string>
-    <string name="device_not_primary_user">Only the device\'s main user can run PD2 Launcher.</string>
+    <string name="device_data_folder">Android keeps this app\'s files in a folder PD2 Launcher cannot use.</string>
     <string name="device_no_space">%1$d MB free, %2$d MB needed to unpack.</string>
-    <string name="device_kernel_untested">Kernel %1$s is older than 5.15. This device is untested.</string>
-    <!-- Check's device row: no kernel here; only its untested warning names it. -->
+    <!-- Check's device row: the GPU and the Android version, no kernel. -->
     <string name="device_summary">%1$s graphics · Android %2$s</string>
     <string name="device_summary_android">Android %1$s</string>
 
@@ -52,7 +50,7 @@
     <string name="host_after_unpack">Waits for the game support files.</string>
     <string name="host_engine_starting">Starting the check…</string>
     <string name="host_engine_restarting">Restarting the check…</string>
-    <string name="host_engine_failed">Part of PD2 Launcher stopped. Close and reopen PD2 Launcher.</string>
+    <string name="host_engine_failed">Part of PD2 Launcher stopped. Try again; if it keeps stopping, close and reopen PD2 Launcher.</string>
     <string name="host_checking">Checking your device…</string>
     <string name="host_supported">Yes</string>
     <string name="host_missing">Missing:</string>
@@ -64,6 +62,7 @@
     <string name="action_check_again">Check again</string>
     <string name="hint_missing">Continue needs every check to pass.</string>
     <string name="hint_wait_for_check">Continue is offered once the check is done.</string>
+    <string name="hint_try_again">Try again starts it once more.</string>
     <string name="hint_continue_to_download">Next: choose where Diablo II comes from.</string>
 
     <!-- Step 3: Download. -->

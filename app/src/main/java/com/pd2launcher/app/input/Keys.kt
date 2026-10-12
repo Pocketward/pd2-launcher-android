@@ -129,4 +129,18 @@ object Keys {
         }
         return events
     }
+
+    /**
+     * BackSpace taps for [before] characters and Delete taps for [after] (the IME's
+     * `deleteSurroundingText`), each between 0 and [MAX_DELETE]: the lengths come from the
+     * keyboard app, and a negative one would throw, a huge one fill the memory.
+     */
+    fun deleteText(before: Int, after: Int): List<RelayEvent> =
+        List(before.coerceIn(0, MAX_DELETE)) { tapOf(XK_BACKSPACE) }.flatten() +
+            List(after.coerceIn(0, MAX_DELETE)) { tapOf(XK_DELETE) }.flatten()
+
+    private fun tapOf(sym: Int) = listOf(RelayEvent.Key(sym, true), RelayEvent.Key(sym, false))
+
+    /** The most characters one IME deletion takes out (the chat line is shorter). */
+    const val MAX_DELETE = 64
 }

@@ -7,10 +7,13 @@ an unprivileged process EPERM, ENOSYS otherwise.
 - Wrappers generated from syscalls.list: a new aarch64 syscall-template.S
   emits the error in place of the svc for every blocked SYSCALL_NAME and
   includes the generic template for any other name.
-- C wrappers: EPERM from clock_settime, clock_adjtime (adjtimex, ntp_*),
-  settimeofday's timezone path, umount/umount2 and reboot; ENOSYS from
-  fanotify_mark, open_by_handle_at, epoll_pwait2, pkey_mprotect (pkey -1
-  is still mprotect) and __alloc_gcs's map_shadow_stack.
+- C wrappers: EPERM from clock_settime of CLOCK_REALTIME (EINVAL for any
+  other clock), any change through clock_adjtime (adjtimex, ntp_*,
+  adjtime), settimeofday's timezone path, umount/umount2 and reboot; a read
+  of CLOCK_REALTIME's NTP state succeeds with an unsynchronised clock's
+  values; ENOSYS from fanotify_mark, open_by_handle_at, epoll_pwait2,
+  pkey_mprotect (pkey -1 is still mprotect) and __alloc_gcs's
+  map_shadow_stack.
 Blocked syscalls without a glibc wrapper are reachable only through
 syscall(), which patch 0009 answers.
 ---
@@ -36,7 +39,7 @@ syscall(), which patch 0009 answers.
 +
 +#define ANDROID_ANSWER_acct ~, EPERM
 +#define ANDROID_ANSWER_add_key ~, ENOSYS
-+#define ANDROID_ANSWER_adjtimex ~, ENOSYS
++#define ANDROID_ANSWER_adjtimex ~, EPERM
 +#define ANDROID_ANSWER_cachestat ~, ENOSYS
 +#define ANDROID_ANSWER_chroot ~, EPERM
 +#define ANDROID_ANSWER_clock_adjtime ~, EPERM
@@ -147,7 +150,7 @@ syscall(), which patch 0009 answers.
 +#endif
 --- a/sysdeps/unix/sysv/linux/clock_settime.c
 +++ b/sysdeps/unix/sysv/linux/clock_settime.c
-@@ -32,26 +32,9 @@
+@@ -32,26 +32,12 @@
        return -1;
      }
  
@@ -171,15 +174,26 @@ syscall(), which patch 0009 answers.
 -#endif
 -
 -  return ret;
-+  /* The Android app seccomp policy traps clock_settime:
-+     an unprivileged process gets EPERM from it, without issuing it.  */
++  /* The Android app seccomp policy traps clock_settime: it is never issued.
++     Linux refuses any clock but CLOCK_REALTIME with EINVAL, and gives an
++     unprivileged process EPERM for that one.  */
++  if (clock_id != CLOCK_REALTIME)
++    return INLINE_SYSCALL_ERROR_RETURN_VALUE (EINVAL);
 +  return INLINE_SYSCALL_ERROR_RETURN_VALUE (EPERM);
  }
  
  #if __TIMESIZE != 64
 --- a/sysdeps/unix/sysv/linux/clock_adjtime.c
 +++ b/sysdeps/unix/sysv/linux/clock_adjtime.c
-@@ -26,27 +26,9 @@
+@@ -18,6 +18,7 @@
+ 
+ #include <errno.h>
+ #include <stdlib.h>
++#include <string.h>
+ #include <time.h>
+ #include <sysdep.h>
+ #include <sys/timex.h>
+@@ -26,27 +27,35 @@
  int
  __clock_adjtime64 (const clockid_t clock_id, struct __timex64 *tx64)
  {
@@ -193,10 +207,36 @@ syscall(), which patch 0009 answers.
 -
 -  if (tx64->modes & ADJ_SETOFFSET
 -      && ! in_int32_t_range (tx64->time.tv_sec))
--    {
++  /* The Android app seccomp policy traps clock_adjtime (and adjtimex, ntp_*):
++     it is never issued.  Linux lets any process read CLOCK_REALTIME's state
++     (modes 0, as adjtimex for reading and ntp_gettime ask, or
++     ADJ_OFFSET_SS_READ, as adjtime (NULL, &old) asks); that read is answered
++     here with the kernel's values for a clock no NTP daemon disciplines,
++     since the app cannot see the real ones: unsynchronised (TIME_ERROR), no
++     offset or frequency correction, the current time.  A change gets EPERM,
++     as an unprivileged process gets from Linux.  */
++  if (clock_id == CLOCK_REALTIME
++      && (tx64->modes == 0 || tx64->modes == ADJ_OFFSET_SS_READ))
+     {
 -      __set_errno (EOVERFLOW);
 -      return -1;
--    }
++      struct __timespec64 now;
++      if (__clock_gettime64 (CLOCK_REALTIME, &now) != 0)
++        return -1;
++      unsigned int modes = tx64->modes;
++      memset (tx64, 0, sizeof (*tx64));
++      tx64->modes = modes;
++      tx64->maxerror = 16000000;	/* NTP_PHASE_LIMIT, in microseconds.  */
++      tx64->esterror = 16000000;
++      tx64->status = STA_UNSYNC;
++      tx64->constant = 2;		/* The kernel's initial time constant.  */
++      tx64->precision = 1;
++      tx64->tolerance = 500 << 16;	/* MAXFREQ: 500 ppm, scaled by 2^16.  */
++      tx64->time.tv_sec = now.tv_sec;
++      tx64->time.tv_usec = now.tv_nsec / 1000;
++      tx64->tick = 10000;		/* Microseconds a tick at USER_HZ 100.  */
++      return TIME_ERROR;
+     }
 -
 -  struct timex tx32 = valid_timex64_to_timex (*tx64);
 -  r = INLINE_SYSCALL_CALL (clock_adjtime, clock_id, &tx32);
@@ -204,8 +244,6 @@ syscall(), which patch 0009 answers.
 -    *tx64 = valid_timex_to_timex64 (tx32);
 -#endif
 -  return r;
-+  /* The Android app seccomp policy traps clock_adjtime (and adjtimex, ntp_*):
-+     an unprivileged process gets EPERM from it, without issuing it.  */
 +  return INLINE_SYSCALL_ERROR_RETURN_VALUE (EPERM);
  }
  

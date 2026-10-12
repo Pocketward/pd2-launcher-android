@@ -36,6 +36,9 @@ object SourceImport {
     private const val SHARED_STORAGE = "com.android.externalstorage.documents"
     /** How long a copied folder waits for the engine's check of it. */
     private const val VERDICT_TIMEOUT_MS = 120_000L
+    /** The deepest a picked folder may nest, and the most files and folders it may hold ([walk]). */
+    const val MAX_DEPTH = 32
+    const val MAX_ENTRIES = 200_000
     private val worker = Executors.newSingleThreadExecutor { Thread(it, "pd2-source") }
     /** Counts the folder copies started; a copy's late verdict counts only while no newer one started. */
     private val generation = AtomicLong()
@@ -59,10 +62,12 @@ object SourceImport {
             val paths = SessionPaths(DeviceCheck.dataDir(app))
             var target: File? = null
             _copy.value = try {
-                val listed = ArrayList<Pick>()
-                walk(resolver, tree, DocumentsContract.getTreeDocumentId(tree), "", listed)
+                val walked = walk(DocumentsContract.getTreeDocumentId(tree)) { parent -> children(resolver, tree, parent) }
                 val into = paths.importedGame("copy-${System.currentTimeMillis()}")
-                val picks = listed.map { it.copy(relative = ExistingFolder.canonical(it.relative)) }
+                val picks = walked.map { (relative, entry) ->
+                    val uri = if (entry.folder) null else DocumentsContract.buildDocumentUriUsingTree(tree, entry.id)
+                    Pick(ExistingFolder.canonical(relative), if (entry.folder) 0 else entry.size, uri, if (entry.folder) 0 else entry.modified)
+                }
                 val check = ExistingFolder.check(picks.filter { it.uri != null }.associate { it.relative to it.size })
                 // The folder is copied once and used in place (a Launcher copy checks its own space).
                 val total = picks.sumOf { it.size }
@@ -80,7 +85,10 @@ object SourceImport {
                         // move into SessionPaths.userSave, so removing the copies takes none.
                         SaveKeeper.moveImported(paths) { Log.i(TAG, it) }
                         target = replaced
-                        for (earlier in replacedCopies(paths.imports, gameFolder())) {
+                        // The engine's word, and while it has none (starting or restarting) the
+                        // Launcher's record: without either, the copy in use would go too.
+                        val inUse = listOfNotNull(gameFolder(), GameFilesProvider.recordedGameFolder(paths))
+                        for (earlier in replacedCopies(paths.imports, inUse)) {
                             UserlandInstaller.deleteTree(earlier.toPath())
                         }
                         copyAll(app.contentResolver, into, picks, total)
@@ -104,7 +112,9 @@ object SourceImport {
                         }
                     }
                 }
-            } catch (error: Exception) {
+            } catch (error: Throwable) {
+                // Any failure, an Error too (a provider's folders deep enough to exhaust the stack or
+                // the memory): on this executor thread it would otherwise end the app.
                 Log.w(TAG, "folder copy failed: $error")
                 // Nothing half copied stays behind.
                 target?.let { runCatching { UserlandInstaller.deleteTree(it.toPath()) } }
@@ -138,14 +148,15 @@ object SourceImport {
     private fun gameFolder(): String? = SessionService.status.value.snapshot?.gameFolder?.path
 
     /**
-     * The previous folder copies below [imports] a new copy replaces: every token folder but the
-     * one holding [inUse], the folder the installation uses in place. Removing that one would
-     * leave the installation without its game (the engine's `game-folder-unavailable`) until
-     * Start over; it goes with the next copy after Start over.
+     * The previous folder copies below [imports] a new copy replaces: every token folder but those
+     * holding a folder of [inUse], the folder the installation uses in place as the engine and
+     * the Launcher's record name it. Removing that one would leave the installation without its
+     * game (the engine's `game-folder-unavailable`) until Start over; it goes with the next copy
+     * after Start over.
      */
-    fun replacedCopies(imports: File, inUse: String?): List<File> {
-        val kept = inUse?.let { File(it).parentFile }
-        return imports.listFiles()?.filter { it != kept } ?: emptyList()
+    fun replacedCopies(imports: File, inUse: Collection<String>): List<File> {
+        val kept = inUse.mapNotNull { File(it).parentFile }.toSet()
+        return imports.listFiles()?.filter { it !in kept } ?: emptyList()
     }
 
     /**
@@ -209,7 +220,38 @@ object SourceImport {
         Files.setPosixFilePermissions(dir.toPath(), PosixFilePermissions.fromString("rwx------"))
     }
 
-    private fun walk(resolver: ContentResolver, tree: Uri, parent: String, prefix: String, out: MutableList<Pick>) {
+    /** One entry a provider lists in a folder: its document ID, display name, kind, size and last change. */
+    data class Listed(val id: String, val name: String?, val folder: Boolean, val size: Long = 0, val modified: Long = 0)
+
+    /** An entry below the picked folder: its path there and what the provider listed. */
+    data class Walked(val relative: String, val listed: Listed)
+
+    /**
+     * Every entry below folder [root], each folder before what it holds, from [list] (a folder's
+     * entries). The provider is another app's code: one whose folders hold each other (a folder
+     * listed twice), nest deeper than [MAX_DEPTH] or hold more than [MAX_ENTRIES] entries in all
+     * is refused with an [IOException] instead of being walked until the stack or the memory runs out.
+     */
+    fun walk(root: String, list: (String) -> List<Listed>): List<Walked> {
+        val out = ArrayList<Walked>()
+        val visited = hashSetOf(root)
+        fun descend(parent: String, prefix: String, depth: Int) {
+            for (entry in list(parent)) {
+                val relative = prefix + plainName(entry.name)
+                if (out.size >= MAX_ENTRIES) throw IOException("the folder holds more than $MAX_ENTRIES files and folders")
+                out += Walked(relative, entry)
+                if (!entry.folder) continue
+                if (depth > MAX_DEPTH) throw IOException("folders nested more than $MAX_DEPTH deep: $relative")
+                if (!visited.add(entry.id)) throw IOException("a folder holds itself: $relative")
+                descend(entry.id, "$relative/", depth + 1)
+            }
+        }
+        descend(root, "", 1)
+        return out
+    }
+
+    /** What the picked [tree] lists in folder [parent]; at most one more than [MAX_ENTRIES], which [walk] refuses. */
+    private fun children(resolver: ContentResolver, tree: Uri, parent: String): List<Listed> {
         val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, parent)
         val columns = arrayOf(
             DocumentsContract.Document.COLUMN_DOCUMENT_ID,
@@ -219,15 +261,10 @@ object SourceImport {
             DocumentsContract.Document.COLUMN_LAST_MODIFIED,
         )
         val cursor = resolver.query(children, columns, null, null, null) ?: throw IOException("cannot list the folder")
-        cursor.use {
-            while (it.moveToNext()) {
-                val id = it.getString(0)
-                val relative = prefix + plainName(it.getString(1))
-                if (it.getString(2) == DocumentsContract.Document.MIME_TYPE_DIR) {
-                    out += Pick(relative, 0, null)
-                    walk(resolver, tree, id, "$relative/", out)
-                } else {
-                    out += Pick(relative, it.getLong(3), DocumentsContract.buildDocumentUriUsingTree(tree, id), it.getLong(4))
+        return cursor.use {
+            buildList {
+                while (size <= MAX_ENTRIES && it.moveToNext()) {
+                    add(Listed(it.getString(0), it.getString(1), it.getString(2) == DocumentsContract.Document.MIME_TYPE_DIR, it.getLong(3), it.getLong(4)))
                 }
             }
         }

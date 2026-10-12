@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 # Builds the App userland end to end, every step in a container (see docs/BUILDING.md):
 #   fetch-debian.sh   pinned Debian 13 arm64 packages -> staging tree and cross-build sysroot
-#   build-xvfb.sh     Xvfb from xorg-server 21.1.16 with the device's compiled-in paths
+#   build-xvfb.sh     Xvfb from xorg-server 21.1.25 with the prefix's compiled-in paths
 #   build-turnip.sh   Mesa 26.2.3 Turnip (KGSL) and its ICD JSON
 #   build-panvk.sh    Mesa's PanVK with our kbase backend (Mali) and its ICD JSON (PD2_PANVK_STAGE=1)
 #   build-glibc.sh    only with PD2_USERLAND_WITH_GLIBC=1: our glibc (glibc/) replaces Debian's libc6
 #   build-fex.sh      only with PD2_USERLAND_WITH_FEX=1: our FEX-2609.1 (fex/) with thunks
 #   build-entry.sh    pd2-fex, the entry point of App-provided FEX (fex-entry.c, our code)
 #   build-relay.sh    x-input-relay, touch and keyboard into the X screen (x-input-relay.c, our code)
-#   relocate.sh       interpreter, run paths, links, etc/ for the fixed prefix
-#   pack.sh           out/userland.tar.zst + out/manifest.json, copied into the APK's assets
+#   relocate.sh       interpreter, run paths, links, etc/ for the prefix
+#   pack.sh           out/userland.tar.zst + out/manifest.json (with where the placeholder is),
+#                     copied into the APK's assets
 #   check-tree.sh     verifies the packed archive
 # Pass --resolve to re-resolve packages.txt into packages.lock first.
-# The userland is the release app's (com.pd2launcher.app); PD2_USERLAND_VARIANT=debug builds the
-# development build's (com.pd2launcher.app.dev) instead, with its own build folders and outputs
-# (config.sh), into the debug build type's assets.
+# Every program is built for the placeholder prefix in config.sh; the app rewrites it to its own
+# data folder as it unpacks the tree, so the release app and the development build share it.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,7 +26,7 @@ fi
 
 # shellcheck source=config.sh
 . "$here/config.sh"
-echo "App userland for $APP_ID: $USERLAND"
+echo "App userland for the prefix $USERLAND"
 step() { echo "== $1"; "$here/$1" "${@:2}"; }
 
 step fetch-debian.sh "$@"

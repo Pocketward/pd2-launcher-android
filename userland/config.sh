@@ -1,24 +1,21 @@
 # Pins and paths shared by every App userland script. Sourced, never executed.
 # shellcheck shell=bash
 
-# The app build this userland is for (PD2_USERLAND_VARIANT): release, the default, for the app
-# com.pd2launcher.app, or debug, for the development build com.pd2launcher.app.dev
-# (app/build.gradle.kts, applicationIdSuffix). The app's data folder is the root of the fixed
-# install prefix that every userland binary carries, so each variant is a userland of its own:
-# its version (pack.sh) includes the data folder, and its prefix-dependent build folders and
-# outputs carry VARIANT_SUFFIX (none for release, -debug for debug), while downloads and sources
-# are shared. X_DISPLAY is the variant's X display (userland.env), apart so that both apps' Xvfb
-# can run at once: Xvfb listens on an abstract socket, which every app on a device shares.
-USERLAND_VARIANT="${PD2_USERLAND_VARIANT:-release}"
-case "$USERLAND_VARIANT" in
-    release) APP_ID=com.pd2launcher.app VARIANT_SUFFIX="" X_DISPLAY=:0 ;;
-    debug) APP_ID=com.pd2launcher.app.dev VARIANT_SUFFIX=-debug X_DISPLAY=:1 ;;
-    *) echo "refusing: PD2_USERLAND_VARIANT is release or debug, not $USERLAND_VARIANT" >&2; exit 1 ;;
-esac
+# The app's data folder as every userland program is built for it: a placeholder of 200 bytes,
+# longer than any data folder Android gives an app (/mnt/expand/<uuid>/user/<n>/<package> is about
+# 100). The app replaces it with its real data folder as it unpacks the tree (UserlandInstaller):
+# in place in a binary file, the real path padded with '/' to the same length (repeated slashes
+# name the same path), and freely in a text file. So one userland serves the release app and the
+# development build, for any user and on any storage. pack.sh records where the placeholder is.
+DATA_PLACEHOLDER="/pd2launcher-data-placeholder-$(printf '%0170d' 0)"
+# The prefix every program is built for: the userland's place in the data folder.
+USERLAND=$DATA_PLACEHOLDER/files/userland/current
 
-# Fixed install prefix on the device.
-DATA_DIR=/data/data/$APP_ID
-USERLAND=$DATA_DIR/files/userland/current
+# The libraries the Launcher engine links (its DT_NEEDED). pack.sh puts them and every library they
+# need into the manifest's critical set, which the app checks again before each engine start; the
+# app's build.sh refuses an engine that needs a library not listed here.
+ENGINE_NEEDED=(ld-linux-aarch64.so.1 libc.so.6 libgcc_s.so.1 libm.so.6 libxcb.so.1 libxkbcommon.so.0
+    libxkbcommon-x11.so.0)
 
 # debian:trixie-slim, multi-arch index digest (the same pin as ../containers/Containerfile).
 DEBIAN_IMAGE=docker.io/library/debian@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
@@ -58,17 +55,18 @@ KBASE_UAPI_FILES=(
     "99d7d2d123c7dda45d4d7cf4c8b85336822353a3638738ecc3282334d6ae3d63 mali_kbase_mem_flags.h"
 )
 
-# X server for Xvfb (Debian 13 ships the same upstream release, 21.1.16), https://www.x.org/releases/
-# SHA-256 recorded on first download from x.org over HTTPS (no published checksum list to compare).
-XSERVER_VERSION=21.1.16
-XSERVER_SHA256=b14a116d2d805debc5b5b2aac505a279e69b217dae2fae2dfcb62400471a9970
+# X server for Xvfb, https://www.x.org/releases/: a 21.1 release with X.Org's security fixes
+# (Debian 13 ships 21.1.16 with its own backports). The SHA-256 is the one X.Org's release
+# announcement publishes.
+XSERVER_VERSION=21.1.25
+XSERVER_SHA256=6ad4e3c7b59a309b32c92e5c15ce1267110f9e13f1ac78da62361a628da1a0eb
 XSERVER_URL="https://www.x.org/releases/individual/xserver/xorg-server-$XSERVER_VERSION.tar.xz"
 
 # Android's own shell, used by Xvfb to run xkbcomp (patches/xserver/0002).
 ANDROID_SHELL=/system/bin/sh
 
 # Directory the app creates for compiled keymaps (Xvfb's compile-time XKM output dir).
-XKM_OUTPUT_DIR=$DATA_DIR/files/tmp/xkb
+XKM_OUTPUT_DIR=$DATA_PLACEHOLDER/files/tmp/xkb
 
 # Persistent cache outside the repository.
 USERLAND_CACHE="${PD2_USERLAND_CACHE:-$HOME/.cache/pd2-android/userland}"
@@ -106,14 +104,9 @@ container_engine() {
 }
 
 USERLAND_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# This variant's packed userland (pack.sh) and where the app build takes it from: the release
-# userland in the assets every build type has, the debug one in the debug build type's, which
-# replace those in a debug APK.
-USERLAND_OUT="$USERLAND_SRC/out$VARIANT_SUFFIX"
-case "$USERLAND_VARIANT" in
-    release) USERLAND_ASSETS="$(dirname "$USERLAND_SRC")/app/src/main/assets/userland" ;;
-    debug) USERLAND_ASSETS="$(dirname "$USERLAND_SRC")/app/src/debug/assets/userland" ;;
-esac
+# The packed userland (pack.sh) and where every app build takes it from.
+USERLAND_OUT="$USERLAND_SRC/out"
+USERLAND_ASSETS="$(dirname "$USERLAND_SRC")/app/src/main/assets/userland"
 
 # --- helpers used inside the tools container ----------------------------------------------
 
@@ -161,6 +154,26 @@ endian = 'little'
 EOF
 }
 
+# Prints the identity of a component build inside a container (build-xvfb.sh, build-turnip.sh,
+# build-panvk.sh): the image it builds in (PD2_IMAGE, which names the toolchain and its pins), the
+# package lock (the sysroot), the prefix, the cross file, then each argument: a pin as given, a
+# file as its path under /src and SHA-256. A build whose recorded identity (its BUILDINFO) equals
+# this one is reused instead of built again.
+build_identity() { # pin-or-file...
+    local a
+    echo "image=${PD2_IMAGE:?}"
+    echo "packages.lock $(sha256sum < /src/packages.lock | cut -d' ' -f1)"
+    echo "prefix=$USERLAND"
+    echo "cross-file $(declare -f write_cross_file | sha256sum | cut -d' ' -f1)"
+    for a in "$@"; do
+        if [[ "$a" == /src/* ]]; then
+            echo "${a#/src/} $(sha256sum < "$a" | cut -d' ' -f1)"
+        else
+            echo "$a"
+        fi
+    done
+}
+
 # Downloads a pinned source tarball into the cache once and checks its SHA-256.
 fetch_source() { # url sha256 -> prints the local path
     local url="$1" sha="$2" file
@@ -168,56 +181,111 @@ fetch_source() { # url sha256 -> prints the local path
     mkdir -p "$USERLAND_CACHE/sources"
     if [[ ! -f "$file" ]]; then
         curl -fsSL --retry 3 -o "$file.part" "$url"
+        # Checked before it takes the cached name: a bad download is removed, never kept as good.
+        echo "$sha  $file.part" | sha256sum -c --quiet - >&2 || { rm -f "$file.part"; echo "SHA-256 mismatch: $url" >&2; return 1; }
         mv "$file.part" "$file"
     fi
     echo "$sha  $file" | sha256sum -c --quiet - >&2 || { echo "SHA-256 mismatch: $file" >&2; return 1; }
     echo "$file"
 }
 
-# Builds (once) and prints the tools image; the tag hashes the Containerfile and its two pins.
+# Image archives: with PD2_IMAGE_ARCHIVE set to a folder (the release workflow keeps it between
+# runs), an image that is missing is loaded from its archive there, and one built here is archived
+# there: <name, with / and : as _>.tar.zst.
+image_archive() { # image -> its archive's path
+    echo "$PD2_IMAGE_ARCHIVE/$(tr '/:' '__' <<<"$1").tar.zst"
+}
+
+# True when the engine has the image, loading it from its archive if there is one. `image inspect`,
+# not Podman's own `image exists`, so Docker works too.
+have_image() { # engine image
+    "$1" image inspect "$2" >/dev/null 2>&1 && return 0
+    [[ -n "${PD2_IMAGE_ARCHIVE:-}" && -f "$(image_archive "$2")" ]] || return 1
+    echo "loading $2 from $(image_archive "$2")" >&2
+    zstd -dc "$(image_archive "$2")" | "$1" load >&2 && "$1" image inspect "$2" >/dev/null 2>&1
+}
+
+# Archives an image just built, when PD2_IMAGE_ARCHIVE is set. Only a saving: a failure leaves no
+# archive and the build goes on.
+archive_image() { # engine image
+    local file
+    [[ -n "${PD2_IMAGE_ARCHIVE:-}" ]] || return 0
+    file="$(image_archive "$2")"
+    if mkdir -p "$PD2_IMAGE_ARCHIVE" && "$1" save "$2" | zstd -T0 -q -f -o "$file.part" &&
+        mv "$file.part" "$file"; then
+        echo "archived $2 in $file" >&2
+    else
+        rm -f "$file.part"
+        echo "warning: could not archive $2" >&2
+    fi
+}
+
+# The tools image's name; the tag hashes the Containerfile and its two pins.
+tools_image_name() {
+    echo "localhost/pd2-userland-tools:$( (cat "$USERLAND_SRC/containers/Containerfile.tools"
+        echo "$DEBIAN_IMAGE $DEBIAN_SNAPSHOT") | sha256sum | cut -c1-16)"
+}
+
+# Builds (once) and prints the tools image.
 tools_image() {
-    local engine hash image
+    local engine image
     engine="$(container_engine)"
-    hash="$( (cat "$USERLAND_SRC/containers/Containerfile.tools"; echo "$DEBIAN_IMAGE $DEBIAN_SNAPSHOT") | sha256sum | cut -c1-16)"
-    image="localhost/pd2-userland-tools:$hash"
-    if ! "$engine" image exists "$image" 2>/dev/null; then
+    image="$(tools_image_name)"
+    if ! have_image "$engine" "$image"; then
         "$engine" build --platform linux/amd64 \
             --build-arg "DEBIAN_IMAGE=$DEBIAN_IMAGE" --build-arg "DEBIAN_SNAPSHOT=$DEBIAN_SNAPSHOT" \
             -t "$image" -f "$USERLAND_SRC/containers/Containerfile.tools" "$USERLAND_SRC/containers" >&2
+        archive_image "$engine" "$image"
     fi
     echo "$image"
 }
 
 # Re-runs the calling script inside the tools image with the sources read-only at /src and
-# the cache at /cache, this variant's work folder (work, or work-debug for debug: the staging
-# tree, the sysroot, the build folders and records) at /cache/work, and the variant passed on.
-# Extra engine arguments go before the image via RUN_EXTRA (array).
+# the cache at /cache (its work folder, /cache/work, holds the staging tree, the sysroot, the build
+# folders and records). Extra engine arguments go before the image via RUN_EXTRA (array).
 run_in_tools() {
     local script="$1"; shift
     local engine image
     engine="$(container_engine)"
     image="$(tools_image)"
-    mkdir -p "$USERLAND_CACHE/work$VARIANT_SUFFIX"
+    mkdir -p "$USERLAND_CACHE/work"
     "$engine" run --rm --platform linux/amd64 \
-        -v "$USERLAND_SRC:/src:ro" -v "$USERLAND_CACHE:/cache" -v "$USERLAND_CACHE/work$VARIANT_SUFFIX:/cache/work" \
-        -e PD2_USERLAND_IN_CONTAINER=1 -e PD2_USERLAND_CACHE=/cache -e "PD2_USERLAND_VARIANT=$USERLAND_VARIANT" \
-        "${RUN_EXTRA[@]}" "$image" bash "/src/$script" "$@"
+        -v "$USERLAND_SRC:/src:ro" -v "$USERLAND_CACHE:/cache" \
+        -e PD2_USERLAND_IN_CONTAINER=1 -e PD2_USERLAND_CACHE=/cache \
+        -e "PD2_IMAGE=$image" "${RUN_EXTRA[@]}" "$image" bash "/src/$script" "$@"
 }
 RUN_EXTRA=()
 
-# Builds (once) and prints the PanVK image: the tools image plus LLVM/Clang/libclc for Mesa's host
-# tools (containers/Containerfile.panvk). The tag hashes that file and the tools image's tag.
+# The PanVK image's name: the tools image plus LLVM/Clang/libclc for Mesa's host tools
+# (containers/Containerfile.panvk). The tag hashes that file and the tools image's name.
+panvk_image_name() {
+    echo "localhost/pd2-userland-panvk:$( (cat "$USERLAND_SRC/containers/Containerfile.panvk"
+        tools_image_name) | sha256sum | cut -c1-16)"
+}
+
+# Builds (once) and prints the PanVK image.
 panvk_image() {
-    local engine tools hash image
+    local engine tools image
     engine="$(container_engine)"
     tools="$(tools_image)"
-    hash="$( (cat "$USERLAND_SRC/containers/Containerfile.panvk"; echo "$tools") | sha256sum | cut -c1-16)"
-    image="localhost/pd2-userland-panvk:$hash"
-    if ! "$engine" image exists "$image" 2>/dev/null; then
+    image="$(panvk_image_name)"
+    if ! have_image "$engine" "$image"; then
         "$engine" build --platform linux/amd64 --build-arg "TOOLS_IMAGE=$tools" \
             -t "$image" -f "$USERLAND_SRC/containers/Containerfile.panvk" "$USERLAND_SRC/containers" >&2
+        archive_image "$engine" "$image"
     fi
     echo "$image"
+}
+
+# The names of fex/build.sh's and glibc/build.sh's images: the tags hash their Containerfiles and
+# the two pins.
+fex_image_name() {
+    echo "localhost/pd2-userland-fex:$( (cat "$USERLAND_SRC/fex/Containerfile"
+        echo "$DEBIAN_IMAGE $DEBIAN_SNAPSHOT") | sha256sum | cut -c1-16)"
+}
+glibc_image_name() {
+    echo "localhost/pd2-glibc-build:$( (cat "$USERLAND_SRC/glibc/Containerfile"
+        echo "$DEBIAN_IMAGE $DEBIAN_SNAPSHOT") | sha256sum | cut -c1-16)"
 }
 
 # Like run_in_tools, in the PanVK image, with PANVK_CACHE at /kbase as well.
@@ -226,11 +294,10 @@ run_in_panvk() {
     local engine image
     engine="$(container_engine)"
     image="$(panvk_image)"
-    mkdir -p "$USERLAND_CACHE/work$VARIANT_SUFFIX" "$PANVK_CACHE"
+    mkdir -p "$USERLAND_CACHE/work" "$PANVK_CACHE"
     "$engine" run --rm --platform linux/amd64 \
-        -v "$USERLAND_SRC:/src:ro" -v "$USERLAND_CACHE:/cache" -v "$USERLAND_CACHE/work$VARIANT_SUFFIX:/cache/work" \
-        -v "$PANVK_CACHE:/kbase" \
+        -v "$USERLAND_SRC:/src:ro" -v "$USERLAND_CACHE:/cache" -v "$PANVK_CACHE:/kbase" \
         -e PD2_USERLAND_IN_CONTAINER=1 -e PD2_USERLAND_CACHE=/cache -e PD2_PANVK_CACHE=/kbase \
-        -e "PD2_USERLAND_VARIANT=$USERLAND_VARIANT" \
+        -e "PD2_IMAGE=$image" \
         "${RUN_EXTRA[@]}" "$image" bash "/src/$script" "$@"
 }

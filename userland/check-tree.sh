@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Checks the packed App userland as the device will see it: unpacks out/userland.tar.zst (out-debug/
-# for the debug variant, config.sh; glibc and FEX likewise from their out-debug/) into a
+# Checks the packed App userland as the device will see it: unpacks out/userland.tar.zst into a
 # scratch directory and verifies
 #   - no hard-link entries in the archive and no hard links in the unpacked tree
 #   - no absolute symlinks
@@ -11,10 +10,16 @@
 #   - PanVK (build-panvk.sh) is there: its ICD JSON and libvulkan_panfrost.so, every library it
 #     needs in the tree
 #   - the manifest matches the tree (every entry, type, mode, size, SHA-256)
+#   - the placeholder (config.sh): the manifest names it and the prefix, and lists for every file
+#     exactly the offsets where the tree holds it, rewritten as text exactly when the file is not
+#     an ELF and has no NUL byte; no partial copy of it anywhere, no symlink to it
+#   - the critical set: every path is a file of the tree as the loader or a program opens it,
+#     the engine's libraries (ENGINE_NEEDED) are in it, and so is every library an ELF in it needs;
+#     the absent paths are not in the tree
 #   - when the manifest has a "glibc" record (PD2_USERLAND_WITH_GLIBC=1): every recorded file is in
-#     the tree with its SHA-256; the record's patch hashes are those of glibc/patches; ld.so and
-#     libc.so.6 equal glibc/out/install's copies stripped as build-glibc.sh strips them and carry
-#     our version string; both loader paths resolve to our loader; no regular file of Debian's
+#     the tree with its SHA-256; the record's patch, build.sh and Containerfile hashes are those
+#     in glibc/; ld.so and libc.so.6 equal glibc/out/install's copies stripped as build-glibc.sh
+#     strips them and carry our version string; both loader paths resolve to our loader; no regular file of Debian's
 #     libc6 .deb is left in the tree (files in the record are ours, even where byte-identical to
 #     Debian's, such as gconv-modules)
 #     and etc/userland.env does not set LD_LIBRARY_PATH
@@ -24,6 +29,10 @@
 #     every NEEDED library of the aarch64 FEX files and each library a host thunk dlopen()s is in
 #     lib/aarch64-linux-gnu or usr/lib/aarch64-linux-gnu (ld.so's default path), and none has a
 #     run path
+#   - last, the tree rewritten for a scratch data folder as the app rewrites it (padded binaries,
+#     exact text files) holds no placeholder, and with the host's qemu-aarch64 binfmt handler
+#     Xvfb prints its usage and xkbcomp, PulseAudio and FEXServer their versions from there:
+#     interpreter, run paths and the loader's own folders all at the padded path
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -31,15 +40,22 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$here/config.sh"
 
 if [[ "${PD2_USERLAND_IN_CONTAINER:-}" != 1 ]]; then
-    RUN_EXTRA=(-v "$USERLAND_OUT:/out:ro")
+    # The host's binfmt_misc, which the container does not see: with qemu-aarch64 there (its F flag
+    # makes it work in the container), the relocated tree's programs run below.
+    binfmt=0
+    grep -qsx enabled /proc/sys/fs/binfmt_misc/qemu-aarch64 && binfmt=1
+    RUN_EXTRA=(-v "$USERLAND_OUT:/out:ro" -e "PD2_HOST_BINFMT_AARCH64=$binfmt")
     run_in_tools check-tree.sh "$@"
     exit
 fi
 
 archive=/out/userland.tar.zst
-tree=/cache/work/check
-rm -rf "$tree"
+# A data folder as on the device: the tree in files/userland/<version>, current naming it.
+data=/cache/work/check
+tree="$data/files/userland/tree"
+rm -rf "$data"
 mkdir -p "$tree"
+ln -s tree "$data/files/userland/current"
 fail=0
 bad() { echo "FAIL: $*" >&2; fail=1; }
 
@@ -116,12 +132,110 @@ for dirpath, dirnames, filenames in os.walk(tree):
 print(f"manifest {m['version']}: {len(m['entries'])} entries match the unpacked tree")
 EOF
 
+python3 - "$tree" /out/manifest.json "$DATA_PLACEHOLDER" "$USERLAND" "${ENGINE_NEEDED[*]}" <<'EOF' || fail=1
+import json, os, re, subprocess, sys
+tree, manifest, placeholder, prefix, engine_needed = sys.argv[1:]
+m = json.load(open(manifest))
+P = placeholder.encode()
+head = P[:32]
+bad = []
+if m.get('placeholder') != placeholder or m.get('prefix') != prefix:
+    bad.append(f"manifest placeholder/prefix {m.get('placeholder')!r} {m.get('prefix')!r}, not config.sh's")
+entries = {e['path']: e for e in m['entries']}
+relocated = occurrences = 0
+for path, e in entries.items():
+    full = os.path.join(tree, path)
+    if e['type'] == 'symlink':
+        if head in e['target'].encode():
+            bad.append(f'{path}: symlink to the placeholder')
+        continue
+    if e['type'] != 'file':
+        continue
+    data = open(full, 'rb').read()
+    found, i = [], data.find(P)
+    while i >= 0:
+        found.append(i)
+        i = data.find(P, i + 1)
+    if data.count(head) != len(found):
+        bad.append(f'{path}: a partial copy of the placeholder')
+    if found != e.get('placeholders', []):
+        bad.append(f'{path}: placeholder at {found}, manifest {e.get("placeholders", [])}')
+    text = bool(found) and data[:4] != b'\x7fELF' and b'\0' not in data
+    if e.get('text', False) != text:
+        bad.append(f'{path}: text {e.get("text", False)}, should be {text}')
+    if found:
+        relocated += 1
+        occurrences += len(found)
+
+def resolve(path):
+    """path's file entry, links followed through the manifest; None if it is not one."""
+    parts, i, hops = path.split('/'), 0, 0
+    while i < len(parts):
+        e = entries.get('/'.join(parts[:i + 1]))
+        if e is None:
+            return None
+        if e['type'] == 'symlink':
+            hops += 1
+            if hops > 16 or e['target'].startswith('/'):
+                return None
+            joined = []
+            for part in parts[:i] + e['target'].split('/') + parts[i + 1:]:
+                if part == '..':
+                    if not joined:
+                        return None
+                    joined.pop()
+                elif part not in ('', '.'):
+                    joined.append(part)
+            parts, i = joined, 0
+            continue
+        if e['type'] == 'file' and i != len(parts) - 1:
+            return None
+        i += 1
+    e = entries.get('/'.join(parts))
+    return e if e and e['type'] == 'file' else None
+
+critical = m.get('critical', [])
+for path in critical:
+    if resolve(path) is None:
+        bad.append(f'critical {path}: not a file of the tree')
+for path in ('lib/ld-linux-aarch64.so.1', 'etc/userland.env', 'etc/nsswitch.conf', 'etc/ssl/certs/ca-certificates.crt'):
+    if path not in critical:
+        bad.append(f'{path}: not critical')
+for path in m.get('absent', []):
+    if path in entries:
+        bad.append(f'{path}: must not be in the tree')
+if 'etc/ld.so.cache' not in m.get('absent', []):
+    bad.append('etc/ld.so.cache: not absent')
+if m.get('engine_needed') != engine_needed.split():
+    bad.append("engine_needed is not config.sh's ENGINE_NEEDED")
+# Closed: every library the engine or a critical ELF needs is critical (in a folder the loader searches).
+libs = lambda soname: {f'{d}/{soname}' for d in ('lib/aarch64-linux-gnu', 'usr/lib/aarch64-linux-gnu')}
+needs = {(s, 'the engine') for s in engine_needed.split()}
+for path in critical:
+    e = resolve(path)
+    if e is None:
+        continue
+    full = os.path.join(tree, e['path'])
+    if open(full, 'rb').read(4) != b'\x7fELF':
+        continue
+    dyn = subprocess.run(['aarch64-linux-gnu-readelf', '-d', full], capture_output=True, text=True, check=True).stdout
+    needs |= {(s, path) for s in re.findall(r'\(NEEDED\)\s+Shared library: \[(.+?)\]', dyn)}
+for soname, by in sorted(needs):
+    if soname != 'ld-linux-aarch64.so.1' and not libs(soname) & set(critical):
+        bad.append(f'{soname} (needed by {by}) is not critical')
+for b in bad:
+    print('FAIL:', b, file=sys.stderr)
+print(f'placeholder: in {relocated} files, {occurrences} times, as the manifest lists; '
+      f'{len(critical)} critical paths, closed under NEEDED; absent: {", ".join(m.get("absent", []))}')
+sys.exit(1 if bad else 0)
+EOF
+
 if jq -e .glibc /out/manifest.json >/dev/null; then
     scratch=/cache/work/check-glibc
     rm -rf "$scratch"
     mkdir -p "$scratch/libc6"
     for p in lib/ld-linux-aarch64.so.1 lib/aarch64-linux-gnu/libc.so.6; do
-        cp "/src/glibc/out$VARIANT_SUFFIX/install/$p" "$scratch/$(basename "$p")"
+        cp "/src/glibc/out/install/$p" "$scratch/$(basename "$p")"
         aarch64-linux-gnu-strip --strip-debug "$scratch/$(basename "$p")"
     done
     deb="/cache/debs/$(basename "$(awk '$1 == "runtime" && $2 == "libc6" {print $7}' /src/packages.lock)")"
@@ -139,6 +253,9 @@ for rel, want in g['files'].items():
 patches = {n: sha(os.path.join(patchdir, n)) for n in sorted(os.listdir(patchdir)) if n.endswith('.patch')}
 if g['buildinfo']['patches'] != patches:
     bad.append('recorded patch hashes differ from glibc/patches')
+inputs = {n: sha(os.path.join(os.path.dirname(patchdir), n)) for n in ('build.sh', 'Containerfile')}
+if g['buildinfo'].get('inputs') != inputs:
+    bad.append('recorded build.sh/Containerfile hashes differ from glibc/')
 ldso, libc = 'usr/lib/ld-linux-aarch64.so.1', 'usr/lib/aarch64-linux-gnu/libc.so.6'
 for rel, built in ((ldso, 'ld-linux-aarch64.so.1'), (libc, 'libc.so.6')):
     data = open(os.path.join(tree, rel), 'rb').read()
@@ -173,7 +290,7 @@ EOF
 fi
 
 if jq -e .fex /out/manifest.json >/dev/null; then
-    python3 - "$tree" /out/manifest.json /src/fex "/src/fex/out$VARIANT_SUFFIX/userland" <<'EOF' || fail=1
+    python3 - "$tree" /out/manifest.json /src/fex /src/fex/out/userland <<'EOF' || fail=1
 import hashlib, json, os, re, subprocess, sys
 tree, manifest, fexdir, fexout = sys.argv[1:]
 x = json.load(open(manifest))['fex']
@@ -227,6 +344,57 @@ EOF
 fi
 
 echo "archive: $(stat -c %s "$archive") bytes; regular files: $(find "$tree" -type f | wc -l); unpacked: $(du -sb "$tree" | cut -f1) bytes"
-rm -rf "$tree"
+
+# The tree rewritten for $data as the app rewrites it (UserlandInstaller), then run from there.
+python3 - "$tree" /out/manifest.json "$data" <<'EOF' || fail=1
+import json, os, sys
+tree, manifest, data = sys.argv[1:]
+m = json.load(open(manifest))
+P = m['placeholder'].encode()
+exact = data.encode()
+padded = exact + b'/' * (len(P) - len(exact))
+for e in m['entries']:
+    if not e.get('placeholders'):
+        continue
+    path = os.path.join(tree, e['path'])
+    old = open(path, 'rb').read()
+    new, at = bytearray(), 0
+    for o in e['placeholders']:
+        assert old[o:o + len(P)] == P, e['path']
+        new += old[at:o] + (exact if e.get('text') else padded)
+        at = o + len(P)
+    new += old[at:]
+    mode = os.stat(path).st_mode
+    os.chmod(path, mode | 0o200)
+    open(path, 'wb').write(new)
+    os.chmod(path, mode)
+left = []
+for dirpath, _, files in os.walk(tree):
+    for n in files:
+        f = os.path.join(dirpath, n)
+        if not os.path.islink(f) and P[:32] in open(f, 'rb').read():
+            left.append(os.path.relpath(f, tree))
+if left:
+    sys.exit(f'FAIL: the placeholder is left in {left}')
+print(f'rewritten for {data}: no placeholder left')
+EOF
+if [[ "${PD2_HOST_BINFMT_AARCH64:-0}" == 1 ]]; then
+    bin="$data/files/userland/current/usr/bin"
+    # Each: the command, then what its output must hold.
+    runs=("Xvfb -help|use: X" "xkbcomp -version|xkbcomp" "pulseaudio --version|pulseaudio [0-9]")
+    [[ -f "$bin/FEXServer" ]] && runs+=("FEXServer --version|FEX-[0-9]")
+    for run in "${runs[@]}"; do
+        command="${run%%|*}"
+        # Interpreter and libraries only at the padded path: no library environment.
+        if got="$( (env -i "$bin/${command%% *}" ${command#* } 2>&1 || true) | grep -m1 -E "${run#*|}")"; then
+            echo "relocated $command: $got"
+        else
+            bad "relocated $command: $(env -i "$bin/${command%% *}" ${command#* } 2>&1 | head -n 3)"
+        fi
+    done
+else
+    echo "relocated runs skipped: no qemu-aarch64 binfmt handler on this host"
+fi
+rm -rf "$data"
 [[ "$fail" == 0 ]] && echo "check-tree: OK"
 exit "$fail"

@@ -12,9 +12,9 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
-#include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -118,12 +118,25 @@ JNIEXPORT jint JNICALL Java_com_pd2launcher_app_Spawner_nativeSpawn(
     (void)clazz;
     int result = 0;
     pid_t pid = 0;
+    // Each copy only while the one before worked: a failed one may leave an exception pending,
+    // and no other JNI call may follow it.
     char **child_argv = copy_strings(env, argv);
-    char **child_envp = copy_strings(env, envp);
-    const char *child_path = (*env)->GetStringUTFChars(env, path, NULL);
+    char **child_envp = child_argv != NULL ? copy_strings(env, envp) : NULL;
+    const char *child_path = child_envp != NULL ? (*env)->GetStringUTFChars(env, path, NULL) : NULL;
     if (child_argv == NULL || child_envp == NULL || child_path == NULL) {
         result = -ENOMEM;
         goto out;
+    }
+    // A descriptor that already is 3 is copied first: a dup2 onto itself would leave it
+    // close-on-exec on Androids whose posix_spawn predates POSIX's rule for that case. Without
+    // the copy the child would start without it, so the spawn fails instead.
+    int fd3_copy = -1;
+    if (fd3 == 3) {
+        fd3_copy = fcntl(fd3, F_DUPFD_CLOEXEC, 4);
+        if (fd3_copy < 0) {
+            result = -errno;
+            goto out;
+        }
     }
 
     posix_spawn_file_actions_t actions;
@@ -137,9 +150,6 @@ JNIEXPORT jint JNICALL Java_com_pd2launcher_app_Spawner_nativeSpawn(
     posix_spawn_file_actions_adddup2(&actions, stdin_fd, 0);
     posix_spawn_file_actions_adddup2(&actions, output_fd, 1);
     posix_spawn_file_actions_adddup2(&actions, output_fd, 2);
-    // A descriptor that already is 3 is copied first: a dup2 onto itself would leave it
-    // close-on-exec on Androids whose posix_spawn predates POSIX's rule for that case.
-    int fd3_copy = fd3 == 3 ? fcntl(fd3, F_DUPFD_CLOEXEC, 4) : -1;
     if (fd3 >= 0) posix_spawn_file_actions_adddup2(&actions, fd3_copy >= 0 ? fd3_copy : fd3, 3);
 
     // A new session, no blocked signals, and default dispositions: the app's
@@ -214,15 +224,21 @@ JNIEXPORT jintArray JNICALL Java_com_pd2launcher_app_Spawner_nativeSocketPair(JN
     return result;
 }
 
-// A new, empty memfd named [name], close-on-exec (a child gets it only as its descriptor 3).
-// Returns the descriptor, or -errno. The system call, not bionic's wrapper (API 30), so the
-// library loads on every Android the app runs on; the caller asks only on Android 11 and later.
+// A new, empty memfd named [name], close-on-exec (a child gets it only as its descriptor 3), that
+// can grow but never shrink (F_SEAL_SHRINK): the app maps it, and a process of the app's user that
+// reached it through /proc and cut it shorter would end the app with SIGBUS on its next read;
+// Xvfb only grows it to the framebuffer's size. Returns the descriptor, or -errno.
 JNIEXPORT jint JNICALL Java_com_pd2launcher_app_Spawner_nativeMemfd(JNIEnv *env, jclass clazz, jstring name) {
     (void)clazz;
     const char *chars = (*env)->GetStringUTFChars(env, name, NULL);
     if (chars == NULL) return -ENOMEM;
-    int fd = (int)syscall(__NR_memfd_create, chars, 1u /* MFD_CLOEXEC */);
+    int fd = memfd_create(chars, MFD_CLOEXEC | MFD_ALLOW_SEALING);
     int error = errno;
     (*env)->ReleaseStringUTFChars(env, name, chars);
+    if (fd >= 0 && fcntl(fd, F_ADD_SEALS, F_SEAL_SHRINK) != 0) {
+        error = errno;
+        close(fd);
+        fd = -1;
+    }
     return fd >= 0 ? fd : -error;
 }

@@ -4,12 +4,10 @@
 # pinned container and installed into out/install (the contents of <U>).
 #
 # Usage: userland/glibc/build.sh
-# Output: userland/glibc/out/install/{lib,usr,etc}, out/BUILDINFO, out/build.log; for the
-# debug variant (PD2_USERLAND_VARIANT=debug, ../config.sh) out-debug/ instead of out/.
+# Output: userland/glibc/out/install/{lib,usr,etc}, out/BUILDINFO, out/build.log.
 set -euo pipefail
 
-# Fixed install prefix on the device: ../config.sh's USERLAND for
-# the variant, which the host passes into the container.
+# The install prefix: ../config.sh's USERLAND, which the host passes into the container.
 if [ "${PD2_GLIBC_IN_CONTAINER:-}" != 1 ]; then
     # shellcheck source=../config.sh
     . "$(dirname "${BASH_SOURCE[0]}")/../config.sh"
@@ -39,16 +37,16 @@ if [ "${PD2_GLIBC_IN_CONTAINER:-}" != 1 ]; then
     elif command -v docker >/dev/null 2>&1; then engine=docker
     else echo "refusing: no container engine (podman or docker) found" >&2; exit 1; fi
     cache="${PD2_USERLAND_CACHE:-$HOME/.cache/pd2-android/userland}/glibc"
-    hash="$( (cat "$HERE/Containerfile"; echo "$DEBIAN_IMAGE $DEBIAN_SNAPSHOT") | sha256sum | cut -c1-16)"
-    image="localhost/pd2-glibc-build:$hash"
-    if ! "$engine" image exists "$image" 2>/dev/null; then
+    image="$(glibc_image_name)"
+    if ! have_image "$engine" "$image"; then
         "$engine" build --platform linux/amd64 \
             --build-arg "DEBIAN_IMAGE=$DEBIAN_IMAGE" --build-arg "DEBIAN_SNAPSHOT=$DEBIAN_SNAPSHOT" \
             -t "$image" -f "$HERE/Containerfile" "$HERE" >&2
+        archive_image "$engine" "$image"
     fi
-    mkdir -p "$cache/src" "$HERE/out$VARIANT_SUFFIX"
+    mkdir -p "$cache/src" "$HERE/out"
     exec "$engine" run --rm --platform linux/amd64 \
-        -v "$HERE:/src:ro" -v "$cache:/cache" -v "$HERE/out$VARIANT_SUFFIX:/out" \
+        -v "$HERE:/src:ro" -v "$cache:/cache" -v "$HERE/out:/out" \
         -e PD2_GLIBC_IN_CONTAINER=1 -e "PD2_GLIBC_PREFIX=$U" -e "JOBS=${JOBS:-$(nproc)}" \
         "$image" bash /src/build.sh
 fi
@@ -165,6 +163,7 @@ cp /build/glibc/sysdeps/unix/sysv/linux/aarch64/arch-syscall.h /out/arch-syscall
     echo "prefix=$U"
     echo "compiler=$(aarch64-linux-gnu-gcc-14 --version | head -n1)"
     echo "kernel_headers=$(dpkg-query -W -f '${Version}' linux-libc-dev-arm64-cross)"
+    for f in build.sh Containerfile; do echo "input=$f $(sha256sum < "/src/$f" | cut -d' ' -f1)"; done
     for p in /src/patches/*.patch; do echo "patch=$(basename "$p") $(sha256sum < "$p" | cut -d' ' -f1)"; done
 } > /out/BUILDINFO
 echo "== installed into out/install:"

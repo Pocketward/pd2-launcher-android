@@ -6,7 +6,9 @@ and riscv ports, so set_robust_list is not issued at process start, at
 thread start or in a fork child. glibc takes its existing paths for a
 kernel without robust futex lists: it marks the robust mutexes of an
 exiting thread OWNER_DEAD itself, and pthread_mutex_init of a robust,
-process-shared mutex returns ENOTSUP.
+process-shared mutex returns ENOTSUP. So does pthread_mutex_init of a
+robust priority-inheritance mutex: glibc's walk wakes a dead thread's
+robust mutex with FUTEX_WAKE, which wakes no waiter of a PI futex.
 
 set_robust_list and get_robust_list are not in the Android 13 (API 33) app
 seccomp allowlist; the filter traps them with SIGSYS.
@@ -55,3 +57,20 @@ seccomp allowlist; the filter traps them with SIGSYS.
        call_function_static_weak (__getrandom_fork_subprocess);
      }
  
+--- a/nptl/pthread_mutex_init.c
++++ b/nptl/pthread_mutex_init.c
+@@ -97,6 +97,14 @@
+       if ((imutexattr->mutexkind & PTHREAD_MUTEXATTR_FLAG_PSHARED) != 0
+ 	  && !__nptl_set_robust_list_avail)
+ 	return ENOTSUP;
++      /* Without the kernel's robust list (the Android app seccomp policy
++	 traps set_robust_list), start_thread's own walk marks a dead
++	 thread's robust mutexes, and it cannot hand over a
++	 priority-inheritance futex: the waiters would never wake.  */
++      if ((imutexattr->mutexkind & PTHREAD_MUTEXATTR_PROTOCOL_MASK)
++	  == (PTHREAD_PRIO_INHERIT << PTHREAD_MUTEXATTR_PROTOCOL_SHIFT)
++	  && !__nptl_set_robust_list_avail)
++	return ENOTSUP;
+ #endif
+ 
+       mutex_kind |= PTHREAD_MUTEX_ROBUST_NORMAL_NP;

@@ -53,6 +53,12 @@ object OwnedProcesses : UserlandProcesses {
  */
 class ProcessStarter(private val logs: File, private val serviceLog: RotatingLog) {
     private val lock = Any()
+    /**
+     * One log per name: a process started again under a name (the engine after a restart, each
+     * `wineserver -k`) writes the same file while an earlier one's drain may still be writing it,
+     * and two logs of one file would each count its size and rotate it under the other.
+     */
+    private val logsByName = HashMap<String, RotatingLog>()
 
     /**
      * Starts [path] with [argv] and [env] as [name]; [stdin] (null: /dev/null) and [fd3] (the
@@ -69,7 +75,7 @@ class ProcessStarter(private val logs: File, private val serviceLog: RotatingLog
         mirror: ((String) -> Unit)? = null,
         onExit: (OwnedProcess, ExitStatus) -> Unit = { _, _ -> },
     ): OwnedProcess {
-        val log = RotatingLog(logs, name)
+        val log = synchronized(lock) { logsByName.getOrPut(name) { RotatingLog(logs, name) } }
         val pipe = ParcelFileDescriptor.createPipe()
         val devNull = if (stdin == null) ParcelFileDescriptor.open(File("/dev/null"), ParcelFileDescriptor.MODE_READ_ONLY) else null
         val drained = CountDownLatch(1)
@@ -80,14 +86,19 @@ class ProcessStarter(private val logs: File, private val serviceLog: RotatingLog
                 var started: OwnedProcess? = null
                 val pid = Spawner.spawn(path, argv, env, stdin ?: devNull!!, pipe[1], fd3) { status ->
                     synchronized(lock) { OwnedProcesses.remove(started?.pid ?: -1) }
-                    // Most output is in by now; a descendant holding the pipe must not delay the exit line.
-                    drained.await(1, TimeUnit.SECONDS)
-                    val line = "exit pid=${started?.pid} name=$name ${describe(status)}"
-                    log.line(line)
-                    log.close()
-                    serviceLog.line(line)
-                    Log.i(TAG, line)
-                    started?.let { onExit(it, status) }
+                    // The exit is handled whatever the logging does: the spawner drops an
+                    // exception here, and with it the exit, so the engine would show as running.
+                    try {
+                        // Most output is in by now; a descendant holding the pipe must not delay the exit line.
+                        drained.await(1, TimeUnit.SECONDS)
+                        val line = "exit pid=${started?.pid} name=$name ${describe(status)}"
+                        log.line(line)
+                        log.close()
+                        serviceLog.line(line)
+                        Log.i(TAG, line)
+                    } finally {
+                        started?.let { onExit(it, status) }
+                    }
                 }
                 process = OwnedProcess(pid, name)
                 started = process
@@ -192,6 +203,23 @@ class UidCleanup(
         left.forEach { log("cleanup: pid ${it.pid} ${it.name} still present after SIGKILL") }
         // Leftovers that started meanwhile are not chased: the engine is not running to start more.
         return alive
+    }
+
+    /**
+     * SIGKILL, with no grace, to every process [list] returns, and again to every one it returns
+     * after that, each [POLL_MS], until it returns none and [settled] holds, or [timeout] ms have
+     * passed. Returns the processes still listed then.
+     */
+    fun killAll(timeout: Long, settled: () -> Boolean = { true }): List<UidProcess> {
+        val deadline = now() + timeout
+        var left = list()
+        while ((left.isNotEmpty() || !settled()) && now() < deadline) {
+            left.forEach { send(it, SIGKILL) }
+            sleep(POLL_MS)
+            left = list()
+        }
+        left.forEach { log("cleanup: pid ${it.pid} ${it.name} still present $timeout ms after SIGKILL") }
+        return left
     }
 
     /** [targets] still present, matched by pid and name (a reused pid is not the same process). */

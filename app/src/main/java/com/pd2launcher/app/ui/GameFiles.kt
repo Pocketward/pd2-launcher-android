@@ -73,6 +73,8 @@ fun ColumnScope.GameFilesRows() {
             is Outcome.Refused -> context.getString(
                 when (outcome.refusal) {
                     DocumentPaths.Refusal.LAUNCHER_BUSY -> R.string.files_refused_busy
+                    DocumentPaths.Refusal.EXECUTABLE -> R.string.files_refused_executable
+                    DocumentPaths.Refusal.GAME_STARTING -> R.string.files_refused_game_starting
                     else -> R.string.files_refused_game_running
                 },
             )

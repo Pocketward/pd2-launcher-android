@@ -18,6 +18,10 @@
  * CPU waits check the conditions and otherwise poll() the kbase fd, which kbase wakes on GPU sync
  * updates and errors (level-triggered until read(); mali_kbase_core_linux.c kbase_poll and
  * kbase_read). One waiter at a time reads notifications; the others sleep on a condition variable.
+ * Beside the kbase fd that waiter polls an eventfd, written when a payload changes (a CPU signal,
+ * a submission's fence) and when another thread has read kbase's notifications, which would
+ * otherwise leave the waiter asleep with nothing left for it to read. A group's fatal error is
+ * passed on to the queue code (kbase_sync_set_fatal_hook), which ends the waits on its rings.
  */
 
 #include <errno.h>
@@ -26,6 +30,7 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/eventfd.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -44,9 +49,8 @@
 #include "kbase_kmod.h"
 #include "kbase_kmod_sync.h"
 
-/* How long one waiter sleeps in poll() before it re-checks, in ms. Wake-ups come from the kernel;
- * this only bounds the time to notice a condition no event announces (another thread's CPU
- * signal is announced on the condition variable instead). */
+/* How long one waiter sleeps in poll() before it re-checks, in ms. Wake-ups come from the kernel
+ * and from the eventfd; this only bounds the time to notice a condition nothing announces. */
 #define KBASE_SYNC_POLL_SLICE_MS 100
 
 #define KBASE_MAX_GROUPS 256
@@ -86,6 +90,14 @@ struct kbase_sync {
 
    /* Groups with a fatal error, by kbase group handle (set by the notification reader). */
    bool group_fatal[KBASE_MAX_GROUPS];
+
+   /* The eventfd in the polling waiter's poll set beside the kbase fd (-1: none, the waiter then
+    * notices changes at the end of its slice). */
+   int wake_fd;
+
+   /* Told about each group newly marked fatal; set with atomics (kbase_sync_set_fatal_hook). */
+   void (*fatal_hook)(void *data, uint8_t group);
+   void *fatal_data;
 };
 
 struct kbase_sync_provider {
@@ -104,6 +116,28 @@ fail(int err)
 {
    errno = err;
    return -err;
+}
+
+/* Wakes the waiter polling the kbase fd, if any, to look again. */
+static void
+sync_wake(struct kbase_sync *sync)
+{
+   if (sync->wake_fd < 0)
+      return;
+   uint64_t one = 1;
+   /* EAGAIN only when the counter is full, that is already non-zero: the waiter wakes anyway. */
+   ssize_t ret = write(sync->wake_fd, &one, sizeof(one));
+   (void)ret;
+}
+
+/* Under the lock: a payload changed. Waiters on the condition variable see it at once; the
+ * polling waiter is woken through the eventfd. */
+static void
+sync_changed(struct kbase_sync *sync)
+{
+   pthread_cond_broadcast(&sync->changed);
+   if (sync->pumping)
+      sync_wake(sync);
 }
 
 /* --- fences ------------------------------------------------------------------------------- */
@@ -411,7 +445,7 @@ kbase_sync_signal(struct util_sync_provider *p, const uint32_t *handles, uint32_
       else
          ret = fail(EINVAL);
    }
-   pthread_cond_broadcast(&sync->changed);
+   sync_changed(sync);
    pthread_mutex_unlock(&sync->lock);
    return ret;
 }
@@ -433,7 +467,7 @@ kbase_sync_timeline_signal(struct util_sync_provider *p, const uint32_t *handles
       else
          obj_replace(obj, NULL);
    }
-   pthread_cond_broadcast(&sync->changed);
+   sync_changed(sync);
    pthread_mutex_unlock(&sync->lock);
    return ret;
 }
@@ -476,7 +510,7 @@ kbase_sync_attach(struct kbase_sync *sync, uint32_t handle, uint64_t point,
       obj_add_point(obj, point, fence_ref(fence));
    else
       obj_replace(obj, fence_ref(fence));
-   pthread_cond_broadcast(&sync->changed);
+   sync_changed(sync);
    pthread_mutex_unlock(&sync->lock);
    return ret;
 }
@@ -506,26 +540,34 @@ kbase_fence_conds(const struct kbase_fence *f, uint32_t *count)
    return f ? f->conds : NULL;
 }
 
-/* Reads every pending notification; marks groups with fatal errors. Called without the lock. */
-void
-kbase_sync_drain_notifications(struct kbase_sync *sync)
+/* Reads every pending notification; marks groups with fatal errors and tells the fatal hook.
+ * Called without the lock. Notifications read by any thread but the polling waiter wake that
+ * waiter ([wake]): kbase's wake-up is consumed by the read. */
+static void
+drain(struct kbase_sync *sync, bool wake)
 {
+   unsigned got_any = 0;
    for (unsigned guard = 0; guard < 64; guard++) {
       struct pollfd pfd = { .fd = sync->fd, .events = POLLIN };
       if (poll(&pfd, 1, 0) <= 0 || !(pfd.revents & POLLIN))
-         return;
+         break;
 
       struct base_csf_notification note;
       ssize_t got = read(sync->fd, &note, sizeof(note));
       if (got != sizeof(note))
-         return;
+         break;
+      got_any++;
 
       if (note.type == BASE_CSF_NOTIFICATION_GPU_QUEUE_GROUP_ERROR) {
          uint8_t group = note.payload.csg_error.handle;
          const struct base_gpu_queue_group_error *err = &note.payload.csg_error.error;
          /* A queue fault (CS_FAULT reporting) is not fatal on its own; everything else is. */
-         if (err->error_type != BASE_GPU_QUEUE_GROUP_QUEUE_ERROR_FAULT)
-            __atomic_store_n(&sync->group_fatal[group], true, __ATOMIC_RELEASE);
+         if (err->error_type != BASE_GPU_QUEUE_GROUP_QUEUE_ERROR_FAULT &&
+             !__atomic_exchange_n(&sync->group_fatal[group], true, __ATOMIC_ACQ_REL)) {
+            void (*hook)(void *, uint8_t) = __atomic_load_n(&sync->fatal_hook, __ATOMIC_ACQUIRE);
+            if (hook)
+               hook(__atomic_load_n(&sync->fatal_data, __ATOMIC_ACQUIRE), group);
+         }
          /* status: the exception type in the low byte (kbase uAPI csf/mali_base_csf_kernel.h). */
          if (err->error_type == BASE_GPU_QUEUE_GROUP_ERROR_FATAL ||
              err->error_type == BASE_GPU_QUEUE_GROUP_ERROR_TIMEOUT ||
@@ -541,6 +583,14 @@ kbase_sync_drain_notifications(struct kbase_sync *sync)
          }
       }
    }
+   if (wake && got_any)
+      sync_wake(sync);
+}
+
+void
+kbase_sync_drain_notifications(struct kbase_sync *sync)
+{
+   drain(sync, true);
 }
 
 bool
@@ -553,6 +603,14 @@ void
 kbase_sync_group_reset(struct kbase_sync *sync, uint8_t group)
 {
    __atomic_store_n(&sync->group_fatal[group], false, __ATOMIC_RELEASE);
+}
+
+void
+kbase_sync_set_fatal_hook(struct kbase_sync *sync, void (*hook)(void *data, uint8_t group),
+                          void *data)
+{
+   __atomic_store_n(&sync->fatal_data, data, __ATOMIC_RELEASE);
+   __atomic_store_n(&sync->fatal_hook, hook, __ATOMIC_RELEASE);
 }
 
 static int
@@ -622,14 +680,25 @@ kbase_sync_timeline_wait(struct util_sync_provider *p, uint32_t *handles, uint64
          MIN2(abs_timeout_ns, now + (int64_t)KBASE_SYNC_POLL_SLICE_MS * 1000000);
 
       if (need_gpu && !sync->pumping) {
-         /* Become the reader: sleep in poll() until kbase reports an event or error. */
+         /* Become the reader: sleep in poll() until kbase reports an event or error, or the
+          * eventfd says something changed (a payload, or notifications another thread read). */
          sync->pumping = true;
          pthread_mutex_unlock(&sync->lock);
 
-         struct pollfd pfd = { .fd = sync->fd, .events = POLLIN };
+         struct pollfd pfd[2] = {
+            { .fd = sync->fd, .events = POLLIN },
+            { .fd = sync->wake_fd, .events = POLLIN },
+         };
          int ms = DIV_ROUND_UP(slice_end - now, 1000000);
-         if (poll(&pfd, 1, ms) > 0 && (pfd.revents & POLLIN))
-            kbase_sync_drain_notifications(sync);
+         if (poll(pfd, sync->wake_fd >= 0 ? 2 : 1, ms) > 0) {
+            if (pfd[1].revents & POLLIN) {
+               uint64_t count;
+               ssize_t ret = read(sync->wake_fd, &count, sizeof(count));
+               (void)ret;
+            }
+            if (pfd[0].revents & POLLIN)
+               drain(sync, false);
+         }
 
          pthread_mutex_lock(&sync->lock);
          sync->pumping = false;
@@ -684,7 +753,7 @@ kbase_sync_transfer(struct util_sync_provider *p, uint32_t dst_handle, uint64_t 
       else
          obj_replace(dst, f);
       f = NULL;
-      pthread_cond_broadcast(&sync->changed);
+      sync_changed(sync);
    }
    pthread_mutex_unlock(&sync->lock);
    fence_unref(f);
@@ -705,6 +774,8 @@ kbase_sync_unref(struct kbase_sync *sync)
       }
    }
    util_dynarray_fini(&sync->objs);
+   if (sync->wake_fd >= 0)
+      close(sync->wake_fd);
    pthread_cond_destroy(&sync->changed);
    pthread_mutex_destroy(&sync->lock);
    free(sync);
@@ -766,6 +837,10 @@ kbase_sync_provider_create(struct kbase_kmod_dev *kdev)
 
    sync->refcnt = 1;
    sync->fd = kdev->base.fd;
+   sync->wake_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+   if (sync->wake_fd < 0)
+      mesa_logw("kbase: no eventfd (%s): CPU signals reach GPU waits at the next poll slice",
+                strerror(errno));
    pthread_mutex_init(&sync->lock, NULL);
 
    /* Timeouts are absolute CLOCK_MONOTONIC times, as DRM's. */
