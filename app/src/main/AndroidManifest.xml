@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- The session service owns every process. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- Held only while the engine-exit cleanup runs (at most 30 s). -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- The engine's own downloads (Download, updates); the app follows the default network's
+         DNS servers and warns on a metered one. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Check's grant buttons: Android's own prompt to stop optimising the app's battery use,
+         and the notification prompt where the target allows. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:label="@string/app_name"
+        android:theme="@android:style/Theme.Material.NoActionBar">
+        <!-- Follows the device (portrait and landscape) and handles configuration changes itself:
+             Compose lays out again; the step state and key fields are not recreated. -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:screenOrientation="fullUser"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|density|keyboard|keyboardHidden|navigation|uiMode"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <service
+            android:name=".SessionService"
+            android:exported="false" />
+        <!-- The "PD2 Launcher" root in the Files app and file pickers: the Diablo II folder in
+             use. Only the system's document UI (MANAGE_DOCUMENTS) binds it; other apps reach
+             files through the URIs it grants. -->
+        <provider
+            android:name=".GameFilesProvider"
+            android:authorities="${applicationId}.documents"
+            android:exported="true"
+            android:grantUriPermissions="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+            </intent-filter>
+        </provider>
+    </application>
+
+</manifest>

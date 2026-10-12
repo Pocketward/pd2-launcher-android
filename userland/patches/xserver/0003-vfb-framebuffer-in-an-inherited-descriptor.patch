@@ -1,0 +1,104 @@
+--- a/hw/vfb/InitOutput.c
++++ b/hw/vfb/InitOutput.c
+@@ -119,6 +119,8 @@
+ 
+ #ifdef HAVE_MMAP
+ static char *pfbdir = NULL;
++/* -fbfd: screen 0's framebuffer in this inherited descriptor (a memfd), -1 none */
++static int fbfd = -1;
+ #endif
+ typedef enum { NORMAL_MEMORY_FB, SHARED_MEMORY_FB, MMAPPED_FILE_FB } fbMemType;
+ static fbMemType fbmemtype = NORMAL_MEMORY_FB;
+@@ -162,6 +164,8 @@
+     switch (fbmemtype) {
+ #ifdef HAVE_MMAP
+     case MMAPPED_FILE_FB:
++        if (pvfb->mmap_file[0] == '\0')
++            break;              /* -fbfd: no file to remove */
+         if (-1 == unlink(pvfb->mmap_file)) {
+             perror("unlink");
+             ErrorF("unlink %s failed, %s",
+@@ -250,6 +254,8 @@
+ #ifdef HAVE_MMAP
+     ErrorF
+         ("-fbdir directory       put framebuffers in mmap'ed files in directory\n");
++    ErrorF
++        ("-fbfd fd               put screen 0's framebuffer in inherited descriptor fd\n");
+ #endif
+ 
+ #ifdef HAS_SHM
+@@ -366,6 +372,13 @@
+         fbmemtype = MMAPPED_FILE_FB;
+         return 2;
+     }
++
++    if (strcmp(argv[i], "-fbfd") == 0) {        /* -fbfd descriptor */
++        CHECK_FOR_REQUIRED_ARGUMENTS(1);
++        fbfd = atoi(argv[++i]);
++        fbmemtype = MMAPPED_FILE_FB;
++        return 2;
++    }
+ #endif                          /* HAVE_MMAP */
+ 
+ #ifdef HAS_SHM
+@@ -487,6 +500,33 @@
+ {
+ }
+ 
++/* -fbfd: the framebuffer in the descriptor the parent passed (a memfd it
++ * also maps), sized here; memory only, so nothing is synced or removed. */
++static void
++vfbAllocateFramebufferInDescriptor(vfbScreenInfoPtr pvfb)
++{
++    pvfb->mmap_file[0] = '\0';
++    if (pvfb != vfbScreens) {
++        ErrorF("-fbfd holds screen 0 only; screen %d has no framebuffer\n",
++               (int) (pvfb - vfbScreens));
++        return;
++    }
++    pvfb->mmap_fd = fbfd;
++    if (-1 == ftruncate(fbfd, pvfb->sizeInBytes)) {
++        perror("ftruncate");
++        ErrorF("ftruncate descriptor %d failed, %s", fbfd, strerror(errno));
++        return;
++    }
++    pvfb->pXWDHeader = (XWDFileHeader *) mmap((caddr_t) NULL, pvfb->sizeInBytes,
++                                              PROT_READ | PROT_WRITE,
++                                              MAP_SHARED, fbfd, 0);
++    if (-1 == (long) pvfb->pXWDHeader) {
++        perror("mmap");
++        ErrorF("mmap descriptor %d failed, %s", fbfd, strerror(errno));
++        pvfb->pXWDHeader = NULL;
++    }
++}
++
+ static void
+ vfbAllocateMmappedFramebuffer(vfbScreenInfoPtr pvfb)
+ {
+@@ -494,6 +534,11 @@
+     char dummyBuffer[DUMMY_BUFFER_SIZE];
+     int currentFileSize, writeThisTime;
+ 
++    if (fbfd >= 0) {
++        vfbAllocateFramebufferInDescriptor(pvfb);
++        return;
++    }
++
+     snprintf(pvfb->mmap_file, sizeof(pvfb->mmap_file), "%s/Xvfb_screen%d",
+              pfbdir, (int) (pvfb - vfbScreens));
+     if (-1 == (pvfb->mmap_fd = open(pvfb->mmap_file, O_CREAT | O_RDWR, 0666))) {
+--- a/hw/vfb/man/Xvfb.man
++++ b/hw/vfb/man/Xvfb.man
+@@ -70,6 +70,12 @@
+ This option only exists on machines that have the mmap and msync system
+ calls.
+ .TP 4
++.B "\-fbfd \fIdescriptor\fP"
++This option puts screen 0's framebuffer, laid out as with \fB\-fbdir\fP,
++in the already open file \fIdescriptor\fP the server inherited (for
++example a memfd its parent also maps), sized by the server. No file is
++created or removed, and nothing is synced. Only screen 0 can have one.
++.TP 4
+ .B "\-shmem"
+ This option specifies that the framebuffer should be put in shared memory.
+ The shared memory ID for each screen will be printed by the server.

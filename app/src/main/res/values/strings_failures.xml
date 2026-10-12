@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Why a Download or Install did not finish (Failures.kt); "Try again" is the screens' button. -->
+    <string name="failure_blizzard_download">Blizzard\'s downloader couldn\'t connect. Check your connection and Try again, or use Import an existing installation.</string>
+    <string name="failure_download">A download didn\'t finish. Check your connection and Try again. What is already downloaded is kept.</string>
+    <string name="failure_d2_key">Diablo II\'s installer didn\'t accept the Diablo II key. Check the key and Try again.</string>
+    <string name="failure_lod_key">Lord of Destruction\'s installer didn\'t accept the Lord of Destruction key. Check the key and Try again.</string>
+    <string name="failure_installer">Blizzard\'s installer stopped with an error. Check both CD keys and Try again.</string>
+    <string name="failure_install">The install didn\'t finish. Try again. What is already downloaded is kept.</string>
+    <!-- The game environment did not start for the install: the session service's reason. -->
+    <string name="failure_detail">%1$s</string>
+</resources>

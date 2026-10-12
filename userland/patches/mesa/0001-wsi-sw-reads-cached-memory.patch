@@ -1,0 +1,88 @@
+--- a/src/vulkan/wsi/wsi_common.c
++++ b/src/vulkan/wsi/wsi_common.c
+@@ -218,6 +218,7 @@
+    WSI_GET_CB(GetImageDrmFormatModifierPropertiesEXT);
+    WSI_GET_CB(GetImageMemoryRequirements);
+    WSI_GET_CB(GetImageSubresourceLayout);
++   WSI_GET_CB(InvalidateMappedMemoryRanges);
+    if (!wsi->sw)
+       WSI_GET_CB(GetMemoryFdKHR);
+    WSI_GET_CB(GetPhysicalDeviceCalibrateableTimeDomainsKHR);
+@@ -3077,8 +3078,23 @@
+ {
+    VkMemoryPropertyFlags req_props = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+ 
+-   if (wsi->sw)
+-      req_props |= VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
++   if (wsi->sw) {
++      /* The CPU reads every presented frame: host-cached memory, coherent or
++       * not (then invalidated before each read), reads far faster than the
++       * write-combined kind.
++       */
++      const VkMemoryPropertyFlags cached =
++         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
++      u_foreach_bit(t, type_bits) {
++         if ((wsi->memory_props.memoryTypes[t].propertyFlags & (cached | req_props)) ==
++             (cached | req_props))
++            return t;
++      }
++      u_foreach_bit(t, type_bits) {
++         if ((wsi->memory_props.memoryTypes[t].propertyFlags & cached) == cached)
++            return t;
++      }
++   }
+ 
+    return wsi_select_memory_type(wsi, req_props, 0 /* deny_props */, type_bits);
+ }
+@@ -3140,6 +3156,10 @@
+          info->select_blit_dst_memory_type(wsi, reqs.memoryTypeBits),
+    };
+ 
++   image->blit.non_coherent =
++      !(wsi->memory_props.memoryTypes[buf_mem_info.memoryTypeIndex].propertyFlags &
++        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
++
+    void *sw_host_ptr = NULL;
+    if (info->alloc_shm)
+       sw_host_ptr = info->alloc_shm(image, info->linear_size);
+--- a/src/vulkan/wsi/wsi_common.h
++++ b/src/vulkan/wsi/wsi_common.h
+@@ -232,6 +232,7 @@
+    WSI_CB(GetImageDrmFormatModifierPropertiesEXT);
+    WSI_CB(GetImageMemoryRequirements);
+    WSI_CB(GetImageSubresourceLayout);
++   WSI_CB(InvalidateMappedMemoryRanges);
+    WSI_CB(GetMemoryFdKHR);
+    WSI_CB(GetPhysicalDeviceCalibrateableTimeDomainsKHR);
+    WSI_CB(GetPhysicalDeviceProperties);
+--- a/src/vulkan/wsi/wsi_common_private.h
++++ b/src/vulkan/wsi/wsi_common_private.h
+@@ -171,6 +171,10 @@
+        * with the compositor instead of being mapped via vkMapMemory locally.
+        */
+       bool to_foreign_queue;
++      /* The blit dst memory is host-cached but not host-coherent: invalidate
++       * the CPU caches over it before reading it.
++       */
++      bool non_coherent;
+    } blit;
+    /* Whether or not the image has been acquired
+     * on the CPU side via acquire_next_image.
+--- a/src/vulkan/wsi/wsi_common_x11.c
++++ b/src/vulkan/wsi/wsi_common_x11.c
+@@ -1854,6 +1854,15 @@
+    xcb_get_geometry_cookie_t geom_cookie = xcb_get_geometry(chain->conn, chain->window);
+ 
+    xcb_void_cookie_t cookie;
++   if (image->base.blit.non_coherent) {
++      const VkMappedMemoryRange range = {
++         .sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
++         .memory = image->base.blit.memory,
++         .offset = 0,
++         .size = VK_WHOLE_SIZE,
++      };
++      chain->base.wsi->InvalidateMappedMemoryRanges(chain->base.device, 1, &range);
++   }
+    void *myptr = image->base.cpu_map;
+    size_t hdr_len = sizeof(xcb_put_image_request_t);
+    int stride_b = image->base.row_pitches[0];

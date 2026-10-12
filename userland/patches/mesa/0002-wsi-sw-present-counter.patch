@@ -1,0 +1,74 @@
+--- a/src/vulkan/wsi/wsi_common_x11.c
++++ b/src/vulkan/wsi/wsi_common_x11.c
+@@ -71,6 +71,11 @@
+ #include <sys/shm.h>
+ #endif
+ 
++#ifdef __linux__
++#include <sys/mman.h>
++#include <sys/stat.h>
++#endif
++
+ #ifndef XCB_PRESENT_OPTION_ASYNC_MAY_TEAR
+ #define XCB_PRESENT_OPTION_ASYNC_MAY_TEAR 16
+ #endif
+@@ -1840,6 +1845,49 @@
+    return x11_swapchain_result(chain, VK_SUCCESS);
+ }
+ #endif
++
++#ifdef __linux__
++/* A count of the frames the software path has sent, shared with whoever
++ * shows the X screen: PD2_PRESENT_COUNTER names a file of at least 4 bytes
++ * (made by that reader) whose first 32-bit word, native endian, goes up by
++ * one per frame. Without the variable or the file nothing is counted.
++ */
++static uint32_t *sw_present_counter;
++static once_flag sw_present_counter_once = ONCE_FLAG_INIT;
++
++static void
++sw_present_counter_open(void)
++{
++   const char *path = getenv("PD2_PRESENT_COUNTER");
++   if (path == NULL || path[0] == '\0')
++      return;
++   int fd = open(path, O_RDWR | O_CLOEXEC);
++   if (fd < 0)
++      return;
++   struct stat st;
++   if (fstat(fd, &st) == 0 && st.st_size >= (off_t)sizeof(uint32_t)) {
++      void *map = mmap(NULL, sizeof(uint32_t), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
++      if (map != MAP_FAILED)
++         sw_present_counter = map;
++   }
++   close(fd);
++}
++
++static void
++sw_present_counted(void)
++{
++   call_once(&sw_present_counter_once, sw_present_counter_open);
++   if (sw_present_counter == NULL)
++      return;
++   __atomic_fetch_add(sw_present_counter, 1, __ATOMIC_RELEASE);
++}
++#else
++static void
++sw_present_counted(void)
++{
++}
++#endif
++
+ /**
+  * Send image to X server unaccelerated (software drivers).
+  */
+@@ -1935,6 +1983,9 @@
+    free(err);
+    free(geom);
+ 
++   /* The geometry reply came after the frame: the X server has it. */
++   sw_present_counted();
++
+    wsi_queue_push(&chain->acquire_queue, image_index);
+    return result;
+ }

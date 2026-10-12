@@ -1,0 +1,766 @@
+--- a/src/vulkan/wsi/wsi_common.c
++++ b/src/vulkan/wsi/wsi_common.c
+@@ -195,6 +195,7 @@
+    WSI_GET_CB(CmdPipelineBarrier);
+    WSI_GET_CB(CmdCopyImage);
+    WSI_GET_CB(CmdCopyImageToBuffer);
++   WSI_GET_CB(CmdBlitImage);
+    WSI_GET_CB(CmdResetQueryPool);
+    WSI_GET_CB(ResetQueryPoolEXT);
+    WSI_GET_CB(CmdWriteTimestamp);
+@@ -221,6 +222,7 @@
+    WSI_GET_CB(InvalidateMappedMemoryRanges);
+    if (!wsi->sw)
+       WSI_GET_CB(GetMemoryFdKHR);
++   WSI_GET_CB(GetMemoryFdPropertiesKHR);
+    WSI_GET_CB(GetPhysicalDeviceCalibrateableTimeDomainsKHR);
+    WSI_GET_CB(GetPhysicalDeviceProperties);
+    WSI_GET_CB(GetPhysicalDeviceFormatProperties);
+@@ -2745,10 +2747,17 @@
+          }
+ 
+          if (swapchain->blit.type != WSI_SWAPCHAIN_NO_BLIT) {
++            VkCommandBuffer blit_cmd = image->blit.cmd_buffers[queue->queue_family_index];
++            /* A blit into a buffer the platform shows instead, when it has one for this image. */
++            if (swapchain->direct_blit != NULL) {
++               VkCommandBuffer direct =
++                  swapchain->direct_blit(swapchain, image_index, queue->queue_family_index);
++               if (direct != VK_NULL_HANDLE)
++                  blit_cmd = direct;
++            }
+             command_buffer_infos[command_buffer_count++] = (VkCommandBufferSubmitInfo) {
+                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+-               .commandBuffer =
+-                  image->blit.cmd_buffers[queue->queue_family_index],
++               .commandBuffer = blit_cmd,
+             };
+          }
+ 
+--- a/src/vulkan/wsi/wsi_common.h
++++ b/src/vulkan/wsi/wsi_common.h
+@@ -208,6 +208,7 @@
+    WSI_CB(CmdPipelineBarrier);
+    WSI_CB(CmdCopyImage);
+    WSI_CB(CmdCopyImageToBuffer);
++   WSI_CB(CmdBlitImage);
+    WSI_CB(CmdResetQueryPool);
+    WSI_CB(ResetQueryPoolEXT);
+    WSI_CB(CmdWriteTimestamp);
+@@ -234,6 +235,7 @@
+    WSI_CB(GetImageSubresourceLayout);
+    WSI_CB(InvalidateMappedMemoryRanges);
+    WSI_CB(GetMemoryFdKHR);
++   WSI_CB(GetMemoryFdPropertiesKHR);
+    WSI_CB(GetPhysicalDeviceCalibrateableTimeDomainsKHR);
+    WSI_CB(GetPhysicalDeviceProperties);
+    WSI_CB(GetPhysicalDeviceFormatProperties);
+--- a/src/vulkan/wsi/wsi_common_private.h
++++ b/src/vulkan/wsi/wsi_common_private.h
+@@ -324,6 +324,14 @@
+    VkResult (*release_images)(struct wsi_swapchain *swap_chain,
+                               uint32_t count,
+                               const uint32_t *indices);
++   /* Optional, for a buffer blit: the command buffer that blits this image
++    * into a buffer the platform shows itself instead of the CPU-visible one,
++    * or VK_NULL_HANDLE for the usual blit. Called once per present, before
++    * the submission; it may wait for such a buffer to come free.
++    */
++   VkCommandBuffer (*direct_blit)(struct wsi_swapchain *swap_chain,
++                                  uint32_t image_index,
++                                  uint32_t queue_family_index);
+    void (*set_present_mode)(struct wsi_swapchain *swap_chain,
+                             VkPresentModeKHR mode);
+    void (*set_hdr_metadata)(struct wsi_swapchain *swap_chain,
+--- a/src/vulkan/wsi/wsi_common_x11.c
++++ b/src/vulkan/wsi/wsi_common_x11.c
+@@ -72,8 +72,11 @@
+ #endif
+ 
+ #ifdef __linux__
++#include <poll.h>
+ #include <sys/mman.h>
++#include <sys/socket.h>
+ #include <sys/stat.h>
++#include <sys/un.h>
+ #include <time.h>
+ #include "util/futex.h"
+ #endif
+@@ -1245,9 +1248,14 @@
+ };
+ #define X11_SWAPCHAIN_REFRESH_RATE_WINDOW_SIZE 16
+ 
++struct sw_direct;
++
+ struct x11_swapchain {
+    struct wsi_swapchain                        base;
+ 
++   /* The software path's direct present into the app's buffers, or NULL. */
++   struct sw_direct *                           direct;
++
+    bool                                         has_dri3_modifiers;
+    bool                                         has_mit_shm;
+    bool                                         has_async_may_tear;
+@@ -1954,6 +1962,607 @@
+ }
+ #endif
+ 
++#ifdef __linux__
++/* Direct present into the app's buffers. When PD2_PRESENT_SOCKET names the
++ * app's socket, the software path asks the app for as many buffers as the
++ * swapchain has images (AHardwareBuffers, sent as
++ * AHardwareBuffer_sendHandleToUnixSocket writes them), imports each buffer's
++ * first descriptor as a linear dma-buf image, and on a present blits the
++ * swapchain image on the GPU into a free buffer instead of reading it back
++ * for PutImage; the queue thread then tells the app which buffer to show,
++ * and the image goes back to the acquire queue at once. The app gives a
++ * buffer back once the compositor has replaced it on the screen (after its
++ * release fence). A present waits, at most 100 ms, for a free buffer: with
++ * the compositor showing one and holding the next, the game draws at the
++ * panel's rate, its own images free to render ahead. Once set up, the
++ * swapchain names its window in the root window's _PD2_PRESENT_WINDOW
++ * property, from which x-input-relay tells the app where that window is on
++ * the X screen and whether anything else shows there (a full-screen window,
++ * or a windowed game's, which the X screen shows at an offset). The app
++ * chooses between its buffers and the X screen with the word at byte 192 of
++ * the present counter's page (zero: PutImage, as while another window shows
++ * on the X screen); a present with no free buffer after the wait goes
++ * through PutImage too. Anything that fails leaves the swapchain on
++ * PutImage.
++ *
++ * The socket is AF_UNIX SOCK_SEQPACKET; every message is one struct
++ * sw_direct_msg, a sync_file beside it as SCM_RIGHTS where there is one.
++ */
++#define SW_DIRECT_MAGIC 0x50443250u /* "P2DP" in memory */
++#define SW_DIRECT_VERSION 1
++#define SW_DIRECT_MAX_IMAGES 4
++#define SW_DIRECT_MAX_BUFFERS 4
++#define SW_DIRECT_WAIT_NS (100 * 1000 * 1000)
++#define SW_DIRECT_WANTED_WORD (192 / sizeof(uint32_t))
++/* GraphicBuffer's flattened form ('GB01'), AOSP libs/ui GraphicBuffer::flatten. */
++#define SW_DIRECT_GB01 0x47423031
++#define SW_DIRECT_GB01_WIDTH 1
++#define SW_DIRECT_GB01_HEIGHT 2
++#define SW_DIRECT_GB01_STRIDE 3
++#define SW_DIRECT_GB01_FORMAT 4
++#define SW_DIRECT_GB01_NUM_FDS 10
++#define SW_DIRECT_GB01_NUM_INTS 11
++#define SW_DIRECT_GB01_HEADER 13
++/* Qualcomm's gralloc: the handle's ints start with its magic, then flags. */
++#define SW_DIRECT_QCOM_MAGIC 0x676d736d
++#define SW_DIRECT_QCOM_UBWC 0x08000000
++#define SW_DIRECT_AHB_R8G8B8A8 1
++
++enum sw_direct_type {
++   SW_DIRECT_HELLO = 1,   /* to the app: width, height, count */
++   SW_DIRECT_BUFFERS = 2, /* from the app: width, height, count, format; then the buffers */
++   SW_DIRECT_PRESENT = 3, /* to the app: index (the buffer is ready) */
++   SW_DIRECT_RELEASE = 4, /* from the app: index, + release fence */
++};
++
++enum sw_direct_state {
++   SW_DIRECT_FREE,     /* ours to blit into */
++   SW_DIRECT_RESERVED, /* this present's blit goes into it */
++   SW_DIRECT_HELD,     /* the app has it */
++};
++
++struct sw_direct_msg {
++   uint32_t magic, version, type, index, width, height, count, format;
++};
++
++struct sw_direct {
++   int sock;
++   uint32_t count;
++   VkImage buffers[SW_DIRECT_MAX_BUFFERS];
++   VkDeviceMemory memory[SW_DIRECT_MAX_BUFFERS];
++   /* Per swapchain image and buffer, one per queue family with a pool. */
++   VkCommandBuffer *cmd_buffers[SW_DIRECT_MAX_IMAGES][SW_DIRECT_MAX_BUFFERS];
++   uint32_t cmd_buffer_count;
++   thrd_t reader;
++   bool reader_started;
++   mtx_t lock;
++   struct u_cnd_monotonic freed;
++   /* Under lock. */
++   enum sw_direct_state state[SW_DIRECT_MAX_BUFFERS];
++   int chosen[SW_DIRECT_MAX_IMAGES]; /* the buffer this present of image i goes to, -1: PutImage */
++   bool gone;
++};
++
++static bool
++sw_direct_send(int sock, uint32_t type, uint32_t index, uint32_t width, uint32_t height, uint32_t count)
++{
++   struct sw_direct_msg m = { SW_DIRECT_MAGIC, SW_DIRECT_VERSION, type, index, width, height, count, 0 };
++   ssize_t n;
++   do {
++      n = send(sock, &m, sizeof(m), MSG_NOSIGNAL);
++   } while (n < 0 && errno == EINTR);
++   return n == (ssize_t)sizeof(m);
++}
++
++/* One message into [data], its descriptors into [fds] (the rest closed).
++ * Returns its length, 0 at the end, -1 on an error. */
++static ssize_t
++sw_direct_recv(int sock, void *data, size_t cap, int *fds, int max_fds, int *nfds)
++{
++   struct iovec iov = { data, cap };
++   union {
++      char buf[CMSG_SPACE(16 * sizeof(int))];
++      struct cmsghdr align;
++   } control;
++   struct msghdr msg = {
++      .msg_iov = &iov, .msg_iovlen = 1,
++      .msg_control = control.buf, .msg_controllen = sizeof(control.buf),
++   };
++   ssize_t n;
++   do {
++      n = recvmsg(sock, &msg, MSG_CMSG_CLOEXEC);
++   } while (n < 0 && errno == EINTR);
++   *nfds = 0;
++   if (n < 0)
++      return -1;
++   for (struct cmsghdr *c = CMSG_FIRSTHDR(&msg); c != NULL; c = CMSG_NXTHDR(&msg, c)) {
++      if (c->cmsg_level != SOL_SOCKET || c->cmsg_type != SCM_RIGHTS)
++         continue;
++      int count = (int)((c->cmsg_len - CMSG_LEN(0)) / sizeof(int));
++      int *got = (int *)CMSG_DATA(c);
++      for (int i = 0; i < count; i++) {
++         if (*nfds < max_fds)
++            fds[(*nfds)++] = got[i];
++         else
++            close(got[i]);
++      }
++   }
++   if (msg.msg_flags & (MSG_TRUNC | MSG_CTRUNC))
++      return -1;
++   return n;
++}
++
++/* Whether the app wants the game's frames in its buffers now (else on the
++ * X screen); without the present counter's page, always. */
++static bool
++sw_direct_wanted(void)
++{
++   call_once(&sw_present_counter_once, sw_present_counter_open);
++   if (!sw_pacing_mapped)
++      return true;
++   return __atomic_load_n(&sw_present_counter[SW_DIRECT_WANTED_WORD], __ATOMIC_ACQUIRE) != 0;
++}
++
++/* The app's RELEASE messages: a buffer is free again once its release
++ * fence has signalled. At the end (the app gone, or the swapchain closing)
++ * nothing is waited for any more. */
++static int
++sw_direct_reader(void *data)
++{
++   struct sw_direct *d = data;
++   u_thread_setname("WSI direct present");
++   for (;;) {
++      struct sw_direct_msg m;
++      int fds[4], nfds;
++      ssize_t n = sw_direct_recv(d->sock, &m, sizeof(m), fds, 4, &nfds);
++      if (n <= 0)
++         break;
++      if (n != (ssize_t)sizeof(m) || m.magic != SW_DIRECT_MAGIC || m.type != SW_DIRECT_RELEASE ||
++          m.index >= d->count) {
++         for (int i = 0; i < nfds; i++)
++            close(fds[i]);
++         continue;
++      }
++      if (nfds > 0) {
++         struct pollfd p = { fds[0], POLLIN, 0 };
++         while (poll(&p, 1, 1000) < 0 && errno == EINTR) {
++         }
++         for (int i = 0; i < nfds; i++)
++            close(fds[i]);
++      }
++      mtx_lock(&d->lock);
++      if (d->state[m.index] == SW_DIRECT_HELD)
++         d->state[m.index] = SW_DIRECT_FREE;
++      u_cnd_monotonic_broadcast(&d->freed);
++      mtx_unlock(&d->lock);
++   }
++   mtx_lock(&d->lock);
++   d->gone = true;
++   u_cnd_monotonic_broadcast(&d->freed);
++   mtx_unlock(&d->lock);
++   return 0;
++}
++
++static void
++sw_direct_free(struct x11_swapchain *chain, struct sw_direct *d)
++{
++   const struct wsi_device *wsi = chain->base.wsi;
++   if (d->sock >= 0)
++      shutdown(d->sock, SHUT_RDWR);
++   if (d->reader_started)
++      thrd_join(d->reader, NULL);
++   for (uint32_t i = 0; i < SW_DIRECT_MAX_IMAGES; i++) {
++      for (uint32_t b = 0; b < SW_DIRECT_MAX_BUFFERS; b++) {
++         VkCommandBuffer *cmds = d->cmd_buffers[i][b];
++         if (cmds == NULL)
++            continue;
++         for (uint32_t q = 0; q < d->cmd_buffer_count; q++) {
++            if (cmds[q] != VK_NULL_HANDLE)
++               wsi->FreeCommandBuffers(chain->base.device, chain->base.cmd_pools[q], 1, &cmds[q]);
++         }
++         vk_free(&chain->base.alloc, cmds);
++      }
++   }
++   for (uint32_t b = 0; b < SW_DIRECT_MAX_BUFFERS; b++) {
++      if (d->buffers[b] != VK_NULL_HANDLE)
++         wsi->DestroyImage(chain->base.device, d->buffers[b], &chain->base.alloc);
++      if (d->memory[b] != VK_NULL_HANDLE)
++         wsi->FreeMemory(chain->base.device, d->memory[b], &chain->base.alloc);
++   }
++   if (d->sock >= 0)
++      close(d->sock);
++   u_cnd_monotonic_destroy(&d->freed);
++   mtx_destroy(&d->lock);
++   vk_free(&chain->base.alloc, d);
++}
++
++/* Imports the app's buffer (the dma-buf [fd], [stride] pixels a row) as
++ * buffer [b] of [d]; false when the GPU or the layout refuses it. */
++static bool
++sw_direct_import(struct x11_swapchain *chain, struct sw_direct *d, uint32_t b, int fd, uint32_t stride)
++{
++   const struct wsi_device *wsi = chain->base.wsi;
++   const VkSubresourceLayout plane = { .offset = 0, .size = 0, .rowPitch = (VkDeviceSize)stride * 4 };
++   const VkImageDrmFormatModifierExplicitCreateInfoEXT explicit_info = {
++      .sType = VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT,
++      .drmFormatModifier = DRM_FORMAT_MOD_LINEAR,
++      .drmFormatModifierPlaneCount = 1,
++      .pPlaneLayouts = &plane,
++   };
++   const VkExternalMemoryImageCreateInfo external_info = {
++      .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
++      .pNext = &explicit_info,
++      .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
++   };
++   const VkImageCreateInfo image_info = {
++      .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
++      .pNext = &external_info,
++      .imageType = VK_IMAGE_TYPE_2D,
++      .format = vk_format_is_srgb(chain->base.image_info.create.format) ? VK_FORMAT_R8G8B8A8_SRGB
++                                                                       : VK_FORMAT_R8G8B8A8_UNORM,
++      .extent = { chain->extent.width, chain->extent.height, 1 },
++      .mipLevels = 1,
++      .arrayLayers = 1,
++      .samples = VK_SAMPLE_COUNT_1_BIT,
++      .tiling = VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT,
++      .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT,
++      .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
++      .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
++   };
++   if (wsi->CreateImage(chain->base.device, &image_info, &chain->base.alloc, &d->buffers[b]) != VK_SUCCESS)
++      return false;
++   VkMemoryFdPropertiesKHR fd_props = { .sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR };
++   if (wsi->GetMemoryFdPropertiesKHR(chain->base.device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
++                                     fd, &fd_props) != VK_SUCCESS)
++      return false;
++   VkMemoryRequirements reqs;
++   wsi->GetImageMemoryRequirements(chain->base.device, d->buffers[b], &reqs);
++   uint32_t types = reqs.memoryTypeBits & fd_props.memoryTypeBits;
++   if (types == 0)
++      return false;
++   int import_fd = os_dupfd_cloexec(fd);
++   if (import_fd < 0)
++      return false;
++   const VkMemoryDedicatedAllocateInfo dedicated = {
++      .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
++      .image = d->buffers[b],
++   };
++   const VkImportMemoryFdInfoKHR import_info = {
++      .sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR,
++      .pNext = &dedicated,
++      .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
++      .fd = import_fd,
++   };
++   const VkMemoryAllocateInfo memory_info = {
++      .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
++      .pNext = &import_info,
++      .allocationSize = reqs.size,
++      .memoryTypeIndex = (uint32_t)__builtin_ffs((int)types) - 1,
++   };
++   if (wsi->AllocateMemory(chain->base.device, &memory_info, &chain->base.alloc, &d->memory[b]) != VK_SUCCESS) {
++      close(import_fd);
++      return false;
++   }
++   return wsi->BindImageMemory(chain->base.device, d->buffers[b], d->memory[b], 0) == VK_SUCCESS;
++}
++
++/* The command buffers that blit swapchain image [i] into the app's buffer
++ * [b]: as the buffer blit (wsi_cmd_blit_image_to_buffer), but into an image,
++ * so the swapchain's B8G8R8A8 lands in the R8G8B8A8 buffer channel for
++ * channel. */
++static bool
++sw_direct_record(struct x11_swapchain *chain, struct sw_direct *d, uint32_t i, uint32_t b)
++{
++   const struct wsi_device *wsi = chain->base.wsi;
++   VkCommandBuffer *cmds = vk_zalloc(&chain->base.alloc, sizeof(VkCommandBuffer) * d->cmd_buffer_count, 8,
++                                     VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
++   if (cmds == NULL)
++      return false;
++   d->cmd_buffers[i][b] = cmds;
++   for (uint32_t q = 0; q < d->cmd_buffer_count; q++) {
++      if (!chain->base.cmd_pools[q])
++         continue;
++      const VkCommandBufferAllocateInfo alloc_info = {
++         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
++         .commandPool = chain->base.cmd_pools[q],
++         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
++         .commandBufferCount = 1,
++      };
++      VkCommandBuffer cmd;
++      if (wsi->AllocateCommandBuffers(chain->base.device, &alloc_info, &cmd) != VK_SUCCESS)
++         return false;
++      cmds[q] = cmd;
++      const VkCommandBufferBeginInfo begin = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
++      wsi->BeginCommandBuffer(cmd, &begin);
++      VkImageMemoryBarrier barriers[2] = {
++         {
++            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
++            .srcAccessMask = 0,
++            .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
++            .oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
++            .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
++            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
++            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
++            .image = chain->images[i].base.image,
++            .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
++         },
++         {
++            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
++            .srcAccessMask = 0,
++            .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
++            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
++            .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
++            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
++            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
++            .image = d->buffers[b],
++            .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
++         },
++      };
++      wsi->CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
++                              0, 0, NULL, 0, NULL, 2, barriers);
++      const int32_t w = (int32_t)chain->extent.width, h = (int32_t)chain->extent.height;
++      const VkImageBlit region = {
++         .srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
++         .srcOffsets = { { 0, 0, 0 }, { w, h, 1 } },
++         .dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
++         .dstOffsets = { { 0, 0, 0 }, { w, h, 1 } },
++      };
++      wsi->CmdBlitImage(cmd, chain->images[i].base.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
++                        d->buffers[b], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region, VK_FILTER_NEAREST);
++      barriers[0].srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
++      barriers[0].dstAccessMask = 0;
++      barriers[0].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
++      barriers[0].newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
++      barriers[1].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
++      barriers[1].dstAccessMask = 0;
++      barriers[1].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
++      barriers[1].newLayout = VK_IMAGE_LAYOUT_GENERAL;
++      wsi->CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
++                              0, 0, NULL, 0, NULL, 2, barriers);
++      if (wsi->EndCommandBuffer(cmd) != VK_SUCCESS)
++         return false;
++   }
++   return true;
++}
++
++/* Names [window] in its root window's _PD2_PRESENT_WINDOW property (one
++ * WINDOW) for x-input-relay. A newer swapchain names its own; the property
++ * is never removed (a swapchain made again on the same window would lose
++ * it), and a window that has gone is never alone for the relay. */
++static void
++sw_direct_name_window(xcb_connection_t *conn, xcb_window_t window)
++{
++   static const char name[] = "_PD2_PRESENT_WINDOW";
++   xcb_intern_atom_cookie_t atom_cookie = xcb_intern_atom(conn, 0, strlen(name), name);
++   xcb_get_geometry_cookie_t geom_cookie = xcb_get_geometry(conn, window);
++   xcb_intern_atom_reply_t *atom = xcb_intern_atom_reply(conn, atom_cookie, NULL);
++   xcb_get_geometry_reply_t *geom = xcb_get_geometry_reply(conn, geom_cookie, NULL);
++   if (atom != NULL && geom != NULL) {
++      /* Checked: an error stays here, never reaching the game's own error handler. */
++      free(xcb_request_check(conn, xcb_change_property_checked(conn, XCB_PROP_MODE_REPLACE, geom->root, atom->atom,
++                                                               XCB_ATOM_WINDOW, 32, 1, &window)));
++   }
++   free(atom);
++   free(geom);
++}
++
++/* Sets up the direct present for a new software swapchain; leaves
++ * chain->direct NULL (PutImage) when it is not wanted or anything fails. */
++static void
++sw_direct_open(struct x11_swapchain *chain)
++{
++   const struct wsi_device *wsi = chain->base.wsi;
++   const char *path = getenv("PD2_PRESENT_SOCKET");
++   if (path == NULL || path[0] == '\0' || !wsi->sw || chain->has_mit_shm ||
++       chain->base.blit.type != WSI_SWAPCHAIN_BUFFER_BLIT || chain->base.blit.queue != NULL ||
++       chain->base.image_count > SW_DIRECT_MAX_IMAGES ||
++       wsi->CmdBlitImage == NULL || wsi->GetMemoryFdPropertiesKHR == NULL)
++      return;
++
++   struct sw_direct *d = vk_zalloc(&chain->base.alloc, sizeof(*d), 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
++   if (d == NULL)
++      return;
++   d->sock = -1;
++   d->count = MIN2(chain->base.image_count, SW_DIRECT_MAX_BUFFERS);
++   d->cmd_buffer_count = wsi->queue_family_count;
++   for (uint32_t i = 0; i < SW_DIRECT_MAX_IMAGES; i++)
++      d->chosen[i] = -1;
++   mtx_init(&d->lock, mtx_plain);
++   u_cnd_monotonic_init(&d->freed);
++   int buffer_fds[SW_DIRECT_MAX_BUFFERS];
++   uint32_t strides[SW_DIRECT_MAX_BUFFERS];
++   uint32_t received = 0;
++   const char *why = NULL;
++
++   d->sock = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
++   struct sockaddr_un addr = { .sun_family = AF_UNIX };
++   snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path);
++   /* The app answers at once or not at all: a second for the setup (a Unix
++    * connect honours the send timeout while the app's backlog is full). */
++   struct timeval timeout = { .tv_sec = 1 };
++   if (d->sock >= 0)
++      setsockopt(d->sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
++   if (d->sock < 0 || connect(d->sock, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
++      why = "no app on the socket";
++      goto fail;
++   }
++   setsockopt(d->sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
++   if (!sw_direct_send(d->sock, SW_DIRECT_HELLO, 0, chain->extent.width, chain->extent.height, d->count)) {
++      why = "HELLO";
++      goto fail;
++   }
++   struct sw_direct_msg m;
++   int fds[16], nfds;
++   ssize_t got = sw_direct_recv(d->sock, &m, sizeof(m), fds, 16, &nfds);
++   for (int f = 0; f < nfds; f++)
++      close(fds[f]);
++   if (got != (ssize_t)sizeof(m) || m.magic != SW_DIRECT_MAGIC || m.version != SW_DIRECT_VERSION ||
++       m.type != SW_DIRECT_BUFFERS || m.count != d->count ||
++       m.width != chain->extent.width || m.height != chain->extent.height ||
++       m.format != SW_DIRECT_AHB_R8G8B8A8) {
++      why = "BUFFERS";
++      goto fail;
++   }
++   for (; received < d->count; received++) {
++      int32_t words[1024];
++      ssize_t n = sw_direct_recv(d->sock, words, sizeof(words), fds, 16, &nfds);
++      bool ok = n >= SW_DIRECT_GB01_HEADER * 4 && words[0] == SW_DIRECT_GB01 && nfds >= 1 &&
++                nfds == words[SW_DIRECT_GB01_NUM_FDS] &&
++                n >= (ssize_t)((SW_DIRECT_GB01_HEADER + words[SW_DIRECT_GB01_NUM_INTS]) * 4) &&
++                words[SW_DIRECT_GB01_FORMAT] == SW_DIRECT_AHB_R8G8B8A8 &&
++                (uint32_t)words[SW_DIRECT_GB01_WIDTH] == chain->extent.width &&
++                (uint32_t)words[SW_DIRECT_GB01_HEIGHT] == chain->extent.height &&
++                (uint32_t)words[SW_DIRECT_GB01_STRIDE] >= chain->extent.width;
++      for (int f = ok ? 1 : 0; f < nfds; f++)
++         close(fds[f]);
++      if (!ok) {
++         why = "a buffer";
++         goto fail;
++      }
++      const int32_t *ints = words + SW_DIRECT_GB01_HEADER;
++      if (words[SW_DIRECT_GB01_NUM_INTS] >= 2 && ints[0] == SW_DIRECT_QCOM_MAGIC &&
++          (ints[1] & SW_DIRECT_QCOM_UBWC)) {
++         close(fds[0]);
++         why = "a compressed (UBWC) buffer";
++         goto fail;
++      }
++      buffer_fds[received] = fds[0];
++      strides[received] = (uint32_t)words[SW_DIRECT_GB01_STRIDE];
++   }
++   timeout.tv_sec = 0;
++   setsockopt(d->sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
++   for (uint32_t b = 0; b < d->count; b++) {
++      if (!sw_direct_import(chain, d, b, buffer_fds[b], strides[b])) {
++         why = "the GPU refused a buffer";
++         goto fail;
++      }
++   }
++   for (uint32_t i = 0; i < chain->base.image_count; i++) {
++      for (uint32_t b = 0; b < d->count; b++) {
++         if (!sw_direct_record(chain, d, i, b)) {
++            why = "command buffers";
++            goto fail;
++         }
++      }
++   }
++   for (uint32_t i = 0; i < received; i++)
++      close(buffer_fds[i]);
++   received = 0;
++   if (thrd_create(&d->reader, sw_direct_reader, d) != thrd_success) {
++      why = "no thread";
++      goto fail;
++   }
++   d->reader_started = true;
++   chain->direct = d;
++   sw_direct_name_window(chain->conn, chain->window);
++   fprintf(stderr, "MESA: direct present: %ux%u, %u images into %u app buffers\n",
++           chain->extent.width, chain->extent.height, chain->base.image_count, d->count);
++   return;
++
++fail:
++   for (uint32_t i = 0; i < received; i++)
++      close(buffer_fds[i]);
++   fprintf(stderr, "MESA: direct present off (%s): the X screen\n", why);
++   sw_direct_free(chain, d);
++}
++
++/* wsi_swapchain::direct_blit: image [image_index] goes to a free app buffer
++ * when the app wants the frames, waiting for one at most SW_DIRECT_WAIT_NS. */
++static VkCommandBuffer
++x11_direct_blit(struct wsi_swapchain *wsi_chain, uint32_t image_index, uint32_t queue_family_index)
++{
++   struct x11_swapchain *chain = (struct x11_swapchain *)wsi_chain;
++   struct sw_direct *d = chain->direct;
++   if (d == NULL || image_index >= SW_DIRECT_MAX_IMAGES || queue_family_index >= d->cmd_buffer_count)
++      return VK_NULL_HANDLE;
++   bool wanted = sw_direct_wanted();
++   struct timespec deadline;
++   clock_gettime(CLOCK_MONOTONIC, &deadline);
++   timespec_add_nsec(&deadline, &deadline, SW_DIRECT_WAIT_NS);
++   int chosen = -1;
++   mtx_lock(&d->lock);
++   /* A reservation whose present never reached the queue thread (a failed submission) is free. */
++   int stale = d->chosen[image_index];
++   if (stale >= 0 && d->state[stale] == SW_DIRECT_RESERVED)
++      d->state[stale] = SW_DIRECT_FREE;
++   d->chosen[image_index] = -1;
++   while (wanted && !d->gone) {
++      for (uint32_t b = 0; b < d->count && chosen < 0; b++) {
++         if (d->state[b] == SW_DIRECT_FREE)
++            chosen = (int)b;
++      }
++      if (chosen >= 0 || u_cnd_monotonic_timedwait(&d->freed, &d->lock, &deadline) != thrd_success)
++         break;
++   }
++   if (chosen >= 0 && d->cmd_buffers[image_index][chosen][queue_family_index] == VK_NULL_HANDLE)
++      chosen = -1;
++   if (chosen >= 0)
++      d->state[chosen] = SW_DIRECT_RESERVED;
++   d->chosen[image_index] = chosen;
++   mtx_unlock(&d->lock);
++   return chosen >= 0 ? d->cmd_buffers[image_index][chosen][queue_family_index] : VK_NULL_HANDLE;
++}
++
++/* Whether this present of [image_index] went to an app buffer. */
++static bool
++sw_direct_chosen(struct x11_swapchain *chain, uint32_t image_index)
++{
++   struct sw_direct *d = chain->direct;
++   if (d == NULL || image_index >= SW_DIRECT_MAX_IMAGES)
++      return false;
++   mtx_lock(&d->lock);
++   bool chosen = d->chosen[image_index] >= 0;
++   mtx_unlock(&d->lock);
++   return chosen;
++}
++
++/* The frame is in the app's buffer (the WSI waited for the GPU): show it;
++ * the image is free again. */
++static VkResult
++x11_present_direct(struct x11_swapchain *chain, uint32_t image_index)
++{
++   struct sw_direct *d = chain->direct;
++   xcb_get_geometry_cookie_t geom_cookie = xcb_get_geometry(chain->conn, chain->window);
++   mtx_lock(&d->lock);
++   int b = d->chosen[image_index];
++   d->chosen[image_index] = -1;
++   d->state[b] = SW_DIRECT_HELD;
++   mtx_unlock(&d->lock);
++   if (!sw_direct_send(d->sock, SW_DIRECT_PRESENT, (uint32_t)b, chain->extent.width, chain->extent.height, 0)) {
++      /* The app has gone; the reader ends and the next presents use PutImage. */
++      mtx_lock(&d->lock);
++      d->gone = true;
++      mtx_unlock(&d->lock);
++   }
++   sw_present_counted();
++   wsi_queue_push(&chain->acquire_queue, image_index);
++
++   VkResult result = VK_SUCCESS;
++   xcb_generic_error_t *err = NULL;
++   xcb_get_geometry_reply_t *geom = xcb_get_geometry_reply(chain->conn, geom_cookie, &err);
++   if (geom) {
++      if (chain->extent.width != geom->width || chain->extent.height != geom->height)
++         result = VK_ERROR_OUT_OF_DATE_KHR;
++   } else {
++      result = VK_ERROR_SURFACE_LOST_KHR;
++   }
++   free(err);
++   free(geom);
++   return result;
++}
++#else
++static void
++sw_direct_open(struct x11_swapchain *chain)
++{
++}
++
++static bool
++sw_direct_chosen(struct x11_swapchain *chain, uint32_t image_index)
++{
++   return false;
++}
++#endif
++
+ /**
+  * Send image to X server unaccelerated (software drivers).
+  */
+@@ -2200,7 +2809,9 @@
+    x11_capture_trace(chain);
+ 
+    VkResult result;
+-   if (chain->base.wsi->sw && !chain->has_mit_shm)
++   if (chain->base.wsi->sw && !chain->has_mit_shm && sw_direct_chosen(chain, image_index))
++      result = x11_present_direct(chain, image_index);
++   else if (chain->base.wsi->sw && !chain->has_mit_shm)
+       result = x11_present_to_x11_sw(chain, image_index);
+    else
+ #ifdef HAVE_X11_DRM
+@@ -2665,7 +3276,8 @@
+          }
+       }
+ 
+-      if (chain->base.wsi->sw && !chain->has_mit_shm)
++      /* A frame for the app's buffer is paced by the app giving buffers back. */
++      if (chain->base.wsi->sw && !chain->has_mit_shm && !sw_direct_chosen(chain, image_index))
+          sw_present_paced();
+ 
+       mtx_lock(&chain->thread_state_lock);
+@@ -3105,6 +3717,14 @@
+    thrd_join(chain->queue_manager, NULL);
+    thrd_join(chain->event_manager, NULL);
+ 
++#ifdef __linux__
++   /* Before the acquire queue goes: the direct present's reader pushes to it. */
++   if (chain->direct != NULL) {
++      sw_direct_free(chain, chain->direct);
++      chain->direct = NULL;
++   }
++#endif
++
+    if (!chain->base.image_info.explicit_sync)
+       wsi_queue_destroy(&chain->acquire_queue);
+    wsi_queue_destroy(&chain->present_queue);
+@@ -3377,6 +3997,9 @@
+ 
+    chain->base.destroy = x11_swapchain_destroy;
+    chain->base.get_wsi_image = x11_get_wsi_image;
++#ifdef __linux__
++   chain->base.direct_blit = x11_direct_blit;
++#endif
+    chain->base.acquire_next_image = x11_acquire_next_image;
+    chain->base.queue_present = x11_queue_present;
+    chain->base.wait_for_present = x11_wait_for_present;
+@@ -3513,6 +4136,9 @@
+ 
+    chain->screen_resources = wsi_x11_connection_find_screen_resources(wsi_device, conn, window);
+ 
++   /* Nothing fails after this: the direct present needs no undoing here. */
++   sw_direct_open(chain);
++
+    /* It is safe to set it here as only one swapchain can be associated with
+     * the window, and swapchain creation does the association. At this point
+     * we know the creation is going to succeed. */

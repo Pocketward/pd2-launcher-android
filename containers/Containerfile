@@ -1,0 +1,52 @@
+# Build image for the Android app. Every Android toolchain runs only in this image.
+# Everything is pinned: base image by digest, JDK / command-line tools / NDK by SHA-256.
+# Platforms and build-tools come from sdkmanager, which verifies Google's published checksums.
+
+# debian:trixie-slim (multi-arch index digest)
+FROM docker.io/library/debian@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Eclipse Temurin OpenJDK 21.0.12.1+1
+ARG JDK_URL=https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/OpenJDK21U-jdk_x64_linux_hotspot_21.0.12.1_1.tar.gz
+ARG JDK_SHA256=ce79869e1307ed8ee1e2baa86a412b1eb5b75d10a01006d788a6f968bcfaee94
+RUN curl -fsSL -o /tmp/jdk.tar.gz "$JDK_URL" \
+    && echo "$JDK_SHA256  /tmp/jdk.tar.gz" | sha256sum -c - \
+    && mkdir -p /opt/jdk && tar -xzf /tmp/jdk.tar.gz -C /opt/jdk --strip-components=1 \
+    && rm /tmp/jdk.tar.gz
+ENV JAVA_HOME=/opt/jdk
+
+# Android command-line tools 22.0 (build 15859902)
+ARG CMDLINE_URL=https://dl.google.com/android/repository/commandlinetools-linux-15859902_latest.zip
+ARG CMDLINE_SHA256=4e4c464f145a7512b57d088ac6c278c03c9eea610886b35a5e0804e74eedf583
+ENV ANDROID_HOME=/opt/android-sdk
+RUN curl -fsSL -o /tmp/cmdline.zip "$CMDLINE_URL" \
+    && echo "$CMDLINE_SHA256  /tmp/cmdline.zip" | sha256sum -c - \
+    && mkdir -p "$ANDROID_HOME/cmdline-tools" \
+    && unzip -q /tmp/cmdline.zip -d "$ANDROID_HOME/cmdline-tools" \
+    && mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/22.0" \
+    && rm /tmp/cmdline.zip
+
+# Platforms android-28 (targetSdk) and android-36 (compileSdk), build-tools 36.0.0
+RUN yes | "$ANDROID_HOME/cmdline-tools/22.0/bin/sdkmanager" --licenses > /dev/null \
+    && "$ANDROID_HOME/cmdline-tools/22.0/bin/sdkmanager" \
+        "platforms;android-28" "platforms;android-36" "build-tools;36.0.0"
+
+# NDK r27c (27.2.12479018), for the app's native code
+ARG NDK_URL=https://dl.google.com/android/repository/android-ndk-r27c-linux.zip
+ARG NDK_SHA256=59c2f6dc96743b5daf5d1626684640b20a6bd2b1d85b13156b90333741bad5cc
+RUN curl -fsSL -o /tmp/ndk.zip "$NDK_URL" \
+    && echo "$NDK_SHA256  /tmp/ndk.zip" | sha256sum -c - \
+    && mkdir -p "$ANDROID_HOME/ndk" \
+    && unzip -q /tmp/ndk.zip -d "$ANDROID_HOME/ndk" \
+    && mv "$ANDROID_HOME/ndk/android-ndk-r27c" "$ANDROID_HOME/ndk/27.2.12479018" \
+    && rm /tmp/ndk.zip
+
+# CMake 3.22.1 for externalNativeBuild (the app's NDK library); sdkmanager verifies Google's checksum
+RUN "$ANDROID_HOME/cmdline-tools/22.0/bin/sdkmanager" "cmake;3.22.1"
+
+ENV PATH=$JAVA_HOME/bin:$ANDROID_HOME/build-tools/36.0.0:$PATH
+RUN chmod -R a+rX /opt
+WORKDIR /work

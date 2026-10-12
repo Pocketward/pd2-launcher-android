@@ -1,0 +1,353 @@
+From: User <noreply@users.noreply.github.com>
+Subject: [PATCH 10/10] blocked explicit wrappers answer without a syscall
+
+Every remaining glibc wrapper of a syscall the Android 13 (API 33) app
+seccomp policy traps fails without issuing it: EPERM where Linux answers
+an unprivileged process EPERM, ENOSYS otherwise.
+- Wrappers generated from syscalls.list: a new aarch64 syscall-template.S
+  emits the error in place of the svc for every blocked SYSCALL_NAME and
+  includes the generic template for any other name.
+- C wrappers: EPERM from clock_settime, clock_adjtime (adjtimex, ntp_*),
+  settimeofday's timezone path, umount/umount2 and reboot; ENOSYS from
+  fanotify_mark, open_by_handle_at, epoll_pwait2, pkey_mprotect (pkey -1
+  is still mprotect) and __alloc_gcs's map_shadow_stack.
+Blocked syscalls without a glibc wrapper are reachable only through
+syscall(), which patch 0009 answers.
+---
+--- /dev/null
++++ b/sysdeps/unix/sysv/linux/aarch64/syscall-template.S
+@@ -0,0 +1,128 @@
++/* Generated syscall wrappers for the Android app sandbox (aarch64).  */
++
++/* make-syscalls.sh builds every wrapper listed in a syscalls.list by
++   defining SYSCALL_NAME (the kernel syscall), SYSCALL_SYMBOL and the rest,
++   then including <syscall-template.S>; this file is found first for
++   aarch64.  When SYSCALL_NAME is trapped by the Android app seccomp policy
++   (API 33), the wrapper fails with the errno below and issues no syscall:
++   EPERM where an unprivileged process gets EPERM, ENOSYS otherwise.  Any
++   other syscall gets the generic wrapper.
++
++   ANDROID_ANSWER (name) expands to the errno for a listed name and to 0
++   for any other: a listed name's macro supplies a second argument to
++   ANDROID_ANSWER_SECOND, an unlisted one leaves the default 0 in place.  */
++
++#include <sysdep.h>
++#include <bits/errno.h>
++
++#define ANDROID_ANSWER_acct ~, EPERM
++#define ANDROID_ANSWER_add_key ~, ENOSYS
++#define ANDROID_ANSWER_adjtimex ~, ENOSYS
++#define ANDROID_ANSWER_cachestat ~, ENOSYS
++#define ANDROID_ANSWER_chroot ~, EPERM
++#define ANDROID_ANSWER_clock_adjtime ~, EPERM
++#define ANDROID_ANSWER_clock_settime ~, EPERM
++#define ANDROID_ANSWER_delete_module ~, EPERM
++#define ANDROID_ANSWER_epoll_pwait2 ~, ENOSYS
++#define ANDROID_ANSWER_fanotify_init ~, ENOSYS
++#define ANDROID_ANSWER_fanotify_mark ~, ENOSYS
++#define ANDROID_ANSWER_finit_module ~, EPERM
++#define ANDROID_ANSWER_fsconfig ~, EPERM
++#define ANDROID_ANSWER_fsmount ~, EPERM
++#define ANDROID_ANSWER_fsopen ~, EPERM
++#define ANDROID_ANSWER_fspick ~, EPERM
++#define ANDROID_ANSWER_futex_requeue ~, ENOSYS
++#define ANDROID_ANSWER_futex_wait ~, ENOSYS
++#define ANDROID_ANSWER_futex_waitv ~, ENOSYS
++#define ANDROID_ANSWER_futex_wake ~, ENOSYS
++#define ANDROID_ANSWER_get_mempolicy ~, ENOSYS
++#define ANDROID_ANSWER_get_robust_list ~, ENOSYS
++#define ANDROID_ANSWER_init_module ~, EPERM
++#define ANDROID_ANSWER_io_pgetevents ~, ENOSYS
++#define ANDROID_ANSWER_io_uring_enter ~, ENOSYS
++#define ANDROID_ANSWER_io_uring_register ~, ENOSYS
++#define ANDROID_ANSWER_io_uring_setup ~, ENOSYS
++#define ANDROID_ANSWER_kcmp ~, ENOSYS
++#define ANDROID_ANSWER_kexec_file_load ~, EPERM
++#define ANDROID_ANSWER_kexec_load ~, EPERM
++#define ANDROID_ANSWER_keyctl ~, ENOSYS
++#define ANDROID_ANSWER_landlock_add_rule ~, ENOSYS
++#define ANDROID_ANSWER_landlock_create_ruleset ~, ENOSYS
++#define ANDROID_ANSWER_landlock_restrict_self ~, ENOSYS
++#define ANDROID_ANSWER_listmount ~, ENOSYS
++#define ANDROID_ANSWER_lookup_dcookie ~, ENOSYS
++#define ANDROID_ANSWER_lsm_get_self_attr ~, ENOSYS
++#define ANDROID_ANSWER_lsm_list_modules ~, ENOSYS
++#define ANDROID_ANSWER_lsm_set_self_attr ~, ENOSYS
++#define ANDROID_ANSWER_map_shadow_stack ~, ENOSYS
++#define ANDROID_ANSWER_mbind ~, ENOSYS
++#define ANDROID_ANSWER_memfd_secret ~, ENOSYS
++#define ANDROID_ANSWER_migrate_pages ~, ENOSYS
++#define ANDROID_ANSWER_mount ~, EPERM
++#define ANDROID_ANSWER_mount_setattr ~, EPERM
++#define ANDROID_ANSWER_move_mount ~, EPERM
++#define ANDROID_ANSWER_move_pages ~, ENOSYS
++#define ANDROID_ANSWER_mq_getsetattr ~, ENOSYS
++#define ANDROID_ANSWER_mq_notify ~, ENOSYS
++#define ANDROID_ANSWER_mq_open ~, ENOSYS
++#define ANDROID_ANSWER_mq_timedreceive ~, ENOSYS
++#define ANDROID_ANSWER_mq_timedsend ~, ENOSYS
++#define ANDROID_ANSWER_mq_unlink ~, ENOSYS
++#define ANDROID_ANSWER_mseal ~, ENOSYS
++#define ANDROID_ANSWER_msgctl ~, ENOSYS
++#define ANDROID_ANSWER_msgget ~, ENOSYS
++#define ANDROID_ANSWER_msgrcv ~, ENOSYS
++#define ANDROID_ANSWER_msgsnd ~, ENOSYS
++#define ANDROID_ANSWER_name_to_handle_at ~, ENOSYS
++#define ANDROID_ANSWER_nfsservctl ~, ENOSYS
++#define ANDROID_ANSWER_open_by_handle_at ~, ENOSYS
++#define ANDROID_ANSWER_open_tree ~, EPERM
++#define ANDROID_ANSWER_openat2 ~, ENOSYS
++#define ANDROID_ANSWER_pkey_alloc ~, ENOSYS
++#define ANDROID_ANSWER_pkey_free ~, ENOSYS
++#define ANDROID_ANSWER_pkey_mprotect ~, ENOSYS
++#define ANDROID_ANSWER_process_mrelease ~, ENOSYS
++#define ANDROID_ANSWER_quotactl_fd ~, EPERM
++#define ANDROID_ANSWER_reboot ~, EPERM
++#define ANDROID_ANSWER_remap_file_pages ~, ENOSYS
++#define ANDROID_ANSWER_request_key ~, ENOSYS
++#define ANDROID_ANSWER_semctl ~, ENOSYS
++#define ANDROID_ANSWER_semget ~, ENOSYS
++#define ANDROID_ANSWER_semop ~, ENOSYS
++#define ANDROID_ANSWER_semtimedop ~, ENOSYS
++#define ANDROID_ANSWER_set_mempolicy ~, ENOSYS
++#define ANDROID_ANSWER_set_mempolicy_home_node ~, ENOSYS
++#define ANDROID_ANSWER_setdomainname ~, EPERM
++#define ANDROID_ANSWER_sethostname ~, EPERM
++#define ANDROID_ANSWER_settimeofday ~, EPERM
++#define ANDROID_ANSWER_shmat ~, ENOSYS
++#define ANDROID_ANSWER_shmctl ~, ENOSYS
++#define ANDROID_ANSWER_shmdt ~, ENOSYS
++#define ANDROID_ANSWER_shmget ~, ENOSYS
++#define ANDROID_ANSWER_statmount ~, ENOSYS
++#define ANDROID_ANSWER_swapoff ~, EPERM
++#define ANDROID_ANSWER_swapon ~, EPERM
++#define ANDROID_ANSWER_syslog ~, EPERM
++#define ANDROID_ANSWER_umount2 ~, EPERM
++#define ANDROID_ANSWER_vhangup ~, EPERM
++
++#define ANDROID_ANSWER_SECOND(a, b, ...) b
++#define ANDROID_ANSWER_PROBE(x) ANDROID_ANSWER_SECOND (x, 0, ~)
++#define ANDROID_ANSWER_NAME(name) ANDROID_ANSWER_PROBE (ANDROID_ANSWER_##name)
++#define ANDROID_ANSWER(name) ANDROID_ANSWER_NAME (name)
++
++#if ANDROID_ANSWER (SYSCALL_NAME) != 0 && !SYSCALL_NOERRNO && !SYSCALL_ERRVAL
++
++# define syscall_hidden_def(SYMBOL) hidden_def (SYMBOL)
++
++	.text
++ENTRY (SYSCALL_SYMBOL)
++	mov	x0, #-ANDROID_ANSWER (SYSCALL_NAME)
++	b	.Lsyscall_error
++PSEUDO_END (SYSCALL_SYMBOL)
++
++syscall_hidden_def (SYSCALL_SYMBOL)
++
++#else
++# include_next <syscall-template.S>
++#endif
+--- a/sysdeps/unix/sysv/linux/clock_settime.c
++++ b/sysdeps/unix/sysv/linux/clock_settime.c
+@@ -32,26 +32,9 @@
+       return -1;
+     }
+ 
+-#ifndef __NR_clock_settime64
+-# define __NR_clock_settime64 __NR_clock_settime
+-#endif
+-  int ret = INLINE_SYSCALL_CALL (clock_settime64, clock_id, tp);
+-
+-#ifndef __ASSUME_TIME64_SYSCALLS
+-  if (ret == 0 || errno != ENOSYS)
+-    return ret;
+-
+-  if (! in_int32_t_range (tp->tv_sec))
+-    {
+-      __set_errno (EOVERFLOW);
+-      return -1;
+-    }
+-
+-  struct timespec ts32 = valid_timespec64_to_timespec (*tp);
+-  ret = INLINE_SYSCALL_CALL (clock_settime, clock_id, &ts32);
+-#endif
+-
+-  return ret;
++  /* The Android app seccomp policy traps clock_settime:
++     an unprivileged process gets EPERM from it, without issuing it.  */
++  return INLINE_SYSCALL_ERROR_RETURN_VALUE (EPERM);
+ }
+ 
+ #if __TIMESIZE != 64
+--- a/sysdeps/unix/sysv/linux/clock_adjtime.c
++++ b/sysdeps/unix/sysv/linux/clock_adjtime.c
+@@ -26,27 +26,9 @@
+ int
+ __clock_adjtime64 (const clockid_t clock_id, struct __timex64 *tx64)
+ {
+-#ifndef __NR_clock_adjtime64
+-# define __NR_clock_adjtime64 __NR_clock_adjtime
+-#endif
+-  int r = INLINE_SYSCALL_CALL (clock_adjtime64, clock_id, tx64);
+-#ifndef __ASSUME_TIME64_SYSCALLS
+-  if (r >= 0 || errno != ENOSYS)
+-    return r;
+-
+-  if (tx64->modes & ADJ_SETOFFSET
+-      && ! in_int32_t_range (tx64->time.tv_sec))
+-    {
+-      __set_errno (EOVERFLOW);
+-      return -1;
+-    }
+-
+-  struct timex tx32 = valid_timex64_to_timex (*tx64);
+-  r = INLINE_SYSCALL_CALL (clock_adjtime, clock_id, &tx32);
+-  if (r >= 0)
+-    *tx64 = valid_timex_to_timex64 (tx32);
+-#endif
+-  return r;
++  /* The Android app seccomp policy traps clock_adjtime (and adjtimex, ntp_*):
++     an unprivileged process gets EPERM from it, without issuing it.  */
++  return INLINE_SYSCALL_ERROR_RETURN_VALUE (EPERM);
+ }
+ 
+ #if __TIMESIZE != 64
+--- a/sysdeps/unix/sysv/linux/settimezone.c
++++ b/sysdeps/unix/sysv/linux/settimezone.c
+@@ -28,10 +28,7 @@
+ int
+ __settimezone (const struct timezone *tz)
+ {
+-#ifdef __NR_settimeofday
+-  return INLINE_SYSCALL_CALL (settimeofday, NULL, tz);
+-#else
+-  __set_errno (ENOSYS);
+-  return -1;
+-#endif
++  /* The Android app seccomp policy traps settimeofday:
++     an unprivileged process gets EPERM from it, without issuing it.  */
++  return INLINE_SYSCALL_ERROR_RETURN_VALUE (EPERM);
+ }
+--- a/sysdeps/unix/sysv/linux/umount2.c
++++ b/sysdeps/unix/sysv/linux/umount2.c
+@@ -17,12 +17,15 @@
+    <https://www.gnu.org/licenses/>.  */
+ 
+ #include <sys/mount.h>
++#include <errno.h>
+ #include <sysdep.h>
+ 
+ int
+ __umount2 (const char *special_file, int flags)
+ {
+-  return INLINE_SYSCALL_CALL (umount2, special_file, flags);
++  /* The Android app seccomp policy traps umount2 (also umount):
++     an unprivileged process gets EPERM from it, without issuing it.  */
++  return INLINE_SYSCALL_ERROR_RETURN_VALUE (EPERM);
+ }
+ libc_hidden_def (__umount2)
+ 
+--- a/sysdeps/unix/sysv/linux/reboot.c
++++ b/sysdeps/unix/sysv/linux/reboot.c
+@@ -25,5 +25,7 @@
+ int
+ reboot (int howto)
+ {
+-  return INLINE_SYSCALL (reboot, 3, (int) 0xfee1dead, 672274793, howto);
++  /* The Android app seccomp policy traps reboot:
++     an unprivileged process gets EPERM from it, without issuing it.  */
++  return INLINE_SYSCALL_ERROR_RETURN_VALUE (EPERM);
+ }
+--- a/sysdeps/unix/sysv/linux/fanotify_mark.c
++++ b/sysdeps/unix/sysv/linux/fanotify_mark.c
+@@ -18,14 +18,16 @@
+    <https://www.gnu.org/licenses/>.  */
+ 
+ #include <sys/fanotify.h>
++#include <errno.h>
+ #include <sysdep.h>
+ 
+ int
+ __fanotify_mark (int fd, unsigned int flags, uint64_t mask, int dirfd,
+ 	         const char *pathname)
+ {
+-  return INLINE_SYSCALL_CALL (fanotify_mark, fd, flags, SYSCALL_LL64 (mask),
+-			      dirfd, pathname);
++  /* The Android app seccomp policy traps fanotify_mark:
++     answer as a kernel without it, without issuing it.  */
++  return INLINE_SYSCALL_ERROR_RETURN_VALUE (ENOSYS);
+ }
+ #ifdef VERSION_fanotify_mark
+ # include <shlib-compat.h>
+--- a/sysdeps/unix/sysv/linux/open_by_handle_at.c
++++ b/sysdeps/unix/sysv/linux/open_by_handle_at.c
+@@ -19,10 +19,13 @@
+ #include <fcntl.h>
+ #include <sys/types.h>
+ #include <sys/stat.h>
++#include <errno.h>
+ #include <sysdep-cancel.h>
+ 
+ int
+ open_by_handle_at (int mount_fd, struct file_handle *handle, int flags)
+ {
+-  return SYSCALL_CANCEL (open_by_handle_at, mount_fd, handle, flags);
++  /* The Android app seccomp policy traps open_by_handle_at:
++     answer as a kernel without it, without issuing it.  */
++  return INLINE_SYSCALL_ERROR_RETURN_VALUE (ENOSYS);
+ }
+--- a/sysdeps/unix/sysv/linux/epoll_pwait2.c
++++ b/sysdeps/unix/sysv/linux/epoll_pwait2.c
+@@ -17,14 +17,16 @@
+    <https://www.gnu.org/licenses/>.  */
+ 
+ #include <sys/epoll.h>
++#include <errno.h>
+ #include <sysdep.h>
+ 
+ int
+ __epoll_pwait2_time64 (int fd, struct epoll_event *ev, int maxev,
+ 		       const struct __timespec64 *tmo, const sigset_t *s)
+ {
+-  /* The syscall only supports 64-bit time_t.  */
+-  return SYSCALL_CANCEL (epoll_pwait2, fd, ev, maxev, tmo, s, __NSIG_BYTES);
++  /* The Android app seccomp policy traps epoll_pwait2:
++     answer as a kernel without it, without issuing it.  */
++  return INLINE_SYSCALL_ERROR_RETURN_VALUE (ENOSYS);
+ }
+ #if __TIMESIZE != 64
+ libc_hidden_def (__epoll_pwait2_time64)
+--- a/sysdeps/unix/sysv/linux/pkey_mprotect.c
++++ b/sysdeps/unix/sysv/linux/pkey_mprotect.c
+@@ -28,7 +28,10 @@
+     /* If the key is -1, the system call is precisely equivalent to
+        mprotect.  */
+     return __mprotect (addr, len, prot);
+-  return INLINE_SYSCALL_CALL (pkey_mprotect, addr, len, prot, pkey);
++  /* The Android app seccomp policy traps pkey_mprotect (and pkey_alloc,
++     so no key other than -1 can exist): answer as a kernel without
++     it, without issuing it.  */
++  return INLINE_SYSCALL_ERROR_RETURN_VALUE (ENOSYS);
+ }
+ libc_hidden_def (__pkey_mprotect)
+ weak_alias (__pkey_mprotect, pkey_mprotect)
+--- a/sysdeps/aarch64/__alloc_gcs.c
++++ b/sysdeps/aarch64/__alloc_gcs.c
+@@ -15,6 +15,7 @@
+    License along with the GNU C Library; if not, see
+    <https://www.gnu.org/licenses/>.  */
+ 
++#include <errno.h>
+ #include <sysdep.h>
+ #include <unistd.h>
+ #include <sys/mman.h>
+@@ -27,7 +28,10 @@
+ static void *
+ map_shadow_stack (void *addr, size_t size, unsigned long flags)
+ {
+-  return (void *) INLINE_SYSCALL_CALL (map_shadow_stack, addr, size, flags);
++  /* The Android app seccomp policy traps map_shadow_stack: fail as a kernel
++     without it (MAP_FAILED, ENOSYS), without issuing it.  Only reached when
++     GCS is enabled (HWCAP_GCS and glibc.cpu.aarch64_gcs).  */
++  return (void *) INLINE_SYSCALL_ERROR_RETURN_VALUE (ENOSYS);
+ }
+ 
+ #define GCS_MAX_SIZE (1UL << 31)

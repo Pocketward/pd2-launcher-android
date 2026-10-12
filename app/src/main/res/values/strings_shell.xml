@@ -1,0 +1,129 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The launcher shell, Play and Repair. -->
+<resources>
+    <string name="brand_name">Project Diablo 2</string>
+    <string name="percent">%1$d%%</string>
+    <string name="stepper_less">−</string>
+    <string name="stepper_more">+</string>
+    <string name="back_to_play">‹ Play</string>
+    <string name="back_to_game">‹ Game</string>
+    <string name="back_to_menu">‹ Menu</string>
+
+    <string name="action_resume">Resume</string>
+    <string name="action_try_again">Try again</string>
+    <string name="action_stop">Stop</string>
+    <string name="action_stopping">Stopping…</string>
+
+    <!-- Check. -->
+    <string name="check_title_ready">Ready for Diablo II</string>
+    <string name="check_intro_ready">This device runs Project Diablo 2. Next, choose where Diablo II comes from.</string>
+    <string name="check_title_problem">Something is missing</string>
+    <string name="check_intro_problem">This device can\'t run the game yet. What is missing is listed here; check again once it is fixed.</string>
+    <!-- Only optional asks left (notifications, battery): never "Ready" beside a device warning. -->
+    <string name="check_title_optional_one">Ready — 1 optional setting</string>
+    <string name="check_title_optional">Ready — %1$d optional settings</string>
+    <string name="check_intro_optional">This device runs Project Diablo 2. The settings below are optional: they keep downloads and the game going while the app is in the background.</string>
+    <string name="check_title_untested">Untested device</string>
+    <string name="check_intro_untested">The game may not run well on this device; the warning below says why. You can still go on and choose where Diablo II comes from.</string>
+    <!-- The rows that passed, folded into one line that opens. -->
+    <string name="check_passed_one">1 check passed</string>
+    <string name="check_passed">%1$d checks passed</string>
+    <string name="check_passed_show">Show</string>
+    <string name="check_passed_hide">Hide</string>
+
+    <!-- Download. -->
+    <string name="download_title_running">Downloading the installers</string>
+    <string name="download_intro_running">These install the game in the next step. Each one is checked before it is used. You can leave the app; it carries on.</string>
+    <string name="download_title_stopping">Stopping safely</string>
+    <string name="download_title_stopped">Download stopped</string>
+    <string name="download_intro_stopped">Nothing is lost. Resume when you\'re ready.</string>
+    <string name="download_title_failed">Download interrupted</string>
+    <string name="download_intro_failed">Your progress is kept. Try again to carry on.</string>
+    <string name="download_title_done">Installers downloaded</string>
+    <string name="download_intro_done">Every installer is downloaded and checked. Next, the install: Blizzard\'s installers download the game files there.</string>
+
+    <!-- Install. The running title follows the task underway (InstallProgress.title); the rows and caption carry its details. -->
+    <string name="install_title_environment">Setting up the game environment</string>
+    <string name="install_title_game">Installing Diablo II</string>
+    <string name="install_title_lod">Installing Lord of Destruction</string>
+    <string name="install_title_running">Installing Project Diablo 2</string>
+    <string name="install_title_verify">Checking the game files</string>
+    <string name="install_intro_running">Installing, then checking every file. You can leave the app; it carries on.</string>
+    <string name="install_title_stopping">Stopping safely</string>
+    <string name="install_title_stopped">Install paused</string>
+    <string name="install_title_failed">Install failed</string>
+    <string name="install_title_done">Ready to play</string>
+    <string name="install_row_working">Working…</string>
+    <string name="install_row_stopped">Paused</string>
+    <string name="install_row_failed">Did not finish</string>
+    <string name="install_row_done">Done</string>
+
+    <!-- Play. -->
+    <string name="action_play">Play</string>
+    <string name="play_ready">Ready to play</string>
+    <!-- Where "Ready to play" goes while Play waits (an installed game, before the first check ends). -->
+    <string name="play_getting_ready">Getting ready…</string>
+    <string name="play_updating_files">Updating game files…</string>
+    <string name="play_updating_files_percent">Updating game files… %1$d%%</string>
+    <string name="play_not_ready">Can\'t start right now</string>
+    <string name="play_files_failed">Updating game files failed: %1$s</string>
+    <string name="play_fact_glide">Glide on the GPU</string>
+    <string name="play_fact_direct_draw">DirectDraw</string>
+    <string name="play_fact_plain">%1$s</string>
+    <string name="play_settings">Settings</string>
+    <string name="play_controls">Controls</string>
+    <string name="play_repair">Repair</string>
+    <string name="play_about">About</string>
+    <string name="play_official_launcher">Official PD2 launcher</string>
+    <string name="play_official_launcher_failed">The official PD2 launcher didn\'t open. Try again, or check the game in Repair.</string>
+    <string name="update_up_to_date">Up to date</string>
+    <string name="update_available">Update available</string>
+    <string name="update_checking">Checking for updates</string>
+    <string name="update_check_failed">Update check failed</string>
+    <string name="update_unknown">Not checked yet</string>
+    <!-- Project Diablo 2's Available update on Play: the main button, the line above it, the running figure. -->
+    <string name="action_update">Update</string>
+    <string name="play_update_headline">Project Diablo 2 has an update</string>
+    <string name="play_update_stopped">Update stopped</string>
+    <string name="play_updating">Updating Project Diablo 2</string>
+    <string name="play_update_stopping">Stopping safely</string>
+    <!-- After a finished update, while the engine checks again: where "Ready to play" goes. -->
+    <string name="play_update_rechecking">Checking for updates…</string>
+    <string name="play_without_updating">Play without updating</string>
+    <!-- The running update's caption while the engine reports no amount. -->
+    <string name="update_step_looking">Checking which files changed…</string>
+    <string name="update_step_checking">Checking the game files…</string>
+    <string name="update_step_installing">Installing the new files…</string>
+    <string name="update_failed">The update didn\'t finish. Try again, or play without updating.</string>
+    <string name="update_refused">The update can\'t start now. Wait until nothing else runs, then try again.</string>
+
+    <!-- Repair. -->
+    <string name="repair_title">Your installation</string>
+    <string name="repair_intro">Check again looks over the installation and repairs recorded work. Start over removes it so you can install again; your downloads are kept.</string>
+    <string name="repair_status_checking">Checking…</string>
+    <string name="repair_row_installation">Diablo II, Lord of Destruction and Project Diablo 2</string>
+    <string name="repair_row_update">Project Diablo 2 updates</string>
+    <string name="repair_installation_ready">Installed</string>
+    <string name="repair_installation_repair">Needs repair: Check again repairs it</string>
+    <string name="repair_installation_incomplete">Not completely installed</string>
+    <string name="repair_installation_interrupted">An install step was interrupted: Start over resolves it</string>
+    <string name="repair_status_resetting">Starting over…</string>
+    <string name="host_missing_short">Something this device needs is missing</string>
+    <string name="host_folder_gone_short">Can\'t check until the game is set up again</string>
+    <string name="repair_installation_folder_gone">The Diablo II files it was set up with are gone: Start over sets it up again</string>
+    <string name="repair_start_over">Start over…</string>
+    <string name="repair_keep">Keep it</string>
+    <string name="repair_confirm">Remove and start over</string>
+    <string name="repair_confirm_body">Start over removes the Launcher\'s game environment: the installed Diablo II, Lord of Destruction and Project Diablo 2 files and their settings. Your characters are kept: they live in a folder of their own. Everything already downloaded is kept, so reinstalling doesn\'t download it again. You\'ll need your CD keys again to reinstall.</string>
+
+    <!-- The engine did not take a command: shown on the screen it came from. -->
+    <string name="refusal_install">The install can\'t start from where the installation stands now. Check again, or Start over in Repair.</string>
+    <string name="refusal_start_over">Start over can\'t run now: other work is still running or needs to finish first.</string>
+    <string name="refusal_saves_not_kept">Start over didn\'t run: your characters couldn\'t be moved to their own folder first, so nothing was removed. Try again.</string>
+    <string name="refusal_official_launcher">The official PD2 launcher can\'t open now. Wait until nothing else runs, then try again.</string>
+    <string name="refusal_busy">Other work is still running. Wait for it to finish, then try again.</string>
+    <string name="refusal_engine_busy">The Launcher is busy. Try again in a moment.</string>
+    <string name="refusal_engine_gone">The Launcher stopped and is starting again. Try again in a moment.</string>
+    <string name="refusal_other">The Launcher didn\'t start that (%1$s).</string>
+    <string name="refusal_dismiss">OK</string>
+</resources>

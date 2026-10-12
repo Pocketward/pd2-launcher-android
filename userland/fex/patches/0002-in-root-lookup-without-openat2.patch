@@ -1,0 +1,588 @@
+FEX on Android: RootFS lookups without the openat2 syscall.
+
+Guest open/openat of an absolute path tries the RootFS first with openat2(RESOLVE_IN_ROOT), which
+Android blocks. OpenInRoot (LinuxSyscalls/InRootResolver.cpp) does the same lookup in userspace,
+following openat2(2): one component at a time with openat(O_PATH | O_NOFOLLOW) from RootFSFD;
+absolute paths and links restart at RootFSFD; ".." at the root stays there; procfs magic links fail
+with EXDEV; more than 40 links fail with ELOOP. The last component is opened with the guest's flags
+plus O_NOFOLLOW, so a link created meanwhile is walked again. FileManager::Open and Openat use it;
+the EXDEV and host fallbacks stay. unittests/APITests/InRootResolver.cpp tests it.
+
+ Source/Tools/LinuxEmulation/CMakeLists.txt         |   1 +
+ .../LinuxSyscalls/FileManagement.cpp               |  19 +-
+ .../LinuxSyscalls/InRootResolver.cpp               | 246 +++++++++++++++++++++
+ .../LinuxEmulation/LinuxSyscalls/InRootResolver.h  |  24 ++
+ unittests/APITests/CMakeLists.txt                  |   8 +
+ unittests/APITests/InRootResolver.cpp              | 207 +++++++++++++++++
+ 6 files changed, 493 insertions(+), 12 deletions(-)
+
+diff --git a/Source/Tools/LinuxEmulation/CMakeLists.txt b/Source/Tools/LinuxEmulation/CMakeLists.txt
+index 4a4184d..32a3f13 100644
+--- a/Source/Tools/LinuxEmulation/CMakeLists.txt
++++ b/Source/Tools/LinuxEmulation/CMakeLists.txt
+@@ -11,6 +11,7 @@ add_library(LinuxEmulation STATIC
+   LinuxSyscalls/Android/Answers.cpp
+   LinuxSyscalls/FaultSafeUserMemAccess.cpp
+   LinuxSyscalls/FileManagement.cpp
++  LinuxSyscalls/InRootResolver.cpp
+   LinuxSyscalls/LinuxAllocator.cpp
+   LinuxSyscalls/Seccomp/SeccompEmulator.cpp
+   LinuxSyscalls/Seccomp/BPFEmitter.cpp
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/FileManagement.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/FileManagement.cpp
+index 7172460..fb3dbf8 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/FileManagement.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/FileManagement.cpp
+@@ -13,6 +13,7 @@ $end_info$
+ #include "FEXCore/Config/Config.h"
+ #include "LinuxSyscalls/FileManagement.h"
+ #include "LinuxSyscalls/EmulatedFiles/EmulatedFiles.h"
++#include "LinuxSyscalls/InRootResolver.h"
+ #include "LinuxSyscalls/Syscalls.h"
+ #include "LinuxSyscalls/x64/Syscalls.h"
+ 
+@@ -667,12 +668,9 @@ uint64_t FileManager::Open(const char* pathname, int flags, uint32_t mode) {
+     FDPathTmpData TmpFilename;
+     auto Path = GetEmulatedFDPath(AT_FDCWD, SelfPath, false, TmpFilename);
+     if (Path.FD != -1) {
+-      FEX::HLE::open_how how = {
+-        .flags = (uint64_t)flags,
+-        .mode = (flags & (O_CREAT | O_TMPFILE)) ? mode & 07777 : 0, // openat2() is stricter about this
+-        .resolve = (Path.FD == AT_FDCWD) ? 0u : RESOLVE_IN_ROOT,    // AT_FDCWD means it's a thunk and not via RootFS
+-      };
+-      fd = ::syscall(SYSCALL_DEF(openat2), Path.FD, Path.Path, &how, sizeof(how));
++      // Android blocks the openat2 syscall: RESOLVE_IN_ROOT is resolved in userspace.
++      // AT_FDCWD means it's a thunk and not via RootFS
++      fd = (Path.FD == AT_FDCWD) ? ::openat(Path.FD, Path.Path, flags, mode) : OpenInRoot(Path.FD, Path.Path, flags, mode);
+ 
+       if (fd == -1 && errno == EXDEV) {
+         // This means a magic symlink (/proc/foo) was involved. In this case we
+@@ -921,12 +919,9 @@ uint64_t FileManager::Openat([[maybe_unused]] int dirfs, const char* pathname, i
+     FDPathTmpData TmpFilename;
+     auto Path = GetEmulatedFDPath(dirfs, SelfPath, false, TmpFilename);
+     if (Path.FD != -1) {
+-      FEX::HLE::open_how how = {
+-        .flags = (uint64_t)flags,
+-        .mode = (flags & (O_CREAT | O_TMPFILE)) ? mode & 07777 : 0, // openat2() is stricter about this,
+-        .resolve = (Path.FD == AT_FDCWD) ? 0u : RESOLVE_IN_ROOT,    // AT_FDCWD means it's a thunk and not via RootFS
+-      };
+-      fd = ::syscall(SYSCALL_DEF(openat2), Path.FD, Path.Path, &how, sizeof(how));
++      // Android blocks the openat2 syscall: RESOLVE_IN_ROOT is resolved in userspace.
++      // AT_FDCWD means it's a thunk and not via RootFS
++      fd = (Path.FD == AT_FDCWD) ? ::openat(Path.FD, Path.Path, flags, mode) : OpenInRoot(Path.FD, Path.Path, flags, mode);
+       if (fd == -1 && errno == EXDEV) {
+         // This means a magic symlink (/proc/foo) was involved. In this case we
+         // just punt and do the access without RESOLVE_IN_ROOT.
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/InRootResolver.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/InRootResolver.cpp
+new file mode 100644
+index 0000000..222771b
+--- /dev/null
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/InRootResolver.cpp
+@@ -0,0 +1,246 @@
++/*
++$info$
++tags: LinuxSyscalls|common
++desc: openat2(RESOLVE_IN_ROOT) in userspace, for hosts that do not allow the openat2 syscall
++$end_info$
++*/
++
++#include "LinuxSyscalls/InRootResolver.h"
++
++#include <errno.h>
++#include <fcntl.h>
++#include <limits.h>
++#include <linux/magic.h>
++#include <string.h>
++#include <sys/stat.h>
++#include <sys/vfs.h>
++#include <unistd.h>
++
++namespace FEX::HLE {
++namespace {
++  // Linux's limit on symbolic links followed in one lookup (MAXSYMLINKS); openat2 then fails with ELOOP.
++  constexpr int MaxSymlinks = 40;
++
++  // The directory the walk is in. Owns its fd unless it is the root fd.
++  class Directory final {
++  public:
++    explicit Directory(int Root)
++      : Root {Root}
++      , FD {Root} {}
++    ~Directory() {
++      Release();
++    }
++    Directory(const Directory&) = delete;
++    Directory& operator=(const Directory&) = delete;
++
++    int Get() const {
++      return FD;
++    }
++    void Reset(int New) {
++      Release();
++      FD = New;
++    }
++    void ResetToRoot() {
++      Reset(Root);
++    }
++
++  private:
++    void Release() {
++      if (FD != Root) {
++        int SavedErrno = errno;
++        ::close(FD);
++        errno = SavedErrno;
++      }
++    }
++    const int Root;
++    int FD;
++  };
++
++  bool SameFile(const struct stat& A, const struct stat& B) {
++    return A.st_dev == B.st_dev && A.st_ino == B.st_ino;
++  }
++
++  int Fail(int Error) {
++    errno = Error;
++    return -1;
++  }
++} // namespace
++
++int OpenInRoot(int RootFD, const char* Path, int Flags, mode_t Mode) {
++  if (!Path) {
++    return Fail(EFAULT);
++  }
++  if (Path[0] == '\0') {
++    return Fail(ENOENT);
++  }
++
++  // The rest of the path that is still to be walked. A symbolic link replaces the component that
++  // named it with its target, so the rest moves between two buffers.
++  char Buffers[2][PATH_MAX];
++  int Active = 0;
++  size_t PathLen = strlen(Path);
++  if (PathLen >= PATH_MAX) {
++    return Fail(ENAMETOOLONG);
++  }
++  memcpy(Buffers[Active], Path, PathLen + 1);
++  const char* Rest = Buffers[Active];
++
++  Directory Current {RootFD};
++  // Components walked below the root. `..` at depth 0 stays in the root.
++  size_t Depth = 0;
++  int Symlinks = 0;
++  char Name[NAME_MAX + 1];
++
++  for (;;) {
++    while (*Rest == '/') {
++      ++Rest;
++    }
++
++    if (*Rest == '\0') {
++      // The path names the current directory itself ("/", "dir/", "dir/..").
++      return ::openat(Current.Get(), ".", Flags, Mode);
++    }
++
++    const char* End = strchrnul(Rest, '/');
++    const size_t NameLen = End - Rest;
++    // The last component has nothing after it. A trailing slash makes it a directory component.
++    const bool Last = *End == '\0';
++
++    if (NameLen == 1 && Rest[0] == '.') {
++      Rest = End;
++      continue;
++    }
++
++    if (NameLen == 2 && Rest[0] == '.' && Rest[1] == '.') {
++      Rest = End;
++      if (Depth == 0) {
++        // "If a prefix component of pathname equates to dirfd, then an immediately following ..
++        // component likewise equates to dirfd (just as /.. is traditionally equivalent to /)."
++        continue;
++      }
++      int Parent = ::openat(Current.Get(), "..", O_PATH | O_DIRECTORY | O_CLOEXEC);
++      if (Parent == -1) {
++        return -1;
++      }
++      Current.Reset(Parent);
++      --Depth;
++      if (Depth == 0) {
++        // Back at the root by depth: it must be the root itself, or a directory was moved out
++        // of the root during the walk (openat2 reports such an escape with EXDEV).
++        struct stat RootStat {}, CurrentStat {};
++        if (::fstat(RootFD, &RootStat) == -1 || ::fstat(Current.Get(), &CurrentStat) == -1) {
++          return -1;
++        }
++        if (!SameFile(RootStat, CurrentStat)) {
++          return Fail(EXDEV);
++        }
++        Current.ResetToRoot();
++      }
++      continue;
++    }
++
++    if (NameLen > NAME_MAX) {
++      return Fail(ENAMETOOLONG);
++    }
++    memcpy(Name, Rest, NameLen);
++    Name[NameLen] = '\0';
++
++    bool IsSymlink = false;
++    if (Last) {
++      // open(2): O_NOFOLLOW, and O_CREAT with O_EXCL, do not follow a symbolic link in the last component.
++      const bool FollowLast = !(Flags & O_NOFOLLOW) && !((Flags & O_CREAT) && (Flags & O_EXCL));
++      if (!FollowLast) {
++        return ::openat(Current.Get(), Name, Flags, Mode);
++      }
++
++      struct stat Stat {};
++      if (::fstatat(Current.Get(), Name, &Stat, AT_SYMLINK_NOFOLLOW) == 0 && S_ISLNK(Stat.st_mode)) {
++        IsSymlink = true;
++      } else {
++        // Not a symbolic link (or not there yet, for O_CREAT). O_NOFOLLOW keeps a link that appears
++        // in the meantime from being followed outside the root; the walk then retries it.
++        int FD = ::openat(Current.Get(), Name, Flags | O_NOFOLLOW, Mode);
++        bool BecameSymlink = FD == -1 && errno == ELOOP;
++        if (FD != -1 && (Flags & O_PATH)) {
++          // O_PATH | O_NOFOLLOW opens a symbolic link itself instead of failing.
++          struct stat Opened {};
++          if (::fstat(FD, &Opened) == 0 && S_ISLNK(Opened.st_mode)) {
++            ::close(FD);
++            BecameSymlink = true;
++          }
++        }
++        if (!BecameSymlink) {
++          return FD;
++        }
++        if (++Symlinks > MaxSymlinks) {
++          return Fail(ELOOP);
++        }
++        continue;
++      }
++    } else {
++      int Next = ::openat(Current.Get(), Name, O_PATH | O_NOFOLLOW | O_CLOEXEC);
++      if (Next == -1) {
++        return -1;
++      }
++      struct stat Stat {};
++      if (::fstat(Next, &Stat) == -1) {
++        int SavedErrno = errno;
++        ::close(Next);
++        return Fail(SavedErrno);
++      }
++      if (S_ISLNK(Stat.st_mode)) {
++        ::close(Next);
++        IsSymlink = true;
++      } else if (!S_ISDIR(Stat.st_mode)) {
++        ::close(Next);
++        return Fail(ENOTDIR);
++      } else {
++        Current.Reset(Next);
++        ++Depth;
++        Rest = End;
++        continue;
++      }
++    }
++
++    // Name is a symbolic link that must be followed.
++    if (IsSymlink) {
++      if (++Symlinks > MaxSymlinks) {
++        return Fail(ELOOP);
++      }
++
++      struct statfs FS {};
++      if (::fstatfs(Current.Get(), &FS) == -1) {
++        return -1;
++      }
++      if (FS.f_type == PROC_SUPER_MAGIC) {
++        // procfs links (/proc/self/fd/N, /proc/self/exe, ...) are magic links: RESOLVE_IN_ROOT does not follow them.
++        return Fail(EXDEV);
++      }
++
++      // The target replaces the component: <target>/<rest after the component>.
++      char* Next = Buffers[Active ^ 1];
++      ssize_t TargetLen = ::readlinkat(Current.Get(), Name, Next, PATH_MAX);
++      if (TargetLen == -1) {
++        return -1;
++      }
++      if (TargetLen == 0) {
++        return Fail(ENOENT);
++      }
++      const size_t RestLen = strlen(End);
++      if (static_cast<size_t>(TargetLen) + RestLen >= PATH_MAX) {
++        return Fail(ENAMETOOLONG);
++      }
++      // End is empty or starts with '/', so the target and the rest stay separate components.
++      memcpy(Next + TargetLen, End, RestLen + 1);
++      Active ^= 1;
++      Rest = Next;
++
++      if (Next[0] == '/') {
++        // "Absolute symbolic links are interpreted relative to dirfd."
++        Current.ResetToRoot();
++        Depth = 0;
++      }
++    }
++  }
++}
++} // namespace FEX::HLE
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/InRootResolver.h b/Source/Tools/LinuxEmulation/LinuxSyscalls/InRootResolver.h
+new file mode 100644
+index 0000000..b094237
+--- /dev/null
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/InRootResolver.h
+@@ -0,0 +1,24 @@
++/*
++$info$
++tags: LinuxSyscalls|common
++desc: openat2(RESOLVE_IN_ROOT) in userspace, for hosts that do not allow the openat2 syscall
++$end_info$
++*/
++
++#pragma once
++
++#include <sys/types.h>
++
++namespace FEX::HLE {
++// Opens `Path` like openat2(RootFD, Path, {Flags, Mode, RESOLVE_IN_ROOT}), without the openat2
++// syscall (Android's app seccomp policy blocks it). Semantics, from openat2(2) RESOLVE_IN_ROOT:
++// - `RootFD` is the root directory of the lookup; an absolute `Path` is relative to it.
++// - Absolute symbolic links are interpreted relative to `RootFD`.
++// - `..` in the root stays in the root, as `/..` does.
++// - A magic link (a procfs link such as /proc/self/fd/N) fails with EXDEV. A symbolic link on
++//   procfs is treated as magic.
++// - More than 40 symbolic links fail with ELOOP.
++// The path is walked one component at a time with openat(O_PATH | O_NOFOLLOW); the last
++// component is opened with the caller's `Flags` and `Mode`. Returns the new fd, or -1 with errno.
++int OpenInRoot(int RootFD, const char* Path, int Flags, mode_t Mode);
++} // namespace FEX::HLE
+diff --git a/unittests/APITests/CMakeLists.txt b/unittests/APITests/CMakeLists.txt
+index db3ccf1..f1affd6 100644
+--- a/unittests/APITests/CMakeLists.txt
++++ b/unittests/APITests/CMakeLists.txt
+@@ -19,6 +19,14 @@ foreach(API_TEST ${TESTS})
+     TEST_SUFFIX ".${API_TEST}.APITest")
+ endforeach()
+ 
++# The userspace RESOLVE_IN_ROOT resolver only needs libc, so it is built from its source.
++add_executable(InRootResolver InRootResolver.cpp ${PROJECT_SOURCE_DIR}/Source/Tools/LinuxEmulation/LinuxSyscalls/InRootResolver.cpp)
++target_include_directories(InRootResolver PRIVATE ${PROJECT_SOURCE_DIR}/Source/Tools/LinuxEmulation)
++target_link_libraries(InRootResolver PRIVATE Catch2::Catch2WithMain)
++catch_discover_tests(InRootResolver
++  TEST_SUFFIX ".InRootResolver.APITest")
++list(APPEND TESTS InRootResolver)
++
+ add_custom_target(api_tests
+   WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+   USES_TERMINAL
+diff --git a/unittests/APITests/InRootResolver.cpp b/unittests/APITests/InRootResolver.cpp
+new file mode 100644
+index 0000000..276d4a2
+--- /dev/null
++++ b/unittests/APITests/InRootResolver.cpp
+@@ -0,0 +1,207 @@
++// Tests for FEX::HLE::OpenInRoot, the userspace openat2(RESOLVE_IN_ROOT) (LinuxSyscalls/InRootResolver.cpp).
++// Expected results follow openat2(2): RESOLVE_IN_ROOT treats the root fd as "/", re-roots absolute
++// symbolic links, clamps ".." at the root, refuses magic links (EXDEV) and stops after 40 links (ELOOP).
++
++#include "LinuxSyscalls/InRootResolver.h"
++
++#include <catch2/catch_test_macros.hpp>
++
++#include <cerrno>
++#include <cstdlib>
++#include <cstring>
++#include <fcntl.h>
++#include <string>
++#include <sys/stat.h>
++#include <unistd.h>
++
++namespace {
++// A scratch tree:
++//   <base>/etc/passwd                 "host"   (outside the root: reaching it is an escape)
++//   <base>/a/b/root/                  the root
++//     etc/passwd                      "guest"
++//     usr/lib/libfoo.so               "foo"
++//     lib -> usr/lib                  relative link
++//     abs_lib -> /usr/lib             absolute link (re-rooted)
++//     escape_rel -> ../../../etc      relative link that climbs past the root
++//     escape_abs -> /../../../etc     absolute link that climbs past the root
++//     dir/up -> ../etc/passwd         relative link with ".."
++//     loop1 -> loop2, loop2 -> loop1, self -> self
++//     dangling -> /newfile            link to a file that does not exist yet
++//     chain0 -> chain1 -> ... -> chain40 -> etc/passwd
++class Tree {
++public:
++  Tree() {
++    char Template[] = "/tmp/fex-inroot-XXXXXX";
++    REQUIRE(mkdtemp(Template) != nullptr);
++    Base = Template;
++    Root = Base + "/a/b/root";
++
++    for (auto Dir : {"/etc", "/a", "/a/b", "/a/b/root", "/a/b/root/etc", "/a/b/root/usr", "/a/b/root/usr/lib", "/a/b/root/dir"}) {
++      REQUIRE(mkdir((Base + Dir).c_str(), 0755) == 0);
++    }
++    Write(Base + "/etc/passwd", "host");
++    Write(Root + "/etc/passwd", "guest");
++    Write(Root + "/usr/lib/libfoo.so", "foo");
++    Link("usr/lib", "lib");
++    Link("/usr/lib", "abs_lib");
++    Link("../../../etc", "escape_rel");
++    Link("/../../../etc", "escape_abs");
++    Link("../etc/passwd", "dir/up");
++    Link("loop2", "loop1");
++    Link("loop1", "loop2");
++    Link("self", "self");
++    Link("/newfile", "dangling");
++    for (int i = 0; i < 40; ++i) {
++      Link("chain" + std::to_string(i + 1), "chain" + std::to_string(i));
++    }
++    Link("etc/passwd", "chain40");
++
++    RootFD = open(Root.c_str(), O_PATH | O_DIRECTORY | O_CLOEXEC);
++    REQUIRE(RootFD >= 0);
++  }
++
++  ~Tree() {
++    close(RootFD);
++    std::string Cmd = "rm -rf '" + Base + "'";
++    [[maybe_unused]] int Ignored = system(Cmd.c_str());
++  }
++
++  // Opens Path in the root and returns its contents, or "errno:<n>" on failure.
++  std::string Read(const char* Path, int Flags = O_RDONLY) const {
++    int FD = FEX::HLE::OpenInRoot(RootFD, Path, Flags | O_CLOEXEC, 0);
++    if (FD < 0) {
++      return "errno:" + std::to_string(errno);
++    }
++    char Buffer[64] {};
++    ssize_t Size = read(FD, Buffer, sizeof(Buffer) - 1);
++    close(FD);
++    return Size < 0 ? "read-failed" : std::string(Buffer, Size);
++  }
++
++  int Errno(const char* Path, int Flags = O_RDONLY, mode_t Mode = 0) const {
++    int FD = FEX::HLE::OpenInRoot(RootFD, Path, Flags | O_CLOEXEC, Mode);
++    if (FD >= 0) {
++      close(FD);
++      return 0;
++    }
++    return errno;
++  }
++
++  std::string Base;
++  std::string Root;
++  int RootFD = -1;
++
++private:
++  static void Write(const std::string& Path, const char* Data) {
++    int FD = open(Path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
++    REQUIRE(FD >= 0);
++    REQUIRE(write(FD, Data, strlen(Data)) == static_cast<ssize_t>(strlen(Data)));
++    close(FD);
++  }
++  void Link(const std::string& Target, const std::string& Name) const {
++    REQUIRE(symlink(Target.c_str(), (Root + "/" + Name).c_str()) == 0);
++  }
++};
++
++const std::string Guest = "guest";
++const std::string Errno(int Error) {
++  return "errno:" + std::to_string(Error);
++}
++} // namespace
++
++TEST_CASE("InRootResolver - plain paths") {
++  Tree T;
++  CHECK(T.Read("/usr/lib/libfoo.so") == "foo");
++  CHECK(T.Read("usr/lib/libfoo.so") == "foo");
++  CHECK(T.Read("//usr///lib/./libfoo.so") == "foo");
++  CHECK(T.Read("/etc/passwd") == Guest);
++}
++
++TEST_CASE("InRootResolver - relative and absolute symlinks") {
++  Tree T;
++  CHECK(T.Read("/lib/libfoo.so") == "foo");
++  CHECK(T.Read("/abs_lib/libfoo.so") == "foo");
++  CHECK(T.Read("/dir/up") == Guest);
++}
++
++TEST_CASE("InRootResolver - dot-dot cannot escape") {
++  Tree T;
++  CHECK(T.Read("/../etc/passwd") == Guest);
++  CHECK(T.Read("/../../../etc/passwd") == Guest);
++  CHECK(T.Read("usr/../../../../etc/passwd") == Guest);
++  CHECK(T.Read("/usr/lib/../../etc/passwd") == Guest);
++  CHECK(T.Read("/escape_rel/passwd") == Guest);
++  CHECK(T.Read("/escape_abs/passwd") == Guest);
++}
++
++TEST_CASE("InRootResolver - symlink loops") {
++  Tree T;
++  CHECK(T.Read("/loop1") == Errno(ELOOP));
++  CHECK(T.Read("/self/x") == Errno(ELOOP));
++  // 40 links are followed, the 41st is refused.
++  CHECK(T.Read("/chain1") == Guest);
++  CHECK(T.Read("/chain0") == Errno(ELOOP));
++}
++
++TEST_CASE("InRootResolver - missing and non-directory components") {
++  Tree T;
++  CHECK(T.Read("/usr/nope/libfoo.so") == Errno(ENOENT));
++  CHECK(T.Read("/nope") == Errno(ENOENT));
++  CHECK(T.Read("") == Errno(ENOENT));
++  CHECK(T.Read("/etc/passwd/x") == Errno(ENOTDIR));
++  CHECK(T.Errno("/etc/passwd/") == ENOTDIR);
++  CHECK(T.Errno(std::string(300, 'x').c_str()) == ENAMETOOLONG);
++}
++
++TEST_CASE("InRootResolver - the root and directories") {
++  Tree T;
++  struct stat RootStat {}, Opened {};
++  REQUIRE(stat(T.Root.c_str(), &RootStat) == 0);
++  for (auto Path : {"/", "/..", "usr/..", "."}) {
++    int FD = FEX::HLE::OpenInRoot(T.RootFD, Path, O_RDONLY | O_DIRECTORY | O_CLOEXEC, 0);
++    REQUIRE(FD >= 0);
++    REQUIRE(fstat(FD, &Opened) == 0);
++    CHECK(Opened.st_ino == RootStat.st_ino);
++    CHECK(Opened.st_dev == RootStat.st_dev);
++    close(FD);
++  }
++  CHECK(T.Errno("/usr/", O_RDONLY | O_DIRECTORY) == 0);
++  CHECK(T.Errno("/lib/", O_RDONLY | O_DIRECTORY) == 0);
++}
++
++TEST_CASE("InRootResolver - O_NOFOLLOW on the last component") {
++  Tree T;
++  CHECK(T.Errno("/lib", O_RDONLY | O_NOFOLLOW) == ELOOP);
++  int FD = FEX::HLE::OpenInRoot(T.RootFD, "/lib", O_PATH | O_NOFOLLOW | O_CLOEXEC, 0);
++  REQUIRE(FD >= 0);
++  struct stat Stat {};
++  REQUIRE(fstatat(FD, "", &Stat, AT_EMPTY_PATH) == 0);
++  CHECK(S_ISLNK(Stat.st_mode));
++  close(FD);
++  // A link in a middle component is still followed.
++  CHECK(T.Read("/lib/libfoo.so", O_RDONLY | O_NOFOLLOW) == "foo");
++}
++
++TEST_CASE("InRootResolver - O_CREAT through an absolute dangling link stays in the root") {
++  Tree T;
++  CHECK(T.Errno("/dangling", O_WRONLY | O_CREAT | O_EXCL, 0644) == EEXIST);
++  CHECK(T.Errno("/dangling", O_WRONLY | O_CREAT, 0644) == 0);
++  struct stat Stat {};
++  CHECK(stat((T.Root + "/newfile").c_str(), &Stat) == 0);
++  CHECK(access("/newfile", F_OK) != 0);
++}
++
++TEST_CASE("InRootResolver - magic links are refused") {
++  int ProcSelf = open("/proc/self", O_PATH | O_DIRECTORY | O_CLOEXEC);
++  REQUIRE(ProcSelf >= 0);
++  errno = 0;
++  CHECK(FEX::HLE::OpenInRoot(ProcSelf, "exe", O_RDONLY | O_CLOEXEC, 0) == -1);
++  CHECK(errno == EXDEV);
++  CHECK(FEX::HLE::OpenInRoot(ProcSelf, "/fd/0", O_RDONLY | O_CLOEXEC, 0) == -1);
++  CHECK(errno == EXDEV);
++  // Not following the last component is fine.
++  int FD = FEX::HLE::OpenInRoot(ProcSelf, "exe", O_PATH | O_NOFOLLOW | O_CLOEXEC, 0);
++  CHECK(FD >= 0);
++  close(FD);
++  close(ProcSelf);
++}

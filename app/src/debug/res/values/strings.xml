@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The development build (com.pd2launcher.app.dev) beside the release app: its own name in the
+     launcher and in the Files app. -->
+<resources>
+    <string name="app_name">PD2 Launcher Dev</string>
+    <string name="files_root_title">PD2 Launcher Dev</string>
+</resources>

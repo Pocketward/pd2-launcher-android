@@ -1,0 +1,377 @@
+# The release build. Each release is one commit on main with its version tag
+# (vX.Y.Z or vX.Y.Z-betaN), pushed together, so a push to main whose commit
+# carries such a tag builds and publishes that release; workflow_dispatch builds
+# a given tag again. Running on main keeps the build caches where every later
+# release can use them (a tag's own caches serve only that tag).
+#
+#   userland  userland/build.sh with our glibc and FEX, unless the cache holds the
+#             archive for these inputs; FEX's and glibc's builds and the Debian
+#             downloads are cached apart, so a change elsewhere reuses them
+#   runtime   runtime/pack.sh, unless the cache holds it for these pins
+#   apk       the release executable of the engine that engine.lock pins (its
+#             SHA-256 checked), build.sh release signed with the release key from
+#             the repository's secrets, then the GitHub release with the APK
+#
+# While the engine's repository is private, the secret ENGINE_REPO_TOKEN (read
+# access to its contents) lets Git and the GitHub CLI fetch from it; a public
+# one needs none.
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The release tag to build and publish
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      userland: ${{ steps.keys.outputs.userland }}
+      fex: ${{ steps.keys.outputs.fex }}
+      glibc: ${{ steps.keys.outputs.glibc }}
+      downloads: ${{ steps.keys.outputs.downloads }}
+      runtime: ${{ steps.keys.outputs.runtime }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Find the release tag
+        id: tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          pattern='^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
+          if [[ -n $INPUT_TAG ]]; then
+            [[ $INPUT_TAG =~ $pattern ]] || { echo "not a release tag: $INPUT_TAG" >&2; exit 1; }
+            git ls-remote --exit-code --tags origin "refs/tags/$INPUT_TAG" >/dev/null ||
+              { echo "no tag $INPUT_TAG" >&2; exit 1; }
+            tag=$INPUT_TAG
+          else
+            # The tag arrives with the commit; look twice more in case it is a moment late.
+            for attempt in 1 2 3; do
+              tag=$(git ls-remote --tags origin 'refs/tags/v*' |
+                awk -v commit="$GITHUB_SHA" '$1 == commit { sub("^refs/tags/", "", $2); sub("\\^\\{\\}$", "", $2); print $2 }' |
+                grep -E "$pattern" | sort -uV | tail -n 1 || true)
+              [[ -n $tag || $attempt == 3 ]] && break
+              sleep 10
+            done
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "release tag: ${tag:-none (not a release)}"
+
+      - name: Check out the release
+        if: steps.tag.outputs.tag != ''
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          git fetch -q --depth=1 origin "+refs/tags/$TAG:refs/tags/$TAG"
+          git checkout -q --detach "refs/tags/$TAG"
+
+      # The cache keys, from the release's tree before any build writes into it: the
+      # userland's covers every input of its version (userland/pack.sh) and more,
+      # leaving out only the build's out/ folders and the READMEs.
+      - name: Name the caches
+        id: keys
+        if: steps.tag.outputs.tag != ''
+        run: |
+          {
+            echo "userland=userland-${{ hashFiles('userland/**', '!userland/**/out*/**', '!userland/README.md', '!userland/fex/README.md', '!userland/glibc/README.md') }}"
+            echo "fex=fex-out-${{ hashFiles('userland/fex/**', '!userland/fex/out*/**', 'userland/config.sh') }}"
+            echo "glibc=glibc-out-${{ hashFiles('userland/glibc/**', '!userland/glibc/out*/**', 'userland/config.sh') }}"
+            echo "downloads=userland-downloads-${{ hashFiles('userland/packages.lock', 'userland/config.sh') }}"
+            echo "runtime=runtime-${{ hashFiles('runtime/**', 'engine.lock') }}"
+          } | tee -a "$GITHUB_OUTPUT"
+
+  userland:
+    needs: tag
+    if: needs.tag.outputs.tag != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.tag.outputs.tag }}
+
+      - name: Restore the userland
+        id: userland
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: app/src/main/assets/userland
+          key: ${{ needs.tag.outputs.userland }}
+
+      - name: Make room on the disk
+        if: steps.userland.outputs.cache-hit != 'true'
+        run: |
+          df -h / "$GITHUB_WORKSPACE"
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/powershell /usr/share/swift
+          df -h /
+          nproc
+          free -g
+
+      - name: Install a static qemu-aarch64 binfmt_misc handler
+        if: steps.userland.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --yes --no-install-recommends qemu-user-static
+          grep -q '^flags: .*F' /proc/sys/fs/binfmt_misc/qemu-aarch64
+          cat /proc/sys/fs/binfmt_misc/qemu-aarch64
+
+      - name: Restore the Debian packages and source archives
+        if: steps.userland.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/pd2-android/userland/debs
+            ~/.cache/pd2-android/userland/sources
+          key: ${{ needs.tag.outputs.downloads }}
+          restore-keys: userland-downloads-
+
+      # build-fex.sh and build-glibc.sh reuse a restored build only when its
+      # BUILDINFO names the current inputs, so an older one is safe to restore.
+      - name: Restore the FEX build
+        id: fex
+        if: steps.userland.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: userland/fex/out
+          key: ${{ needs.tag.outputs.fex }}
+          restore-keys: fex-out-
+
+      - name: Restore the glibc build
+        id: glibc
+        if: steps.userland.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: userland/glibc/out
+          key: ${{ needs.tag.outputs.glibc }}
+          restore-keys: glibc-out-
+
+      - name: Build the userland
+        if: steps.userland.outputs.cache-hit != 'true'
+        env:
+          PD2_USERLAND_WITH_GLIBC: 1
+          PD2_USERLAND_WITH_FEX: 1
+        run: userland/build.sh
+
+      - name: Save the FEX build
+        if: steps.userland.outputs.cache-hit != 'true' && steps.fex.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: userland/fex/out
+          key: ${{ needs.tag.outputs.fex }}
+
+      - name: Save the glibc build
+        if: steps.userland.outputs.cache-hit != 'true' && steps.glibc.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: userland/glibc/out
+          key: ${{ needs.tag.outputs.glibc }}
+
+      - name: Save the Debian packages and source archives
+        if: steps.userland.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        continue-on-error: true
+        with:
+          path: |
+            ~/.cache/pd2-android/userland/debs
+            ~/.cache/pd2-android/userland/sources
+          key: ${{ needs.tag.outputs.downloads }}
+
+      - name: Save the userland
+        if: steps.userland.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: app/src/main/assets/userland
+          key: ${{ needs.tag.outputs.userland }}
+
+  runtime:
+    needs: tag
+    if: needs.tag.outputs.tag != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      # Not persisted: git would send the checkout's token to the engine repository too,
+      # and never ask the credential helper for ENGINE_REPO_TOKEN.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.tag.outputs.tag }}
+          persist-credentials: false
+
+      - name: Restore the runtime
+        id: runtime
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: app/src/main/assets/runtime
+          key: ${{ needs.tag.outputs.runtime }}
+
+      - name: Make room on the disk
+        if: steps.runtime.outputs.cache-hit != 'true'
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/powershell /usr/share/swift
+          df -h /
+
+      # The runtime's pins are in the engine's sources at the release engine.lock pins.
+      - name: Pack the runtime
+        if: steps.runtime.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.ENGINE_REPO_TOKEN }}
+          GIT_CONFIG_COUNT: 1
+          GIT_CONFIG_KEY_0: credential.https://github.com.helper
+          GIT_CONFIG_VALUE_0: '!gh auth git-credential'
+        run: |
+          url=$(sed -n 's/^url=//p' engine.lock)
+          git ls-remote "$url" HEAD >/dev/null || {
+            echo "::error::cannot read $url; while it is private, the secret ENGINE_REPO_TOKEN must give read access to it"
+            exit 1
+          }
+          sudo apt-get update -qq
+          sudo apt-get install --yes --no-install-recommends squashfs-tools
+          runtime/pack.sh
+
+      - name: Save the runtime
+        if: steps.runtime.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: app/src/main/assets/runtime
+          key: ${{ needs.tag.outputs.runtime }}
+
+  apk:
+    needs: [tag, userland, runtime]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.tag.outputs.tag }}
+    steps:
+      # Not persisted, as in the runtime job; the release is published with gh, not git.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.tag.outputs.tag }}
+          persist-credentials: false
+
+      # The build image (SDK, NDK) needs more room than a hosted runner leaves free.
+      - name: Make room on the disk
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/powershell /usr/share/swift
+          df -h /
+
+      - name: Restore the userland
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: app/src/main/assets/userland
+          key: ${{ needs.tag.outputs.userland }}
+          fail-on-cache-miss: true
+
+      - name: Restore the runtime
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: app/src/main/assets/runtime
+          key: ${{ needs.tag.outputs.runtime }}
+          fail-on-cache-miss: true
+
+      - name: Restore the Gradle cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/pd2-android/gradle/caches
+            ~/.cache/pd2-android/gradle/wrapper
+          key: gradle-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties', 'gradle.properties', 'build.gradle.kts', 'settings.gradle.kts', 'app/build.gradle.kts') }}
+          restore-keys: gradle-
+
+      - name: Download the engine
+        env:
+          GH_TOKEN: ${{ secrets.ENGINE_REPO_TOKEN }}
+          GIT_CONFIG_COUNT: 1
+          GIT_CONFIG_KEY_0: credential.https://github.com.helper
+          GIT_CONFIG_VALUE_0: '!gh auth git-credential'
+          PD2_RELEASE_BUILD: 1
+        run: |
+          url=$(sed -n 's/^url=//p' engine.lock)
+          git ls-remote "$url" HEAD >/dev/null || {
+            echo "::error::cannot read $url; while it is private, the secret ENGINE_REPO_TOKEN must give read access to it"
+            exit 1
+          }
+          engine/build.sh
+
+      - name: Write the release key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          [[ -n $KEYSTORE_BASE64 && -n $KEYSTORE_PASSWORD && -n $KEY_ALIAS ]] ||
+            { echo "the release key's secrets are not set" >&2; exit 1; }
+          signing=$RUNNER_TEMP/signing
+          install -d -m 0700 "$signing"
+          umask 077
+          base64 --decode <<<"$KEYSTORE_BASE64" > "$signing/release.jks"
+          printf 'storeFile=release.jks\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
+            "$KEYSTORE_PASSWORD" "$KEY_ALIAS" "$KEYSTORE_PASSWORD" > "$signing/release-signing.properties"
+          echo "PD2_RELEASE_SIGNING_DIR=$signing" >> "$GITHUB_ENV"
+
+      - name: Build the signed release APK
+        run: ./build.sh release
+
+      - name: Remove the release key
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/signing"
+
+      - name: Name the APK and describe it
+        id: apk
+        run: |
+          image="localhost/pd2-android-build:$(sha256sum containers/Containerfile | cut -c1-16)"
+          tools() { podman run --rm -v "$PWD/build/outputs:/apk:ro" "$image" "$@"; }
+          badging=$(tools aapt2 dump badging /apk/app-release.apk | head -n 1)
+          version_name=$(sed -n "s/.* versionName='\([^']*\)'.*/\1/p" <<<"$badging")
+          version_code=$(sed -n "s/.* versionCode='\([^']*\)'.*/\1/p" <<<"$badging")
+          package=$(sed -n "s/^package: name='\([^']*\)'.*/\1/p" <<<"$badging")
+          certificate=$(tools apksigner verify --print-certs /apk/app-release.apk |
+            sed -n 's/^Signer #1 certificate SHA-256 digest: //p')
+          [[ -n $version_name && -n $version_code && -n $certificate ]]
+          apk=pd2-launcher-android-$version_name.apk
+          mkdir -p release
+          cp build/outputs/app-release.apk "release/$apk"
+          (cd release && sha256sum "$apk" > "$apk.sha256")
+          engine_tag=$(sed -n 's/^tag=//p' engine.lock)
+          engine_commit=$(sed -n 's/^commit=//p' engine.lock)
+          {
+            echo "PD2 Launcher for Android $TAG."
+            echo
+            echo "- \`$apk\`: package \`$package\`, versionName $version_name, versionCode $version_code; SHA-256 in \`$apk.sha256\`."
+            echo "- Signed with the certificate whose SHA-256 is \`$certificate\`."
+            echo "- Engine: PD2 Launcher $engine_tag (\`$engine_commit\`)."
+          } > release/notes.md
+          cat release/notes.md
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=()
+          [[ $TAG == *-* ]] && prerelease=(--prerelease)
+          files=(release/*.apk release/*.apk.sha256)
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file release/notes.md
+          else
+            gh release create "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --verify-tag \
+              --title "$TAG" --notes-file release/notes.md "${prerelease[@]}"
+          fi

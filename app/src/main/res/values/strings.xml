@@ -1,0 +1,149 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">PD2 Launcher</string>
+
+    <!-- The four step marks: Check, Download, Install, Play. -->
+    <string name="step_check">Check</string>
+    <string name="step_download">Download</string>
+    <string name="step_install">Install</string>
+    <string name="step_play">Play</string>
+    <string name="step_counter">Step %1$d of %2$d</string>
+    <!-- The app bar's back arrow, for TalkBack. -->
+
+    <!-- Device check. -->
+    <string name="device_checking_title">Checking this device…</string>
+    <string name="device_checking_body">Nothing is unpacked until the check passes.</string>
+    <string name="not_supported_title">This device is not supported</string>
+    <string name="not_supported_body">PD2 Launcher needs an Adreno 6xx, 7xx or 8xx or a Mali-G310, G610, G615, G715, G720 or G725 GPU, Android 11 or later and 4 KB memory pages.</string>
+    <string name="not_supported_close">Close</string>
+    <string name="device_check_failed">The device check could not run: %1$s</string>
+    <string name="device_gpu_not_supported">%1$s is not supported. An Adreno 6xx, 7xx or 8xx or a Mali-G310, G610, G615, G715, G720 or G725 GPU is needed.</string>
+    <string name="device_gpu_unknown_to_driver">%1$s is not known to the bundled graphics driver. PD2 may not start on it.</string>
+    <string name="device_gpu_unknown">This GPU is not supported. An Adreno 6xx, 7xx or 8xx or a Mali-G310, G610, G615, G715, G720 or G725 GPU is needed.</string>
+    <string name="device_page_size">Memory pages are %1$d bytes. 4096 is needed.</string>
+    <string name="device_android_too_old">Android SDK %1$d is too old. Android 11 or later is needed.</string>
+    <string name="device_not_primary_user">Only the device\'s main user can run PD2 Launcher.</string>
+    <string name="device_no_space">%1$d MB free, %2$d MB needed to unpack.</string>
+    <string name="device_kernel_untested">Kernel %1$s is older than 5.15. This device is untested.</string>
+    <!-- Check's device row: no kernel here; only its untested warning names it. -->
+    <string name="device_summary">%1$s graphics · Android %2$s</string>
+    <string name="device_summary_android">Android %1$s</string>
+
+    <!-- Permissions. -->
+    <string name="notifications_off_warning">Off. Android may stop the game while PD2 Launcher is in the background.</string>
+    <string name="notifications_on">On</string>
+    <!-- Check's grant buttons: Android's own prompt or settings page opens. -->
+    <string name="check_grant_notifications">Turn on</string>
+    <string name="check_grant_battery">Allow</string>
+
+    <!-- Step 1: Check. -->
+    <string name="check_title">Checking this device</string>
+    <string name="check_intro">First, let\'s make sure this device can run the game.</string>
+    <!-- The rows in plain words: the App userland is "Game support files" (its build id shows in
+         About), the Launcher's host check "Can run the game". -->
+    <string name="row_device">This device</string>
+    <string name="row_notifications">Notifications</string>
+    <string name="row_userland">Game support files</string>
+    <string name="row_host">Can run the game</string>
+    <string name="userland_checking">Checking…</string>
+    <string name="userland_unpacking">Unpacking %1$d%% (%2$d of %3$d MB)</string>
+    <string name="userland_ready">Ready</string>
+    <string name="userland_failed">Unpacking failed: %1$s</string>
+    <string name="host_after_unpack">Waits for the game support files.</string>
+    <string name="host_engine_starting">Starting the check…</string>
+    <string name="host_engine_restarting">Restarting the check…</string>
+    <string name="host_engine_failed">Part of PD2 Launcher stopped. Close and reopen PD2 Launcher.</string>
+    <string name="host_checking">Checking your device…</string>
+    <string name="host_supported">Yes</string>
+    <string name="host_missing">Missing:</string>
+    <string name="host_game_folder_gone">The Diablo II files this game was set up with are gone, so the game can\'t be checked. Repair → Start over sets it up again; your characters are kept.</string>
+    <string name="host_check_failed">The check couldn\'t finish (%1$s). Check again; if it keeps failing, close and reopen PD2 Launcher.</string>
+    <string name="hint_game_folder_gone">Repair can set the game up again.</string>
+    <string name="action_continue">Continue</string>
+    <string name="action_back">Back</string>
+    <string name="action_check_again">Check again</string>
+    <string name="hint_missing">Continue needs every check to pass.</string>
+    <string name="hint_wait_for_check">Continue is offered once the check is done.</string>
+    <string name="hint_continue_to_download">Next: choose where Diablo II comes from.</string>
+
+    <!-- Step 3: Download. -->
+    <string name="download_title">Download the installers</string>
+    <string name="download_intro">PD2 Launcher downloads the installers for Diablo II and Lord of Destruction from Blizzard, and Project Diablo 2, and checks each one. They install the game in the next step.</string>
+    <string name="download_amount">%1$d of %2$d MB</string>
+    <string name="download_amount_open">%1$d MB</string>
+    <string name="download_item_d2">Diablo II installer (Blizzard)</string>
+    <string name="download_item_lod">Lord of Destruction installer (Blizzard)</string>
+    <string name="download_item_pd2">Project Diablo 2</string>
+    <string name="download_row_downloading">Downloading…</string>
+    <string name="download_row_done">Downloaded and checked</string>
+    <string name="download_stopped_item">Stopped. What is done is kept.</string>
+    <string name="download_failed_item">Did not finish</string>
+    <string name="action_download">Download</string>
+    <string name="download_hint_waiting">Getting ready…</string>
+    <string name="download_hint_ready">The download carries on if you leave the app.</string>
+    <string name="download_hint_running">Stop keeps what is done; Resume carries on.</string>
+    <string name="download_hint_stopping">Stopping safely…</string>
+    <string name="download_hint_stopped">Resume carries on where it stopped.</string>
+    <string name="download_hint_done">%1$d MB downloaded. Next: install.</string>
+    <string name="status_ok">passed</string>
+    <string name="status_warning">warning</string>
+    <string name="status_error">problem</string>
+    <string name="status_pending">in progress</string>
+
+    <!-- The Launcher's host findings in plain words (the desktop's step 1 list, for Android). -->
+    <string name="missing_display_session">A screen for Windows programs (the X screen)</string>
+    <string name="missing_fex">The part of PD2 Launcher that runs Windows programs on this device</string>
+    <string name="missing_fex_root_fs">The system files PD2 Launcher runs Windows programs with</string>
+    <string name="missing_page_size">A system with 4 KB memory pages</string>
+    <string name="missing_wine_cannot_run">Permission to run the Windows compatibility layer</string>
+    <string name="missing_ia32_execution">32-bit program support</string>
+    <string name="missing_no_exec">Permission to run programs from the app\'s folder</string>
+    <string name="missing_i386_loader">32-bit system libraries</string>
+    <string name="missing_libraries">A system library the game needs to start</string>
+    <string name="missing_wine_library_x11">The X11 library (libX11), which the game\'s windows need</string>
+    <string name="missing_wine_library_xext">The X11 extension library (libXext), which the game\'s windows need</string>
+    <string name="missing_wine_library_free_type">The FreeType font library, which the Diablo II installer needs</string>
+    <string name="missing_wine_library_fontconfig">The Fontconfig library, without which the game can\'t finish setting up</string>
+    <string name="missing_wine_library_open_gl">OpenGL, which the game draws with</string>
+    <string name="missing_libunwind">The libunwind library</string>
+    <string name="missing_xwayland">XWayland, so Windows programs can open windows</string>
+    <string name="missing_vulkan_loader">Vulkan support (the Vulkan loader)</string>
+    <string name="missing_vulkan_driver">A Vulkan graphics driver</string>
+    <string name="missing_hardware_graphics">Graphics acceleration (the game can\'t use software rendering)</string>
+    <string name="missing_launcher_build">The Launcher build for this device</string>
+    <string name="missing_architecture">An ARM64 processor</string>
+    <string name="missing_host_information">Readable system information</string>
+    <string name="missing_uncertified_build">This build hasn\'t been approved for this kind of device yet</string>
+    <string name="missing_unknown">Something this version of PD2 Launcher can\'t name yet; an update may explain it</string>
+
+    <!-- Session notification. -->
+    <string name="notification_channel_name">Session</string>
+    <string name="notification_title">PD2 Launcher is running</string>
+    <string name="notification_text">The Launcher runs in the background.</string>
+
+    <!-- The Game view before its X screen is up. -->
+    <string name="game_view_waiting">Waiting for the X screen. Start the game environment first.</string>
+
+    <!-- Key screen. -->
+    <string name="keys_title">Your CD keys</string>
+    <string name="keys_intro">Blizzard\'s installers need your own two keys. They go only to the installers, stay only in the app\'s memory, and are forgotten once Diablo II is installed or the app closes.</string>
+    <string name="keys_d2_label">Diablo II key</string>
+    <string name="keys_lod_label">Lord of Destruction key</string>
+    <string name="keys_placeholder">XXXX-XXXX-XXXX-XXXX-XXXX-XX</string>
+    <string name="keys_hint">Enter both keys: letters, numbers and dashes.</string>
+    <string name="keys_terms_notice">Installing means you accept Blizzard\'s End User License Agreement for both games.</string>
+    <string name="keys_where_label">Where to find them</string>
+    <string name="keys_where">Blizzard account → Games &amp; Subscriptions → Diablo II, or the manual and CD case.</string>
+    <string name="keys_example_label">A key looks like</string>
+    <string name="keys_example">ABCD-EFGH-JKLM-NPQR-STVW-XY</string>
+    <string name="keys_example_old">Older 16-character keys work too.</string>
+    <string name="keys_terms_link">Read Blizzard\'s terms</string>
+    <string name="keys_show">Show keys</string>
+    <string name="keys_show_body">Keys are hidden unless you choose to see them.</string>
+    <string name="keys_install">Agree and install</string>
+    <string name="terms_title">Blizzard\'s license terms</string>
+    <string name="terms_body">Diablo II and Lord of Destruction are installed with Blizzard\'s own installers. Each asks you to accept Blizzard\'s End User License Agreement; Agree and install accepts it for you, for both games.</string>
+    <string name="terms_url">https://www.blizzard.com/legal/</string>
+    <string name="terms_open">Open in browser</string>
+    <string name="terms_close">Close</string>
+</resources>

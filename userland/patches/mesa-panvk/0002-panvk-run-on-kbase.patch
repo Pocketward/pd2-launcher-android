@@ -1,0 +1,649 @@
+panvk: run on Arm's mali_kbase through the kbase pan_kmod backend
+
+- Enumeration: kbase's /dev/mali0 is not a DRM device, so drmGetDevices2() never lists it. PanVK
+  gets an `enumerate` callback (as Turnip has for KGSL, src/freedreno/vulkan/tu_knl.cc) that opens
+  the kbase node (PANVK_KBASE_DEVICE, default /dev/mali0) and creates the physical device without a
+  drmDevice; when the node is absent or the kbase backend refuses it, VK_ERROR_INCOMPATIBLE_DRIVER
+  lets the runtime enumerate DRM devices (src/vulkan/runtime/vk_instance.c). Without a drmDevice
+  there are no DRM node ids and no VK_EXT_physical_device_drm.
+- The CSF queue code issues its panthor ioctls and reads the CSF interface and flush id through
+  pan_kmod_dev_ioctl(), pan_kmod_dev_get_csif_props() and pan_kmod_dev_get_flush_id() (same
+  behaviour on panthor).
+- VA heaps: the executable heap is the first 4 GiB window of the backend's user VA range instead of
+  [32 MiB, 4 GiB) (unchanged for a range starting at 0); the capture/replay heap stays above it.
+- Private BOs and the render descriptor ring are GPU-mapped before they are CPU-mapped: a backend
+  may create the memory only when it gets its GPU address.
+- On a backend that maps a BO once (props.limits.single_gpu_mapping), the render descriptor ring
+  is one BO of twice the size instead of one BO mapped twice; sparse binding is off.
+- No VK_EXT_map_memory_placed without placed CPU mappings, no external-fd extensions without fd
+  sharing.
+- Sync objects command streams wait on live in GPU_SYNC memory when the backend offers it: the
+  uncached pool (VkEvents, queries) carries the flag, and the queues' own sync objects and the
+  render descriptor ring's come from that pool instead of the cached one. A BO with a fixed_va is
+  mapped there instead of at an address from the VA heaps.
+- vkSetEvent tells the kernel the CPU changed a sync object (pan_kmod_dev_notify_sync_update), so
+  a group suspended on the event's wait runs again.
+
+--- a/src/panfrost/vulkan/csf/panvk_vX_cmd_buffer.c
++++ b/src/panfrost/vulkan/csf/panvk_vX_cmd_buffer.c
+@@ -827,7 +827,7 @@
+    };
+ 
+    const struct drm_panthor_csif_info *csif_info =
+-      panthor_kmod_get_csif_props(dev->kmod.dev);
++      pan_kmod_dev_get_csif_props(dev->kmod.dev);
+ 
+    for (uint32_t i = 0; i < ARRAY_SIZE(cmdbuf->state.cs); i++) {
+       struct cs_builder *b = &cmdbuf->state.cs[i].builder;
+--- a/src/panfrost/vulkan/csf/panvk_vX_cmd_draw.c
++++ b/src/panfrost/vulkan/csf/panvk_vX_cmd_draw.c
+@@ -105,7 +105,7 @@
+                                       uint32_t *dump_region_size)
+ {
+    const struct drm_panthor_csif_info *csif_info =
+-      panthor_kmod_get_csif_props(dev->kmod.dev);
++      pan_kmod_dev_get_csif_props(dev->kmod.dev);
+ 
+    struct cs_builder b;
+    struct cs_builder_conf conf = {
+--- a/src/panfrost/vulkan/csf/panvk_vX_event.c
++++ b/src/panfrost/vulkan/csf/panvk_vX_event.c
+@@ -77,6 +77,7 @@
+ VKAPI_ATTR VkResult VKAPI_CALL
+ panvk_per_arch(SetEvent)(VkDevice _device, VkEvent _event)
+ {
++   VK_FROM_HANDLE(panvk_device, device, _device);
+    VK_FROM_HANDLE(panvk_event, event, _event);
+ 
+    panvk_priv_mem_write_array(event->syncobjs, 0, struct panvk_cs_sync32,
+@@ -85,6 +86,10 @@
+          syncobjs[i].seqno = 1;
+    }
+ 
++   /* A command stream may be waiting on this event in a group the kernel
++    * has suspended; let it re-evaluate the wait. */
++   pan_kmod_dev_notify_sync_update(device->kmod.dev);
++
+    return VK_SUCCESS;
+ }
+ 
+--- a/src/panfrost/vulkan/csf/panvk_vX_exception_handler.c
++++ b/src/panfrost/vulkan/csf/panvk_vX_exception_handler.c
+@@ -183,7 +183,7 @@
+    const uint32_t fbd_size = get_fbd_size(has_zs_ext, rt_count);
+ 
+    const struct drm_panthor_csif_info *csif_info =
+-      panthor_kmod_get_csif_props(dev->kmod.dev);
++      pan_kmod_dev_get_csif_props(dev->kmod.dev);
+ 
+    struct cs_builder b;
+    struct cs_builder_conf conf = {
+--- a/src/panfrost/vulkan/csf/panvk_vX_gpu_queue.c
++++ b/src/panfrost/vulkan/csf/panvk_vX_gpu_queue.c
+@@ -30,6 +30,17 @@
+ #define MIN_CS_TRACEBUF_SIZE (512 * 1024)
+ #define DEFAULT_CS_TRACEBUF_SIZE (2 * 1024 * 1024)
+ 
++/* The pool for sync objects the command streams wait on: the uncached pool
++ * when the backend has GPU_SYNC memory for them (rw_nc carries the flag then),
++ * the cached one otherwise. */
++static struct panvk_pool *
++panvk_sync_pool(struct panvk_device *dev)
++{
++   return (dev->kmod.dev->props.supported_bo_flags & PAN_KMOD_BO_FLAG_GPU_SYNC)
++             ? &dev->mempools.rw_nc
++             : &dev->mempools.rw;
++}
++
+ static void
+ finish_render_desc_ringbuf(struct panvk_gpu_queue *queue)
+ {
+@@ -96,20 +107,22 @@
+       ringbuf->size = RENDER_DESC_RINGBUF_SIZE;
+    }
+ 
++   /* The second half of the VA range normally maps the same BO again, so an
++    * allocation that crosses the end lands back at the start. A backend that
++    * maps a BO only once gets a BO of twice the size instead: an allocation
++    * crossing the end then uses the second half, which no other live
++    * allocation can use (the ring's free-space counter covers positions
++    * modulo the ring size). */
++   const bool mirror = !dev->kmod.dev->props.limits.single_gpu_mapping;
++   const uint64_t bo_size =
++      !tracing_enabled && !mirror ? ringbuf->size * 2 : ringbuf->size;
++
+    ringbuf->bo =
+-      pan_kmod_bo_alloc(dev->kmod.dev, dev->kmod.vm, ringbuf->size, flags);
++      pan_kmod_bo_alloc(dev->kmod.dev, dev->kmod.vm, bo_size, flags);
+    if (!ringbuf->bo)
+       return panvk_errorf(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY,
+                           "Failed to create a descriptor ring buffer context");
+ 
+-   if (!(flags & PAN_KMOD_BO_FLAG_NO_MMAP)) {
+-      ringbuf->addr.host = pan_kmod_bo_mmap(ringbuf->bo, PROT_READ | PROT_WRITE,
+-                                            MAP_SHARED, NULL);
+-      if (ringbuf->addr.host == MAP_FAILED)
+-         return panvk_errorf(dev, VK_ERROR_OUT_OF_HOST_MEMORY,
+-                             "Failed to CPU map ringbuf BO");
+-   }
+-
+    /* We choose the alignment to guarantee that we won't ever cross a 4G
+     * boundary when accessing the mapping. This way we can encode the wraparound
+     * using 32-bit operations. */
+@@ -125,7 +138,7 @@
+          .type = PAN_KMOD_VM_OP_TYPE_MAP,
+          .va = {
+             .start = dev_addr,
+-            .size = ringbuf->size,
++            .size = bo_size,
+          },
+          .map = {
+             .bo = ringbuf->bo,
+@@ -148,7 +161,7 @@
+    /* If tracing is enabled, we keep the second part of the mapping unmapped
+     * to serve as a guard region. */
+    ret = pan_kmod_vm_bind(dev->kmod.vm, PAN_KMOD_VM_OP_MODE_IMMEDIATE, vm_ops,
+-                          tracing_enabled ? 1 : ARRAY_SIZE(vm_ops));
++                          tracing_enabled || !mirror ? 1 : ARRAY_SIZE(vm_ops));
+    if (ret) {
+       panvk_as_free(dev, dev_addr, ringbuf->size * 2);
+       return panvk_errorf(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY,
+@@ -157,6 +170,17 @@
+ 
+    ringbuf->addr.dev = dev_addr;
+ 
++   /* CPU-map after the GPU mapping (see panvk_priv_bo_create()). */
++   if (!(flags & PAN_KMOD_BO_FLAG_NO_MMAP)) {
++      ringbuf->addr.host = pan_kmod_bo_mmap(ringbuf->bo, PROT_READ | PROT_WRITE,
++                                            MAP_SHARED, NULL);
++      if (ringbuf->addr.host == MAP_FAILED) {
++         ringbuf->addr.host = NULL;
++         return panvk_errorf(dev, VK_ERROR_OUT_OF_HOST_MEMORY,
++                             "Failed to CPU map ringbuf BO");
++      }
++   }
++
+    panvk_address_binding_report(dev, NULL, ringbuf->addr.dev, ringbuf->size,
+                                 VK_DEVICE_ADDRESS_BINDING_TYPE_BIND_EXT);
+ 
+@@ -174,7 +198,7 @@
+       .alignment = 64,
+    };
+ 
+-   ringbuf->syncobj = panvk_pool_alloc_mem(&dev->mempools.rw, alloc_info);
++   ringbuf->syncobj = panvk_pool_alloc_mem(panvk_sync_pool(dev), alloc_info);
+    if (!panvk_priv_mem_check_alloc(ringbuf->syncobj))
+       return panvk_errorf(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY,
+                           "Failed to create the render desc ringbuf context");
+@@ -399,7 +423,7 @@
+ 
+    struct cs_builder b;
+    const struct drm_panthor_csif_info *csif_info =
+-      panthor_kmod_get_csif_props(dev->kmod.dev);
++      pan_kmod_dev_get_csif_props(dev->kmod.dev);
+ 
+    struct cs_buffer root_cs = {
+       .cpu = panvk_priv_mem_host_addr(subq->req_resource.buf),
+@@ -542,7 +566,7 @@
+       .queue_index = subqueue,
+       .stream_size = cs_root_chunk_size(&b),
+       .stream_addr = cs_root_chunk_gpu_addr(&b),
+-      .latest_flush = panthor_kmod_get_flush_id(dev->kmod.dev),
++      .latest_flush = pan_kmod_dev_get_flush_id(dev->kmod.dev),
+       .syncs = DRM_PANTHOR_OBJ_ARRAY(1, &syncop),
+    };
+    struct drm_panthor_group_submit gsubmit = {
+@@ -554,7 +578,7 @@
+ 
+    pan_kmod_flush_bo_map_syncs(dev->kmod.dev);
+ 
+-   int ret = pan_kmod_ioctl(dev->drm_fd, DRM_IOCTL_PANTHOR_GROUP_SUBMIT,
++   int ret = pan_kmod_dev_ioctl(dev->kmod.dev, DRM_IOCTL_PANTHOR_GROUP_SUBMIT,
+                             &gsubmit);
+    if (ret)
+       return panvk_errorf(dev->vk.physical, VK_ERROR_INITIALIZATION_FAILED,
+@@ -607,7 +631,7 @@
+       .alignment = 64,
+    };
+ 
+-   queue->syncobjs = panvk_pool_alloc_mem(&dev->mempools.rw, alloc_info);
++   queue->syncobjs = panvk_pool_alloc_mem(panvk_sync_pool(dev), alloc_info);
+    if (!panvk_priv_mem_check_alloc(queue->syncobjs))
+       return panvk_errorf(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY,
+                           "Failed to allocate subqueue sync objects");
+@@ -683,7 +707,7 @@
+       .vm_id = pan_kmod_vm_handle(dev->kmod.vm),
+    };
+ 
+-   int ret = pan_kmod_ioctl(dev->drm_fd, DRM_IOCTL_PANTHOR_GROUP_CREATE, &gc);
++   int ret = pan_kmod_dev_ioctl(dev->kmod.dev, DRM_IOCTL_PANTHOR_GROUP_CREATE, &gc);
+    if (ret)
+       return panvk_errorf(dev, VK_ERROR_INITIALIZATION_FAILED,
+                           "Failed to create a scheduling group");
+@@ -701,7 +725,7 @@
+    };
+ 
+    ASSERTED int ret =
+-      pan_kmod_ioctl(dev->drm_fd, DRM_IOCTL_PANTHOR_GROUP_DESTROY, &gd);
++      pan_kmod_dev_ioctl(dev->kmod.dev, DRM_IOCTL_PANTHOR_GROUP_DESTROY, &gd);
+    assert(!ret);
+ }
+ 
+@@ -753,7 +777,7 @@
+       .target_in_flight = 65535,
+    };
+ 
+-   int ret = pan_kmod_ioctl(dev->drm_fd, DRM_IOCTL_PANTHOR_TILER_HEAP_CREATE,
++   int ret = pan_kmod_dev_ioctl(dev->kmod.dev, DRM_IOCTL_PANTHOR_TILER_HEAP_CREATE,
+                             &thc);
+    if (ret) {
+       result = panvk_errorf(dev, VK_ERROR_INITIALIZATION_FAILED,
+@@ -788,7 +812,7 @@
+       .handle = tiler_heap->context.handle,
+    };
+    ASSERTED int ret =
+-      pan_kmod_ioctl(dev->drm_fd, DRM_IOCTL_PANTHOR_TILER_HEAP_DESTROY, &thd);
++      pan_kmod_dev_ioctl(dev->kmod.dev, DRM_IOCTL_PANTHOR_TILER_HEAP_DESTROY, &thd);
+    assert(!ret);
+ 
+    panvk_pool_free_mem(&tiler_heap->desc);
+@@ -1030,7 +1054,7 @@
+       return;
+ 
+    struct panvk_device *dev = submit->dev;
+-   uint32_t flush_id = panthor_kmod_get_flush_id(dev->kmod.dev);
++   uint32_t flush_id = pan_kmod_dev_get_flush_id(dev->kmod.dev);
+ 
+    u_foreach_bit(i, submit->req_resource_subqueue_mask) {
+       struct panvk_subqueue *subq = &submit->queue->subqueues[i];
+@@ -1088,7 +1112,7 @@
+       struct panvk_cmd_buffer *cmdbuf = container_of(
+          vk_submit->command_buffers[i], struct panvk_cmd_buffer, vk);
+ 
+-      uint32_t flush_id = panthor_kmod_get_flush_id(dev->kmod.dev);
++      uint32_t flush_id = pan_kmod_dev_get_flush_id(dev->kmod.dev);
+ 
+       for (uint32_t j = 0; j < ARRAY_SIZE(cmdbuf->state.cs); j++) {
+          struct cs_builder *b = panvk_get_cs_builder(cmdbuf, j);
+@@ -1105,7 +1129,7 @@
+       }
+ 
+       if (util_bitcount(submit->utrace.queue_mask) > 0)
+-         flush_id = panthor_kmod_get_flush_id(dev->kmod.dev);
++         flush_id = pan_kmod_dev_get_flush_id(dev->kmod.dev);
+ 
+       u_foreach_bit(j, submit->utrace.queue_mask) {
+          struct u_trace *ut = &cmdbuf->utrace.uts[j];
+@@ -1227,7 +1251,7 @@
+          DRM_PANTHOR_OBJ_ARRAY(submit->qsubmit_count, submit->qsubmits),
+    };
+ 
+-   ret = pan_kmod_ioctl(dev->drm_fd, DRM_IOCTL_PANTHOR_GROUP_SUBMIT, &gsubmit);
++   ret = pan_kmod_dev_ioctl(dev->kmod.dev, DRM_IOCTL_PANTHOR_GROUP_SUBMIT, &gsubmit);
+    if (ret)
+       return vk_queue_set_lost(&queue->vk, "GROUP_SUBMIT: %m");
+ 
+@@ -1511,7 +1535,7 @@
+       }
+    }
+ 
+-   int ret = pan_kmod_ioctl(dev->drm_fd, DRM_IOCTL_PANTHOR_GROUP_GET_STATE,
++   int ret = pan_kmod_dev_ioctl(dev->kmod.dev, DRM_IOCTL_PANTHOR_GROUP_GET_STATE,
+                             &state);
+    if (!ret && !state.state)
+       return VK_SUCCESS;
+--- a/src/panfrost/vulkan/csf/panvk_vX_utrace.c
++++ b/src/panfrost/vulkan/csf/panvk_vX_utrace.c
+@@ -273,7 +273,7 @@
+                                           struct panvk_utrace_clone_cs_ctx *ctx)
+ {
+    const struct drm_panthor_csif_info *csif_info =
+-      panthor_kmod_get_csif_props(dev->kmod.dev);
++      pan_kmod_dev_get_csif_props(dev->kmod.dev);
+    const struct cs_builder_conf builder_conf = {
+       .nr_registers = csif_info->cs_reg_count,
+       .nr_kernel_registers = MAX2(csif_info->unpreserved_cs_reg_count, 4),
+--- a/src/panfrost/vulkan/panvk_instance.c
++++ b/src/panfrost/vulkan/panvk_instance.c
+@@ -10,6 +10,8 @@
+  * SPDX-License-Identifier: MIT
+  */
+ 
++#include <unistd.h>
++
+ #include "util/build_id.h"
+ #include "panvk_drirc.h"
+ #include "util/mesa-blake3.h"
+@@ -156,6 +158,34 @@
+    return VK_SUCCESS;
+ }
+ 
++/* Arm's mali_kbase is not a DRM device, so drmGetDevices2() never lists it.
++ * When its node can be opened, it becomes the physical device; otherwise
++ * VK_ERROR_INCOMPATIBLE_DRIVER lets the runtime enumerate DRM devices. */
++static VkResult
++panvk_enumerate_kbase(struct vk_instance *vk_instance)
++{
++   struct panvk_instance *instance =
++      container_of(vk_instance, struct panvk_instance, vk);
++
++   if (access(panvk_kbase_device_path(), R_OK | W_OK))
++      return VK_ERROR_INCOMPATIBLE_DRIVER;
++
++   struct panvk_physical_device *device =
++      vk_zalloc(&instance->vk.alloc, sizeof(*device), 8,
++                VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
++   if (!device)
++      return panvk_error(instance, VK_ERROR_OUT_OF_HOST_MEMORY);
++
++   VkResult result = panvk_physical_device_init(device, instance, NULL);
++   if (result != VK_SUCCESS) {
++      vk_free(&instance->vk.alloc, device);
++      return VK_ERROR_INCOMPATIBLE_DRIVER;
++   }
++
++   list_addtail(&device->vk.link, &instance->vk.physical_devices.list);
++   return VK_SUCCESS;
++}
++
+ static void
+ panvk_destroy_physical_device(struct vk_physical_device *device)
+ {
+@@ -255,6 +285,7 @@
+       .priv = &instance->vk.alloc,
+    };
+ 
++   instance->vk.physical_devices.enumerate = panvk_enumerate_kbase;
+    instance->vk.physical_devices.try_create_for_drm =
+       panvk_physical_device_try_create;
+    instance->vk.physical_devices.destroy = panvk_destroy_physical_device;
+--- a/src/panfrost/vulkan/panvk_physical_device.c
++++ b/src/panfrost/vulkan/panvk_physical_device.c
+@@ -72,11 +72,21 @@
+ PER_ARCH_FUNCS(13);
+ PER_ARCH_FUNCS(14);
+ 
++const char *
++panvk_kbase_device_path(void)
++{
++   const char *path = os_get_option("PANVK_KBASE_DEVICE");
++   return path && path[0] ? path : "/dev/mali0";
++}
++
+ static VkResult
+ create_kmod_dev(struct panvk_physical_device *device,
+                 const struct panvk_instance *instance, drmDevicePtr drm_device)
+ {
+-   const char *path = drm_device->nodes[DRM_NODE_RENDER];
++   /* Without a drmDevice the device is Arm's mali_kbase node (panvk_instance.c,
++    * panvk_enumerate_kbase), which the kbase pan_kmod backend drives. */
++   const char *path = drm_device ? drm_device->nodes[DRM_NODE_RENDER]
++                                 : panvk_kbase_device_path();
+    int fd = open(path, O_RDWR | O_CLOEXEC);
+    if (fd < 0) {
+       return panvk_errorf(instance, VK_ERROR_INCOMPATIBLE_DRIVER,
+@@ -108,6 +118,10 @@
+ {
+    struct stat st;
+ 
++   /* kbase is not a DRM device: no render or primary node to report. */
++   if (!drm_device)
++      return VK_SUCCESS;
++
+    if (stat(drm_device->nodes[DRM_NODE_RENDER], &st)) {
+       return vk_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
+                        "failed to query render node stat");
+--- a/src/panfrost/vulkan/panvk_physical_device.h
++++ b/src/panfrost/vulkan/panvk_physical_device.h
+@@ -96,6 +96,9 @@
+ 
+ void panvk_physical_device_finish(struct panvk_physical_device *device);
+ 
++/* The mali_kbase device node: PANVK_KBASE_DEVICE, else /dev/mali0. */
++const char *panvk_kbase_device_path(void);
++
+ 
+ VkSampleCountFlags panvk_get_sample_counts(unsigned arch,
+                                            unsigned max_tib_size,
+--- a/src/panfrost/vulkan/panvk_priv_bo.c
++++ b/src/panfrost/vulkan/panvk_priv_bo.c
+@@ -38,15 +38,6 @@
+    priv_bo->bo = bo;
+    priv_bo->dev = dev;
+ 
+-   if (!(flags & PAN_KMOD_BO_FLAG_NO_MMAP)) {
+-      priv_bo->addr.host =
+-         pan_kmod_bo_mmap(bo, PROT_READ | PROT_WRITE, MAP_SHARED, NULL);
+-      if (priv_bo->addr.host == MAP_FAILED) {
+-         result = panvk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
+-         goto err_put_bo;
+-      }
+-   }
+-
+    struct pan_kmod_vm_op op = {
+       .type = PAN_KMOD_VM_OP_TYPE_MAP,
+       .va = {
+@@ -59,7 +50,10 @@
+       },
+    };
+ 
+-   if (!(dev->kmod.vm->flags & PAN_KMOD_VM_FLAG_AUTO_VA)) {
++   if (bo->fixed_va) {
++      /* The backend placed the BO itself (GPU_SYNC memory on kbase). */
++      op.va.start = bo->fixed_va;
++   } else if (!(dev->kmod.vm->flags & PAN_KMOD_VM_FLAG_AUTO_VA)) {
+       enum panvk_va_heap_id heap = flags & PAN_KMOD_BO_FLAG_EXECUTABLE
+                                       ? PANVK_EXEC_VA_HEAP
+                                       : PANVK_NO_EXEC_VA_HEAP;
+@@ -68,7 +62,7 @@
+                         pan_choose_gpu_va_alignment(dev->kmod.vm, op.va.size));
+       if (!op.va.start) {
+          result = panvk_error(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+-         goto err_munmap_bo;
++         goto err_put_bo;
+       }
+    }
+ 
+@@ -80,6 +74,18 @@
+ 
+    priv_bo->addr.dev = op.va.start;
+ 
++   /* CPU-map after the GPU mapping: a backend may only create the memory when
++    * it gets its GPU address (kbase FIXED allocations). */
++   if (!(flags & PAN_KMOD_BO_FLAG_NO_MMAP)) {
++      priv_bo->addr.host =
++         pan_kmod_bo_mmap(bo, PROT_READ | PROT_WRITE, MAP_SHARED, NULL);
++      if (priv_bo->addr.host == MAP_FAILED) {
++         priv_bo->addr.host = NULL;
++         result = panvk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
++         goto err_unbind;
++      }
++   }
++
+    panvk_address_binding_report(dev, NULL, priv_bo->addr.dev,
+                                 pan_kmod_bo_size(priv_bo->bo),
+                                 VK_DEVICE_ADDRESS_BINDING_TYPE_BIND_EXT);
+@@ -95,17 +101,24 @@
+    *out = priv_bo;
+    return VK_SUCCESS;
+ 
++err_unbind: {
++   struct pan_kmod_vm_op unmap = {
++      .type = PAN_KMOD_VM_OP_TYPE_UNMAP,
++      .va = {
++         .start = op.va.start,
++         .size = op.va.size,
++      },
++   };
++   ASSERTED int unbind_ret =
++      pan_kmod_vm_bind(dev->kmod.vm, PAN_KMOD_VM_OP_MODE_IMMEDIATE, &unmap, 1);
++   assert(!unbind_ret);
++}
++
+ err_return_va:
+-   if (!(dev->kmod.vm->flags & PAN_KMOD_VM_FLAG_AUTO_VA)) {
++   if (!bo->fixed_va && !(dev->kmod.vm->flags & PAN_KMOD_VM_FLAG_AUTO_VA)) {
+       panvk_as_free(dev, op.va.start, op.va.size);
+    }
+ 
+-err_munmap_bo:
+-   if (priv_bo->addr.host) {
+-      ret = os_munmap(priv_bo->addr.host, pan_kmod_bo_size(bo));
+-      assert(!ret);
+-   }
+-
+ err_put_bo:
+    pan_kmod_bo_put(bo);
+ 
+@@ -157,7 +170,7 @@
+       pan_kmod_vm_bind(dev->kmod.vm, PAN_KMOD_VM_OP_MODE_IMMEDIATE, &op, 1);
+    assert(!ret);
+ 
+-   if (!(dev->kmod.vm->flags & PAN_KMOD_VM_FLAG_AUTO_VA)) {
++   if (!priv_bo->bo->fixed_va && !(dev->kmod.vm->flags & PAN_KMOD_VM_FLAG_AUTO_VA)) {
+       panvk_as_free(dev, op.va.start, op.va.size);
+    }
+ 
+--- a/src/panfrost/vulkan/panvk_vX_device.c
++++ b/src/panfrost/vulkan/panvk_vX_device.c
+@@ -82,9 +82,13 @@
+ 
+    panvk_pool_init(&dev->mempools.rw, dev, NULL, NULL, &rw_pool_props);
+ 
++   /* The uncached pool also holds the sync objects command streams wait on
++    * (VkEvents, queries and, with a GPU_SYNC backend, the queues' own). */
+    struct panvk_pool_properties rw_nc_pool_props = {
+-      .create_flags =
+-         panvk_device_adjust_bo_flags(dev, PAN_KMOD_BO_FLAG_GPU_UNCACHED),
++      .create_flags = panvk_device_adjust_bo_flags(
++         dev, PAN_KMOD_BO_FLAG_GPU_UNCACHED |
++                 (dev->kmod.dev->props.supported_bo_flags &
++                  PAN_KMOD_BO_FLAG_GPU_SYNC)),
+       .slab_size = 16 * 1024,
+       .label = "Device RW uncached memory pool",
+       .owns_bos = false,
+@@ -418,23 +422,32 @@
+ static void
+ init_va_heaps(struct panvk_device *device, uint64_t user_va_start, uint64_t user_va_end)
+ {
+-   /* capture/replay requires a separate AS for fixed allocations. */
++   /* The executable heap is the first 4G window of the user VA range (the
++    * first 4G for a range starting at 0). */
++   const uint64_t exec_end = (user_va_start & ~((1ull << 32) - 1)) + (1ull << 32);
++
++   /* capture/replay requires a separate AS for fixed allocations: the upper
++    * half of the VA space, or of what follows the executable heap when the
++    * user VA range starts high. */
++   const uint64_t fixed_start = user_va_end / 2 >= exec_end
++                                   ? user_va_end / 2
++                                   : exec_end + (user_va_end - exec_end) / 2;
+    init_va_heap(&device->as.heaps[PANVK_FIXED_VA_HEAP],
+                 device->vk.enabled_features.bufferDeviceAddressCaptureReplay
+-                   ? user_va_end / 2
++                   ? fixed_start
+                    : user_va_end,
+                 user_va_end);
+ 
+-   /* Non-executable heap starts at a 4G offset, and ends where the fixed heap
+-    * starts. If the fixed heap stars below the 4G boundary, then this heap
+-    * is empty. */
+-   init_va_heap(&device->as.heaps[PANVK_NO_EXEC_VA_HEAP], 1ull << 32,
++   /* Non-executable heap starts where the executable heap ends, and ends
++    * where the fixed heap starts. If the fixed heap stars below that, then
++    * this heap is empty. */
++   init_va_heap(&device->as.heaps[PANVK_NO_EXEC_VA_HEAP], exec_end,
+                 device->as.heaps[PANVK_FIXED_VA_HEAP].start);
+ 
+    /* And Finally, we have the executable heap, which covers at most the
+-    * first 4G of the VA space. This is where we'll map all our executable
+-    * buffers, but non-executable buffers can also live here if there's no
+-    * space in the no-exec heap. */
++    * first 4G window of the user VA range. This is where we'll map all our
++    * executable buffers, but non-executable buffers can also live here if
++    * there's no space in the no-exec heap. */
+    init_va_heap(&device->as.heaps[PANVK_EXEC_VA_HEAP], user_va_start,
+                 MIN3(user_va_end, device->as.heaps[PANVK_NO_EXEC_VA_HEAP].start,
+                      device->as.heaps[PANVK_FIXED_VA_HEAP].start));
+@@ -548,7 +561,7 @@
+ 
+ #if PAN_ARCH >= 10
+    const struct drm_panthor_csif_info *csif_info =
+-      panthor_kmod_get_csif_props(device->kmod.dev);
++      pan_kmod_dev_get_csif_props(device->kmod.dev);
+ 
+    assert(csif_info->scoreboard_slot_count <= 16);
+    device->csf.sb.count = csif_info->scoreboard_slot_count;
+--- a/src/panfrost/vulkan/panvk_vX_physical_device.c
++++ b/src/panfrost/vulkan/panvk_vX_physical_device.c
+@@ -40,6 +40,10 @@
+    struct vk_device_extension_table *ext)
+ {
+    bool has_gralloc = vk_android_get_ugralloc() != NULL;
++   /* Backend limits (kbase): no fd export/import, no placed CPU mappings. */
++   const bool fd_sharing = !device->kmod.dev->props.limits.no_fd_sharing;
++   const bool placed_maps =
++      !device->kmod.dev->props.limits.no_placed_cpu_mapping;
+ 
+    *ext = (struct vk_device_extension_table){
+       .KHR_8bit_storage = true,
+@@ -64,11 +68,11 @@
+       .KHR_dynamic_rendering = true,
+       .KHR_dynamic_rendering_local_read = true,
+       .KHR_external_fence = true,
+-      .KHR_external_fence_fd = true,
++      .KHR_external_fence_fd = fd_sharing,
+       .KHR_external_memory = true,
+-      .KHR_external_memory_fd = true,
++      .KHR_external_memory_fd = fd_sharing,
+       .KHR_external_semaphore = true,
+-      .KHR_external_semaphore_fd = true,
++      .KHR_external_semaphore_fd = fd_sharing,
+       .KHR_format_feature_flags2 = true,
+       .KHR_get_memory_requirements2 = true,
+       .KHR_global_priority = true,
+@@ -166,7 +170,7 @@
+       .EXT_extended_dynamic_state2 = true,
+       .EXT_extended_dynamic_state3 = true,
+       .EXT_external_memory_acquire_unmodified = true,
+-      .EXT_external_memory_dma_buf = true,
++      .EXT_external_memory_dma_buf = fd_sharing,
+       .EXT_global_priority = true,
+       .EXT_global_priority_query = true,
+       .EXT_graphics_pipeline_library = true,
+@@ -184,13 +188,13 @@
+       .EXT_legacy_dithering = true,
+       .EXT_line_rasterization = true,
+       .EXT_load_store_op_none = true,
+-      .EXT_map_memory_placed = true,
++      .EXT_map_memory_placed = placed_maps,
+       .EXT_nested_command_buffer = PAN_ARCH >= 10,
+       .EXT_memory_budget = true,
+       .EXT_non_seamless_cube_map = true,
+       .EXT_mutable_descriptor_type = PAN_ARCH >= 9,
+       .EXT_multisampled_render_to_single_sampled = true,
+-      .EXT_physical_device_drm = true,
++      .EXT_physical_device_drm = device->drm.render_rdev != 0,
+       .EXT_pipeline_creation_cache_control = true,
+       .EXT_pipeline_creation_feedback = true,
+       .EXT_pipeline_robustness = true,
+@@ -301,7 +305,9 @@
+    const struct panvk_physical_device *device, struct vk_features *features)
+ {
+    const bool has_gralloc = vk_android_get_ugralloc() != NULL;
+-   bool has_sparse = PAN_ARCH >= 10;
++   /* Sparse binding maps memory at more than one VA. */
++   bool has_sparse = PAN_ARCH >= 10 &&
++                     !device->kmod.dev->props.limits.single_gpu_mapping;
+ 
+    *features = (struct vk_features){
+       /* Vulkan 1.0 */
+@@ -715,7 +721,8 @@
+       .nestedCommandBufferSimultaneousUse = PAN_ARCH >= 10,
+ 
+       /* VK_EXT_map_memory_placed */
+-      .memoryMapPlaced = true,
++      .memoryMapPlaced =
++         !device->kmod.dev->props.limits.no_placed_cpu_mapping,
+       .memoryMapRangePlaced = false,
+       .memoryUnmapReserve = true,
+ 

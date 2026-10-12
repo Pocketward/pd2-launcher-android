@@ -1,0 +1,116 @@
+--- a/src/vulkan/wsi/wsi_common_x11.c
++++ b/src/vulkan/wsi/wsi_common_x11.c
+@@ -74,6 +74,8 @@
+ #ifdef __linux__
+ #include <sys/mman.h>
+ #include <sys/stat.h>
++#include <time.h>
++#include "util/futex.h"
+ #endif
+ 
+ #ifndef XCB_PRESENT_OPTION_ASYNC_MAY_TEAR
+@@ -1855,6 +1857,22 @@
+ static uint32_t *sw_present_counter;
+ static once_flag sw_present_counter_once = ONCE_FLAG_INIT;
+ 
++/* The Game view's pacing, in the same file when it is a page long: the
++ * reader writes the last count it has taken off the X screen into the
++ * 32-bit word at byte 64 (and wakes its futex waiters), and keeps the word
++ * at byte 128 non-zero while it takes the X screen on each display frame.
++ */
++#define SW_PACING_PAGE 4096
++#define SW_TAKEN_WORD (64 / sizeof(uint32_t))
++#define SW_PACED_WORD (128 / sizeof(uint32_t))
++/* A reader that has taken nothing for this long is not waited for again
++ * until it takes a frame: a stalled view never holds the game up.
++ */
++#define SW_PACING_TIMEOUT_NS (100 * 1000 * 1000)
++static bool sw_pacing_mapped;
++static bool sw_pacing_stalled;
++static uint32_t sw_pacing_stalled_taken;
++
+ static void
+ sw_present_counter_open(void)
+ {
+@@ -1866,9 +1884,12 @@
+       return;
+    struct stat st;
+    if (fstat(fd, &st) == 0 && st.st_size >= (off_t)sizeof(uint32_t)) {
+-      void *map = mmap(NULL, sizeof(uint32_t), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+-      if (map != MAP_FAILED)
++      size_t len = st.st_size >= SW_PACING_PAGE ? SW_PACING_PAGE : sizeof(uint32_t);
++      void *map = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
++      if (map != MAP_FAILED) {
+          sw_present_counter = map;
++         sw_pacing_mapped = len == SW_PACING_PAGE;
++      }
+    }
+    close(fd);
+ }
+@@ -1881,11 +1902,56 @@
+       return;
+    __atomic_fetch_add(sw_present_counter, 1, __ATOMIC_RELEASE);
+ }
++
++/* Waits until the reader has taken the frame before (its taken count is
++ * the present count), so the game draws no more frames than the reader
++ * shows, one per display frame, in step with it. Every present mode: the
++ * reader shows at most one frame per display frame whatever the mode, so a
++ * frame an IMMEDIATE or MAILBOX swapchain (vsync off) draws beyond that is
++ * never seen. The X server gets the next frame only once the reader has
++ * read the last one, so no frame is written over while it is read. Not
++ * waited for: no reader pacing, and a reader that has stalled.
++ */
++static void
++sw_present_paced(void)
++{
++#if UTIL_FUTEX_SUPPORTED
++   call_once(&sw_present_counter_once, sw_present_counter_open);
++   if (!sw_pacing_mapped)
++      return;
++   uint32_t *taken = &sw_present_counter[SW_TAKEN_WORD];
++   const uint32_t *paced = &sw_present_counter[SW_PACED_WORD];
++   struct timespec deadline;
++   clock_gettime(CLOCK_MONOTONIC, &deadline);
++   timespec_add_nsec(&deadline, &deadline, SW_PACING_TIMEOUT_NS);
++   while (__atomic_load_n(paced, __ATOMIC_ACQUIRE)) {
++      uint32_t seen = __atomic_load_n(taken, __ATOMIC_ACQUIRE);
++      uint32_t presents = __atomic_load_n(sw_present_counter, __ATOMIC_RELAXED);
++      if ((int32_t)(presents - seen) <= 0) {
++         sw_pacing_stalled = false;
++         return;
++      }
++      if (sw_pacing_stalled && seen == sw_pacing_stalled_taken)
++         return;
++      sw_pacing_stalled = false;
++      if (futex_wait(taken, seen, &deadline) != 0 && errno == ETIMEDOUT) {
++         sw_pacing_stalled = true;
++         sw_pacing_stalled_taken = __atomic_load_n(taken, __ATOMIC_ACQUIRE);
++         return;
++      }
++   }
++#endif
++}
+ #else
+ static void
+ sw_present_counted(void)
+ {
+ }
++
++static void
++sw_present_paced(void)
++{
++}
+ #endif
+ 
+ /**
+@@ -2599,6 +2665,9 @@
+          }
+       }
+ 
++      if (chain->base.wsi->sw && !chain->has_mit_shm)
++         sw_present_paced();
++
+       mtx_lock(&chain->thread_state_lock);
+ 
+       /* In IMMEDIATE and MAILBOX modes, there is a risk that we have exhausted the presentation queue,

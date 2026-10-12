@@ -1,0 +1,59 @@
+FEX thunks: an X error of a GLX request on the host-side display fails the call instead of ending the process.
+
+The GL thunk draws through a host Display that X11Manager opens with the host libX11, whose default
+error handler exits; the guest's handler (Wine's) never sees those errors. Mesa reports a context it
+cannot create in glXCreateContextAttribsARB as an X error (GLXBadFBConfig), so a guest that tries
+several GL versions in turn (D2GL: 4.6 down to 3.3) would end at the first one the driver lacks.
+X11Manager installs a host error handler once per process: errors of the display's GLX major opcode
+are logged and ignored, so the GLX call returns its failure to the guest; every other error goes to
+the previous handler.
+
+diff --git a/ThunkLibs/include/common/X11Manager.h b/ThunkLibs/include/common/X11Manager.h
+--- a/ThunkLibs/include/common/X11Manager.h
++++ b/ThunkLibs/include/common/X11Manager.h
+@@ -63,6 +63,7 @@
+         std::abort();
+       } else {
+         it->second = host_display;
++        InstallHostErrorHandler(host_display);
+       }
+     }
+     return it->second;
+@@ -106,6 +107,37 @@
+     return func(Name);
+   }
+ 
++  // The host Xlib has no error handler of the guest's: Xlib's default one prints the error and
++  // exits the process. A GLX call that fails on the host display (such as glXCreateContextAttribsARB
++  // asking for a newer OpenGL version than the driver has; Mesa reports it as an X error and returns
++  // NULL) would end the guest instead of failing, so errors of GLX requests are logged and the call
++  // returns its failure. Every other error still goes to the handler that was installed before.
++  static inline int HostGLXMajorOpcode = 0;
++  static inline XErrorHandler PreviousHostErrorHandler = nullptr;
++
++  static int HostErrorHandler(Display* Dis, XErrorEvent* Event) {
++    if (HostGLXMajorOpcode != 0 && Event->request_code == HostGLXMajorOpcode) {
++      fprintf(stderr, "Host-side X11 error %d of GLX request %d.%d: the call fails, the process continues\n", Event->error_code,
++              Event->request_code, Event->minor_code);
++      return 0;
++    }
++    return PreviousHostErrorHandler ? PreviousHostErrorHandler(Dis, Event) : 0;
++  }
++
++  // Called with the mutex held, for each new host display.
++  static void InstallHostErrorHandler(Display* Dis) {
++    static auto query = reinterpret_cast<decltype(&XQueryExtension)>(dlsym(GetLibX11(), "XQueryExtension"));
++    static auto set_handler = reinterpret_cast<decltype(&XSetErrorHandler)>(dlsym(GetLibX11(), "XSetErrorHandler"));
++    int major = 0, event = 0, error = 0;
++    if (!query || !set_handler || !query(Dis, "GLX", &major, &event, &error)) {
++      return;
++    }
++    HostGLXMajorOpcode = major;
++    if (!PreviousHostErrorHandler) {
++      PreviousHostErrorHandler = set_handler(HostErrorHandler);
++    }
++  }
++
+   static XVisualInfo* HostXGetVisualInfo(Display* a, long b, XVisualInfo* c, int* d) {
+     static auto func = reinterpret_cast<decltype(&XGetVisualInfo)>(dlsym(GetLibX11(), "XGetVisualInfo"));
+     return func(a, b, c, d);

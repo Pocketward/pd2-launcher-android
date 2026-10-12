@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The development mark: a red dot, ringed in the icon's background colour, on the ring's lower
+     right waypoint (72.38, 72.38), inside the adaptive icon's safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:pathData="M72.38,64.88 A7.5,7.5 0 1 1 72.38,79.88 A7.5,7.5 0 1 1 72.38,64.88 Z"
+        android:fillColor="#10191a" />
+    <path
+        android:pathData="M72.38,66.88 A5.5,5.5 0 1 1 72.38,77.88 A5.5,5.5 0 1 1 72.38,66.88 Z"
+        android:fillColor="#E5533D" />
+</vector>

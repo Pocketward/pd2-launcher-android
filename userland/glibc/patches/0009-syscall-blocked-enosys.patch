@@ -1,0 +1,71 @@
+From: User <noreply@users.noreply.github.com>
+Subject: [PATCH 09/10] aarch64 syscall(): refuse numbers outside the Android allowlist
+
+syscall(2) returns -1/ENOSYS without entering the kernel for every number
+that is not in the Android 13 (API 33) app seccomp allowlist (214 aarch64
+syscalls), including numbers glibc does not know; allowed numbers are
+unchanged. The check is a 64-byte bitmap in .rodata and uses only scratch
+registers x9-x11, so x1-x7 still carry the arguments. Raw svc
+instructions elsewhere are not affected.
+
+The filter's default action is SECCOMP_RET_TRAP, so a program probing a
+blocked syscall through syscall() would die of SIGSYS instead of seeing
+ENOSYS.
+---
+--- a/sysdeps/unix/sysv/linux/aarch64/syscall.S
++++ b/sysdeps/unix/sysv/linux/aarch64/syscall.S
+@@ -17,6 +17,9 @@
+    <https://www.gnu.org/licenses/>.  */
+ 
+ #include <sysdep.h>
++#include <bits/errno.h>
++
++#define ANDROID_SYSCALL_LIMIT 512
+ 
+ /* syscall (int nr, ...)
+ 
+@@ -28,6 +31,19 @@
+ 
+ ENTRY (syscall)
+ 	uxtw	x8, w0
++	/* The Android app seccomp policy (API 33) traps every syscall that is
++	   not in its allowlist, and the process dies of SIGSYS.  Refuse such
++	   a number here with ENOSYS instead of issuing it.  x9-x11 are
++	   scratch registers; x1-x7 still hold the arguments.  */
++	cmp	x8, #ANDROID_SYSCALL_LIMIT
++	b.hs	2f
++	adrp	x9, android_allowed_syscalls
++	add	x9, x9, :lo12:android_allowed_syscalls
++	lsr	x10, x8, #3
++	ldrb	w10, [x9, x10]
++	and	w11, w8, #7
++	lsr	w10, w10, w11
++	tbz	w10, #0, 2f
+ 	mov	x0, x1
+ 	mov	x1, x2
+ 	mov	x2, x3
+@@ -41,4 +57,24 @@
+ 	RET
+ 1:
+ 	b	SYSCALL_ERROR
++2:
++	mov	x0, #-ENOSYS
++	b	SYSCALL_ERROR
+ PSEUDO_END (syscall)
++
++/* Bit N is set when aarch64 syscall N is in the Android 13 (API 33) app
++   seccomp allowlist (AOSP bionic android13-release SYSCALLS.TXT and
++   SECCOMP_{ALLOWLIST,BLOCKLIST}_{COMMON,APP}.TXT, merged as genseccomp.py
++   does; 214 syscalls).  Numbers from arch-syscall.h.  */
++	.section .rodata
++	.type	android_allowed_syscalls, %object
++	.size	android_allowed_syscalls, 64
++android_allowed_syscalls:
++	.byte	0xff, 0xff, 0xfb, 0xff, 0x7f, 0xfa, 0xf7, 0xfb
++	.byte	0xff, 0xff, 0xff, 0xfd, 0xe7, 0xf8, 0xee, 0xff
++	.byte	0xff, 0x3f, 0x58, 0x7e, 0xf9, 0xf3, 0x0f, 0x00
++	.byte	0xc0, 0xfb, 0xff, 0xf1, 0xfc, 0x03, 0x0f, 0x00
++	.byte	0x30, 0xf8, 0xfc, 0xff, 0x08, 0x00, 0x00, 0x00
++	.byte	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
++	.byte	0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x54, 0x01
++	.byte	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00

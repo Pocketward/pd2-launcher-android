@@ -1,0 +1,33 @@
+--- a/os/utils.c
++++ b/os/utils.c
+@@ -228,6 +228,12 @@
+ #endif
+ }
+ 
++/* The shell that System() and Popen() run commands with (XKB runs xkbcomp this way).
++ * Overridable at build time: Android has no /bin/sh. */
++#ifndef XSERVER_SHELL
++#define XSERVER_SHELL "/bin/sh"
++#endif
++
+ /*
+  * Explicit support for a server lock file like the ones used for UUCP.
+  * For architectures with virtual terminals that can run more than one
+@@ -1394,7 +1400,7 @@
+             _exit(127);
+         if (setuid(getuid()) == -1)
+             _exit(127);
+-        execl("/bin/sh", "sh", "-c", command, (char *) NULL);
++        execl(XSERVER_SHELL, "sh", "-c", command, (char *) NULL);
+         _exit(127);
+     default:                   /* parent */
+         do {
+@@ -1480,7 +1486,7 @@
+             }
+             close(pdes[1]);
+         }
+-        execl("/bin/sh", "sh", "-c", command, (char *) NULL);
++        execl(XSERVER_SHELL, "sh", "-c", command, (char *) NULL);
+         _exit(127);
+     }
+ 

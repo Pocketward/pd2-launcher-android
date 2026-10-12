@@ -1,0 +1,57 @@
+From: User <noreply@users.noreply.github.com>
+Subject: [PATCH 02/10] nptl: never issue set_robust_list
+
+__ASSUME_SET_ROBUST_LIST is undefined for aarch64, as in glibc's arm, mips
+and riscv ports, so set_robust_list is not issued at process start, at
+thread start or in a fork child. glibc takes its existing paths for a
+kernel without robust futex lists: it marks the robust mutexes of an
+exiting thread OWNER_DEAD itself, and pthread_mutex_init of a robust,
+process-shared mutex returns ENOTSUP.
+
+set_robust_list and get_robust_list are not in the Android 13 (API 33) app
+seccomp allowlist; the filter traps them with SIGSYS.
+---
+--- a/sysdeps/unix/sysv/linux/aarch64/kernel-features.h
++++ b/sysdeps/unix/sysv/linux/aarch64/kernel-features.h
+@@ -21,3 +21,9 @@
+ 
+ #undef __ASSUME_CLONE_DEFAULT
+ #define __ASSUME_CLONE_BACKWARDS 1
++
++/* The Android app seccomp policy traps set_robust_list.  Treat it as
++   unavailable, as the arm, mips and riscv ports do, so that new threads
++   never issue it and glibc itself releases a dead thread's robust
++   mutexes at thread exit.  */
++#undef __ASSUME_SET_ROBUST_LIST
+--- a/sysdeps/nptl/dl-tls_init_tp.c
++++ b/sysdeps/nptl/dl-tls_init_tp.c
+@@ -91,14 +91,8 @@
+     pd->robust_head.futex_offset = (offsetof (pthread_mutex_t, __data.__lock)
+                                     - offsetof (pthread_mutex_t,
+                                                 __data.__list.__next));
+-    int res = INTERNAL_SYSCALL_CALL (set_robust_list, &pd->robust_head,
+-                                     sizeof (struct robust_list_head));
+-    if (!INTERNAL_SYSCALL_ERROR_P (res))
+-      {
+-#ifndef __ASSUME_SET_ROBUST_LIST
+-        __nptl_set_robust_list_avail = true;
+-#endif
+-      }
++    /* set_robust_list is trapped by the Android app seccomp policy, so it
++       is not issued and __nptl_set_robust_list_avail stays false.  */
+   }
+ 
+   {
+--- a/sysdeps/nptl/_Fork.c
++++ b/sysdeps/nptl/_Fork.c
+@@ -49,8 +49,8 @@
+       self->robust_prev = &self->robust_head;
+ #endif
+       self->robust_head.list = &self->robust_head;
+-      INTERNAL_SYSCALL_CALL (set_robust_list, &self->robust_head,
+-			     sizeof (struct robust_list_head));
++      /* set_robust_list is trapped by the Android app seccomp policy and
++	 was never registered at process startup, so it is not issued.  */
+       call_function_static_weak (__getrandom_fork_subprocess);
+     }
+ 

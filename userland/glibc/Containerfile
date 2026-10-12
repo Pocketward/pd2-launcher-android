@@ -1,0 +1,43 @@
+# Build image for our glibc (amd64 host, aarch64 cross toolchain).
+# Base pinned by digest (same pin as userland/config.sh); every package pinned by
+# exact version from the snapshot.debian.org timestamp passed in DEBIAN_SNAPSHOT.
+ARG DEBIAN_IMAGE
+FROM ${DEBIAN_IMAGE}
+
+ARG DEBIAN_SNAPSHOT
+RUN rm -f /etc/apt/sources.list.d/debian.sources \
+    && printf '%s\n' \
+        'Types: deb deb-src' \
+        "URIs: http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}" \
+        'Suites: trixie trixie-updates' \
+        'Components: main' \
+        'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+        'Check-Valid-Until: no' \
+        '' \
+        'Types: deb deb-src' \
+        "URIs: http://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}" \
+        'Suites: trixie-security' \
+        'Components: main' \
+        'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+        'Check-Valid-Until: no' \
+        > /etc/apt/sources.list.d/snapshot.sources \
+    && apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        gcc-14-aarch64-linux-gnu=14.2.0-19cross1 \
+        g++-14-aarch64-linux-gnu=14.2.0-19cross1 \
+        binutils-aarch64-linux-gnu=2.44-3 \
+        libc6-dev-arm64-cross=2.41-11cross1 \
+        linux-libc-dev-arm64-cross=6.12.38-1cross1 \
+        gcc-14=14.2.0-19 \
+        gcc=4:14.2.0-1 \
+        make=4.4.1-2 \
+        gawk=1:5.2.1-2+b1 \
+        bison=2:3.8.2+dfsg-1+b2 \
+        python3=3.13.5-1 \
+        dpkg-dev=1.22.22 \
+        xz-utils=5.8.1-1+deb13u1 \
+        perl=5.40.1-6+deb13u1 \
+        file=1:5.46-5 \
+        patch=2.8-2 \
+        ca-certificates=20250419 \
+    && rm -rf /var/lib/apt/lists/*

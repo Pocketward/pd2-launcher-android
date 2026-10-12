@@ -1,0 +1,61 @@
+FEX ThunkLibs (32-bit guests): return long and unsigned long in the guest's 32-bit size.
+
+GuestWrapperForHostFunction (host functions a 32-bit guest gets through glXGetProcAddress) returns
+long and unsigned long (XIDs such as GLXWindow) in the guest's 32-bit type, instead of writing 8
+bytes into the guest's 4-byte return slot over its saved %ebx. A long return with a passthrough
+annotation does not compile; no libGL function has one.
+
+ ThunkLibs/include/common/Host.h | 25 ++++++++++++++++++++++++-
+ 1 file changed, 24 insertions(+), 1 deletion(-)
+
+diff --git a/ThunkLibs/include/common/Host.h b/ThunkLibs/include/common/Host.h
+index 8415099..7e01c65 100644
+--- a/ThunkLibs/include/common/Host.h
++++ b/ThunkLibs/include/common/Host.h
+@@ -565,6 +565,24 @@ using as_guest_layout_if = std::conditional_t<Cond, guest_layout<GuestT>, T>;
+ template<typename, typename...>
+ struct GuestWrapperForHostFunction;
+ 
++// The guest's type for a host function's return value. On 32-bit guests, long and
++// unsigned long (XIDs such as GLXWindow, GLXPixmap) are 4 bytes; storing the 8-byte
++// host value would write past the guest's packed arguments and clobber its stack.
++template<typename T>
++struct guest_return_type {
++  using type = T;
++};
++#ifdef IS_32BIT_THUNK
++template<>
++struct guest_return_type<unsigned long> {
++  using type = uint32_t;
++};
++template<>
++struct guest_return_type<long> {
++  using type = int32_t;
++};
++#endif
++
+ template<typename Result, typename... Args, typename... GuestArgs>
+ struct GuestWrapperForHostFunction<Result(Args...), GuestArgs...> {
+   // Host functions called from Guest
+@@ -574,8 +592,9 @@ struct GuestWrapperForHostFunction<Result(Args...), GuestArgs...> {
+     static_assert(sizeof...(Annotations) == sizeof...(Args));
+     static_assert(sizeof...(GuestArgs) == sizeof...(Args));
+ 
++    using GuestResult = typename guest_return_type<Result>::type;
+     auto args =
+-      reinterpret_cast<PackedArguments<as_guest_layout_if<!std::is_void_v<Result>, Result, Result>, guest_layout<GuestArgs>..., uintptr_t>*>(argsv);
++      reinterpret_cast<PackedArguments<as_guest_layout_if<!std::is_void_v<Result>, Result, GuestResult>, guest_layout<GuestArgs>..., uintptr_t>*>(argsv);
+     constexpr auto CBIndex = sizeof...(GuestArgs);
+     uintptr_t cb;
+     static_assert(CBIndex <= 18 || CBIndex == 23);
+@@ -630,6 +649,10 @@ struct GuestWrapperForHostFunction<Result(Args...), GuestArgs...> {
+       // Fold over each of Annotations, Args, and args. This will match up the elements in triplets.
+       if constexpr (std::is_void_v<Result>) {
+         callback(Projection<Annotations, Args>(args)..., target);
++      } else if constexpr (!RetAnnotations.is_passthrough && !std::is_same_v<GuestResult, Result>) {
++        guest_layout<GuestResult> ret;
++        ret.data = static_cast<GuestResult>(callback(Projection<Annotations, Args>(args)..., target));
++        return ret;
+       } else if constexpr (!RetAnnotations.is_passthrough) {
+         return (guest_layout<Result>)to_guest(to_host_layout(callback(Projection<Annotations, Args>(args)..., target)));
+       } else {

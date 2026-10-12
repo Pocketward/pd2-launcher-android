@@ -1,0 +1,422 @@
+From: User <noreply@users.noreply.github.com>
+Subject: [PATCH 06/10] SysV IPC and POSIX message queues fail with ENOSYS
+
+shm*, sem*, msg* and mq_* return their error value with errno ENOSYS and
+issue no syscall (shmat returns (void *) -1; mq_notify fails before its
+SIGEV_THREAD set-up): the answer of a kernel built without CONFIG_SYSVIPC
+and CONFIG_POSIX_MQUEUE. Only the 64-bit-time paths aarch64 uses change.
+
+No SysV IPC or mq_* syscall is in the Android 13 (API 33) app seccomp
+allowlist; the filter traps them with SIGSYS.
+---
+--- a/sysdeps/unix/sysv/linux/shmget.c
++++ b/sysdeps/unix/sysv/linux/shmget.c
+@@ -18,6 +18,7 @@
+ #include <sys/msg.h>
+ #include <stddef.h>
+ #include <ipc_priv.h>
++#include <errno.h>
+ #include <sysdep.h>
+ 
+ /* Return an identifier for an shared memory segment of at least size SIZE
+@@ -26,9 +27,7 @@
+ int
+ shmget (key_t key, size_t size, int shmflg)
+ {
+-#ifdef __ASSUME_DIRECT_SYSVIPC_SYSCALLS
+-  return INLINE_SYSCALL_CALL (shmget, key, size, shmflg, NULL);
+-#else
+-  return INLINE_SYSCALL_CALL (ipc, IPCOP_shmget, key, size, shmflg, NULL);
+-#endif
++  /* SysV IPC syscalls are trapped by the Android app seccomp policy:
++     fail without issuing one.  */
++  return INLINE_SYSCALL_ERROR_RETURN_VALUE (ENOSYS);
+ }
+--- a/sysdeps/unix/sysv/linux/shmat.c
++++ b/sysdeps/unix/sysv/linux/shmat.c
+@@ -26,17 +26,7 @@
+ void *
+ shmat (int shmid, const void *shmaddr, int shmflg)
+ {
+-#ifdef __ASSUME_DIRECT_SYSVIPC_SYSCALLS
+-  return (void*) INLINE_SYSCALL_CALL (shmat, shmid, shmaddr, shmflg);
+-#else
+-  unsigned long resultvar;
+-  void *raddr;
+-
+-  resultvar = INTERNAL_SYSCALL_CALL (ipc, IPCOP_shmat, shmid, shmflg,
+-				     &raddr, shmaddr);
+-  if (INTERNAL_SYSCALL_ERROR_P (resultvar))
+-    return (void *) INLINE_SYSCALL_ERROR_RETURN_VALUE (INTERNAL_SYSCALL_ERRNO (resultvar));
+-
+-  return raddr;
+-#endif
++  /* SysV IPC syscalls are trapped by the Android app seccomp policy:
++     fail without issuing one.  */
++  return (void *) INLINE_SYSCALL_ERROR_RETURN_VALUE (ENOSYS);
+ }
+--- a/sysdeps/unix/sysv/linux/shmdt.c
++++ b/sysdeps/unix/sysv/linux/shmdt.c
+@@ -25,9 +25,7 @@
+ int
+ shmdt (const void *shmaddr)
+ {
+-#ifdef __ASSUME_DIRECT_SYSVIPC_SYSCALLS
+-  return INLINE_SYSCALL_CALL (shmdt, shmaddr);
+-#else
+-  return INLINE_SYSCALL_CALL (ipc, IPCOP_shmdt, 0, 0, 0, shmaddr);
+-#endif
++  /* SysV IPC syscalls are trapped by the Android app seccomp policy:
++     fail without issuing one.  */
++  return INLINE_SYSCALL_ERROR_RETURN_VALUE (ENOSYS);
+ }
+--- a/sysdeps/unix/sysv/linux/shmctl.c
++++ b/sysdeps/unix/sysv/linux/shmctl.c
+@@ -73,12 +73,9 @@
+ static int
+ shmctl_syscall (int shmid, int cmd, shmctl_arg_t *buf)
+ {
+-#ifdef __ASSUME_DIRECT_SYSVIPC_SYSCALLS
+-  return INLINE_SYSCALL_CALL (shmctl, shmid, cmd | __IPC_64, buf);
+-#else
+-  return INLINE_SYSCALL_CALL (ipc, IPCOP_shmctl, shmid, cmd | __IPC_64, 0,
+-			      buf);
+-#endif
++  /* SysV IPC syscalls are trapped by the Android app seccomp policy:
++     fail without issuing one.  */
++  return INLINE_SYSCALL_ERROR_RETURN_VALUE (ENOSYS);
+ }
+ 
+ /* Provide operations to control over shared memory segments.  */
+--- a/sysdeps/unix/sysv/linux/semget.c
++++ b/sysdeps/unix/sysv/linux/semget.c
+@@ -26,9 +26,7 @@
+ int
+ semget (key_t key, int nsems, int semflg)
+ {
+-#ifdef __ASSUME_DIRECT_SYSVIPC_SYSCALLS
+-  return INLINE_SYSCALL_CALL (semget, key, nsems, semflg);
+-#else
+-  return INLINE_SYSCALL_CALL (ipc, IPCOP_semget, key, nsems, semflg, NULL);
+-#endif
++  /* SysV IPC syscalls are trapped by the Android app seccomp policy:
++     fail without issuing one.  */
++  return INLINE_SYSCALL_ERROR_RETURN_VALUE (ENOSYS);
+ }
+--- a/sysdeps/unix/sysv/linux/semtimedop.c
++++ b/sysdeps/unix/sysv/linux/semtimedop.c
+@@ -24,14 +24,9 @@
+ semtimedop_syscall (int semid, struct sembuf *sops, size_t nsops,
+ 		    const struct __timespec64 *timeout)
+ {
+-#ifdef __NR_semtimedop_time64
+-  return INLINE_SYSCALL_CALL (semtimedop_time64, semid, sops, nsops, timeout);
+-#elif defined __ASSUME_DIRECT_SYSVIPC_SYSCALLS && defined __NR_semtimedop
+-  return INLINE_SYSCALL_CALL (semtimedop, semid, sops, nsops, timeout);
+-#else
+-  return INLINE_SYSCALL_CALL (ipc, IPCOP_semtimedop, semid,
+-			      SEMTIMEDOP_IPC_ARGS (nsops, sops, timeout));
+-#endif
++  /* SysV IPC syscalls are trapped by the Android app seccomp policy:
++     fail without issuing one.  */
++  return INLINE_SYSCALL_ERROR_RETURN_VALUE (ENOSYS);
+ }
+ 
+ /* Perform user-defined atomic operation of array of semaphores.  */
+--- a/sysdeps/unix/sysv/linux/semctl.c
++++ b/sysdeps/unix/sysv/linux/semctl.c
+@@ -18,6 +18,7 @@
+ #include <sys/sem.h>
+ #include <stdarg.h>
+ #include <ipc_priv.h>
++#include <errno.h>
+ #include <sysdep.h>
+ #include <shlib-compat.h>
+ #include <linux/posix_types.h>             /* For __kernel_mode_t.  */
+@@ -120,13 +121,9 @@
+ static int
+ semctl_syscall (int semid, int semnum, int cmd, semctl_arg_t arg)
+ {
+-#ifdef __ASSUME_DIRECT_SYSVIPC_SYSCALLS
+-  return INLINE_SYSCALL_CALL (semctl, semid, semnum, cmd | __IPC_64,
+-			      arg.array);
+-#else
+-  return INLINE_SYSCALL_CALL (ipc, IPCOP_semctl, semid, semnum, cmd | __IPC_64,
+-			      SEMCTL_ARG_ADDRESS (arg));
+-#endif
++  /* SysV IPC syscalls are trapped by the Android app seccomp policy:
++     fail without issuing one.  */
++  return INLINE_SYSCALL_ERROR_RETURN_VALUE (ENOSYS);
+ }
+ 
+ /* POSIX states ipc_perm mode should have type of mode_t.  */
+--- a/sysdeps/unix/sysv/linux/msgget.c
++++ b/sysdeps/unix/sysv/linux/msgget.c
+@@ -25,9 +25,7 @@
+ int
+ msgget (key_t key, int msgflg)
+ {
+-#ifdef __ASSUME_DIRECT_SYSVIPC_SYSCALLS
+-  return INLINE_SYSCALL_CALL (msgget, key, msgflg);
+-#else
+-  return INLINE_SYSCALL_CALL (ipc, IPCOP_msgget, key, msgflg, 0, NULL);
+-#endif
++  /* SysV IPC syscalls are trapped by the Android app seccomp policy:
++     fail without issuing one.  */
++  return INLINE_SYSCALL_ERROR_RETURN_VALUE (ENOSYS);
+ }
+--- a/sysdeps/unix/sysv/linux/msgsnd.c
++++ b/sysdeps/unix/sysv/linux/msgsnd.c
+@@ -16,16 +16,14 @@
+    <https://www.gnu.org/licenses/>.  */
+ 
+ #include <ipc_priv.h>
++#include <errno.h>
+ #include <sysdep-cancel.h>
+ 
+ int
+ __libc_msgsnd (int msqid, const void *msgp, size_t msgsz, int msgflg)
+ {
+-#ifdef __ASSUME_DIRECT_SYSVIPC_SYSCALLS
+-  return SYSCALL_CANCEL (msgsnd, msqid, msgp, msgsz, msgflg);
+-#else
+-  return SYSCALL_CANCEL (ipc, IPCOP_msgsnd, msqid, msgsz, msgflg,
+-			 msgp);
+-#endif
++  /* SysV IPC syscalls are trapped by the Android app seccomp policy:
++     fail without issuing one.  */
++  return INLINE_SYSCALL_ERROR_RETURN_VALUE (ENOSYS);
+ }
+ weak_alias (__libc_msgsnd, msgsnd)
+--- a/sysdeps/unix/sysv/linux/msgrcv.c
++++ b/sysdeps/unix/sysv/linux/msgrcv.c
+@@ -16,17 +16,15 @@
+    <https://www.gnu.org/licenses/>.  */
+ 
+ #include <ipc_priv.h>
++#include <errno.h>
+ #include <sysdep-cancel.h>
+ 
+ ssize_t
+ __libc_msgrcv (int msqid, void *msgp, size_t msgsz, long int msgtyp,
+ 	       int msgflg)
+ {
+-#ifdef __ASSUME_DIRECT_SYSVIPC_SYSCALLS
+-  return SYSCALL_CANCEL (msgrcv, msqid, msgp, msgsz, msgtyp, msgflg);
+-#else
+-  return SYSCALL_CANCEL (ipc, IPCOP_msgrcv, msqid, msgsz, msgflg,
+-			 MSGRCV_ARGS (msgp, msgtyp));
+-#endif
++  /* SysV IPC syscalls are trapped by the Android app seccomp policy:
++     fail without issuing one.  */
++  return INLINE_SYSCALL_ERROR_RETURN_VALUE (ENOSYS);
+ }
+ weak_alias (__libc_msgrcv, msgrcv)
+--- a/sysdeps/unix/sysv/linux/msgctl.c
++++ b/sysdeps/unix/sysv/linux/msgctl.c
+@@ -74,12 +74,9 @@
+ static int
+ msgctl_syscall (int msqid, int cmd, msgctl_arg_t *buf)
+ {
+-#ifdef __ASSUME_DIRECT_SYSVIPC_SYSCALLS
+-  return INLINE_SYSCALL_CALL (msgctl, msqid, cmd | __IPC_64, buf);
+-#else
+-  return INLINE_SYSCALL_CALL (ipc, IPCOP_msgctl, msqid, cmd | __IPC_64, 0,
+-			      buf);
+-#endif
++  /* SysV IPC syscalls are trapped by the Android app seccomp policy:
++     fail without issuing one.  */
++  return INLINE_SYSCALL_ERROR_RETURN_VALUE (ENOSYS);
+ }
+ 
+ int
+--- a/sysdeps/unix/sysv/linux/mq_open.c
++++ b/sysdeps/unix/sysv/linux/mq_open.c
+@@ -33,22 +33,9 @@
+ mqd_t
+ __mq_open (const char *name, int oflag, ...)
+ {
+-  if (name[0] != '/')
+-    return INLINE_SYSCALL_ERROR_RETURN_VALUE (EINVAL);
+-
+-  mode_t mode = 0;
+-  struct mq_attr *attr = NULL;
+-  if (oflag & O_CREAT)
+-    {
+-      va_list ap;
+-
+-      va_start (ap, oflag);
+-      mode = va_arg (ap, mode_t);
+-      attr = va_arg (ap, struct mq_attr *);
+-      va_end (ap);
+-    }
+-
+-  return INLINE_SYSCALL (mq_open, 4, name + 1, oflag, mode, attr);
++  /* POSIX message queue syscalls are trapped by the Android app seccomp
++     policy: fail without issuing one.  */
++  return INLINE_SYSCALL_ERROR_RETURN_VALUE (ENOSYS);
+ }
+ versioned_symbol (libc, __mq_open, mq_open, GLIBC_2_34);
+ #if OTHER_SHLIB_COMPAT (librt, GLIBC_2_3_4, GLIBC_2_34)
+--- a/sysdeps/unix/sysv/linux/mq_unlink.c
++++ b/sysdeps/unix/sysv/linux/mq_unlink.c
+@@ -24,22 +24,9 @@
+ int
+ __mq_unlink (const char *name)
+ {
+-  if (name[0] != '/')
+-    return INLINE_SYSCALL_ERROR_RETURN_VALUE (EINVAL);
+-
+-  int ret = INTERNAL_SYSCALL_CALL (mq_unlink, name + 1);
+-
+-  /* While unlink can return either EPERM or EACCES, mq_unlink should
+-     return just EACCES.  */
+-  if (__glibc_unlikely (INTERNAL_SYSCALL_ERROR_P (ret)))
+-    {
+-      ret = INTERNAL_SYSCALL_ERRNO (ret);
+-      if (ret == EPERM)
+-	ret = EACCES;
+-      return INLINE_SYSCALL_ERROR_RETURN_VALUE (ret);
+-    }
+-
+-  return ret;
++  /* POSIX message queue syscalls are trapped by the Android app seccomp
++     policy: fail without issuing one.  */
++  return INLINE_SYSCALL_ERROR_RETURN_VALUE (ENOSYS);
+ }
+ versioned_symbol (libc, __mq_unlink, mq_unlink, GLIBC_2_34);
+ #if OTHER_SHLIB_COMPAT (librt, GLIBC_2_3_4, GLIBC_2_34)
+--- a/sysdeps/unix/sysv/linux/mq_setattr.c
++++ b/sysdeps/unix/sysv/linux/mq_setattr.c
+@@ -18,13 +18,16 @@
+ 
+ #include <mqueue.h>
+ #include <shlib-compat.h>
++#include <errno.h>
+ #include <sysdep.h>
+ 
+ int
+ __mq_setattr (mqd_t mqdes, const struct mq_attr *mqstat,
+               struct mq_attr * omqstat)
+ {
+-  return INLINE_SYSCALL_CALL (mq_getsetattr, mqdes, mqstat, omqstat);
++  /* POSIX message queue syscalls are trapped by the Android app seccomp
++     policy: fail without issuing one.  */
++  return INLINE_SYSCALL_ERROR_RETURN_VALUE (ENOSYS);
+ }
+ versioned_symbol (libc, __mq_setattr, mq_setattr, GLIBC_2_34);
+ libc_hidden_ver (__mq_setattr, mq_setattr)
+--- a/sysdeps/unix/sysv/linux/mq_timedsend.c
++++ b/sysdeps/unix/sysv/linux/mq_timedsend.c
+@@ -17,6 +17,7 @@
+    <https://www.gnu.org/licenses/>.  */
+ 
+ #include <mqueue.h>
++#include <errno.h>
+ #include <sysdep-cancel.h>
+ #include <shlib-compat.h>
+ 
+@@ -27,36 +28,9 @@
+ 			unsigned int msg_prio,
+ 			const struct __timespec64 *abs_timeout)
+ {
+-# ifndef __NR_mq_timedsend_time64
+-#  define __NR_mq_timedsend_time64 __NR_mq_timedsend
+-# endif
+-
+-#ifdef __ASSUME_TIME64_SYSCALLS
+-  return SYSCALL_CANCEL (mq_timedsend_time64, mqdes, msg_ptr, msg_len,
+-			 msg_prio, abs_timeout);
+-#else
+-  bool need_time64 = abs_timeout != NULL
+-		     && !in_int32_t_range (abs_timeout->tv_sec);
+-  if (need_time64)
+-    {
+-      int r = SYSCALL_CANCEL (mq_timedsend_time64, mqdes, msg_ptr, msg_len,
+-			      msg_prio, abs_timeout);
+-      if (r == 0 || errno != ENOSYS)
+-	return r;
+-      __set_errno (EOVERFLOW);
+-      return -1;
+-    }
+-
+-  struct timespec ts32, *pts32 = NULL;
+-  if (abs_timeout != NULL)
+-    {
+-      ts32 = valid_timespec64_to_timespec (*abs_timeout);
+-      pts32 = &ts32;
+-    }
+-
+-  return SYSCALL_CANCEL (mq_timedsend, mqdes, msg_ptr, msg_len, msg_prio,
+-			 pts32);
+-#endif
++  /* POSIX message queue syscalls are trapped by the Android app seccomp
++     policy: fail without issuing one.  */
++  return INLINE_SYSCALL_ERROR_RETURN_VALUE (ENOSYS);
+ }
+ 
+ #if __TIMESIZE == 64
+--- a/sysdeps/unix/sysv/linux/mq_timedreceive.c
++++ b/sysdeps/unix/sysv/linux/mq_timedreceive.c
+@@ -17,6 +17,7 @@
+    <https://www.gnu.org/licenses/>.  */
+ 
+ #include <mqueue.h>
++#include <errno.h>
+ #include <sysdep-cancel.h>
+ #include <shlib-compat.h>
+ 
+@@ -27,36 +28,9 @@
+                           unsigned int *__restrict msg_prio,
+                           const struct __timespec64 *__restrict abs_timeout)
+ {
+-#ifndef __NR_mq_timedreceive_time64
+-# define __NR_mq_timedreceive_time64 __NR_mq_timedreceive
+-#endif
+-
+-#ifdef __ASSUME_TIME64_SYSCALLS
+-  return SYSCALL_CANCEL (mq_timedreceive_time64, mqdes, msg_ptr, msg_len,
+-			 msg_prio, abs_timeout);
+-#else
+-  bool need_time64 = abs_timeout != NULL
+-		     && !in_int32_t_range (abs_timeout->tv_sec);
+-  if (need_time64)
+-    {
+-      int r = SYSCALL_CANCEL (mq_timedreceive_time64, mqdes, msg_ptr, msg_len,
+-			      msg_prio, abs_timeout);
+-      if (r >= 0 || errno != ENOSYS)
+-	return r;
+-      __set_errno (EOVERFLOW);
+-      return -1;
+-    }
+-
+-  struct timespec ts32, *pts32 = NULL;
+-  if (abs_timeout != NULL)
+-    {
+-      ts32 = valid_timespec64_to_timespec (*abs_timeout);
+-      pts32 = &ts32;
+-    }
+-
+-  return SYSCALL_CANCEL (mq_timedreceive, mqdes, msg_ptr, msg_len, msg_prio,
+-			 pts32);
+-#endif
++  /* POSIX message queue syscalls are trapped by the Android app seccomp
++     policy: fail without issuing one.  */
++  return INLINE_SYSCALL_ERROR_RETURN_VALUE (ENOSYS);
+ }
+ 
+ #if __TIMESIZE == 64
+--- a/sysdeps/unix/sysv/linux/mq_notify.c
++++ b/sysdeps/unix/sysv/linux/mq_notify.c
+@@ -205,6 +205,11 @@
+   /* Make sure the type is correctly defined.  */
+   assert (sizeof (union notify_data) == NOTIFY_COOKIE_LEN);
+ 
++  /* POSIX message queue syscalls are trapped by the Android app seccomp
++     policy: fail without issuing one, and before the SIGEV_THREAD set-up
++     below creates its netlink socket and helper thread.  */
++  return INLINE_SYSCALL_ERROR_RETURN_VALUE (ENOSYS);
++
+   /* Special treatment needed for SIGEV_THREAD.  */
+   if (notification == NULL || notification->sigev_notify != SIGEV_THREAD)
+     return INLINE_SYSCALL (mq_notify, 2, mqdes, notification);

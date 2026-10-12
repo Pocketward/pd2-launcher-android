@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The in-app brand mark: the launcher icon's ring and II, cropped to the ring's own bounds. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="40dp"
+    android:height="40dp"
+    android:viewportWidth="60"
+    android:viewportHeight="60">
+    <group android:translateX="-24" android:translateY="-24">
+    <path
+        android:pathData="M57.17,28.19 A26,26 0 0 1 70.01,33.51 M74.49,37.99 A26,26 0 0 1 79.81,50.83 M79.81,57.17 A26,26 0 0 1 74.49,70.01 M70.01,74.49 A26,26 0 0 1 57.17,79.81 M50.83,79.81 A26,26 0 0 1 37.99,74.49 M33.51,70.01 A26,26 0 0 1 28.19,57.17 M28.19,50.83 A26,26 0 0 1 33.51,37.99 M37.99,33.51 A26,26 0 0 1 50.83,28.19"
+        android:strokeColor="#34B8A7"
+        android:strokeWidth="3.2"
+        android:strokeLineCap="butt"
+        android:strokeLineJoin="miter" />
+    <path
+        android:pathData="M54.00,25.40 L56.60,28.00 L54.00,30.60 L51.40,28.00 Z"
+        android:fillColor="#34B8A7" />
+    <path
+        android:pathData="M72.38,33.02 L74.98,35.62 L72.38,38.22 L69.78,35.62 Z"
+        android:fillColor="#34B8A7" />
+    <path
+        android:pathData="M80.00,51.40 L82.60,54.00 L80.00,56.60 L77.40,54.00 Z"
+        android:fillColor="#34B8A7" />
+    <path
+        android:pathData="M72.38,69.78 L74.98,72.38 L72.38,74.98 L69.78,72.38 Z"
+        android:fillColor="#34B8A7" />
+    <path
+        android:pathData="M54.00,77.40 L56.60,80.00 L54.00,82.60 L51.40,80.00 Z"
+        android:fillColor="#34B8A7" />
+    <path
+        android:pathData="M35.62,69.78 L38.22,72.38 L35.62,74.98 L33.02,72.38 Z"
+        android:fillColor="#34B8A7" />
+    <path
+        android:pathData="M28.00,51.40 L30.60,54.00 L28.00,56.60 L25.40,54.00 Z"
+        android:fillColor="#34B8A7" />
+    <path
+        android:pathData="M35.62,33.02 L38.22,35.62 L35.62,38.22 L33.02,35.62 Z"
+        android:fillColor="#34B8A7" />
+    <path
+        android:pathData="M40,39 H68 V44 H62.5 V64 H68 V69 H40 V64 H45.5 V44 H40 Z M50.5,44 V64 H57.5 V44 Z"
+        android:fillColor="#E3AA3E" />
+    </group>
+</vector>

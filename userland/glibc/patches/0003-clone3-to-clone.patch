@@ -1,0 +1,26 @@
+From: User <noreply@users.noreply.github.com>
+Subject: [PATCH 03/10] aarch64: never issue clone3; threads and posix_spawn use clone
+
+HAVE_CLONE3_WRAPPER is not defined for aarch64, so glibc takes its existing
+"no clone3 wrapper" paths: __clone3_internal returns ENOSYS at once,
+pthread_create and the other internal users issue clone, and posix_spawn
+(and popen, system, pidfd_spawn) uses clone with the child resetting
+signal dispositions itself; POSIX_SPAWN_SETCGROUP fails with ENOTSUP.
+
+clone3 is not in the Android 13 and 14 app seccomp allowlist; the filter
+traps it with SIGSYS, so glibc's retry with clone after ENOSYS never runs.
+---
+--- a/sysdeps/unix/sysv/linux/aarch64/sysdep.h
++++ b/sysdeps/unix/sysv/linux/aarch64/sysdep.h
+@@ -179,7 +179,10 @@
+ # define HAVE_GETTIMEOFDAY_VSYSCALL	"__kernel_gettimeofday"
+ # define HAVE_GETRANDOM_VSYSCALL        "__kernel_getrandom"
+ 
+-# define HAVE_CLONE3_WRAPPER		1
++/* HAVE_CLONE3_WRAPPER is deliberately not defined: the Android app seccomp
++   policy (API 33 and 34) traps clone3.  __clone3_internal then fails with
++   ENOSYS without a syscall, __clone_internal (pthread_create) and
++   __spawnix (posix_spawn) use clone directly.  */
+ 
+ # undef INTERNAL_SYSCALL_RAW
+ # define INTERNAL_SYSCALL_RAW(name, nr, args...)		\

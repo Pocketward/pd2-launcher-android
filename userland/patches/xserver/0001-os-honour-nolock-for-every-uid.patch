@@ -1,0 +1,19 @@
+--- a/os/utils.c
++++ b/os/utils.c
+@@ -855,13 +855,9 @@
+ #endif
+ #ifdef LOCK_SERVER
+         else if (strcmp(argv[i], "-nolock") == 0) {
+-#if !defined(WIN32) && !defined(__CYGWIN__)
+-            if (getuid() != 0)
+-                ErrorF
+-                    ("Warning: the -nolock option can only be used by root\n");
+-            else
+-#endif
+-                nolock = TRUE;
++            /* Honoured for every uid: an Android app has no /tmp and may not make
++             * the hard link LockServer() needs, so it must be able to skip the lock. */
++            nolock = TRUE;
+         }
+ #endif
+ 	else if ( strcmp( argv[i], "-maxclients") == 0)

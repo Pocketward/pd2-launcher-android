@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Step 4, Install. -->
+<resources>
+    <string name="install_title">Install</string>
+    <string name="install_intro">Diablo II and Project Diablo 2 are installed by the Launcher. Nothing needs your input while it runs.</string>
+    <string name="install_step_d2">Install Diablo II</string>
+    <string name="install_step_pd2">Install Project Diablo 2</string>
+    <string name="install_task_environment">Set up the game environment</string>
+    <string name="install_task_copy_d2">Copy your Diablo II</string>
+    <string name="install_task_adopt_d2">Adopt your Diablo II</string>
+    <string name="install_task_lod">Install Lord of Destruction</string>
+    <string name="install_task_update_pd2">Update Project Diablo 2</string>
+    <string name="install_task_verify">Verify</string>
+    <!-- The page's title while the install starts, and the running row then. -->
+    <string name="install_title_starting">Starting the install</string>
+    <string name="install_row_starting">Starting the game environment…</string>
+    <!-- What the running task does now. -->
+    <string name="install_stage_environment">Setting up what the game and the official PD2 launcher need</string>
+    <string name="install_stage_blizzard_download">Downloading game files from Blizzard</string>
+    <string name="install_stage_d2_installer">Running the Diablo II installer</string>
+    <string name="install_stage_lod_installer">Running the Lord of Destruction installer</string>
+    <string name="install_stage_pd2_installer">Running the Project Diablo 2 installer</string>
+    <!-- The game environment's running part, its place and how many parts this setup runs. -->
+    <string name="install_part_windows">Setting up Windows (%1$d of %2$d)</string>
+    <string name="install_part_web_components">Adding web components (%1$d of %2$d)</string>
+    <string name="install_part_dotnet">Adding .NET (%1$d of %2$d)</string>
+    <string name="install_part_launcher_support">Adding official launcher support (%1$d of %2$d)</string>
+    <!-- The figure's caption while the running part reports no bytes: how long it has taken. -->
+    <string name="install_elapsed">%1$s elapsed</string>
+    <string name="install_window">Installer window</string>
+    <string name="install_window_hint">Tap to enlarge</string>
+    <string name="install_window_close">Tap to close</string>
+    <string name="install_stage_import">Setting up your Diablo II</string>
+    <string name="install_stage_client_download">Downloading Project Diablo 2 files</string>
+    <string name="install_stage_client_check">Checking Project Diablo 2 files</string>
+    <string name="install_stage_verification">Checking the installation</string>
+    <string name="install_stage_promotion">Finishing up</string>
+    <string name="install_amount_gb">%1$.1f of %2$.1f GB</string>
+    <string name="install_action_install">Install</string>
+    <string name="install_stop_note">Stop safely waits for a safe point. If an installer window is stuck, it is cleared only when the Launcher\'s time limit for it runs out, which can take up to ten minutes.</string>
+    <string name="install_hint_waiting">Getting ready…</string>
+    <!-- The key page for a paused Install Diablo II whose keys went with the app. -->
+    <string name="keys_title_resume">Your CD keys, to continue</string>
+    <string name="keys_intro_resume">Install Diablo II is paused. The app forgot your keys when it closed; enter them again and the install continues where it stopped.</string>
+    <string name="keys_resume">Agree and continue</string>
+</resources>

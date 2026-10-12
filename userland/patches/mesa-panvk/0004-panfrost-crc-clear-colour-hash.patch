@@ -1,0 +1,58 @@
+panfrost: a collision-free hash for the CRC clear colour
+
+pan_pack_color() repeats a packed clear value over all four words for every format narrower than
+128 bits, and the upstream pan_crc_clear_color_hash_rt() (per-channel products of four primes
+combined with XOR) then hashes different clear colours alike: on R8G8B8A8_UNORM (0, 6/255, 0, 1)
+and (0, 10/255, 0, 1) give the same crc_clear_color. Transaction elimination then reads the stored
+CRC of empty tiles as unchanged and skips writing the new clear colour. The hash runs the render
+target index and each packed word in turn through a 64-bit mix (the SplitMix64 finalizer) and
+keeps the 46 bits pan_crc_clear_color_pack() has room for; two different clear values share a hash
+with odds of 2^-46.
+
+--- a/src/panfrost/lib/pan_desc.h
++++ b/src/panfrost/lib/pan_desc.h
+@@ -368,19 +368,36 @@
+ 
+ #if PAN_ARCH >= 7
+ static inline uint64_t
++pan_crc_clear_color_mix64(uint64_t x)
++{
++   /* A 64-bit bijection that spreads every input bit over the result (the
++    * finalizer of the SplitMix64 generator). */
++   x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ull;
++   x = (x ^ (x >> 27)) * 0x94d049bb133111ebull;
++   return x ^ (x >> 31);
++}
++
++static inline uint64_t
+ pan_crc_clear_color_hash_rt(unsigned rt, const uint32_t clear[4])
+ {
+-   /* The prime number 16381 is carefully selected so that the 32 bits
+-    * of each clear color channel take at most 46 bits after the mul (the next
+-    * prime number 16411 takes at most 47 bits). The resulting hash value is
+-    * guaranteed not to overflow and can safely be packed. */
+-   static const uint64_t primes[4] = {16381ULL, 16369ULL, 16363ULL, 16361ULL};
+-   uint64_t hash = 0;
++   /* A hash of the render target index and its four packed clear words,
++    * cut to the 46 bits pan_crc_clear_color_pack() has room for. Two
++    * different clear values share a hash with odds of 2^-46.
++    *
++    * Each word goes through the 64-bit mix in turn. Summing per-channel
++    * products of fixed primes with XOR instead collides whenever the four
++    * words hold the same value, as pan_pack_color() gives every format
++    * narrower than 128 bits: on R8G8B8A8_UNORM the clears (0, 6/255, 0, 1)
++    * and (0, 10/255, 0, 1) hashed alike, so a render pass clearing a target
++    * to the second colour after one had cleared it to the first left the
++    * tiles with no primitives on them in the first colour (transaction
++    * elimination took them as unchanged). */
++   uint64_t hash = pan_crc_clear_color_mix64(rt + 1);
+ 
+    for (unsigned c = 0; c < 4; c++)
+-      hash ^= primes[c] * clear[c] * (rt + 1);
++      hash = pan_crc_clear_color_mix64(hash ^ clear[c]);
+ 
+-   return hash;
++   return hash & ((1ull << 46) - 1);
+ }
+ 
+ static inline uint64_t

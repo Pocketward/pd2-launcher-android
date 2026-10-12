@@ -1,0 +1,222 @@
+From: User <noreply@users.noreply.github.com>
+Subject: [PATCH 08/10] resolver and NSS read their files from sysconfdir
+
+glibc's own code reads resolv.conf, host.conf, gai.conf, nsswitch.conf,
+the nss_files and nss_compat databases, netgroup, aliases and the _PATH_*
+network files below the configured sysconfdir instead of /etc. Makeconfig
+passes -DGLIBC_SYSCONFDIR to every object and the internal include/netdb.h
+and include/resolv.h redefine the _PATH_* macros from it; the installed
+headers are unchanged. _PATH_BSHELL stays /bin/sh, the system shell on
+Android.
+
+Android's /etc is the read-only /system/etc, without resolv.conf.
+---
+--- a/Makeconfig
++++ b/Makeconfig
+@@ -265,6 +265,11 @@
+ endif
+ inst_sysconfdir = $(install_root)$(sysconfdir)
+ 
++# The configured sysconfdir as a C string for every object, so that the
++# resolver and NSS read their files below it instead of a hardcoded /etc
++# (on Android /etc is the read-only /system/etc).
++sysconfdir-cppflags = -D'GLIBC_SYSCONFDIR="$(sysconfdir)"'
++
+ # Directory for the database files and Makefile for nss_db.
+ ifndef vardbdir
+ vardbdir = $(localstatedir)/db
+@@ -1077,6 +1082,7 @@
+ # the implicit -lang-asm and breaks cpp behavior for .S files--notably
+ # it causes cpp to stop predefining __ASSEMBLER__.
+ CPPFLAGS = $(config-extra-cppflags) $(CPPFLAGS-config) \
++	   $(sysconfdir-cppflags) \
+ 	   $($(subdir)-CPPFLAGS) \
+ 	   $(+includes) $(defines) $(module-cppflags) \
+ 	   -include $(..)include/libc-symbols.h $(sysdep-CPPFLAGS) \
+--- a/include/netdb.h
++++ b/include/netdb.h
+@@ -3,6 +3,21 @@
+ 
+ #ifndef _ISOMAC
+ # include <stdint.h>
++
++/* glibc's own users of these files read them below the configured
++   sysconfdir.  */
++# undef _PATH_HEQUIV
++# define _PATH_HEQUIV		GLIBC_SYSCONFDIR "/hosts.equiv"
++# undef _PATH_HOSTS
++# define _PATH_HOSTS		GLIBC_SYSCONFDIR "/hosts"
++# undef _PATH_NETWORKS
++# define _PATH_NETWORKS		GLIBC_SYSCONFDIR "/networks"
++# undef _PATH_NSSWITCH_CONF
++# define _PATH_NSSWITCH_CONF	GLIBC_SYSCONFDIR "/nsswitch.conf"
++# undef _PATH_PROTOCOLS
++# define _PATH_PROTOCOLS		GLIBC_SYSCONFDIR "/protocols"
++# undef _PATH_SERVICES
++# define _PATH_SERVICES		GLIBC_SYSCONFDIR "/services"
+ /* Macros for accessing h_errno from inside libc.  */
+ # if IS_IN_LIB
+ #  undef  h_errno
+--- a/include/resolv.h
++++ b/include/resolv.h
+@@ -11,6 +11,11 @@
+   while (0)
+ # endif
+ 
++#if !defined _ISOMAC && defined GLIBC_SYSCONFDIR
++/* glibc's resolver reads resolv.conf below the configured sysconfdir;
++   resolv/resolv.h only defines _PATH_RESCONF when it is not set.  */
++# define _PATH_RESCONF GLIBC_SYSCONFDIR "/resolv.conf"
++#endif
+ #include <resolv/resolv.h>
+ 
+ # if defined _RESOLV_H_ && !defined _ISOMAC
+--- a/resolv/res_hconf.c
++++ b/resolv/res_hconf.c
+@@ -48,7 +48,7 @@
+ # define fgets_unlocked __fgets_unlocked
+ #endif
+ 
+-#define _PATH_HOSTCONF	"/etc/host.conf"
++#define _PATH_HOSTCONF	GLIBC_SYSCONFDIR "/host.conf"
+ 
+ /* Environment vars that all user to override default behavior:  */
+ #define ENV_HOSTCONF	"RESOLV_HOST_CONF"
+--- a/nss/getaddrinfo.c
++++ b/nss/getaddrinfo.c
+@@ -1726,7 +1726,7 @@
+ 
+ 
+ /* Name of the config file for RFC 3484 sorting (for now).  */
+-#define GAICONF_FNAME "/etc/gai.conf"
++#define GAICONF_FNAME GLIBC_SYSCONFDIR "/gai.conf"
+ 
+ 
+ /* Non-zero if we are supposed to reload the config file automatically
+--- a/nss/nss_files/files-XXX.c
++++ b/nss/nss_files/files-XXX.c
+@@ -39,7 +39,7 @@
+ 
+ #define ENTNAME_r	CONCAT(ENTNAME,_r)
+ 
+-#define DATAFILE	"/etc/" DATABASE
++#define DATAFILE	GLIBC_SYSCONFDIR "/" DATABASE
+ 
+ #ifdef NEED_H_ERRNO
+ # include <netdb.h>
+--- a/nss/nss_files/files-netgrp.c
++++ b/nss/nss_files/files-netgrp.c
+@@ -27,7 +27,7 @@
+ #include "netgroup.h"
+ #include <nss_files.h>
+ 
+-#define DATAFILE	"/etc/netgroup"
++#define DATAFILE	GLIBC_SYSCONFDIR "/netgroup"
+ 
+ libc_hidden_proto (_nss_files_endnetgrent)
+ 
+--- a/nss/nss_files/files-alias.c
++++ b/nss/nss_files/files-alias.c
+@@ -42,7 +42,7 @@
+ 
+   if (*stream == NULL)
+     {
+-      *stream = __nss_files_fopen ("/etc/aliases");
++      *stream = __nss_files_fopen (GLIBC_SYSCONFDIR "/aliases");
+ 
+       if (*stream == NULL)
+ 	status = errno == EAGAIN ? NSS_STATUS_TRYAGAIN : NSS_STATUS_UNAVAIL;
+@@ -58,7 +58,7 @@
+ enum nss_status
+ _nss_files_setaliasent (void)
+ {
+-  return __nss_files_data_setent (nss_file_aliasent, "/etc/aliases");
++  return __nss_files_data_setent (nss_file_aliasent, GLIBC_SYSCONFDIR "/aliases");
+ }
+ libc_hidden_def (_nss_files_setaliasent)
+ 
+@@ -338,7 +338,7 @@
+ 
+   struct nss_files_per_file_data *data;
+   enum nss_status status = __nss_files_data_open (&data, nss_file_aliasent,
+-						  "/etc/aliases", errnop, NULL);
++						  GLIBC_SYSCONFDIR "/aliases", errnop, NULL);
+   if (status != NSS_STATUS_SUCCESS)
+     return status;
+ 
+--- a/nss/nss_files/files-init.c
++++ b/nss/nss_files/files-init.c
+@@ -41,12 +41,12 @@
+ void
+ _nss_files_init (void (*cb) (size_t, struct traced_file *))
+ {
+-  register_file (cb, pwddb, "/etc/passwd", 0);
+-  register_file (cb, grpdb, "/etc/group", 0);
+-  register_file (cb, hstdb, "/etc/hosts", 0);
+-  register_file (cb, hstdb, "/etc/resolv.conf", 1);
+-  register_file (cb, servdb, "/etc/services", 0);
+-  register_file (cb, netgrdb, "/etc/netgroup", 0);
++  register_file (cb, pwddb, GLIBC_SYSCONFDIR "/passwd", 0);
++  register_file (cb, grpdb, GLIBC_SYSCONFDIR "/group", 0);
++  register_file (cb, hstdb, GLIBC_SYSCONFDIR "/hosts", 0);
++  register_file (cb, hstdb, GLIBC_SYSCONFDIR "/resolv.conf", 1);
++  register_file (cb, servdb, GLIBC_SYSCONFDIR "/services", 0);
++  register_file (cb, netgrdb, GLIBC_SYSCONFDIR "/netgroup", 0);
+ }
+ libc_hidden_def (_nss_files_init)
+ 
+--- a/nss/nss_files/files-initgroups.c
++++ b/nss/nss_files/files-initgroups.c
+@@ -33,7 +33,7 @@
+ 			   long int *size, gid_t **groupsp, long int limit,
+ 			   int *errnop)
+ {
+-  FILE *stream = __nss_files_fopen ("/etc/group");
++  FILE *stream = __nss_files_fopen (GLIBC_SYSCONFDIR "/group");
+   if (stream == NULL)
+     {
+       *errnop = errno;
+--- a/nss/nss_compat/compat-grp.c
++++ b/nss/nss_compat/compat-grp.c
+@@ -108,7 +108,7 @@
+ 
+   if (ent->stream == NULL)
+     {
+-      ent->stream = __nss_files_fopen ("/etc/group");
++      ent->stream = __nss_files_fopen (GLIBC_SYSCONFDIR "/group");
+ 
+       if (ent->stream == NULL)
+ 	status = errno == EAGAIN ? NSS_STATUS_TRYAGAIN : NSS_STATUS_UNAVAIL;
+--- a/nss/nss_compat/compat-initgroups.c
++++ b/nss/nss_compat/compat-initgroups.c
+@@ -122,7 +122,7 @@
+   else
+     ent->blacklist.current = 0;
+ 
+-  ent->stream = __nss_files_fopen ("/etc/group");
++  ent->stream = __nss_files_fopen (GLIBC_SYSCONFDIR "/group");
+ 
+   if (ent->stream == NULL)
+     status = errno == EAGAIN ? NSS_STATUS_TRYAGAIN : NSS_STATUS_UNAVAIL;
+--- a/nss/nss_compat/compat-pwd.c
++++ b/nss/nss_compat/compat-pwd.c
+@@ -223,7 +223,7 @@
+ 
+   if (ent->stream == NULL)
+     {
+-      ent->stream = __nss_files_fopen ("/etc/passwd");
++      ent->stream = __nss_files_fopen (GLIBC_SYSCONFDIR "/passwd");
+ 
+       if (ent->stream == NULL)
+ 	status = errno == EAGAIN ? NSS_STATUS_TRYAGAIN : NSS_STATUS_UNAVAIL;
+--- a/nss/nss_compat/compat-spwd.c
++++ b/nss/nss_compat/compat-spwd.c
+@@ -178,7 +178,7 @@
+ 
+   if (ent->stream == NULL)
+     {
+-      ent->stream = __nss_files_fopen ("/etc/shadow");
++      ent->stream = __nss_files_fopen (GLIBC_SYSCONFDIR "/shadow");
+ 
+       if (ent->stream == NULL)
+ 	status = errno == EAGAIN ? NSS_STATUS_TRYAGAIN : NSS_STATUS_UNAVAIL;

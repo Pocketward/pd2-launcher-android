@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The release foreground with the development mark over its lower right waypoint. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@drawable/ic_launcher_foreground" />
+    <item android:drawable="@drawable/ic_dev_mark" />
+</layer-list>

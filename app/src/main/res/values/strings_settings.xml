@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Settings. -->
+    <string name="settings_title">Settings</string>
+    <string name="settings_tab_game">Game</string>
+    <string name="settings_tab_app">App</string>
+    <string name="settings_tab_controller">Controller</string>
+    <string name="settings_saved">Saved</string>
+    <string name="settings_waiting">Waiting</string>
+    <string name="settings_not_saved">Not saved</string>
+    <string name="settings_applies_game">These apply the next time you press Play.</string>
+    <string name="settings_applies_app">These apply at once.</string>
+    <string name="settings_applies_controller">These apply at once, in the game too.</string>
+    <string name="settings_hint_waiting">Game settings wait for the Launcher to start, a few seconds after the app opens.</string>
+    <string name="settings_hint_failed">The Launcher could not save its settings (%1$s). The next Play uses the last saved ones.</string>
+
+    <string name="settings_section_renderer">Renderer</string>
+    <string name="settings_section_start">Graphics, start and sound</string>
+    <string name="settings_renderer_glide">Glide</string>
+    <string name="settings_renderer_glide_body">D2GL on the GPU, full screen. Recommended.</string>
+    <string name="settings_renderer_direct_draw">DirectDraw</string>
+    <string name="settings_renderer_direct_draw_body">The game\'s own renderer through Wine. For when Glide does not start.</string>
+    <string name="settings_section_resolution">Game resolution</string>
+    <string name="settings_resolution_body">Fewer lines are smoother; the game is scaled up to fill the screen. Its graphics options are in the game (Ctrl+O).</string>
+    <string name="settings_resolution_automatic">Automatic: %1$s</string>
+    <string name="settings_resolution_automatic_body">480 lines on older or entry-level Adreno GPUs, a medium size on Mali GPUs, full size on newer Adrenos.</string>
+    <string name="settings_section_launcher_resolution">Official launcher resolution</string>
+    <string name="settings_launcher_resolution_body">The screen the official PD2 launcher opens on. Its window needs room: the full size shows all of it.</string>
+    <string name="settings_resolution_full">%1$d × %2$d (full)</string>
+    <string name="settings_resolution_size">%1$d × %2$d</string>
+    <string name="settings_graphics_profile">Graphics profile</string>
+    <string name="settings_graphics_profile_body">D2GL\'s settings for the game\'s look, written at the next Play. What you change in the game (Ctrl+O) stays until you pick another profile.</string>
+    <string name="settings_graphics_automatic_default">Automatic: Default</string>
+    <string name="settings_graphics_automatic_performance">Automatic: Performance</string>
+    <string name="settings_graphics_automatic_body">Performance on older or entry-level Adreno GPUs and on Mali GPUs, Default on newer Adrenos.</string>
+    <string name="settings_graphics_default">Default</string>
+    <string name="settings_graphics_default_body">Project Diablo 2\'s own D2GL settings.</string>
+    <string name="settings_graphics_performance">Performance</string>
+    <string name="settings_graphics_performance_body">D2GL\'s advanced settings tuned down for older devices: a simpler shader, no sharpening, no bloom.</string>
+    <string name="settings_limit_frame_rate">Limit to 60 fps</string>
+    <string name="settings_limit_frame_rate_body">This screen shows up to %1$d frames a second. At 60 the game uses less battery and stays cooler, but moves less smoothly.</string>
+    <string name="settings_skip_to_bnet">Skip to Battle.net</string>
+    <string name="settings_skip_to_bnet_body">The game opens on the online screen.</string>
+    <string name="settings_sound_in_background">Sound in background</string>
+    <string name="settings_sound_in_background_body">The game keeps its sound when another app is in front.</string>
+
+    <string name="settings_section_screen">Screen</string>
+    <string name="settings_keep_screen_on">Keep the screen on during play</string>
+    <string name="settings_keep_screen_on_body">The screen does not dim or turn off while the game shows.</string>
+    <string name="settings_show_fps">Show fps</string>
+    <string name="settings_show_fps_body">A small counter in a corner of the game: the frames the game draws each second.</string>
+
+    <string name="settings_section_android">Android</string>
+    <string name="settings_battery">Battery optimisation</string>
+    <string name="settings_battery_restricted">On. Android may pause downloads and installs while the screen is off. Choose \"Not optimised\" for PD2 Launcher in the list that opens.</string>
+    <string name="settings_battery_unrestricted">Off for PD2 Launcher. Work goes on in the background.</string>
+    <string name="settings_battery_open">Battery settings</string>
+    <string name="settings_notifications">Notifications</string>
+    <string name="settings_notifications_off">Off. Android may stop the game while PD2 Launcher is in the background.</string>
+    <string name="settings_notifications_on">On. The session notification keeps the Launcher and the game running.</string>
+    <string name="settings_notifications_open">Notification settings</string>
+
+
+    <!-- Step 1: the battery row. -->
+    <string name="row_battery">Battery</string>
+    <string name="battery_restricted_warning">Optimised. Android may pause downloads and installs while the screen is off.</string>
+    <string name="battery_unrestricted">Not optimised</string>
+
+    <!-- Step 2: Diablo II source. -->
+    <string name="source_title">Diablo II source</string>
+    <string name="source_intro">Project Diablo 2 needs Diablo II and Lord of Destruction. Choose where they come from.</string>
+    <string name="source_blizzard">Download</string>
+    <string name="source_blizzard_body">Diablo II and Lord of Destruction from Blizzard (about 2 GB), and Project Diablo 2 from Project Diablo 2. Your CD keys come in Install.</string>
+    <string name="source_existing">Import an existing installation</string>
+    <string name="source_existing_body">Copy your Diablo II folder from your PC to this device, then choose it here. It will be copied into the app.</string>
+    <string name="source_existing_pick_action">Choose Diablo II folder</string>
+    <string name="source_continue">Continue</string>
+
+    <string name="source_waiting">Waiting for the Launcher to start.</string>
+    <string name="source_blizzard_ready">Continue starts the download.</string>
+    <string name="source_existing_pick">Continue opens Android\'s folder picker: choose the Diablo II folder you copied from your PC.</string>
+    <string name="source_existing_in_place">Diablo II found and copied into the app.</string>
+    <string name="source_existing_with_pd2">Diablo II and Project Diablo 2 found. Install sets them up with no installer.</string>
+    <string name="source_existing_update_pd2">Diablo II and Project Diablo 2 found. Install brings Project Diablo 2 up to date.</string>
+    <string name="source_existing_copy">Diablo II found. Install copies it (%1$d MB).</string>
+    <string name="source_copying">Copying into the app: %1$d of %2$d MB</string>
+    <string name="source_no_space">Not enough space: this needs %1$d MB, %2$d MB are free.</string>
+    <string name="source_copy_failed">The copy failed: %1$s</string>
+
+    <string name="existing_not_found">The folder was not found.</string>
+    <string name="existing_unreadable">The folder cannot be read.</string>
+    <string name="existing_not_diablo">This is not a Diablo II folder.</string>
+    <string name="existing_unsupported_version">Diablo II %1$s is not supported; 1.14b or 1.14d is.</string>
+    <string name="existing_modified">This Diablo II is modified.</string>
+    <string name="existing_archive_mismatch">The game\'s archives do not match its version.</string>
+    <string name="existing_no_expansion">Lord of Destruction is not installed in it.</string>
+    <string name="existing_missing_file">A game file is missing: %1$s</string>
+    <string name="existing_links">The folder contains links, which are not supported.</string>
+    <string name="existing_inside_launcher">The folder is inside the Launcher\'s own folder.</string>
+    <string name="existing_unsupported_path">The folder\'s path cannot be used.</string>
+
+</resources>

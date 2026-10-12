@@ -1,0 +1,175 @@
+panfrost/kmod: the kbase backend, and backend hooks for command streams and limits
+
+- Registers the pan_kmod backend for Arm's mali_kbase (src/panfrost/lib/kmod/kbase_kmod.c,
+  kbase_kmod_sync.c, kbase_kmod_csf.c, copied into the tree from userland/mesa-kbase/ by
+  build-panvk.sh) after the DRM backends, and builds it.
+- Adds three optional pan_kmod_ops: `ioctl` (the panthor command-stream ioctls a CSF user issues:
+  group create/destroy/submit/get-state and tiler heap create/destroy), `get_csif_props` and
+  `get_flush_id`, with pan_kmod_dev_ioctl(), pan_kmod_dev_get_csif_props() and
+  pan_kmod_dev_get_flush_id() that fall back to the panthor fd and helpers when a backend has
+  none. Panthor and panfrost are unchanged.
+- Adds pan_kmod_dev_props.limits for what a backend cannot do: map a BO at more than one GPU VA,
+  place a CPU mapping, share BOs or syncobjs as fds. All false for the DRM backends.
+- Adds PAN_KMOD_BO_FLAG_GPU_SYNC for BOs holding sync objects command streams wait on (kbase
+  re-evaluates such waits of a suspended group only in its CSF event memory), pan_kmod_bo.fixed_va
+  for a BO the backend placed itself at allocation, and an optional `notify_sync_update` op with
+  pan_kmod_dev_notify_sync_update() to tell the kernel the CPU changed such sync objects. No DRM
+  backend offers the flag or the op; their behaviour is unchanged.
+
+--- a/src/panfrost/lib/kmod/meson.build
++++ b/src/panfrost/lib/kmod/meson.build
+@@ -8,6 +8,9 @@
+   'pan_kmod.c',
+   'panfrost_kmod.c',
+   'panthor_kmod.c',
++  'kbase_kmod.c',
++  'kbase_kmod_sync.c',
++  'kbase_kmod_csf.c',
+ ]
+ 
+ if with_panfrost_vdrm
+--- a/src/panfrost/lib/kmod/pan_kmod.c
++++ b/src/panfrost/lib/kmod/pan_kmod.c
+@@ -14,6 +14,7 @@
+ 
+ extern const struct pan_kmod_ops panfrost_kmod_ops;
+ extern const struct pan_kmod_ops panthor_kmod_ops;
++extern const struct pan_kmod_ops kbase_kmod_ops;
+ #ifdef HAVE_PANFROST_VDRM
+ extern const struct pan_kmod_ops panfrost_virtio_gpu_ops;
+ extern const struct pan_kmod_ops panfrost_vpipe_ops;
+@@ -31,6 +32,12 @@
+       "panthor",
+       &panthor_kmod_ops,
+    },
++   /* Arm's out-of-tree mali_kbase (/dev/mali0), CSF GPUs. Not a DRM driver: its
++    * handshake fails on a DRM fd, so it is tried after the DRM backends. */
++   {
++      "kbase",
++      &kbase_kmod_ops,
++   },
+ #ifdef HAVE_PANFROST_VDRM
+    {
+       "panfrost_virtio_gpu",
+--- a/src/panfrost/lib/kmod/pan_kmod.h
++++ b/src/panfrost/lib/kmod/pan_kmod.h
+@@ -130,6 +130,13 @@
+     * the KMD to force non-coherent mappings on IO coherent setup.
+     */
+    PAN_KMOD_BO_FLAG_IO_COHERENT = BITFIELD_BIT(7),
++
++   /* The buffer object holds sync objects that command streams wait on. A
++    * backend whose kernel re-evaluates such waits only in special memory
++    * (kbase's CSF event memory) allocates it there; such a BO may come with
++    * a GPU VA the backend picked (pan_kmod_bo::fixed_va).
++    */
++   PAN_KMOD_BO_FLAG_GPU_SYNC = BITFIELD_BIT(8),
+ };
+ 
+ /* Allowed group priority flags. */
+@@ -186,6 +193,11 @@
+    /* The device this buffer object was created from. */
+    struct pan_kmod_dev *dev;
+ 
++   /* Non-zero when the backend placed the buffer object at this GPU VA at
++    * allocation time: it must then be mapped there.
++    */
++   uint64_t fixed_va;
++
+    /* User private data. Use pan_kmod_bo_{set,get}_user_priv() to access it. */
+    void *user_priv;
+ };
+@@ -270,6 +282,20 @@
+ 
+    /* Bitmask encoding the available GPU page sizes */
+    uint64_t pgsize_bitmap;
++
++   /* What a backend cannot do; all false for the DRM backends. */
++   struct {
++      /* A buffer object is GPU-mapped once, at one VA, for its whole life:
++       * no aliasing mappings, so no sparse binding either.
++       */
++      bool single_gpu_mapping;
++
++      /* CPU mappings cannot be placed at an address the caller picks. */
++      bool no_placed_cpu_mapping;
++
++      /* Buffer objects and syncobjs cannot be shared as file descriptors. */
++      bool no_fd_sharing;
++   } limits;
+ };
+ 
+ /* Memory allocator for kmod internal allocations. */
+@@ -547,6 +573,28 @@
+ 
+    /* Destroy a perf session. */
+    void (*perf_destroy)(struct pan_kmod_perf_session *session);
++
++   /* Run a panthor command-stream ioctl (group, queue submission and tiler
++    * heap commands) on a backend that is not panthor. Optional: without it
++    * the ioctl goes to the device fd.
++    */
++   int (*ioctl)(struct pan_kmod_dev *dev, unsigned long request, void *arg);
++
++   /* CSF interface information in panthor's layout. Optional: without it
++    * the device is a panthor device.
++    */
++   const struct drm_panthor_csif_info *(*get_csif_props)(
++      const struct pan_kmod_dev *dev);
++
++   /* The LATEST_FLUSH_ID register. Optional: without it the device is a
++    * panthor device.
++    */
++   uint32_t (*get_flush_id)(const struct pan_kmod_dev *dev);
++
++   /* Tell the kernel that the CPU changed sync objects command streams may
++    * be waiting on. Optional: without it nothing needs to be done.
++    */
++   void (*notify_sync_update)(struct pan_kmod_dev *dev);
+ };
+ 
+ static inline bool
+@@ -630,6 +678,43 @@
+ pan_kmod_dev_create(int fd, uint32_t flags,
+                     const struct pan_kmod_allocator *allocator);
+ 
++/* Command-stream ioctls (DRM_IOCTL_PANTHOR_GROUP_*, _TILER_HEAP_*) on any CSF
++ * backend.
++ */
++static inline int
++pan_kmod_dev_ioctl(struct pan_kmod_dev *dev, unsigned long request, void *arg)
++{
++   if (dev->ops->ioctl)
++      return dev->ops->ioctl(dev, request, arg);
++
++   return pan_kmod_ioctl(dev->fd, request, arg);
++}
++
++static inline const struct drm_panthor_csif_info *
++pan_kmod_dev_get_csif_props(const struct pan_kmod_dev *dev)
++{
++   if (dev->ops->get_csif_props)
++      return dev->ops->get_csif_props(dev);
++
++   return panthor_kmod_get_csif_props(dev);
++}
++
++static inline uint32_t
++pan_kmod_dev_get_flush_id(const struct pan_kmod_dev *dev)
++{
++   if (dev->ops->get_flush_id)
++      return dev->ops->get_flush_id(dev);
++
++   return panthor_kmod_get_flush_id(dev);
++}
++
++static inline void
++pan_kmod_dev_notify_sync_update(struct pan_kmod_dev *dev)
++{
++   if (dev->ops->notify_sync_update)
++      dev->ops->notify_sync_update(dev);
++}
++
+ void pan_kmod_dev_destroy(struct pan_kmod_dev *dev);
+ 
+ static inline struct pan_kmod_va_range

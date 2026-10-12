@@ -1,0 +1,73 @@
+From: User <noreply@users.noreply.github.com>
+Subject: [PATCH 04/10] faccessat, fchmodat: take the existing fallbacks directly
+
+faccessat (and eaccess, euidaccess) does not try faccessat2: it issues
+faccessat when the flags allow, otherwise fstatat with glibc's own
+permission check. fchmodat with a non-zero flag does not try fchmodat2: it
+goes to fchmodat_fallback (O_PATH open, chmod through /proc/self/fd).
+The result does not depend on --enable-kernel.
+
+faccessat2 and fchmodat2 are not in the Android 13 (API 33) app seccomp
+allowlist; the filter traps them with SIGSYS before glibc sees ENOSYS.
+---
+--- a/sysdeps/unix/sysv/linux/faccessat.c
++++ b/sysdeps/unix/sysv/linux/faccessat.c
+@@ -26,13 +26,9 @@
+ int
+ __faccessat (int fd, const char *file, int mode, int flag)
+ {
+-  int ret = INLINE_SYSCALL_CALL (faccessat2, fd, file, mode, flag);
+-#if __ASSUME_FACCESSAT2
+-  return ret;
+-#else
+-  if (ret == 0 || errno != ENOSYS)
+-    return ret;
+-
++  /* faccessat2 is trapped by the Android app seccomp policy, so it is never
++     tried: this is the pre-Linux-5.8 path, built on the faccessat syscall
++     and fstatat.  */
+   if (flag & ~(AT_SYMLINK_NOFOLLOW | AT_EACCESS))
+     return INLINE_SYSCALL_ERROR_RETURN_VALUE (EINVAL);
+ 
+@@ -71,6 +67,5 @@
+     return 0;
+ 
+   return INLINE_SYSCALL_ERROR_RETURN_VALUE (EACCES);
+-#endif /* !__ASSUME_FACCESSAT2 */
+ }
+ weak_alias (__faccessat, faccessat)
+--- a/sysdeps/unix/sysv/linux/fchmodat.c
++++ b/sysdeps/unix/sysv/linux/fchmodat.c
+@@ -26,7 +26,6 @@
+ #include <sysdep.h>
+ #include <unistd.h>
+ 
+-#if !__ASSUME_FCHMODAT2
+ static int
+ fchmodat_fallback (int fd, const char *file, mode_t mode, int flag)
+ {
+@@ -85,21 +84,15 @@
+   __close_nocancel (pathfd);
+   return ret;
+ }
+-#endif
+ 
+ int
+ fchmodat (int fd, const char *file, mode_t mode, int flag)
+ {
+-#if __ASSUME_FCHMODAT2
+-  return INLINE_SYSCALL_CALL (fchmodat2, fd, file, mode, flag);
+-#else
+   if (flag == 0)
+     return INLINE_SYSCALL_CALL (fchmodat, fd, file, mode);
+ 
+-  int r = INLINE_SYSCALL_CALL (fchmodat2, fd, file, mode, flag);
+-  if (r != 0 && errno == ENOSYS)
+-    return fchmodat_fallback (fd, file, mode, flag);
+-  return r;
+-#endif
++  /* fchmodat2 is trapped by the Android app seccomp policy, so it is never
++     tried: go straight to the pre-Linux-6.6 fallback.  */
++  return fchmodat_fallback (fd, file, mode, flag);
+ }
+ libc_hidden_def (fchmodat)

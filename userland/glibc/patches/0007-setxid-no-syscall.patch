@@ -1,0 +1,383 @@
+From: User <noreply@users.noreply.github.com>
+Subject: [PATCH 07/10] set*id: answer in user space, never issue a trapped id syscall
+
+setuid, setgid, setreuid, setregid, setresgid, setegid, setgroups,
+setfsuid, setfsgid and posix_spawn's POSIX_SPAWN_RESETIDS issue no
+id-changing syscall. The new setxid-android.h decides each request from
+the current ids with the kernel's rules: a request that leaves every id as
+it is returns 0, any other fails with EPERM (EINVAL where Linux answers
+that). setfsuid/setfsgid return the current effective id and change
+nothing; setfsuid.c and setfsgid.c replace their syscalls.list wrappers.
+setresuid and seteuid are unchanged.
+
+The Android app seccomp policy traps these id syscalls (all but setresuid)
+with SIGSYS.
+---
+--- /dev/null
++++ b/sysdeps/unix/sysv/linux/setxid-android.h
+@@ -0,0 +1,135 @@
++/* set*id requests answered without a syscall, for the Android app sandbox.  */
++
++#ifndef _SETXID_ANDROID_H
++#define _SETXID_ANDROID_H 1
++
++/* The Android app seccomp policy traps setuid, setgid, setreuid, setregid,
++   setresgid, setgroups, setfsuid and setfsgid; only setresuid is allowed.
++   The functions below decide such a request in user space from the current
++   ids (getresuid, getresgid, geteuid and getgroups are allowed): a request
++   that would leave every id unchanged succeeds, any other request fails
++   with EPERM, which is also what Linux answers an unprivileged process for
++   most of them.  No syscall that changes an id is issued, so there is no
++   need for glibc's all-threads set*id broadcast either.
++
++   The new ids a request would produce follow Linux kernel/sys.c
++   (__sys_setuid, __sys_setreuid, __sys_setresuid and the gid versions).
++   uid_t and gid_t are the same 32-bit type, so one set of helpers serves
++   both.  */
++
++#include <errno.h>
++#include <limits.h>
++#include <stdbool.h>
++#include <stdlib.h>
++#include <sys/types.h>
++#include <sysdep.h>
++
++#define SETXID_ANDROID_UNSET ((unsigned int) -1)
++
++static inline int
++setxid_android_answer (bool unchanged)
++{
++  if (unchanged)
++    return 0;
++  return INLINE_SYSCALL_ERROR_RETURN_VALUE (EPERM);
++}
++
++/* Reads the real, effective and saved user (GROUP false) or group (GROUP
++   true) ids.  Returns false if the syscall failed (errno is set).  */
++static inline bool
++setxid_android_current (bool group, unsigned int *r, unsigned int *e,
++			unsigned int *s)
++{
++  int ret = group ? INTERNAL_SYSCALL_CALL (getresgid, r, e, s)
++		  : INTERNAL_SYSCALL_CALL (getresuid, r, e, s);
++  if (INTERNAL_SYSCALL_ERROR_P (ret))
++    {
++      __set_errno (INTERNAL_SYSCALL_ERRNO (ret));
++      return false;
++    }
++  return true;
++}
++
++/* setuid (ID) or setgid (ID).  A privileged caller (effective uid 0) sets
++   the real, effective and saved ids; anyone else may set only the effective
++   id, and only to the real or saved id.  */
++static inline int
++setxid_android_set1 (bool group, unsigned int id)
++{
++  if (id == SETXID_ANDROID_UNSET)
++    return INLINE_SYSCALL_ERROR_RETURN_VALUE (EINVAL);
++  unsigned int r, e, s;
++  if (!setxid_android_current (group, &r, &e, &s))
++    return -1;
++  bool privileged = INTERNAL_SYSCALL_CALL (geteuid) == 0;
++  if (privileged)
++    return setxid_android_answer (r == id && e == id && s == id);
++  return setxid_android_answer ((id == r || id == s) && e == id);
++}
++
++/* setreuid (RID, EID) or setregid (RID, EID).  The saved id becomes the new
++   effective id when the real id is given, or when the effective id is set
++   to something other than the old real id.  */
++static inline int
++setxid_android_set2 (bool group, unsigned int rid, unsigned int eid)
++{
++  unsigned int r, e, s;
++  if (!setxid_android_current (group, &r, &e, &s))
++    return -1;
++  unsigned int nr = rid == SETXID_ANDROID_UNSET ? r : rid;
++  unsigned int ne = eid == SETXID_ANDROID_UNSET ? e : eid;
++  unsigned int ns = s;
++  if (rid != SETXID_ANDROID_UNSET
++      || (eid != SETXID_ANDROID_UNSET && eid != r))
++    ns = ne;
++  return setxid_android_answer (nr == r && ne == e && ns == s);
++}
++
++/* setresgid (RID, EID, SID); -1 leaves an id as it is.  */
++static inline int
++setxid_android_set3 (bool group, unsigned int rid, unsigned int eid,
++		     unsigned int sid)
++{
++  unsigned int r, e, s;
++  if (!setxid_android_current (group, &r, &e, &s))
++    return -1;
++  return setxid_android_answer ((rid == SETXID_ANDROID_UNSET || rid == r)
++				&& (eid == SETXID_ANDROID_UNSET || eid == e)
++				&& (sid == SETXID_ANDROID_UNSET || sid == s));
++}
++
++/* setgroups (N, GROUPS): unchanged when GROUPS is the current supplementary
++   group set (compared as sets, as the kernel keeps them sorted).  */
++static inline int
++setxid_android_setgroups (size_t n, const gid_t *groups)
++{
++  if (n > NGROUPS_MAX)
++    return INLINE_SYSCALL_ERROR_RETURN_VALUE (EINVAL);
++  int count = INTERNAL_SYSCALL_CALL (getgroups, 0, NULL);
++  if (INTERNAL_SYSCALL_ERROR_P (count))
++    return INLINE_SYSCALL_ERROR_RETURN_VALUE (INTERNAL_SYSCALL_ERRNO (count));
++  if ((size_t) count != n)
++    return setxid_android_answer (false);
++  if (n == 0)
++    return 0;
++  gid_t *current = malloc (n * sizeof (gid_t));
++  if (current == NULL)
++    return -1;
++  int got = INTERNAL_SYSCALL_CALL (getgroups, n, current);
++  bool same = !INTERNAL_SYSCALL_ERROR_P (got) && (size_t) got == n;
++  /* Every requested group is current and every current group is
++     requested.  */
++  for (size_t i = 0; same && i < 2 * n; i++)
++    {
++      gid_t want = i < n ? groups[i] : current[i - n];
++      const gid_t *in = i < n ? current : groups;
++      bool found = false;
++      for (size_t j = 0; !found && j < n; j++)
++	found = in[j] == want;
++      same = found;
++    }
++  free (current);
++  return setxid_android_answer (same);
++}
++
++#endif /* setxid-android.h */
+--- a/sysdeps/unix/sysv/linux/setuid.c
++++ b/sysdeps/unix/sysv/linux/setuid.c
+@@ -17,16 +17,14 @@
+ 
+ #include <errno.h>
+ #include <unistd.h>
+-#include <setxid.h>
++#include <setxid-android.h>
+ 
+ int
+ __setuid (uid_t uid)
+ {
+-#ifdef __NR_setuid32
+-  return INLINE_SETXID_SYSCALL (setuid32, 1, uid);
+-#else
+-  return INLINE_SETXID_SYSCALL (setuid, 1, uid);
+-#endif
++  /* The Android app seccomp policy traps setuid: answer without it
++     (setxid-android.h).  */
++  return setxid_android_set1 (false, uid);
+ }
+ #ifndef __setuid
+ weak_alias (__setuid, setuid)
+--- a/sysdeps/unix/sysv/linux/setgid.c
++++ b/sysdeps/unix/sysv/linux/setgid.c
+@@ -17,17 +17,15 @@
+ 
+ #include <errno.h>
+ #include <unistd.h>
+-#include <setxid.h>
++#include <setxid-android.h>
+ 
+ 
+ int
+ __setgid (gid_t gid)
+ {
+-#ifdef __NR_setgid32
+-  return INLINE_SETXID_SYSCALL (setgid32, 1, gid);
+-#else
+-  return INLINE_SETXID_SYSCALL (setgid, 1, gid);
+-#endif
++  /* The Android app seccomp policy traps setgid: answer without it
++     (setxid-android.h).  */
++  return setxid_android_set1 (true, gid);
+ }
+ #ifndef __setgid
+ weak_alias (__setgid, setgid)
+--- a/sysdeps/unix/sysv/linux/setreuid.c
++++ b/sysdeps/unix/sysv/linux/setreuid.c
+@@ -17,17 +17,15 @@
+ 
+ #include <errno.h>
+ #include <unistd.h>
+-#include <setxid.h>
++#include <setxid-android.h>
+ 
+ 
+ int
+ __setreuid (uid_t ruid, uid_t euid)
+ {
+-#ifdef __NR_setreuid32
+-  return INLINE_SETXID_SYSCALL (setreuid32, 2, ruid, euid);
+-#else
+-  return INLINE_SETXID_SYSCALL (setreuid, 2, ruid, euid);
+-#endif
++  /* The Android app seccomp policy traps setreuid: answer without it
++     (setxid-android.h).  */
++  return setxid_android_set2 (false, ruid, euid);
+ }
+ #ifndef __setreuid
+ weak_alias (__setreuid, setreuid)
+--- a/sysdeps/unix/sysv/linux/setregid.c
++++ b/sysdeps/unix/sysv/linux/setregid.c
+@@ -17,17 +17,15 @@
+ 
+ #include <errno.h>
+ #include <unistd.h>
+-#include <setxid.h>
++#include <setxid-android.h>
+ 
+ 
+ int
+ __setregid (gid_t rgid, gid_t egid)
+ {
+-#ifdef __NR_setregid32
+-  return INLINE_SETXID_SYSCALL (setregid32, 2, rgid, egid);
+-#else
+-  return INLINE_SETXID_SYSCALL (setregid, 2, rgid, egid);
+-#endif
++  /* The Android app seccomp policy traps setregid: answer without it
++     (setxid-android.h).  */
++  return setxid_android_set2 (true, rgid, egid);
+ }
+ #ifndef __setregid
+ weak_alias (__setregid, setregid)
+--- a/sysdeps/unix/sysv/linux/setresgid.c
++++ b/sysdeps/unix/sysv/linux/setresgid.c
+@@ -17,17 +17,15 @@
+ 
+ #include <errno.h>
+ #include <unistd.h>
+-#include <setxid.h>
++#include <setxid-android.h>
+ 
+ 
+ int
+ __setresgid (gid_t rgid, gid_t egid, gid_t sgid)
+ {
+-#ifdef __NR_setresgid32
+-  return INLINE_SETXID_SYSCALL (setresgid32, 3, rgid, egid, sgid);
+-#else
+-  return INLINE_SETXID_SYSCALL (setresgid, 3, rgid, egid, sgid);
+-#endif
++  /* The Android app seccomp policy traps setresgid: answer without it
++     (setxid-android.h).  */
++  return setxid_android_set3 (true, rgid, egid, sgid);
+ }
+ libc_hidden_def (__setresgid)
+ #ifndef __setresgid
+--- a/sysdeps/unix/sysv/linux/setegid.c
++++ b/sysdeps/unix/sysv/linux/setegid.c
+@@ -17,7 +17,7 @@
+ 
+ #include <errno.h>
+ #include <unistd.h>
+-#include <setxid.h>
++#include <setxid-android.h>
+ 
+ 
+ int
+@@ -28,11 +28,9 @@
+   if (gid == (gid_t) ~0)
+     return INLINE_SYSCALL_ERROR_RETURN_VALUE (EINVAL);
+ 
+-#ifdef __NR_setresgid32
+-  result = INLINE_SETXID_SYSCALL (setresgid32, 3, -1, gid, -1);
+-#else
+-  result = INLINE_SETXID_SYSCALL (setresgid, 3, -1, gid, -1);
+-#endif
++  /* The Android app seccomp policy traps setresgid: answer without it
++     (setxid-android.h).  */
++  result = setxid_android_set3 (true, -1, gid, -1);
+ 
+   return result;
+ }
+--- a/sysdeps/unix/sysv/linux/setgroups.c
++++ b/sysdeps/unix/sysv/linux/setgroups.c
+@@ -17,7 +17,7 @@
+ 
+ #include <errno.h>
+ #include <grp.h>
+-#include <setxid.h>
++#include <setxid-android.h>
+ #include <sysdep.h>
+ 
+ 
+@@ -27,10 +27,8 @@
+ int
+ setgroups (size_t n, const gid_t *groups)
+ {
+-#ifdef __NR_setgroups32
+-  return INLINE_SETXID_SYSCALL (setgroups32, 2, n, groups);
+-#else
+-  return INLINE_SETXID_SYSCALL (setgroups, 2, n, groups);
+-#endif
++  /* The Android app seccomp policy traps setgroups: answer without it
++     (setxid-android.h).  */
++  return setxid_android_setgroups (n, groups);
+ }
+ libc_hidden_def (setgroups)
+--- a/sysdeps/unix/sysv/linux/local-setxid.h
++++ b/sysdeps/unix/sysv/linux/local-setxid.h
+@@ -9,8 +9,7 @@
+ #endif
+ 
+ 
+-#ifdef __NR_setresgid32
+-# define local_setegid(id) INLINE_SYSCALL (setresgid32, 3, -1, id, -1)
+-#else
+-# define local_setegid(id) INLINE_SYSCALL (setresgid, 3, -1, id, -1)
+-#endif
++/* The Android app seccomp policy traps setresgid: answer without it
++   (setxid-android.h).  */
++#include <setxid-android.h>
++#define local_setegid(id) setxid_android_set3 (true, -1, id, -1)
+--- /dev/null
++++ b/sysdeps/unix/sysv/linux/setfsuid.c
+@@ -0,0 +1,14 @@
++/* setfsuid without the setfsuid syscall, for the Android app sandbox.  */
++
++#include <sys/fsuid.h>
++#include <sysdep.h>
++
++/* The Android app seccomp policy traps setfsuid.  Nothing can change the
++   filesystem UID without it, so it is still the effective UID:
++   return that, as setfsuid returns the previous filesystem UID, and
++   change nothing.  */
++int
++setfsuid (uid_t uid)
++{
++  return INTERNAL_SYSCALL_CALL (geteuid);
++}
+--- /dev/null
++++ b/sysdeps/unix/sysv/linux/setfsgid.c
+@@ -0,0 +1,14 @@
++/* setfsgid without the setfsgid syscall, for the Android app sandbox.  */
++
++#include <sys/fsuid.h>
++#include <sysdep.h>
++
++/* The Android app seccomp policy traps setfsgid.  Nothing can change the
++   filesystem GID without it, so it is still the effective GID:
++   return that, as setfsgid returns the previous filesystem GID, and
++   change nothing.  */
++int
++setfsgid (gid_t gid)
++{
++  return INTERNAL_SYSCALL_CALL (getegid);
++}
+--- a/sysdeps/unix/sysv/linux/syscalls.list
++++ b/sysdeps/unix/sysv/linux/syscalls.list
+@@ -61,8 +61,6 @@
+ sched_setp	-	sched_setparam	i:ip	__sched_setparam	sched_setparam
+ sched_sets	-	sched_setscheduler	i:iip	__sched_setscheduler	sched_setscheduler
+ sched_yield	-	sched_yield	i:	__sched_yield	sched_yield
+-setfsgid	EXTRA	setfsgid	i:i	setfsgid
+-setfsuid	EXTRA	setfsuid	i:i	setfsuid
+ setpgid		-	setpgid		i:ii	__setpgid	setpgid
+ sigaltstack	-	sigaltstack	i:PP	__sigaltstack	sigaltstack
+ sysinfo		EXTRA	sysinfo		i:p	__sysinfo	sysinfo

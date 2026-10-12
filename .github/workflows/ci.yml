@@ -1,0 +1,45 @@
+# Checks of every push to main and every pull request: `build.sh check` compiles
+# the debug APK in the pinned build container and runs the app's JVM unit tests
+# (the test suites are developed outside this repository, so the task finds none
+# here, and the build itself is the check). It needs no engine, userland or
+# runtime; release.yml builds the full APK.
+name: Checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  app:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The build image (SDK, NDK) needs more room than a hosted runner leaves free.
+      - name: Make room on the disk
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/powershell /usr/share/swift
+          df -h /
+
+      - name: Restore the Gradle cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/pd2-android/gradle/caches
+            ~/.cache/pd2-android/gradle/wrapper
+          key: gradle-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties', 'gradle.properties', 'build.gradle.kts', 'settings.gradle.kts', 'app/build.gradle.kts') }}
+          restore-keys: gradle-
+
+      - name: Compile the debug APK and run the unit tests
+        run: ./build.sh check

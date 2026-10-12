@@ -1,0 +1,46 @@
+# Tools image for the App userland (amd64): download/extract, Turnip cross-build, relocation, packing.
+# Base image pinned by digest; every package pinned by exact version from the snapshot in config.sh.
+ARG DEBIAN_IMAGE
+FROM ${DEBIAN_IMAGE}
+
+ARG DEBIAN_SNAPSHOT
+RUN rm -f /etc/apt/sources.list.d/debian.sources \
+    && printf '%s\n' \
+        'Types: deb' \
+        "URIs: http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}" \
+        'Suites: trixie trixie-updates' \
+        'Components: main' \
+        'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+        'Check-Valid-Until: no' \
+        '' \
+        'Types: deb' \
+        "URIs: http://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}" \
+        'Suites: trixie-security' \
+        'Components: main' \
+        'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+        'Check-Valid-Until: no' \
+        > /etc/apt/sources.list.d/snapshot.sources \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        meson=1.7.0-1 \
+        ninja-build=1.12.1-1 \
+        gcc-aarch64-linux-gnu=4:14.2.0-1 \
+        g++-aarch64-linux-gnu=4:14.2.0-1 \
+        binutils-aarch64-linux-gnu=2.44-3 \
+        pkgconf=1.8.1-4 \
+        python3=3.13.5-1 \
+        python3-mako=1.3.9-1 \
+        python3-yaml=6.0.2-1+b2 \
+        python3-packaging=25.0-1 \
+        glslang-tools=15.1.0+1.4.309.0-1 \
+        bison=2:3.8.2+dfsg-1+b2 \
+        flex=2.6.4-8.2+b4 \
+        patchelf=0.18.0-1.4 \
+        patch=2.8-2 \
+        zstd=1.5.7+dfsg-1 \
+        jq=1.7.1-6+deb13u4 \
+        file=1:5.46-5 \
+        curl=8.14.1-2+deb13u5 \
+        xz-utils=5.8.1-1+deb13u1 \
+        ca-certificates=20250419 \
+    && rm -rf /var/lib/apt/lists/*

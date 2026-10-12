@@ -1,0 +1,20 @@
+From: User <noreply@users.noreply.github.com>
+Subject: [PATCH 05/10] aarch64: accept() is accept4(fd, addr, len, 0)
+
+__ASSUME_ACCEPT_SYSCALL is undefined for aarch64, so accept() issues
+accept4(fd, addr, len, 0) (still a cancellation point), which Linux defines
+to be accept.
+
+The Android 13 (API 33) app seccomp policy allows accept4 but traps accept
+with SIGSYS.
+---
+--- a/sysdeps/unix/sysv/linux/aarch64/kernel-features.h
++++ b/sysdeps/unix/sysv/linux/aarch64/kernel-features.h
+@@ -27,3 +27,7 @@
+    never issue it and glibc itself releases a dead thread's robust
+    mutexes at thread exit.  */
+ #undef __ASSUME_SET_ROBUST_LIST
++
++/* The Android app seccomp policy allows accept4 but traps accept, so
++   accept is implemented as accept4 with no flags.  */
++#undef __ASSUME_ACCEPT_SYSCALL

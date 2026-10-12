@@ -1,0 +1,25 @@
+From: User <noreply@users.noreply.github.com>
+Subject: [PATCH 01/10] rseq: glibc.pthread.rseq is 0 and cannot be raised
+
+The tunable glibc.pthread.rseq has default 0 and maximum 0, so neither the
+initial thread nor any new thread issues the rseq syscall, also in programs
+that clear the environment; GLIBC_TUNABLES cannot raise it (the tunables
+parser ignores a value above the maximum). __rseq_size is 0 and
+sched_getcpu uses the getcpu syscall.
+
+rseq is not in the Android 13 (API 33) app seccomp allowlist; the filter
+traps it with SIGSYS before glibc's "registration failed" path can run.
+---
+--- a/sysdeps/nptl/dl-tunables.list
++++ b/sysdeps/nptl/dl-tunables.list
+@@ -30,8 +30,8 @@
+     rseq {
+       type: INT_32
+       minval: 0
+-      maxval: 1
+-      default: 1
++      maxval: 0
++      default: 0
+     }
+     stack_hugetlb {
+       type: INT_32
