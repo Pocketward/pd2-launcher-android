@@ -4,12 +4,16 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.app.NotificationManager
 import android.content.ActivityNotFoundException
+import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
+import android.os.StatFs
 import android.os.SystemClock
+import android.provider.DocumentsContract
 import android.provider.Settings
 import android.util.Log
 import android.view.KeyEvent
@@ -37,7 +41,10 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.withStarted
 import com.pd2launcher.app.control.Command
+import com.pd2launcher.app.control.Game
+import com.pd2launcher.app.control.Installation
 import com.pd2launcher.app.control.Installer
 import com.pd2launcher.app.control.Step
 import com.pd2launcher.app.input.PadButton
@@ -54,8 +61,13 @@ import com.pd2launcher.app.ui.InstallRun
 import com.pd2launcher.app.ui.InstallScreen
 import com.pd2launcher.app.ui.InstallState
 import com.pd2launcher.app.ui.KeysScreen
+import com.pd2launcher.app.ui.LogShareUi
 import com.pd2launcher.app.ui.LauncherTheme
 import com.pd2launcher.app.ui.LocalFormFactor
+import com.pd2launcher.app.ui.LocalLogShare
+import com.pd2launcher.app.ui.LocalNetworkCheck
+import com.pd2launcher.app.ui.NetworkCheckUi
+import com.pd2launcher.app.ui.NetworkState
 import com.pd2launcher.app.ui.LocalRefusal
 import com.pd2launcher.app.ui.NotSupportedScreen
 import com.pd2launcher.app.ui.Play
@@ -70,8 +82,15 @@ import com.pd2launcher.app.ui.SettingsScreen
 import com.pd2launcher.app.ui.SourceScreen
 import com.pd2launcher.app.ui.SystemState
 import com.pd2launcher.app.ui.text
+import java.io.File
+import java.io.FileNotFoundException
+import java.time.Instant
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * The native screens: the device check, then Check,
@@ -108,6 +127,14 @@ class MainActivity : ComponentActivity() {
     private val repairOpen = mutableStateOf(false)
     /** About, from Play or Settings; over both. */
     private val aboutOpen = mutableStateOf(false)
+    /** Share logs and Save logs, from Settings → App and beside a failure on Check, Download and Install ([shareLogs], [saveLogs]). */
+    private val logShare = LogShareUi(onShare = ::shareLogs, onSave = ::saveLogs)
+    /** Whether the servers can be reached ([NetworkCheck]): on Check, and under a failed download ([checkNetwork]). */
+    private val networkCheck = NetworkCheckUi(onRecheck = ::checkNetwork, onOpenSettings = ::openAppSettings)
+    /** The network checks' results, beside the app's other logs (Share logs packs them). */
+    private val networkLog by lazy { RotatingLog(paths.logs, "network") }
+    /** Save logs: Android's "Save as" screen for the zip; [saveChosen] copies it where the player chose. */
+    private val saveLogsTo = registerForActivityResult(SaveInDownload(), ::saveChosen)
     /** Which layout the launcher screens use, from the display's shape (ui/FormFactor.kt). */
     private lateinit var formFactor: FormFactor
     private val batteryRestricted = mutableStateOf(false)
@@ -166,6 +193,8 @@ class MainActivity : ComponentActivity() {
                 CompositionLocalProvider(
                     LocalFormFactor provides formFactor,
                     LocalRefusal provides refusal?.let { RefusalNotice(it, SessionService::dismissRefusal) },
+                    LocalLogShare provides logShare,
+                    LocalNetworkCheck provides networkCheck,
                 ) { Root() }
             }
         }
@@ -181,7 +210,7 @@ class MainActivity : ComponentActivity() {
 
         val previewName = preview.value
         BackHandler(enabled = previewName != null) { preview.value = null }
-        val previewScreen = previewName?.let { DebugPreview.screen(it, device, status, notificationsOff.value) }
+        val previewScreen = previewName?.let { DebugPreview.screen(it, device, status, notificationsOff.value, networkCheck.state) }
         val play = Play.mode(status)
         // From a press of Play or the official PD2 launcher until the game or its session shows
         // (or the engine refuses it), both buttons wait, so a second press cannot restart the game
@@ -262,6 +291,7 @@ class MainActivity : ComponentActivity() {
                         openNotificationSettings()
                     }
                 Grant.BATTERY -> requestBatteryExemption()
+                Grant.NETWORK -> openAppSettings()
             }
         }
 
@@ -455,18 +485,23 @@ class MainActivity : ComponentActivity() {
         } else when (
             val screen = Onboarding.screen(
                 device, status, notificationsOff.value, nav.value.page, batteryRestricted = batteryRestricted.value,
+                network = networkCheck.state,
             )
         ) {
             Screen.CheckingDevice -> CheckingDeviceScreen()
             is Screen.NotSupported -> NotSupportedScreen(screen, onClose = ::finish)
-            is Screen.Check -> CheckScreen(
-                screen,
-                onCheckAgain = { SessionService.send(this, SessionService.ACTION_CHECK_AGAIN) },
-                onContinue = { nav.value = nav.value.open(FlowPage.SOURCE) },
-                onRepair = { repairOpen.value = true },
-                onGrant = grant,
-                onTryAgain = { SessionService.send(this, SessionService.ACTION_RETRY) },
-            )
+            is Screen.Check -> {
+                // The first network check, once Check shows; onResume runs it again on each return.
+                LaunchedEffect(Unit) { if (networkCheck.state == null) checkNetwork() }
+                CheckScreen(
+                    screen,
+                    onCheckAgain = { SessionService.send(this, SessionService.ACTION_CHECK_AGAIN) },
+                    onContinue = { nav.value = nav.value.open(FlowPage.SOURCE) },
+                    onRepair = { repairOpen.value = true },
+                    onGrant = grant,
+                    onTryAgain = { SessionService.send(this, SessionService.ACTION_RETRY) },
+                )
+            }
             Screen.Source -> Source()
             is Screen.Download -> {
                 val downloading = screen.state == DownloadState.RUNNING || screen.state == DownloadState.STOPPING
@@ -599,6 +634,135 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Share logs: [prepareLogs], then Android's share sheet offers the zip. A second press while
+     * one is prepared does nothing.
+     */
+    private fun shareLogs() = prepareLogs(LogShareUi.Action.SHARE) { zip ->
+        startActivity(LogShare.chooser(this, zip, getString(R.string.share_logs_subject), getString(R.string.share_logs_chooser)))
+    }
+
+    /**
+     * Save logs: [prepareLogs], then Android's "Save as" screen asks where to put the zip (for
+     * example Downloads) and [saveChosen] copies it there.
+     */
+    private fun saveLogs() = prepareLogs(LogShareUi.Action.SAVE) { zip -> saveLogsTo.launch(zip.name) }
+
+    /**
+     * The zip for Share logs and Save logs: the engine saves a report first when it runs
+     * ([LogShare.awaitReport]), then [LogShare] packs it with the app's logs and [aboutDevice], and
+     * [hand] passes it on once the app is on screen (a player who went elsewhere meanwhile finds it
+     * on return). A save stays WORKING until the "Save as" screen answers ([saveChosen]).
+     */
+    private fun prepareLogs(action: LogShareUi.Action, hand: (File) -> Unit) {
+        if (logShare.state == LogShareUi.State.WORKING) return
+        logShare.action = action
+        logShare.state = LogShareUi.State.WORKING
+        lifecycleScope.launch {
+            val handed = try {
+                val outcome = LogShare.awaitReport(
+                    SessionService.status.map { LogShare.ReportWatch(it.engine == SessionStatus.Engine.CONNECTED, it.snapshot?.report) },
+                    request = { SessionService.command(Command.ExportDiagnostics) },
+                    dismiss = { SessionService.command(Command.DismissReport) },
+                    timeoutMs = REPORT_WAIT_MS,
+                )
+                if (outcome !is LogShare.ReportOutcome.Saved) Log.w(TAG, "${action.name.lowercase()} logs: engine report ${LogShare.describe(outcome)}")
+                val zip = withContext(Dispatchers.IO) {
+                    LogShare.write(cacheDir, paths, aboutDevice(outcome), (outcome as? LogShare.ReportOutcome.Saved)?.file)
+                }
+                lifecycle.withStarted { hand(zip) }
+                true
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                Log.w(TAG, "${action.name.lowercase()} logs: $error")
+                false
+            }
+            when {
+                !handed -> logShare.state = LogShareUi.State.FAILED
+                action == LogShareUi.Action.SHARE -> logShare.state = LogShareUi.State.IDLE
+            }
+        }
+    }
+
+    /**
+     * The "Save as" screen's answer: null when the player closed it. Copies the zip the last
+     * [prepareLogs] left ([LogShare.latest], also after Android made the activity again meanwhile)
+     * to [target] ([LogShare.saveTo]), emptied first: a player who picked an older file to overwrite
+     * gets no tail of it. A provider that cannot empty a file ("wt") is written as "w".
+     */
+    private fun saveChosen(target: Uri?) {
+        logShare.action = LogShareUi.Action.SAVE
+        if (target == null) {
+            logShare.state = LogShareUi.State.IDLE
+            return
+        }
+        logShare.state = LogShareUi.State.WORKING
+        lifecycleScope.launch {
+            val saved = try {
+                withContext(Dispatchers.IO) {
+                    LogShare.saveTo(
+                        LogShare.latest(cacheDir),
+                        open = {
+                            try {
+                                contentResolver.openOutputStream(target, "wt")
+                            } catch (error: IllegalArgumentException) {
+                                contentResolver.openOutputStream(target, "w")
+                            } catch (error: FileNotFoundException) {
+                                contentResolver.openOutputStream(target, "w")
+                            }
+                        },
+                        delete = { DocumentsContract.deleteDocument(contentResolver, target) },
+                    )
+                }
+                true
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                Log.w(TAG, "save logs: $error")
+                false
+            }
+            logShare.state = if (saved) LogShareUi.State.SAVED else LogShareUi.State.FAILED
+        }
+    }
+
+    /**
+     * `device.txt`: this device, the app, where the installation stands and how the wait for the
+     * engine's [report] ended. Free space is measured now, not at the device check.
+     */
+    private fun aboutDevice(report: LogShare.ReportOutcome): String {
+        val status = SessionService.status.value
+        val device = DeviceCheckRun.state.value
+        val facts = (device as? DeviceCheckState.Done)?.facts
+        val snapshot = status.snapshot
+        val operation = snapshot?.operation
+        return LogShare.about(
+            listOf(
+                "App" to "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}, ${BuildConfig.APPLICATION_ID}, ${BuildConfig.BUILD_TYPE})",
+                "Created" to Instant.now().toString(),
+                "Device" to "${Build.MANUFACTURER} ${Build.MODEL} (${Build.DEVICE})",
+                "Chip" to "${Build.SOC_MANUFACTURER} ${Build.SOC_MODEL}",
+                "Android" to "${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT}), ${Build.SUPPORTED_ABIS.joinToString(" ")}",
+                "GPU" to (facts?.gpu?.name ?: "not found"),
+                "Page size" to (facts?.pageSize?.toString() ?: "unknown"),
+                "Free space" to "${StatFs(paths.data).availableBytes shr 20} MB",
+                "Device check" to when (device) {
+                    is DeviceCheckState.Done -> device.result.findings.joinToString("; ") { "${it.kind}: ${it.message}" }.ifEmpty { "passed" }
+                    is DeviceCheckState.Failed -> "failed: ${device.reason}"
+                    DeviceCheckState.Running -> "running"
+                },
+                "Data folder" to paths.data,
+                "Game support files" to status.userland.toString(),
+                "Engine" to status.engine.toString(),
+                "Installation" to (snapshot?.installation?.toString() ?: "unknown"),
+                "Step" to (snapshot?.step?.toString() ?: "unknown"),
+                "Operation" to (operation?.let { "${it.phase} ${it.status}, failure ${it.failure ?: "none"}" } ?: "none"),
+                "Game environment" to (status.gameEnvironmentFailure?.let { "failed: $it" } ?: if (status.gameEnvironment) "running" else "stopped"),
+                "Engine report" to LogShare.describe(report),
+            ),
+        )
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
@@ -620,7 +784,35 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         notificationsOff.value = !getSystemService(NotificationManager::class.java).areNotificationsEnabled()
         batteryRestricted.value = !getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)
+        // Again on each return during setup (the player may have allowed the app's network meanwhile),
+        // and for a debug preview, whatever the installation; Check runs the first one itself.
+        val snapshot = SessionService.status.value.snapshot
+        val setup = snapshot != null && snapshot.installation != Installation.READY && snapshot.game != Game.RUNNING
+        if (setup || preview.value != null) checkNetwork()
     }
+
+    /**
+     * Runs the network check ([NetworkCheck]) unless one runs: Check shows its row, a failed download
+     * its note, and its report goes to the app's network log.
+     */
+    private fun checkNetwork() {
+        val last = networkCheck.state
+        if (last is NetworkState.Checking) return
+        networkCheck.state = NetworkState.Checking(last?.report)
+        lifecycleScope.launch {
+            val report = withContext(Dispatchers.IO) {
+                runCatching { NetworkCheck.run(this@MainActivity) }
+                    .onSuccess { networkLog.line(it.describe()) }
+                    .onFailure { Log.w(TAG, "network check: $it") }
+                    .getOrNull()
+            }
+            networkCheck.state = report?.let { NetworkState.Done(it) } ?: last
+        }
+    }
+
+    /** The app's own settings page, where Android allows or blocks its Wi-Fi and mobile data. */
+    private fun openAppSettings() =
+        openSystemSettings(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null)))
 
     /**
      * Controllers: A selects and B goes back on every native screen. Android does not treat
@@ -671,13 +863,16 @@ class MainActivity : ComponentActivity() {
      * `--es session game-start|game-stop` to start or stop the Android game environment, and
      * `--es xscreen <width>x<height>` with game-start for an X screen of another size than the
      * display's (a phone-sized proxy), and `--es session install-pd2` for Install Project
-     * Diablo 2 as Install sends it (the engine refuses it unless the client is what is missing).
+     * Diablo 2 as Install sends it (the engine refuses it unless the client is what is missing),
+     * and `--es session download` for Download as its page sends it (on an installed game it only
+     * checks the downloads it holds).
      */
     private fun startSession(intent: Intent) {
         val action = when (if (debuggable) intent.getStringExtra("session") else null) {
             "game-start" -> SessionService.ACTION_GAME_START
             "game-stop" -> SessionService.ACTION_GAME_STOP
             "install-pd2" -> SessionService.ACTION_INSTALL_PD2
+            "download" -> SessionService.ACTION_DOWNLOAD
             else -> SessionService.ACTION_START
         }
         SessionService.send(this, action, if (debuggable) intent.getStringExtra("xscreen") else null)
@@ -685,5 +880,16 @@ class MainActivity : ComponentActivity() {
 
     private companion object {
         const val TAG = "pd2-session"
+        /** How long Share logs and Save logs wait for the engine's report before they go on without one. */
+        const val REPORT_WAIT_MS = 20_000L
     }
+}
+
+/** Android's "Save as" screen for the logs' zip, opened in the Download folder ([LogShare.SAVE_FOLDER_DOCUMENT]). */
+private class SaveInDownload : ActivityResultContracts.CreateDocument("application/zip") {
+    override fun createIntent(context: Context, input: String): Intent =
+        super.createIntent(context, input).putExtra(
+            DocumentsContract.EXTRA_INITIAL_URI,
+            DocumentsContract.buildDocumentUri(SourceImport.SHARED_STORAGE, LogShare.SAVE_FOLDER_DOCUMENT),
+        )
 }

@@ -1,7 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- Why a Download or Install did not finish (Failures.kt); "Try again" is the screens' button. -->
-    <string name="failure_blizzard_download">Blizzard\'s downloader couldn\'t connect. Check your connection and Try again, or use Import an existing installation.</string>
+    <!-- Blizzard's downloader: the program itself could not be fetched (a connection problem), and
+         each way it can fail under Wine, which the engine tells apart. Only the first two are
+         certainly the connection; the others point to the logs under them. -->
+    <string name="failure_blizzard_download">The app couldn\'t get Blizzard\'s downloader. Check your connection and Try again, or use Import an existing installation.</string>
+    <string name="failure_blizzard_stalled">Blizzard\'s download got no data for a minute. Check your connection and Try again; what is downloaded is kept. Or use Import an existing installation.</string>
+    <string name="failure_blizzard_error">Blizzard\'s downloader showed an error. Try again, or use Import an existing installation. If it happens again, send the logs.</string>
+    <string name="failure_blizzard_incomplete">Blizzard\'s downloader stopped before the download was complete. Try again, or use Import an existing installation. If it happens again, send the logs.</string>
+    <string name="failure_blizzard_rejected">The game files from Blizzard\'s downloader didn\'t pass the check. Try again, or use Import an existing installation. If it happens again, send the logs.</string>
+    <string name="failure_blizzard_store">Blizzard\'s download finished, but its files couldn\'t be saved. Check the free space and Try again.</string>
+    <!-- Something the install needs (such as a fresh copy of Blizzard's downloader) must be downloaded again. -->
+    <string name="failure_downloads_required">Something the install needs has to be downloaded again. Check your connection and Try again.</string>
+    <string name="failure_blizzard_ended">Blizzard\'s downloader stopped unexpectedly. Try again, or use Import an existing installation. If it happens again, send the logs.</string>
     <string name="failure_download">A download didn\'t finish. Check your connection and Try again. What is already downloaded is kept.</string>
     <string name="failure_d2_key">Diablo II\'s installer didn\'t accept the Diablo II key. Check the key and Try again.</string>
     <string name="failure_lod_key">Lord of Destruction\'s installer didn\'t accept the Lord of Destruction key. Check the key and Try again.</string>

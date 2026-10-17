@@ -13,6 +13,13 @@ object Failures {
     @StringRes
     fun text(code: String?, job: Job?): Int = when (code) {
         "installer-download-failed" -> R.string.failure_blizzard_download
+        "installer-download-stalled" -> R.string.failure_blizzard_stalled
+        "installer-downloader-error" -> R.string.failure_blizzard_error
+        "installer-download-incomplete" -> R.string.failure_blizzard_incomplete
+        "installer-download-rejected" -> R.string.failure_blizzard_rejected
+        "installer-downloader-failed" -> R.string.failure_blizzard_ended
+        "installer-payload-store-failed" -> R.string.failure_blizzard_store
+        "downloads-required" -> R.string.failure_downloads_required
         "download-failed", "client-download-failed" -> R.string.failure_download
         "base-game-key-rejected" -> R.string.failure_d2_key
         "expansion-key-rejected" -> R.string.failure_lod_key

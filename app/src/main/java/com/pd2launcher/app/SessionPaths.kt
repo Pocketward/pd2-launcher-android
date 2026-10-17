@@ -14,6 +14,8 @@ class SessionPaths(val data: String) {
     val launcherHome = File(files, "launcher")
     val tmp = File(files, "tmp")
     val logs = File(files, "logs")
+    /** The engine's own diagnostics (its activity log and job history), which Share logs and Save logs pack ([LogShare]). */
+    val engineDiagnostics = File(launcherHome, "logs/diagnostics")
     val userlandRoot = File(files, "userland")
     /** The path every userland program runs from: the unpack rewrites the userland for it ([Relocation]). */
     val userland = File(userlandRoot, UserlandInstaller.CURRENT)
@@ -42,6 +44,13 @@ class SessionPaths(val data: String) {
      * host side as `PD2_PRESENT_SOCKET` ([engineEnvironment]).
      */
     val presentSocket = File(runtimeDir, "present.sock")
+    /**
+     * The bytes this app has received (Android's count for its user, which Blizzard's downloader
+     * under Wine shares), written by the session service while a job downloads or installs
+     * ([ReceivedBytes]); the engine reads it as `PD2_RECEIVED_BYTES_FILE` ([engineEnvironment]),
+     * so a download that receives data but writes nothing yet does not count as stalled.
+     */
+    val receivedBytes = File(runtimeDir, "received-bytes")
     /** PulseAudio's socket (userland.env's PULSE_RUNTIME_PATH), which the game's guests reach. */
     val pulseSocket = File(runtimeDir, "pulse/native")
     /** The Unix sockets the session binds below [data]: their paths must fit `sun_path`. */
@@ -93,7 +102,7 @@ class SessionPaths(val data: String) {
      * its roots from there, Android has no `/etc/ssl`) and its App-provided FEX values
      * (`PD2_APP_FEX*`: the entry point, the thunk folders and the GL thunk's host values), which
      * only the engine gets, plus the [presentCounter] and the [presentSocket] as two of those host
-     * values.
+     * values, and the [receivedBytes] file for the engine itself.
      * The host values are the Adreno's (Turnip) unless [mali] (a Mali GPU, PanVK:
      * [maliHostValues]); [devDriver] lets a hand-placed Mali driver build replace the bundled one
      * (debug builds only, [devDriverValues]).
@@ -105,7 +114,8 @@ class SessionPaths(val data: String) {
         val host = if (mali) maliHostValues(values, devDriver) else values.filterNot { (key, _) -> key.startsWith(MALI_HOST) }
         return base() + "XDG_RUNTIME_DIR=${runtimeDir.path}" + host.map { (key, value) -> "$key=$value" } +
             "${HOST}PD2_PRESENT_COUNTER=${presentCounter.path}" +
-            "${HOST}PD2_PRESENT_SOCKET=${presentSocket.path}"
+            "${HOST}PD2_PRESENT_SOCKET=${presentSocket.path}" +
+            "PD2_RECEIVED_BYTES_FILE=${receivedBytes.path}"
     }
 
     /**

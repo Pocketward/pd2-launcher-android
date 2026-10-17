@@ -28,7 +28,7 @@
 # ~/.cache/pd2-android/guest/.
 # `pack.sh --version` prints the version these pins give and packs nothing (the release workflow
 # names its cache by it, so a new engine pin with the same runtime pins reuses the packed runtime).
-# Needs curl, tar, zstd, sha256sum/sha512sum, unsquashfs and readelf (binutils) on the host.
+# Needs curl, jq, tar, zstd, sha256sum/sha512sum, unsquashfs and readelf (binutils) on the host.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -38,12 +38,22 @@ die() { printf 'runtime/pack.sh: %s\n' "$*" >&2; exit 1; }
 say() { printf '== %s\n' "$*"; }
 
 engine="$("$here/../engine/build.sh" --source)"
-fex_src="$engine/src/builtin_fex.rs"
+fex_pins="$engine/src/builtin_fex_pins.json"
 rt_src="$engine/src/runtime.rs"
 next_string() { sed -n "/$1/{n;s/.*\"\(.*\)\".*/\1/p;}" "$2" | head -1; }
-rootfs_url="$(next_string 'const ROOTFS_URL' "$fex_src")"
-rootfs_sha256="$(next_string 'const ROOTFS_SHA256' "$fex_src")"
-rootfs_size="$(sed -n 's/.*const ROOTFS_SIZE: u64 = \([0-9_]*\);.*/\1/p' "$fex_src" | tr -d _)"
+command -v jq >/dev/null || die "jq is not installed"
+# FEX's RootFS as the engine pins it: from the project's mirror release first, then from FEX's own
+# server, the engine's order.
+rootfs_pin() { jq -r --arg field "$1" '.files[] | select(.id == "rootfs") | .[$field] // empty' "$fex_pins" 2>/dev/null; }
+rootfs_name="$(rootfs_pin name)"
+rootfs_sha256="$(rootfs_pin sha256)"
+rootfs_size="$(rootfs_pin size)"
+rootfs_urls=()
+rootfs_mirror="$(jq -r '.mirror | select(.repository and .tag) | "https://github.com/\(.repository)/releases/download/\(.tag)/"' \
+    "$fex_pins" 2>/dev/null)" || rootfs_mirror=
+[[ -z "$rootfs_mirror" || -z "$rootfs_name" ]] || rootfs_urls+=("$rootfs_mirror$rootfs_name")
+while IFS= read -r url; do rootfs_urls+=("$url"); done < <(rootfs_pin upstream | jq -r '.[]' 2>/dev/null)
+rootfs_url="${rootfs_urls[0]:-}"
 wine_block="$(sed -n '/const WINE_GE_8_26: ManagedRuntime/,/^};/p' "$rt_src")"
 field() { sed -n "s/.*$1: \"\{0,1\}\([^\",]*\)\"\{0,1\},.*/\1/p" | head -1; }
 wine_identity="$(field identity <<<"$wine_block")"
@@ -87,14 +97,21 @@ mkdir -p "$cache"
 pinned() { # file size algo hash
     [[ "$(stat -c %s "$1")" == "$2" ]] && echo "$4  $1" | "${3}sum" -c --quiet - >/dev/null 2>&1
 }
-fetch() { # url file size algo hash
-    local url=$1 file=$2 size=$3 algo=$4 hash=$5
+fetch() { # file size algo hash url... (tried in turn)
+    local file=$1 size=$2 algo=$3 hash=$4 url
+    shift 4
     if [[ ! -f "$file" ]]; then
-        say "downloading $url"
-        curl -fsSL --retry 3 -o "$file.part" "$url"
-        # Checked before it takes the cached name: a bad download is removed, never kept as good.
-        pinned "$file.part" "$size" "$algo" "$hash" || { rm -f "$file.part"; die "$url: size or $algo differs from the pin"; }
-        mv "$file.part" "$file"
+        for url in "$@"; do
+            say "downloading $url"
+            # Checked before it takes the cached name: a bad download is removed, never kept as good.
+            if curl -fsSL --retry 3 -o "$file.part" "$url" && pinned "$file.part" "$size" "$algo" "$hash"; then
+                mv "$file.part" "$file"
+                break
+            fi
+            rm -f "$file.part"
+            say "$url: no download, or its size or $algo differs from the pin"
+        done
+        [[ -f "$file" ]] || die "no download of $(basename "$file") matches the pin"
     fi
     pinned "$file" "$size" "$algo" "$hash" || die "$file: size or $algo differs from the pin"
 }
@@ -102,7 +119,7 @@ fetch() { # url file size algo hash
 rootfs_file="$cache/Ubuntu_24_04-$rootfs_sha256.sqsh"
 rootfs_tree="$cache/rootfs-$rootfs_sha256/tree.tar.gz"
 if [[ ! -f "$rootfs_tree" ]]; then
-    fetch "$rootfs_url" "$rootfs_file" "$rootfs_size" sha256 "$rootfs_sha256"
+    fetch "$rootfs_file" "$rootfs_size" sha256 "$rootfs_sha256" "${rootfs_urls[@]}"
     tree="$(dirname "$rootfs_tree")/tree"
     rm -rf "$tree" && mkdir -p "$(dirname "$tree")"
     # Any error writing the tree fails the unpack (it is never cached half done), except one: as an
@@ -126,7 +143,7 @@ fi
 wine_file="$cache/$(basename "$wine_url")"
 wine_tree="$cache/wine-${wine_sha512:0:16}/tree.tar.gz"
 if [[ ! -f "$wine_tree" ]]; then
-    fetch "$wine_url" "$wine_file" "$wine_size" sha512 "$wine_sha512"
+    fetch "$wine_file" "$wine_size" sha512 "$wine_sha512" "$wine_url"
     tree="$(dirname "$wine_tree")/tree"
     rm -rf "$tree" && mkdir -p "$tree"
     tar -C "$tree" --strip-components=1 -xJf "$wine_file"
@@ -136,10 +153,10 @@ if [[ ! -f "$wine_tree" ]]; then
 fi
 gecko_file="$cache/$(basename "$gecko_url")"
 mono_file="$cache/$(basename "$mono_url")"
-fetch "$gecko_url" "$gecko_file" "$gecko_size" sha256 "$gecko_sha256"
-fetch "$mono_url" "$mono_file" "$mono_size" sha256 "$mono_sha256"
+fetch "$gecko_file" "$gecko_size" sha256 "$gecko_sha256" "$gecko_url"
+fetch "$mono_file" "$mono_size" sha256 "$mono_sha256" "$mono_url"
 dotnet_file="$cache/$(basename "$dotnet_url")"
-fetch "$dotnet_url" "$dotnet_file" "$dotnet_size" sha512 "$dotnet_sha512"
+fetch "$dotnet_file" "$dotnet_size" sha512 "$dotnet_sha512" "$dotnet_url"
 
 if [[ -f "$assets/runtime.info" && "$(head -1 "$assets/runtime.info")" == "$version" && -f "$assets/runtime.tar.zst" ]]; then
     say "runtime $version already packed"

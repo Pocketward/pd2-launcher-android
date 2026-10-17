@@ -54,7 +54,7 @@ fun NotSupportedScreen(screen: Screen.NotSupported, onClose: () -> Unit) {
  * Step 2, Download: the engine's figure and the item downloading now; Stop keeps what is done,
  * Resume and Try again continue, Continue goes on to Install once it is done. [onBack] goes back
  * to the Diablo II source; null while the download runs, and never shown then ([backShown]).
- * Under the items, what the page must say ([downloadNote]): why it failed, or why Download waits.
+ * Under the items, what the page must say ([downloadNote]): why it failed (with Share logs and Save logs), or why Download waits.
  */
 @Composable
 fun DownloadScreen(
@@ -147,7 +147,11 @@ fun DownloadScreen(
             )
         }
         when (downloadNote(state)) {
-            Note.PROBLEM -> Banner(text(screen.hint), Palette.Red, Modifier.padding(vertical = 8.dp))
+            Note.PROBLEM -> {
+                Banner(text(screen.hint), Palette.Red, Modifier.padding(top = 8.dp))
+                NetworkNote(Modifier.padding(top = 8.dp))
+                ShareLogsLink(Modifier.padding(bottom = 8.dp))
+            }
             Note.WAITS -> WaitNote(text(screen.hint))
             Note.FOUND, null -> {}
         }

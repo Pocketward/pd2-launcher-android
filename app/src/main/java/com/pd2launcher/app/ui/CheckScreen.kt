@@ -31,8 +31,8 @@ import com.pd2launcher.app.Screen
 import com.pd2launcher.app.Tone
 
 /**
- * Step 1, Check, in plain words: this device, notifications, battery, the game support files and
- * whether it can run the game. The rows that passed fold into one line ("3 checks passed") that
+ * Step 1, Check, in plain words: this device, notifications, battery, the connection to Blizzard
+ * and Project Diablo 2, the game support files and whether it can run the game. The rows that passed fold into one line ("3 checks passed") that
  * opens in place; what needs the player (an ask, a warning, a problem) and what still runs stay
  * open. A row Android lets the app fix has its button ([onGrant]); the row follows once the
  * player is back. [onRepair]: the installation's game folder is gone, Repair (Start over) goes on.
@@ -82,6 +82,8 @@ fun CheckScreen(
             CheckLine(row, onGrant)
         }
         checkWaits(action)?.let { WaitNote(text(it)) }
+        // A check that failed (the engine or the game support files): its logs say why.
+        if (tone == Tone.ERROR) ShareLogsLink(Modifier.padding(top = 8.dp))
     }
 }
 
@@ -100,7 +102,13 @@ private fun CheckLine(row: CheckRow, onGrant: (Grant) -> Unit) {
         action = grant?.let {
             {
                 LauncherButton(
-                    stringResource(if (it == Grant.NOTIFICATIONS) R.string.check_grant_notifications else R.string.check_grant_battery),
+                    stringResource(
+                        when (it) {
+                            Grant.NOTIFICATIONS -> R.string.check_grant_notifications
+                            Grant.BATTERY -> R.string.check_grant_battery
+                            Grant.NETWORK -> R.string.check_grant_network
+                        },
+                    ),
                     { onGrant(it) }, height = 44.dp, padding = 18.dp,
                 )
             }

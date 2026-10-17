@@ -645,7 +645,8 @@ object InstallProgress {
  * once pressed, the note that a stuck installer window clears only when the Launcher's sealed
  * helpers time out (up to ten minutes); then Resume goes on at the same step. Nothing starts
  * until [onInstall]. [onBack] goes back a step; not while install work runs or starts
- * ([backShown]). Under the tasks, what the page must say ([installNote]).
+ * ([backShown]). Under the tasks, what the page must say ([installNote]); under a problem, and while
+ * it runs or is paused, Share logs and Save logs.
  */
 @Composable
 fun InstallScreen(
@@ -722,13 +723,21 @@ fun InstallScreen(
             Spacer(Modifier.height(12.dp))
             Banner(stringResource(R.string.install_stop_note), Palette.Muted)
         }
-        when (installNote(view)) {
+        val note = installNote(view)
+        when (note) {
             Note.PROBLEM -> {
                 Spacer(Modifier.height(12.dp))
                 Banner(view.problem?.let { text(it) }.orEmpty(), Palette.Red)
+                // A failure the network can cause: what a new check finds, and the app's settings when Android blocks it.
+                NetworkNote(Modifier.padding(top = 8.dp))
             }
             Note.WAITS -> WaitNote(stringResource(R.string.install_hint_waiting))
             Note.FOUND, null -> {}
+        }
+        // Under a problem, and while it runs or is paused, so a step that looks stuck can be reported
+        // before it fails; one place, so the links and their note stay when the install fails.
+        if (note == Note.PROBLEM || working || view.state == InstallState.STOPPED) {
+            ShareLogsLink(Modifier.padding(top = 4.dp))
         }
     }
 }

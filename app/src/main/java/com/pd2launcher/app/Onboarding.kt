@@ -9,7 +9,9 @@ import com.pd2launcher.app.control.OperationStatus
 import com.pd2launcher.app.control.Phase
 import com.pd2launcher.app.control.Snapshot
 import com.pd2launcher.app.control.Step
+import com.pd2launcher.app.ui.NetworkState
 import com.pd2launcher.app.ui.TaskState
+import com.pd2launcher.app.ui.networkText
 import com.pd2launcher.app.control.Finding as HostFinding
 
 /** What the first-start device check has found so far. */
@@ -42,8 +44,11 @@ data class CheckRow(
     val grant: Grant? = null,
 )
 
-/** What a Check row can ask Android for: its own prompt where there is one, else its settings page. */
-enum class Grant { NOTIFICATIONS, BATTERY }
+/**
+ * What a Check row can ask Android for: its own prompt where there is one, else its settings page
+ * (for [NETWORK], the app's own page, where Wi-Fi and mobile data are allowed).
+ */
+enum class Grant { NOTIFICATIONS, BATTERY, NETWORK }
 
 /** The first-run pages, in the order the player goes through them. */
 enum class FlowPage { CHECK, SOURCE, DOWNLOAD, INSTALL, KEYS }
@@ -121,8 +126,10 @@ sealed interface Screen {
         val userland: CheckRow,
         val host: CheckRow,
         val action: MainAction,
+        /** Whether Blizzard's and Project Diablo 2's servers can be reached ([NetworkCheck]); never blocks. */
+        val network: CheckRow? = null,
     ) : Screen {
-        val rows: List<CheckRow> get() = listOf(device, notifications, battery, userland, host)
+        val rows: List<CheckRow> get() = listOfNotNull(device, notifications, battery, network, userland, host)
 
         /** The rows that passed, folded into one line ("3 checks passed") the player can open. */
         val passed: List<CheckRow> get() = rows.filter { it.tone == Tone.OK }
@@ -131,7 +138,10 @@ sealed interface Screen {
         val open: List<CheckRow> get() = rows.filter { it.tone != Tone.OK }
 
         /** The asks left: rows the player may grant in place (notifications, battery); none blocks. */
-        val optionalAsks: Int get() = rows.count { it.grant != null && it.tone == Tone.WARNING }
+        val optionalAsks: Int get() = rows.count { it.grant != null && it.grant != Grant.NETWORK && it.tone == Tone.WARNING }
+
+        /** The servers cannot be reached: not optional, as the downloads need them, though Check goes on. */
+        val connectionProblem: Boolean get() = network?.tone == Tone.WARNING
 
         /** How Check stands, for its title and intro: a problem first, then work still running, then a warning. */
         val tone: Tone get() {
@@ -144,8 +154,8 @@ sealed interface Screen {
             }
         }
 
-        /** A warning the player cannot grant away: the device itself is untested. */
-        private val untested: Boolean get() = rows.any { it.tone == Tone.WARNING && it.grant == null }
+        /** A warning the player cannot grant away, apart from the connection's: the device itself is untested. */
+        private val untested: Boolean get() = rows.any { it !== network && it.tone == Tone.WARNING && it.grant == null }
 
         /**
          * The page's title: "Ready" only when nothing but optional asks remain ("Ready — 2 optional
@@ -157,6 +167,7 @@ sealed interface Screen {
             Tone.OK -> Line(R.string.check_title_ready)
             Tone.WARNING -> when {
                 untested -> Line(R.string.check_title_untested)
+                connectionProblem -> Line(R.string.check_title_connection)
                 optionalAsks == 1 -> Line(R.string.check_title_optional_one)
                 else -> Line(R.string.check_title_optional, optionalAsks)
             }
@@ -167,7 +178,11 @@ sealed interface Screen {
             Tone.ERROR -> R.string.check_intro_problem
             Tone.PENDING, Tone.WORKING -> R.string.check_intro
             Tone.OK -> R.string.check_intro_ready
-            Tone.WARNING -> if (untested) R.string.check_intro_untested else R.string.check_intro_optional
+            Tone.WARNING -> when {
+                untested -> R.string.check_intro_untested
+                connectionProblem -> R.string.check_intro_connection
+                else -> R.string.check_intro_optional
+            }
         }
     }
 
@@ -268,7 +283,8 @@ enum class DownloadAction { NONE, DOWNLOAD, DOWNLOAD_AGAIN, STOP_SAFELY, CONTINU
 object Onboarding {
     /**
      * [page]: where the player went on to from Check ([FlowNav]). [batteryRestricted]: Android's
-     * battery optimisation applies to the app (a warning on Check, never a blocker).
+     * battery optimisation applies to the app (a warning on Check, never a blocker). [network]: the
+     * last network check (a warning on Check, never a blocker); null shows none.
      */
     fun screen(
         device: DeviceCheckState,
@@ -276,13 +292,14 @@ object Onboarding {
         notificationsOff: Boolean,
         page: FlowPage = FlowPage.CHECK,
         batteryRestricted: Boolean = false,
+        network: NetworkState? = null,
     ): Screen {
         refusal(device)?.let { return it }
         // An install started and not finished opens on Install ([FlowNav.opening]), which waits meanwhile.
         if (device !is DeviceCheckState.Done) return if (page == FlowPage.INSTALL) Screen.Install else Screen.CheckingDevice
         // Once on, a page stays while the engine audits or restarts; a host found unsupported
         // goes back to Check.
-        val check = check(device, session, notificationsOff, batteryRestricted)
+        val check = check(device, session, notificationsOff, batteryRestricted, network)
         if (check.host.tone == Tone.ERROR) return check
         return when (page) {
             FlowPage.CHECK -> check
@@ -471,6 +488,7 @@ object Onboarding {
         session: SessionStatus,
         notificationsOff: Boolean,
         batteryRestricted: Boolean,
+        network: NetworkState?,
     ): Screen.Check =
         Screen.Check(
             device = deviceRow(device),
@@ -487,7 +505,25 @@ object Onboarding {
             userland = userlandRow(session.userland),
             host = hostRow(session),
             action = action(session),
+            network = network?.let(::networkRow),
         )
+
+    /**
+     * Whether the servers can be reached: checking (the first time only: a check run again shows
+     * the last result meanwhile, so the page does not flicker), then all right or why not, with
+     * Open settings when Android blocks the app's network. A warning at most: Import needs no
+     * Blizzard.
+     */
+    fun networkRow(network: NetworkState): CheckRow {
+        val report = network.report ?: return CheckRow(R.string.row_network, Tone.WORKING, listOf(Line(R.string.network_checking)))
+        val result = report.result
+        return CheckRow(
+            R.string.row_network,
+            if (result == NetworkCheck.Result.OK) Tone.OK else Tone.WARNING,
+            listOf(Line(networkText(result))),
+            grant = Grant.NETWORK.takeIf { result == NetworkCheck.Result.BLOCKED },
+        )
+    }
 
     /** "Adreno 610 graphics · Android 14", then a warning for each finding that lets the app go on. */
     fun deviceRow(device: DeviceCheckState.Done): CheckRow {

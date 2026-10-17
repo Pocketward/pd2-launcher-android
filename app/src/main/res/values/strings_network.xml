@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The network check (NetworkCheck.kt): a row on Check, and a note under a Download or Install that failed on the network. -->
+    <string name="row_network">Connection</string>
+    <string name="network_checking">Checking the connection to Blizzard and Project Diablo 2…</string>
+    <string name="network_ok">Blizzard and Project Diablo 2 can be reached.</string>
+    <string name="network_blocked">Android blocks PD2 Launcher\'s internet access. Allow Wi-Fi and mobile data for PD2 Launcher in its settings.</string>
+    <string name="network_none">No internet connection. Connect to Wi-Fi or mobile data to download the game.</string>
+    <string name="network_dns">This network can\'t look up Blizzard\'s and Project Diablo 2\'s servers. Turn off Private DNS or a VPN, or use another network.</string>
+    <string name="network_blizzard">Blizzard\'s servers can\'t be reached from this network. Use another network, or Import an existing installation.</string>
+    <string name="network_pd2">Project Diablo 2\'s servers can\'t be reached from this network. Use another network.</string>
+    <string name="network_unreachable">Blizzard\'s and Project Diablo 2\'s servers can\'t be reached. Check your connection.</string>
+    <!-- Check's title and intro when the connection has a problem: the downloads need it, so it is not one of the optional settings. -->
+    <string name="check_title_connection">Ready, but check the connection</string>
+    <string name="check_intro_connection">This device runs Project Diablo 2, but the downloads need a connection that works. See Connection below; the other settings are optional.</string>
+    <!-- The button that opens the app's settings page, where Android allows its Wi-Fi and mobile data. -->
+    <string name="check_grant_network">Open settings</string>
+</resources>

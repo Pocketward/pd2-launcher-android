@@ -51,6 +51,17 @@
                 <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
             </intent-filter>
         </provider>
+        <!-- Share logs' zip for the app the player picks in the share sheet: not exported, read
+             only through the one URI the share grants. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.logs"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/shared_logs" />
+        </provider>
     </application>
 
 </manifest>

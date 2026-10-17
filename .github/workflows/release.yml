@@ -1,9 +1,10 @@
-# The release build. Each release is one commit on main with its version tag
-# (vX.Y.Z or vX.Y.Z-betaN), pushed together, so a push to main whose commit
-# carries such a tag builds and publishes that release; workflow_dispatch builds
-# a given tag again. Running on main keeps the build caches where every later
-# release can use them (a tag's own caches serve only that tag); a candidate's run
-# keeps its caches on the branch candidate, where later candidates use them.
+# The release build. Each export is one commit on main whose message is its
+# version (vX.Y.Z or vX.Y.Z-betaN). A push to main whose commit carries that
+# version's tag builds and publishes that release; a push to main whose commit
+# has no tag yet is a release candidate, built into a draft release (below);
+# workflow_dispatch builds a given tag again, or main's head as a candidate.
+# Running on main keeps the build caches where every later release can use them
+# (a tag's own caches serve only that tag).
 #
 #   userland  userland/build.sh with our glibc and FEX, unless the cache holds the
 #             archive for these inputs. Its parts are cached apart, together: the
@@ -25,18 +26,19 @@
 # published; the APK's versionName must be the tag's, and a release that
 # already has files is not overwritten (a person deletes them first).
 #
-# A release candidate is built in the same way before its tag exists:
-# workflow_dispatch on the branch candidate, whose head is the release's commit on
-# top of main, with candidate set (gh workflow run release.yml --ref candidate -f
-# tag=vX.Y.Z -f candidate=true). Every job builds that head, which must still be on
-# the branch candidate and have main in its history; the tag must still not exist
-# when the APK is published on a draft release of the tag that targets that commit
-# (a draft's files are replaced). The engine that engine.lock pins may be a draft
-# release too: the runtime job then fetches its sources by the pinned commit
-# (PD2_ENGINE_UNRELEASED), and the apk job takes its executable and build evidence
-# from this repository's draft release engine-candidate. To publish it, main moves
-# to that commit and publishing the draft makes the tag there; that push builds
-# nothing, because it finds no tag yet or the tag's release is published with its
+# A release candidate is built in the same way before its tag exists: the push
+# of an export commit to main without a tag (its message names the version), or
+# workflow_dispatch on main with candidate set (gh workflow run release.yml
+# --ref main -f tag=vX.Y.Z -f candidate=true), which builds main's head and
+# needs its message to be the tag. Every job builds that commit, which must
+# still be on main; the tag must still not exist when the APK is published on a
+# draft release of the tag that targets that commit (a draft's files are
+# replaced, and a newer candidate moves its target). The engine that
+# engine.lock pins may be a draft release too: the runtime job then fetches its
+# sources by the pinned commit (PD2_ENGINE_UNRELEASED), and the apk job takes
+# its executable and build evidence from this repository's draft release
+# engine-candidate. Publishing the draft after its test makes the tag on that
+# commit; that builds nothing, because the tag's release is published with its
 # files.
 #
 # While the engine's repository is private, the secret ENGINE_REPO_TOKEN (read
@@ -53,7 +55,7 @@ on:
         description: The release tag to build and publish
         required: true
       candidate:
-        description: Build the head of the branch candidate as a draft release, before the tag exists
+        description: Build main's head as a draft release, before the tag exists (its commit message must be the tag)
         type: boolean
         default: false
 
@@ -74,8 +76,7 @@ jobs:
       candidate: ${{ steps.tag.outputs.candidate }}
       userland: ${{ steps.keys.outputs.userland }}
     steps:
-      # The whole history: the release's commit must be on main (a candidate's must have main
-      # in its history).
+      # The whole history: the release's commit must be on main.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
@@ -100,11 +101,14 @@ jobs:
             fi
           }
           candidate=
-          # A candidate: the head of the branch candidate, before its tag exists.
+          # A candidate: main's head, before its tag exists, built on request.
           if [[ $INPUT_CANDIDATE == true ]]; then
-            [[ $GITHUB_REF == refs/heads/candidate ]] ||
-              { echo "a candidate is built on the branch candidate, not $GITHUB_REF" >&2; exit 1; }
+            [[ $GITHUB_REF == refs/heads/main ]] ||
+              { echo "a candidate is built on main, not $GITHUB_REF" >&2; exit 1; }
             [[ $INPUT_TAG =~ $pattern ]] || { echo "not a release tag: $INPUT_TAG" >&2; exit 1; }
+            message=$(git log -1 --format=%s "$GITHUB_SHA")
+            [[ $message == "$INPUT_TAG" ]] ||
+              { echo "main's head $GITHUB_SHA is the export of ${message:-nothing}, not $INPUT_TAG" >&2; exit 1; }
             refs=$(git ls-remote --tags origin "refs/tags/$INPUT_TAG")
             [[ -z $refs ]] || { echo "the tag $INPUT_TAG exists; a candidate is built before its tag" >&2; exit 1; }
             release=$(published "$INPUT_TAG")
@@ -125,15 +129,28 @@ jobs:
               [[ -n $tag || $attempt == 3 ]] && break
               sleep 10
             done
-            # A published candidate: main has moved to its commit, and publishing its draft put the
-            # tag there; the release has its files.
             if [[ -n $tag ]]; then
+              # A release whose files are published already is not built again: a published
+              # candidate, whose draft put the tag on its commit, among them.
               release=$(published "$tag")
               files=0
               [[ -z $release ]] || files=$(jq '.assets | length' <<<"$release")
               if [[ $files != 0 ]]; then
                 echo "the release $tag is published with $files files: nothing to build"
                 tag=
+              fi
+            else
+              # An export commit without its tag is a candidate: its message is the version.
+              message=$(git log -1 --format=%s "$GITHUB_SHA")
+              if [[ $message =~ $pattern ]]; then
+                refs=$(git ls-remote --tags origin "refs/tags/$message")
+                release=$(published "$message")
+                if [[ -z $refs && -z $release ]]; then
+                  tag=$message
+                  candidate=true
+                else
+                  echo "$message has its tag or a published release already: nothing to build"
+                fi
               fi
             fi
           fi
@@ -143,8 +160,7 @@ jobs:
 
       # The commit the tag names now is the one every job builds, whatever the tag names later;
       # only a commit on main, where a release is reviewed, is released. A candidate's is the
-      # commit the run started from: still on the branch candidate, with main in its history,
-      # so that main can later move to it by a fast-forward.
+      # commit the run started from, which must still be on main.
       - name: Check out the release
         id: release
         if: steps.tag.outputs.tag != ''
@@ -153,13 +169,10 @@ jobs:
           CANDIDATE: ${{ steps.tag.outputs.candidate }}
         run: |
           if [[ -n $CANDIDATE ]]; then
-            git fetch -q origin "+refs/heads/main:refs/remotes/origin/main" \
-              "+refs/heads/candidate:refs/remotes/origin/candidate"
+            git fetch -q origin "+refs/heads/main:refs/remotes/origin/main"
             commit=$GITHUB_SHA
-            git merge-base --is-ancestor "$commit" refs/remotes/origin/candidate ||
-              { echo "::error::$commit is no longer on the branch candidate"; exit 1; }
-            git merge-base --is-ancestor refs/remotes/origin/main "$commit" ||
-              { echo "::error::main is not in the history of $commit"; exit 1; }
+            git merge-base --is-ancestor "$commit" refs/remotes/origin/main ||
+              { echo "::error::$commit is no longer on main"; exit 1; }
           else
             git fetch -q origin "+refs/tags/$TAG:refs/tags/$TAG" "+refs/heads/main:refs/remotes/origin/main"
             commit=$(git rev-parse "refs/tags/$TAG^{commit}")

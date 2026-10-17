@@ -474,6 +474,11 @@ private fun AppTab(
             stringResource(R.string.settings_notifications_open), onNotificationSettings,
         )
     }
+    Section(stringResource(R.string.settings_section_help)) {
+        ShareLogsRow(LogShareUi.Action.SHARE)
+        RowRule()
+        ShareLogsRow(LogShareUi.Action.SAVE)
+    }
     Section(stringResource(R.string.settings_section_about)) {
         FocusRow(onAbout) {
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {

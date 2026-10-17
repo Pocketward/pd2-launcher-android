@@ -263,15 +263,24 @@ object DebugPreview {
         return if (run.ended) run else InstallProgress.track(run, session, SourceChoice.BLIZZARD, now)
     }
 
-    /** The screen [name] stands for, from the [real] device check and session; null if unknown. */
-    fun screen(name: String, real: DeviceCheckState, session: SessionStatus, notificationsOff: Boolean): Screen? {
+    /**
+     * The screen [name] stands for, from the [real] device check, session and [network] check;
+     * null if unknown.
+     */
+    fun screen(
+        name: String,
+        real: DeviceCheckState,
+        session: SessionStatus,
+        notificationsOff: Boolean,
+        network: com.pd2launcher.app.ui.NetworkState? = null,
+    ): Screen? {
         val done = real as? DeviceCheckState.Done ?: return null
         val facts = done.facts
         fun device(injected: DeviceFacts) = DeviceCheckState.Done(injected, DeviceCheck.evaluate(injected) { null }, done.androidRelease)
         return when (name) {
             // An Adreno 505: refused.
             NOT_SUPPORTED -> Onboarding.screen(device(facts.copy(gpu = KgslGpu(0x05000500, 5))), session, notificationsOff)
-            CHECK -> Onboarding.screen(done, session, notificationsOff)
+            CHECK -> Onboarding.screen(done, session, notificationsOff, network = network)
             CHECK_GRANTS -> Onboarding.screen(done, session, notificationsOff = true, batteryRestricted = true)
             CHECK_PASSED -> Onboarding.screen(done, session, notificationsOff = false, batteryRestricted = false)
             DOWNLOAD -> Onboarding.download(download(session))

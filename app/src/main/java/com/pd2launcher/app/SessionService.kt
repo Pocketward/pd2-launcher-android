@@ -99,6 +99,8 @@ class SessionService : Service() {
     private lateinit var starter: ProcessStarter
     private lateinit var game: GameEnvironment
     private val worker: ExecutorService = Executors.newSingleThreadExecutor { Thread(it, "pd2-session") }
+    /** Awake while a job downloads or installs ([WorkLocks]); changed on the worker only. */
+    private val workLocks by lazy { WorkLocks(this) }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     // Worker thread only.
@@ -146,7 +148,14 @@ class SessionService : Service() {
         createChannel()
         startForeground(NOTIFICATION_ID, notification())
         running = this
-        log("service started (pid ${Os.getpid()}, uid ${Os.getuid()})")
+        log("service started (pid ${Os.getpid()}, uid ${Os.getuid()}, received ${ReceivedBytes.current() ?: "uncounted"} bytes so far)")
+        // While a job downloads or installs: the app's received bytes, for the engine's stall rule.
+        scope.launch(Dispatchers.IO) {
+            while (true) {
+                if (workLocks.held) ReceivedBytes.current()?.let { ReceivedBytes.write(paths.receivedBytes, it) }
+                delay(ReceivedBytes.INTERVAL_MS)
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -182,6 +191,20 @@ class SessionService : Service() {
         return START_NOT_STICKY
     }
 
+    /**
+     * Holds (and renews) or releases [workLocks] on the worker, never once the service stops, and
+     * says so in the service log when that changes.
+     */
+    private fun holdWorkLocks(wanted: Boolean) {
+        val want = wanted && !stopping
+        val changed = workLocks.held != want
+        workLocks.hold(want)
+        if (changed) {
+            val received = ReceivedBytes.current() ?: "uncounted"
+            log(if (want) "work locks held: a job downloads or installs (received $received bytes so far)" else "work locks released (received $received bytes so far)")
+        }
+    }
+
     /** The processes stop on the worker thread, not the main one (the engine may take 10 s). */
     override fun onDestroy() {
         running = null
@@ -190,6 +213,7 @@ class SessionService : Service() {
         scope.cancel()
         worker.execute {
             stopping = true
+            holdWorkLocks(false)
             // As in stopGameEnvironment: Wine's processes outlive Xvfb otherwise.
             if (game.running) wineserverKill()
             game.stop()
@@ -540,6 +564,7 @@ class SessionService : Service() {
                     if (record == SetupRecord.NONE) AppSettingsStore.startedOver(this@SessionService)
                 }
                 post { applyBackgroundSound() }
+                post { holdWorkLocks(WorkLocks.wanted(next)) }
                 AppRuntime.sweep(previous, next)?.let { sweep -> post { keepRuntimeArchives(sweep) } }
                 // Diablo II and Lord of Destruction are in, or their install failed: the held keys are done with.
                 if (HeldKeys.spent(previous, next)) heldKeys.clear()
@@ -623,6 +648,7 @@ class SessionService : Service() {
         val ended = SystemClock.elapsedRealtime()
         log("engine pid ${process.pid} ended unexpectedly (${ProcessStarter.describe(status)}); cleaning up before a restart")
         _status.update { it.copy(engine = SessionStatus.Engine.RESTARTING, snapshotSeq = null, snapshot = null) }
+        holdWorkLocks(false)
         // Awake for the cleanup: with the screen off the device suspends between polls, and the
         // 5 s grace is counted in elapsed real time (which includes suspend).
         val wakeLock = getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "pd2:cleanup")

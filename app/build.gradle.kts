@@ -39,7 +39,7 @@ android {
         // targetSdk, which the plugin warns about but builds.
         minSdk = 33
         targetSdk = 28
-        versionName = "0.2.0"
+        versionName = "0.2.1"
         versionCode = versionCodeOf(versionName!!)
     }
 

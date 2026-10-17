@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Share logs and Save logs: Settings → App → Help, and beside a failure on Check, Download and Install (LogShare.kt). -->
+    <string name="settings_section_help">Help</string>
+    <string name="share_logs">Share logs</string>
+    <string name="share_logs_body">Sends the app\'s logs as one file, for example with a problem report. They hold no CD keys, but they can show your character names and network addresses.</string>
+    <string name="share_logs_working">Preparing the logs…</string>
+    <string name="share_logs_failed">The logs couldn\'t be prepared. Try again.</string>
+    <string name="save_logs">Save logs</string>
+    <string name="save_logs_body">Saves the same file on this device, for example in Downloads, so you can send it later.</string>
+    <string name="save_logs_saved">The logs are saved.</string>
+    <string name="save_logs_failed">The logs couldn\'t be saved. Try again.</string>
+    <!-- The share sheet: its title, and the subject an email app gets. -->
+    <string name="share_logs_chooser">Share logs</string>
+    <string name="share_logs_subject">PD2 Launcher logs</string>
+</resources>

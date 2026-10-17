@@ -4,13 +4,30 @@
 
 An Android app that installs [Project Diablo 2](https://www.projectdiablo2.com/) on your phone or handheld, keeps it up to date, and starts it with touch and controller controls. It sets up Diablo II, Lord of Destruction and Project Diablo 2 the same way the [desktop PD2 Launcher](https://github.com/Pocketward/pd2-launcher) does on Linux, and runs the game on your device's GPU. No root, no Linux container app, no PC streaming.
 
+The game runs in Wine-GE 8-26 (`wine-ge-8-26-x86_64`), the Wine version that the [PD2 wiki's Linux guide](https://wiki.projectdiablo2.com/wiki/Support_FAQ#How-to_install_Project_Diablo_2_on_Linux_using_Lutris) names, on an x86-64 Linux system that FEX-Emu runs on your device's ARM64 CPU.
+
+## PD2 Launcher for Android and PD2 Launcher Lite
+
+**Project Diablo 2 already on a PC?** [PD2 Launcher Lite](https://github.com/Pocketward/pd2-launcher-android-lite) is the small version of this app. It has the same screens, controls and in-game menu, but it does not install the game, and it runs Windows programs with a different, smaller runtime.
+
+| | PD2 Launcher for Android | PD2 Launcher Lite |
+|---|---|---|
+| Getting the game | Downloads Blizzard's installers and installs Diablo II, Lord of Destruction and Project Diablo 2 (CD keys needed), or imports a folder | **Imports only:** a Diablo II folder that already has Project Diablo 2. No game downloads, no installers, no CD keys |
+| Project Diablo 2 updates | The app's own **Update** | Project Diablo 2's **official launcher** |
+| Starting the game | **Play** starts the game. The official launcher is optional but supported: **Official PD2 launcher** opens it, for example to manage loot filters | **Start launcher** opens the official launcher; its Play starts the game, and the launcher then closes |
+| Runtime | FEX-Emu runs an x86-64 Linux system with Wine-GE 8-26 (`wine-ge-8-26-x86_64`), the Wine version that the [PD2 wiki's Linux guide](https://wiki.projectdiablo2.com/wiki/Support_FAQ#How-to_install_Project_Diablo_2_on_Linux_using_Lutris) names | Wine built for ARM64 runs natively; Box64's WowBox64 translates only the game's and the launcher's 32-bit x86 code. The .NET runtime that the launcher needs is included |
+| App size | About 560 MB | About 100 MB |
+| Storage | About 3 GB for the app and its runtime, plus the game (about 3 GB), plus about 2.6 GB of installer downloads during the installation, which the app offers to remove once the game works | About 0.5 GB for the app and its runtime, plus your game folder (about 3 GB) |
+
+The two apps can be installed side by side. Lite's icon has a gold **LITE** ribbon.
+
 ## What your device needs
 
 - An ARM64 device with Android 13 or later, using 4 KB memory pages (almost every phone and handheld does).
 - A supported GPU:
   - Qualcomm Adreno 6xx, 7xx or 8xx (Snapdragon devices), or
   - Arm Mali of the v10 to v13 architectures on Arm's CSF kernel driver, such as the Mali-G310, G610, G615, G715, G720 and G725.
-- About 10 GB of free storage for the app and the installation. Once the game works, the app offers to free about 2.5 GB of installer downloads.
+- Free storage for the app and its runtime (about 3 GB), the game (about 3 GB), and the installer downloads (about 2.6 GB). The downloads are needed only during the installation: once the game works, the app offers to remove them.
 
 The app checks all of this when it first starts and says what is missing. A GPU of a supported family that the bundled graphics driver does not know gets a warning instead: the game may still run. The check does not look at the kernel version.
 
@@ -46,7 +63,12 @@ Uninstalling the app removes the installation. Android offers to keep the app's 
 
 ## Problems
 
-Open an [issue](https://github.com/Pocketward/pd2-launcher-android/issues) with your device's model, Android version and GPU (the Check screen shows them) and what happened.
+Open an [issue](https://github.com/Pocketward/pd2-launcher-android/issues) with your device's model, Android version and GPU (the Check screen shows them) and what happened, and attach the app's logs: **Share logs** in **Settings → App**, or under the error on the Check, Download and Install screens (and on Install while it runs or is paused), makes one file to send; **Save logs** beside it saves that file on the device instead, for example in Downloads. It holds no CD keys, but it can show your character names and network addresses.
+
+Common problems:
+
+- **The download or install stops part way, for example at about 80%.** Tap **Try again**. The app keeps what is already downloaded and continues from there; a second try often finishes.
+- **A download stops while the app is in the background, or the app asks you to check a connection that works.** Some phones cut off an app's network access, or stop it, while it is in the background, to save battery or data. In the phone's settings for PD2 Launcher, allow it to use the network in the background and set its battery use to no restrictions; the names of these settings are different on each phone. The Check screen's Connection row tells you when the phone blocks the app's network, and opens the app's settings.
 
 ## Building from source
 

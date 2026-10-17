@@ -33,7 +33,7 @@ object SourceImport {
     private const val PREFERENCES = "source"
     private const val PICKED_FOLDER = "picked_folder"
     /** Android's own provider for shared storage: its document ids are `<volume>:<path>`. */
-    private const val SHARED_STORAGE = "com.android.externalstorage.documents"
+    const val SHARED_STORAGE = "com.android.externalstorage.documents"
     /** How long a copied folder waits for the engine's check of it. */
     private const val VERDICT_TIMEOUT_MS = 120_000L
     /** The deepest a picked folder may nest, and the most files and folders it may hold ([walk]). */
