@@ -10,6 +10,8 @@ The game runs in Wine-GE 8-26 (`wine-ge-8-26-x86_64`), the Wine version that the
 
 **Project Diablo 2 already on a PC?** [PD2 Launcher Lite](https://github.com/Pocketward/pd2-launcher-android-lite) is the small version of this app. It has the same screens, controls and in-game menu, but it does not install the game, and it runs Windows programs with a different, smaller runtime.
 
+**Which app to use:** this app is the hands-off, all-in-one choice: it downloads and installs everything for you. If you do not need that, because Project Diablo 2 is already installed on your PC, use Lite. It needs fewer resources: a much smaller app, much less storage, and a lighter runtime that translates only the game's and the official launcher's code. So it suits less powerful devices better.
+
 | | PD2 Launcher for Android | PD2 Launcher Lite |
 |---|---|---|
 | Getting the game | Downloads Blizzard's installers and installs Diablo II, Lord of Destruction and Project Diablo 2 (CD keys needed), or imports a folder | **Imports only:** a Diablo II folder that already has Project Diablo 2. No game downloads, no installers, no CD keys |
