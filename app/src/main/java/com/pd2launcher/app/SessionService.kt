@@ -366,7 +366,7 @@ class SessionService : Service() {
     }
 
     /**
-     * The runtime the app provides (RootFS, Wine-GE, Wine Gecko and Mono), unpacked once into the
+     * The runtime the app provides (RootFS, Wine-GE, the .NET Desktop Runtime installer), unpacked once into the
      * Launcher's managed root before the engine starts; shown as part of the userland unpack.
      */
     private fun ensureAppRuntime() {

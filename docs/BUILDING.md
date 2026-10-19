@@ -6,7 +6,7 @@ Everything is built in pinned containers; only the container engine and a few fi
 | --- | --- | --- |
 | The PD2 Launcher engine (ARM64) | `engine/build.sh` | `pd2-launcher-<version>-aarch64` |
 | The App userland | `userland/build.sh` | `app/src/main/assets/userland/` |
-| The runtime (RootFS, Wine-GE, Gecko, Mono, .NET) | `runtime/pack.sh` | `app/src/main/assets/runtime/` |
+| The runtime (RootFS, Wine-GE, .NET) | `runtime/pack.sh` | `app/src/main/assets/runtime/` |
 | The app | `build.sh` | `build/outputs/app-debug.apk` or `app-release.apk` |
 
 None of these outputs is in the repository. A release build is the app `com.pd2launcher.app`, "PD2 Launcher"; a debug build is a separate development app, `com.pd2launcher.app.dev`, "PD2 Launcher Dev", which installs beside it with its own data. The App userland is built for the app's data folder, so each of the two needs its own (step 2).
@@ -68,7 +68,7 @@ The programs are built for a 200-byte placeholder data folder (`DATA_PLACEHOLDER
 runtime/pack.sh
 ```
 
-Downloads FEX's Ubuntu 24.04 RootFS, Wine-GE 8-26, Wine Gecko, Wine Mono and the .NET 6 Desktop Runtime installer at the versions, sizes and hashes the engine pins in its sources (the release from step 1, or `PD2_ENGINE_SOURCE`), trims the RootFS by `runtime/rootfs-trim.txt`, lays everything out as the engine keeps it, and writes `runtime.tar.zst` and `runtime.info` into the app's assets. Downloads and unpacked trees are cached in `~/.cache/pd2-android/guest/`.
+Downloads FEX's Ubuntu 24.04 RootFS, Wine-GE 8-26 and the .NET 6 Desktop Runtime installer at the versions, sizes and hashes the engine pins in its sources (the release from step 1, or `PD2_ENGINE_SOURCE`), trims the RootFS by `runtime/rootfs-trim.txt`, lays everything out as the engine keeps it, and writes `runtime.tar.zst` and `runtime.info` into the app's assets. Downloads and unpacked trees are cached in `~/.cache/pd2-android/guest/`.
 
 ## 4. The app
 

@@ -108,7 +108,7 @@ data class Segment(val task: InstallTask, val phases: Set<Phase>, val seconds: I
 
 /**
  * What each source's install consists of and how long each part typically takes, for the
- * overall figure: the game environment's four parts ([ENVIRONMENT_PARTS]), Blizzard's Diablo
+ * overall figure: the game environment's parts the engine runs ([PLANNED_PARTS]), Blizzard's Diablo
  * II downloader 1104 s and the Lord of Destruction one 318 s, their installers 23 s and 25 s,
  * Project Diablo 2 (manifest, client files, checks) 52 s, promotion and the final check 6 s,
  * importing an installed Diablo II 30 s. A part the engine reports bytes or files for fills by
@@ -120,9 +120,9 @@ object InstallPlan {
     /**
      * The game environment's parts and their typical seconds, which the engine names as each
      * starts (`environment` in its operation): Windows (Wine's first start in the new prefix,
-     * with the Launcher's registry values) 74 s, web components (Wine Gecko) 24 s, .NET (Wine
-     * Mono) 61 s, and the .NET Desktop Runtime the official PD2 launcher needs 68 s, with the
-     * closing check.
+     * with the Launcher's registry values) 74 s and the .NET Desktop Runtime the official PD2
+     * launcher needs 68 s, with the closing check; web components (Wine Gecko) 24 s and .NET
+     * (Wine Mono) 61 s only from an engine that installs those, which this app's does not.
      */
     val ENVIRONMENT_PARTS: Map<EnvironmentPart, Int> = mapOf(
         EnvironmentPart.WINDOWS to 74,
@@ -130,8 +130,13 @@ object InstallPlan {
         EnvironmentPart.DOTNET to 61,
         EnvironmentPart.LAUNCHER_SUPPORT to 68,
     )
+
+    /** The parts the engine plans for the app's prefix: no Wine Gecko and no Wine Mono. */
+    val PLANNED_PARTS: List<EnvironmentPart> = listOf(EnvironmentPart.WINDOWS, EnvironmentPart.LAUNCHER_SUPPORT)
     private val ENVIRONMENT = Segment(
-        InstallTask.ENVIRONMENT, setOf(Phase.RUNTIME_ACQUISITION, Phase.PREFIX_INITIALIZATION), ENVIRONMENT_PARTS.values.sum(),
+        InstallTask.ENVIRONMENT,
+        setOf(Phase.RUNTIME_ACQUISITION, Phase.PREFIX_INITIALIZATION),
+        PLANNED_PARTS.sumOf { ENVIRONMENT_PARTS.getValue(it) },
     )
     private val BASE_DOWNLOAD = Segment(InstallTask.GAME, setOf(Phase.BASE_GAME_DOWNLOAD), 1104)
     private val BASE_INSTALL = Segment(InstallTask.GAME, setOf(Phase.BASE_GAME_INSTALL), 23)

@@ -11,12 +11,11 @@ import java.nio.file.SimpleFileVisitor
 import java.nio.file.attribute.BasicFileAttributes
 
 /**
- * The prefix's Windows Installer cache: Wine keeps a copy of each installed MSI (Gecko, Mono,
- * about 130 MB) there, which Windows reads only to repair or uninstall that MSI. It is an
- * environment dependency's installer file, so the app removes the copies by itself once the
- * installation is Ready, like the runtime's archive copies.
- * Nothing needs restoring: the Ready audit checks Gecko and Mono by the Launcher's receipts and
- * installed files, never through these copies.
+ * The prefix's Windows Installer cache: Wine keeps a copy of each installed MSI there (an older
+ * release's Gecko and Mono, about 130 MB), which Windows reads only to repair or uninstall that
+ * MSI. It is an environment dependency's installer file, so the app removes the copies by itself
+ * once the installation is Ready, like the runtime's archive copies.
+ * Nothing needs restoring: the Ready audit never reads these copies.
  */
 object InstallerCache {
     /** Below the Launcher's managed root. */

@@ -11,16 +11,12 @@
 #   fex/installed.json         the record naming App-provided FEX (the engine's `AppRecord`)
 #   runner/<identity>/         Wine-GE 8-26 (the engine's `WINE_GE_8_26`), its archive's top
 #                              folder stripped, with the Launcher's receipt (archive SHA-512),
-#                              without share/wine/gecko: the archive bundles Gecko 2.47.3, but this
-#                              Wine's mshtml.dll looks only for wine-gecko-2.47.4 folders, so the
-#                              bundled copy is never loaded; Gecko 2.47.4 comes from the MSI below;
-#                              and without share/wine/mono: the archive bundles Wine Mono 8.1.0,
-#                              but the Mono 11.3.0 MSI below is installed into the prefix, and
-#                              mscoree loads C:\windows\mono\mono-2.0 before it looks in Wine's
-#                              share folder, so the bundled copy is never loaded
-#   cache/artifacts/           Wine Gecko, Wine Mono and the .NET 6 Desktop Runtime x86 installer
-#                              (for the official PD2 launcher), verified, under the Launcher's cache
-#                              names (the engine's `cache_name`)
+#                              without share/wine/gecko and share/wine/mono (the archive's Gecko
+#                              2.47.3 and Wine Mono 8.1.0): the app's prefix has no Wine Gecko and
+#                              no Wine Mono, and the Launcher keeps mshtml and mscoree off there
+#   cache/artifacts/           the .NET 6 Desktop Runtime x86 installer (for the official PD2
+#                              launcher), verified, under the Launcher's cache name (the engine's
+#                              `cache_name`)
 # Output: runtime.tar.zst (GNU tar, sorted, owner 0, mtime 0; zstd) and runtime.info (line 1: the
 # version, a SHA-256 prefix of the pins; line 2: the tar's size in bytes, for progress).
 # The pins are read at run time from the engine's sources, which ../engine/build.sh --source
@@ -60,26 +56,17 @@ wine_identity="$(field identity <<<"$wine_block")"
 wine_url="$(field archive_url <<<"$wine_block")"
 wine_size="$(field archive_size <<<"$wine_block" | tr -d _)"
 wine_sha512="$(field archive_sha512 <<<"$wine_block")"
-gecko_url="$(grep -o 'https://dl.winehq.org/wine/wine-gecko/[^"]*\.msi' "$engine/src/install.rs" | head -1)"
-gecko_sha256="$(grep -A8 "$gecko_url" "$engine/src/install.rs" | sed -n 's/.*"\([0-9a-f]\{64\}\)".*/\1/p' | head -1)"
-gecko_size="$(grep -A8 "$gecko_url" "$engine/src/install.rs" | sed -n 's/.*SizePolicy::Exact(\([0-9_]*\)).*/\1/p' | head -1 | tr -d _)"
-mono_url="$(sed -n 's/.*const WINE_MONO_URL: &str = "\(.*\)";.*/\1/p' "$engine/src/install.rs")"
-mono_sha256="$(next_string 'pub const WINE_MONO_MSI_SHA256' "$engine/src/audit.rs")"
-mono_size="$(grep -A4 'request_url: Cow::Borrowed(WINE_MONO_URL)' "$engine/src/install.rs" | sed -n 's/.*SizePolicy::Exact(\([0-9_]*\)).*/\1/p' | tr -d _)"
-gecko_cache="$(sed -n 's/.*ArtifactKind::Gecko => "\(.*\)",/\1/p' "$engine/src/install/adapters.rs" | head -1)"
-mono_cache="$(sed -n 's/.*ArtifactKind::WineMono => "\(.*\)",/\1/p' "$engine/src/install/adapters.rs" | head -1)"
 dotnet_url="$(sed -n 's/.*const DOTNET_DESKTOP_URL: &str = "\(.*\)";.*/\1/p' "$engine/src/install.rs")"
 dotnet_spec="$(grep -A10 'request_url: Cow::Borrowed(DOTNET_DESKTOP_URL)' "$engine/src/install.rs")"
 dotnet_size="$(sed -n 's/.*SizePolicy::Exact(\([0-9_]*\)).*/\1/p' <<<"$dotnet_spec" | head -1 | tr -d _)"
 dotnet_sha512="$(sed -n 's/.*"\([0-9a-f]\{128\}\)".*/\1/p' <<<"$dotnet_spec" | head -1)"
 dotnet_cache="$(sed -n 's/.*ArtifactKind::DotnetDesktop => "\(.*\.verified\)",/\1/p' "$engine/src/install/adapters.rs" | head -1)"
 for v in rootfs_url rootfs_sha256 rootfs_size wine_identity wine_url wine_size wine_sha512 \
-    gecko_url gecko_sha256 gecko_size mono_url mono_sha256 mono_size gecko_cache mono_cache \
     dotnet_url dotnet_size dotnet_sha512 dotnet_cache; do
     [[ -n "${!v}" ]] || die "pin $v not found in $engine/src/ (did a pin's format change?)"
 done
-version="$(printf '%s\n' "$rootfs_sha256" "$wine_sha512" "$gecko_sha256" "$mono_sha256" \
-    "$dotnet_sha512" "$wine_identity" "$gecko_cache" "$mono_cache" "$dotnet_cache" "$(sha256sum "$0" | cut -d' ' -f1)" \
+version="$(printf '%s\n' "$rootfs_sha256" "$wine_sha512" \
+    "$dotnet_sha512" "$wine_identity" "$dotnet_cache" "$(sha256sum "$0" | cut -d' ' -f1)" \
     "$(sha256sum "$here/rootfs-trim.txt" | cut -d' ' -f1)" | sha256sum | cut -c1-16)"
 if [[ "${1:-}" == --version ]]; then
     echo "$version"
@@ -151,10 +138,6 @@ if [[ ! -f "$wine_tree" ]]; then
     mv "$wine_tree.part" "$wine_tree"
     rm -rf "$tree"
 fi
-gecko_file="$cache/$(basename "$gecko_url")"
-mono_file="$cache/$(basename "$mono_url")"
-fetch "$gecko_file" "$gecko_size" sha256 "$gecko_sha256" "$gecko_url"
-fetch "$mono_file" "$mono_size" sha256 "$mono_sha256" "$mono_url"
 dotnet_file="$cache/$(basename "$dotnet_url")"
 fetch "$dotnet_file" "$dotnet_size" sha512 "$dotnet_sha512" "$dotnet_url"
 
@@ -222,8 +205,6 @@ mkdir -p "$rootfs/tmp" "$rootfs/var/tmp" "$rootfs/dev/shm"
 chmod 1777 "$rootfs/tmp" "$rootfs/var/tmp" "$rootfs/dev/shm"
 printf '{"schema":1,"fex":"app-provided","rootfs_sha256":"%s","fex_probe_passed":false}' "$rootfs_sha256" \
     > "$staging/fex/installed.json"
-cp "$gecko_file" "$staging/cache/artifacts/$gecko_cache"
-cp "$mono_file" "$staging/cache/artifacts/$mono_cache"
 cp "$dotnet_file" "$staging/cache/artifacts/$dotnet_cache"
 chmod 0644 "$staging/cache/artifacts/"*
 find "$staging/fex/config" "$staging/fex/data" "$staging/fex/cache" "$staging/runner" "$staging/cache" -maxdepth 0 -exec chmod 0700 {} +

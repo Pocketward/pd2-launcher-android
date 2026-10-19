@@ -20,10 +20,10 @@ import java.nio.file.attribute.PosixFilePermissions
 
 /**
  * The runtime the app provides (runtime/pack.sh): FEX's RootFS with its App-provided
- * FEX record, Wine-GE with the Launcher's receipt, and Wine Gecko and Mono in the Launcher's
- * download cache, unpacked once into the Launcher's managed root [managedRoot], so the engine
- * finds them installed and downloads none of them. A marker naming the version is written last;
- * a newer version replaces the trees the older one unpacked.
+ * FEX record, Wine-GE with the Launcher's receipt, and the .NET Desktop Runtime's installer in
+ * the Launcher's download cache, unpacked once into the Launcher's managed root [managedRoot], so
+ * the engine finds them installed and downloads none of them. A marker naming the version is
+ * written last; a newer version replaces the trees the older one unpacked.
  */
 class AppRuntime(
     private val managedRoot: File,
@@ -49,7 +49,7 @@ class AppRuntime(
         marker.delete()
         syncDirectory(managedRoot.toPath())
         // What an older version (or a stopped unpack) left.
-        for (path in PROVIDED) UserlandInstaller.deleteTree(File(managedRoot, path).toPath())
+        for (path in PROVIDED + RETIRED) UserlandInstaller.deleteTree(File(managedRoot, path).toPath())
         val reader = TarReader(tar)
         val directories = ArrayList<Pair<File, Int>>()
         val buffer = ByteArray(1 shl 18)
@@ -112,7 +112,7 @@ class AppRuntime(
      * only a second copy of what is unpacked: they go, with an older Launcher's Wine-GE archive.
      * The names removed.
      */
-    fun removeArchives(): List<String> = (ARCHIVES + LEGACY_WINE_ARCHIVE).filter { File(managedRoot, it).delete() }
+    fun removeArchives(): List<String> = (ARCHIVES + LEGACY_WINE_ARCHIVE + RETIRED).filter { File(managedRoot, it).delete() }
 
     /** Whether an install that sets the game up again would miss one of [ARCHIVES]. */
     fun archivesMissing(): Boolean = ARCHIVES.any { !File(managedRoot, it).isFile }
@@ -182,15 +182,20 @@ class AppRuntime(
             "runner/lutris-GE-Proton8-26-x86_64",
             // In the tar's order (pack.sh sorts it by name), as restoreArchives reads them.
             "cache/artifacts/windowsdesktop-runtime-6.0.36-win-x86.verified",
+        )
+
+        /** The .NET Desktop Runtime installer: only an install that sets the game up (again) reads it. */
+        val ARCHIVES = PROVIDED.filter { it.startsWith("cache/") }
+
+        /**
+         * What older runtimes laid into the download cache and none lays out any more: the Wine
+         * Gecko and Wine Mono installers (the prefix has neither). They go with the first unpack
+         * of a newer runtime, and with the other copies once the game is installed.
+         */
+        val RETIRED = listOf(
             "cache/artifacts/wine-gecko-2.47.4-x86.verified",
             "cache/artifacts/wine-mono-11.3.0-x86.verified",
         )
-
-        /**
-         * The .NET Desktop Runtime installer, Wine Gecko and Mono: only an install that sets the
-         * game up (again) reads them.
-         */
-        val ARCHIVES = PROVIDED.filter { it.startsWith("cache/") }
 
         /**
          * What [snapshot]'s state needs: nothing before the engine's audit has ended (its

@@ -54,7 +54,7 @@ The ARM64 Linux programs the app runs natively, packed as `userland.tar.zst` and
 
 ## The runtime (`runtime/`)
 
-The x86 side ships in the APK too: FEX's Ubuntu 24.04 RootFS, trimmed of what the game never loads (`rootfs-trim.txt`), Wine-GE 8-26, Wine Gecko, Wine Mono and the .NET Desktop Runtime installer for Project Diablo 2's own launcher. `pack.sh` takes their pins from the engine's sources and lays them out the way the engine keeps them, so the engine's Download fetches only Blizzard's installers and Project Diablo 2.
+The x86 side ships in the APK too: FEX's Ubuntu 24.04 RootFS, trimmed of what the game never loads (`rootfs-trim.txt`), Wine-GE 8-26 and the .NET Desktop Runtime installer for Project Diablo 2's own launcher. The prefix has no Wine Gecko and no Wine Mono: no program the app runs needs them. `pack.sh` takes their pins from the engine's sources and lays them out the way the engine keeps them, so the engine's Download fetches only Blizzard's installers and Project Diablo 2.
 
 ## FEX-Emu and Wine
 

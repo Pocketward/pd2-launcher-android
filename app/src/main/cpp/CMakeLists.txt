@@ -1,8 +1,11 @@
 cmake_minimum_required(VERSION 3.22.1)
 project(seccompprobe C CXX)
 
-# Every library's LOAD segments are aligned for 16 KB memory pages (NDK r27 links for 4 KB).
-add_link_options("LINKER:-z,max-page-size=16384")
+# Every library's LOAD segments are aligned for 4 KB memory pages. NDK r27 does this by default,
+# but r28 and later align for 16 KB, so the option is explicit: with libframecopy aligned for
+# 16 KB pages, the official launcher's Play stopped at UPDATING... after its game-file update and
+# its .NET runtime then failed (a05e5bc removed that 16 KB option).
+add_link_options("LINKER:-z,max-page-size=4096")
 
 # Debug probe for the app's seccomp policy: which syscalls it lets through.
 add_library(seccompprobe SHARED seccomp_probe.c)
