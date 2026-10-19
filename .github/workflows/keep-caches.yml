@@ -1,0 +1,128 @@
+# Reads the release build's caches every two days, so that GitHub does not remove them between
+# releases: it removes a cache that no run read for 7 days, and only a release run that builds
+# reads these (one that finds the userland in its cache skips the images and the parts; one that
+# reuses a draft, or has nothing to build, reads none). Every two days leaves room for a run that
+# is skipped (below) or fails. It restores the newest cache of each kind on main, the one the next
+# release starts from, by the name the cache list gives (so the names cannot differ from
+# release.yml's), and builds, saves and publishes nothing. The paths must be release.yml's, as a
+# cache is found only with the paths it was saved with: a restore that finds nothing fails this
+# workflow. A fork has none of these caches and skips it.
+#
+# GitHub turns scheduled workflows off after 60 days without activity in the repository; a
+# release, or a manual run, turns this one on again.
+name: Keep the caches
+
+on:
+  schedule:
+    - cron: '23 5 */2 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: keep-caches
+  cancel-in-progress: false
+
+jobs:
+  restore:
+    if: ${{ !github.event.repository.fork }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      # The newest cache of each kind on main, by its name's pattern. Nothing is restored beside a
+      # release run that is queued or running: the next run, two days later, reads the caches.
+      # The repository is asked whether it is a fork too, as a scheduled run's event may not say.
+      - name: Find the release caches
+        id: keys
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ $(gh api "repos/$GITHUB_REPOSITORY" --jq .fork) == true ]]; then
+            echo "::notice::a fork has no release caches: nothing to do"
+            exit 0
+          fi
+          active=0
+          for status in queued in_progress; do
+            n=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/release.yml/runs?status=$status&per_page=1" --jq .total_count)
+            active=$((active + n))
+          done
+          if [[ $active != 0 ]]; then
+            echo "::notice::a release run is queued or running: nothing is restored beside it (the next run is in two days)"
+            exit 0
+          fi
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/caches?ref=refs/heads/main&per_page=100" \
+            --jq '.actions_caches[]' > "$RUNNER_TEMP/caches.json"
+          newest() { # output pattern
+            local key
+            key=$(jq -rs --arg p "$2" 'map(select(.key | test($p))) | sort_by(.created_at) | last | .key // empty' \
+              "$RUNNER_TEMP/caches.json")
+            echo "$1: ${key:-none}"
+            [[ -z $key ]] || echo "$1=$key" >> "$GITHUB_OUTPUT"
+          }
+          newest userland '^userland-[0-9a-f]{64}$'
+          newest images '^userland-images-[0-9a-f]{16}$'
+          newest parts '^userland-parts-[0-9a-f]{16}$'
+          newest runtime '^runtime-[0-9a-f]+$'
+          newest image '^android-image-[0-9a-f]{16}$'
+          newest gradle '^gradle-release-[0-9a-f]{64}$'
+
+      - name: Restore the userland
+        if: steps.keys.outputs.userland != ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: app/src/main/assets/userland
+          key: ${{ steps.keys.outputs.userland }}
+          fail-on-cache-miss: true
+
+      - name: Restore the userland's build images
+        if: steps.keys.outputs.images != ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pd2-android/images/userland
+          key: ${{ steps.keys.outputs.images }}
+          fail-on-cache-miss: true
+
+      - name: Restore the userland's parts
+        if: steps.keys.outputs.parts != ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            userland/fex/out
+            userland/glibc/out
+            ~/.cache/pd2-android/userland/debs
+            ~/.cache/pd2-android/userland/sources
+            ~/.cache/pd2-android/userland/turnip-out
+            ~/.cache/pd2-android/userland/xvfb-out
+            ~/.cache/pd2-android/kbase/sources
+            ~/.cache/pd2-android/kbase/out
+            ~/.cache/pd2-android/kbase/work/host-tools-*
+          key: ${{ steps.keys.outputs.parts }}
+          fail-on-cache-miss: true
+
+      - name: Restore the runtime
+        if: steps.keys.outputs.runtime != ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: app/src/main/assets/runtime
+          key: ${{ steps.keys.outputs.runtime }}
+          fail-on-cache-miss: true
+
+      - name: Restore the APK's build image
+        if: steps.keys.outputs.image != ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pd2-android/images/android.tar.zst
+          key: ${{ steps.keys.outputs.image }}
+          fail-on-cache-miss: true
+
+      - name: Restore the Gradle cache
+        if: steps.keys.outputs.gradle != ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/pd2-android/gradle/caches
+            ~/.cache/pd2-android/gradle/wrapper
+          key: ${{ steps.keys.outputs.gradle }}
+          fail-on-cache-miss: true

@@ -51,14 +51,18 @@ jobs:
         if: steps.image-cache.outputs.cache-hit == 'true'
         run: zstd -dc ~/.cache/pd2-android/images/android.tar.zst | podman load
 
+      # Named as release.yml names its own (by the files that decide what Gradle downloads), apart
+      # from it: this debug build would fill a shared cache first, without the release's artifacts.
       - name: Restore the Gradle cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cache/pd2-android/gradle/caches
             ~/.cache/pd2-android/gradle/wrapper
-          key: gradle-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties', 'gradle.properties', 'build.gradle.kts', 'settings.gradle.kts', 'app/build.gradle.kts') }}
-          restore-keys: gradle-
+          key: gradle-checks-${{ hashFiles('gradle/verification-metadata.xml', 'gradle/wrapper/gradle-wrapper.properties', 'gradle.properties', 'build.gradle.kts', 'settings.gradle.kts') }}
+          restore-keys: |
+            gradle-checks-
+            gradle-
 
       - name: Compile the debug APK
         run: ./build.sh check

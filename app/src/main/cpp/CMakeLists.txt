@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.22.1)
 project(seccompprobe C CXX)
 
+# Every library's LOAD segments are aligned for 16 KB memory pages (NDK r27 links for 4 KB).
+add_link_options("LINKER:-z,max-page-size=16384")
+
 # Debug probe for the app's seccomp policy: which syscalls it lets through.
 add_library(seccompprobe SHARED seccomp_probe.c)
 target_compile_options(seccompprobe PRIVATE -Wall -Wextra -Werror)

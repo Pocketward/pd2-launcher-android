@@ -41,6 +41,18 @@
 # commit; that builds nothing, because the tag's release is published with its
 # files.
 #
+# The release notes' lines that the build writes are a block between two
+# markers, which also records (hidden) the commit the APK was built from and its
+# SHA-256; a build writes that block again and keeps any text outside it.
+# A candidate whose tree differs from the commit its draft's APK was built from
+# only in README.md and docs/ (an export of the documents alone), or that the
+# draft's APK was built from, builds nothing: the draft job moves the draft to
+# this commit with the APK that was tested and keeps its notes (workflow_dispatch
+# with rebuild set builds it anyway). keep-caches.yml reads the caches below
+# every few days, so GitHub does not remove them between releases (after 7 days
+# without a read); it names their paths too, so a path changed here must change
+# there.
+#
 # While the engine's repository is private, the secret ENGINE_REPO_TOKEN (read
 # access to its contents) lets Git and the GitHub CLI fetch from it; a public
 # one needs none.
@@ -58,9 +70,19 @@ on:
         description: Build main's head as a draft release, before the tag exists (its commit message must be the tag)
         type: boolean
         default: false
+      rebuild:
+        description: With candidate, build even when the draft holds the APK built for main's head (or for an earlier commit that differs only in README.md and docs/)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
+
+env:
+  # The markers of the release notes' block that the build writes (Publish the release), in
+  # which the draft job reads the build's record.
+  NOTES_BEGIN: '<!-- ci-notes:begin (each build writes this block again; notes outside it stay) -->'
+  NOTES_END: '<!-- ci-notes:end -->'
 
 concurrency:
   group: release-${{ github.ref }}
@@ -192,9 +214,112 @@ jobs:
           echo "userland=userland-${{ hashFiles('userland/**', '!userland/**/out*/**', '!userland/README.md', '!userland/fex/README.md', '!userland/glibc/README.md') }}" |
             tee -a "$GITHUB_OUTPUT"
 
-  userland:
+  # A candidate keeps its draft's APK, which was tested, when the APK was built from this commit
+  # or from an earlier commit of main that differs from it only in README.md and docs/: the draft
+  # then targets this commit (its files and notes stay) and the build jobs are skipped. The
+  # notes' block that the build wrote records that commit and the APK's SHA-256, and the APK and
+  # its .sha256 file must both match it: files that a build uploaded but did not record (it
+  # stopped before its notes) are never reused. Only main's head is a candidate here: a run of an
+  # older export (a re-run) stops without changing anything, as it would move the draft back. Any
+  # other release, a candidate that cannot reuse its draft, and workflow_dispatch with rebuild
+  # set are built.
+  draft:
     needs: tag
     if: needs.tag.outputs.tag != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    # A draft release is visible only with write access.
+    permissions:
+      contents: write
+    outputs:
+      reuse: ${{ steps.reuse.outputs.reuse }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.tag.outputs.candidate == 'true'
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Reuse the draft's tested APK
+        id: reuse
+        env:
+          TAG: ${{ needs.tag.outputs.tag }}
+          COMMIT: ${{ needs.tag.outputs.commit }}
+          CANDIDATE: ${{ needs.tag.outputs.candidate }}
+          REBUILD: ${{ inputs.rebuild }}
+          GH_TOKEN: ${{ github.token }}
+          GIT_CONFIG_COUNT: 1
+          GIT_CONFIG_KEY_0: credential.https://github.com.helper
+          GIT_CONFIG_VALUE_0: '!gh auth git-credential'
+        run: |
+          # Why the draft's APK cannot be reused for this commit, nothing when it can. An error fails
+          # (on standard error, which the caller does not capture).
+          why_not() {
+            local release body record build sum digest sums
+            if ! release=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,body,assets 2>"$RUNNER_TEMP/view.err"); then
+              [[ $(<"$RUNNER_TEMP/view.err") == "release not found" ]] ||
+                { echo "cannot read the release $TAG: $(<"$RUNNER_TEMP/view.err")" >&2; exit 1; }
+              echo "$TAG has no draft yet"
+              return
+            fi
+            [[ $(jq -r .isDraft <<<"$release") == true ]] || { echo "the release $TAG is not a draft"; return; }
+            body=$(jq -r '.body // ""' <<<"$release") || { echo "cannot read the notes of the release $TAG" >&2; exit 1; }
+            # The build's record, <!-- ci-build commit=<commit> apk-sha256=<SHA-256> -->, read only
+            # between the first begin marker and the end marker after it, the block a build writes.
+            record=$(tr -d '\r' <<<"$body" |
+              awk -v begin="$NOTES_BEGIN" -v end="$NOTES_END" '
+                $0 == begin && !inside { inside = 1; next }
+                inside && $0 == end { printf "%s", block; exit }
+                inside { block = block $0 "\n" }' |
+              sed -n 's/^<!-- ci-build commit=\([0-9a-f]\{40\}\) apk-sha256=\([0-9a-f]\{64\}\) -->$/\1 \2/p' | head -n 1)
+            [[ -n $record ]] || { echo "the draft's notes record no build"; return; }
+            read -r build sum <<<"$record"
+            if [[ $build != "$COMMIT" ]]; then
+              if ! git cat-file -e "$build^{commit}" 2>/dev/null || ! git merge-base --is-ancestor "$build" "$COMMIT"; then
+                echo "the draft's APK was built from $build, which is not an earlier commit of main"
+                return
+              fi
+              git diff --quiet "$build" "$COMMIT" -- . ':(exclude)README.md' ':(exclude)docs' ||
+                { echo "this candidate changes more than README.md and docs/ since $build, which the draft's APK was built from"; return; }
+            fi
+            digest=$(jq -r --arg name "$APK" '.assets[] | select(.name == $name) | .digest // empty' <<<"$release")
+            [[ $digest == "sha256:$sum" ]] || { echo "the draft's $APK is not the APK its notes record"; return; }
+            sums=$(gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$APK.sha256" --output - 2>/dev/null) ||
+              { echo "the draft has no $APK.sha256"; return; }
+            [[ $(cut -d' ' -f1 <<<"$sums") == "$sum" ]] ||
+              { echo "the draft's $APK.sha256 is not the SHA-256 its notes record"; return; }
+          }
+          APK=pd2-launcher-android-${TAG#v}.apk
+          reuse=false
+          if [[ $CANDIDATE == true ]]; then
+            head=$(git ls-remote origin refs/heads/main | cut -f1)
+            [[ $head == "$COMMIT" ]] ||
+              { echo "::error::a newer export replaced this candidate: main's head is ${head:-unknown}, not $COMMIT; nothing is built and the draft $TAG is not changed"; exit 1; }
+            if [[ $REBUILD == true ]]; then
+              echo "building the candidate: a rebuild was asked for"
+            else
+              why=$(why_not)
+              if [[ -n $why ]]; then
+                echo "building the candidate: $why"
+              else
+                refs=$(git ls-remote origin "refs/tags/$TAG")
+                [[ -z $refs ]] || { echo "::error::the tag $TAG exists now; a candidate is published before its tag"; exit 1; }
+                target=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json targetCommitish --jq .targetCommitish)
+                if [[ $target == "$COMMIT" ]]; then
+                  echo "::notice title=Tested draft kept::the draft $TAG targets $COMMIT already, with its tested $APK: nothing to do"
+                else
+                  gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --target "$COMMIT" >/dev/null
+                  echo "::notice title=Tested draft reused::$COMMIT changes only README.md and docs/ since the commit the draft's $APK was built from: the draft $TAG keeps that tested APK and its notes and targets $COMMIT now (before: $target); nothing is built"
+                fi
+                reuse=true
+              fi
+            fi
+          fi
+          echo "reuse=$reuse" >> "$GITHUB_OUTPUT"
+
+  userland:
+    needs: [tag, draft]
+    if: needs.tag.outputs.tag != '' && needs.draft.outputs.reuse != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 340
     env:
@@ -334,8 +459,8 @@ jobs:
           key: ${{ needs.tag.outputs.userland }}
 
   runtime:
-    needs: tag
-    if: needs.tag.outputs.tag != ''
+    needs: [tag, draft]
+    if: needs.tag.outputs.tag != '' && needs.draft.outputs.reuse != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     outputs:
@@ -458,14 +583,19 @@ jobs:
         if: steps.image-cache.outputs.cache-hit == 'true'
         run: zstd -dc ~/.cache/pd2-android/images/android.tar.zst | podman load
 
+      # Named by the files that decide what Gradle downloads: verification-metadata.xml lists every
+      # artifact (Gradle refuses any other), so a new dependency changes the name, and a new
+      # versionName does not. Apart from the Checks' cache, which a debug build fills first.
       - name: Restore the Gradle cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cache/pd2-android/gradle/caches
             ~/.cache/pd2-android/gradle/wrapper
-          key: gradle-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties', 'gradle.properties', 'build.gradle.kts', 'settings.gradle.kts', 'app/build.gradle.kts') }}
-          restore-keys: gradle-
+          key: gradle-release-${{ hashFiles('gradle/verification-metadata.xml', 'gradle/wrapper/gradle-wrapper.properties', 'gradle.properties', 'build.gradle.kts', 'settings.gradle.kts') }}
+          restore-keys: |
+            gradle-release-
+            gradle-
 
       # A candidate's engine may be a draft release, which only the engine repository's writers
       # can download: this repository's draft release engine-candidate then holds a copy of its
@@ -477,8 +607,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           asset=$(sed -n 's/^asset=//p' engine.lock)
-          if ! names=$(gh release view engine-candidate --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' 2>&1); then
-            [[ $names == "release not found" ]] || { echo "::error::cannot read the release engine-candidate: $names"; exit 1; }
+          if ! names=$(gh release view engine-candidate --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' 2>"$RUNNER_TEMP/view.err"); then
+            [[ $(<"$RUNNER_TEMP/view.err") == "release not found" ]] ||
+              { echo "::error::cannot read the release engine-candidate: $(<"$RUNNER_TEMP/view.err")"; exit 1; }
             names=
           fi
           if ! grep -qxF "$asset" <<<"$names"; then
@@ -550,6 +681,7 @@ jobs:
       - name: Name the APK and describe it
         id: apk
         env:
+          COMMIT: ${{ needs.tag.outputs.commit }}
           IMAGE: ${{ steps.image.outputs.name }}
         run: |
           tools() { podman run --rm -v "$PWD/build/outputs:/apk:ro" "$IMAGE" "$@"; }
@@ -569,11 +701,15 @@ jobs:
           engine_tag=$(sed -n 's/^tag=//p' engine.lock)
           engine_commit=$(sed -n 's/^commit=//p' engine.lock)
           {
+            echo "$NOTES_BEGIN"
             echo "PD2 Launcher for Android $TAG."
             echo
             echo "- \`$apk\`: package \`$package\`, versionName $version_name, versionCode $version_code; SHA-256 in \`$apk.sha256\`."
             echo "- Signed with the certificate whose SHA-256 is \`$certificate\`."
             echo "- Engine: PD2 Launcher $engine_tag (\`$engine_commit\`)."
+            echo
+            echo "<!-- ci-build commit=$COMMIT apk-sha256=$(cut -d' ' -f1 "release/$apk.sha256") -->"
+            echo "$NOTES_END"
           } > release/notes.md
           cat release/notes.md
 
@@ -608,36 +744,85 @@ jobs:
           refs=$(git ls-remote origin "refs/tags/$TAG")
           [[ -z $refs ]] || { echo "::error::the tag $TAG exists now; a candidate is published before its tag"; exit 1; }
 
+      # The notes' block from NOTES_BEGIN to the first NOTES_END after it is the build's: each
+      # build writes it again, and any text outside it stays; notes without that pair of markers
+      # keep their text below a new block (with a warning). On an existing release the files are
+      # uploaded first, then the notes are read again and the target and notes change in one edit,
+      # so the notes record a build only once its files are there. A new draft gets its notes,
+      # then its files (gh release create): the draft job's digest check covers a create that
+      # stopped half way. A candidate is published only while it is main's head (a newer export
+      # replaced it otherwise).
       - name: Publish the release
         env:
           COMMIT: ${{ needs.tag.outputs.commit }}
           CANDIDATE: ${{ needs.tag.outputs.candidate }}
           GH_TOKEN: ${{ github.token }}
+          GIT_CONFIG_COUNT: 1
+          GIT_CONFIG_KEY_0: credential.https://github.com.helper
+          GIT_CONFIG_VALUE_0: '!gh auth git-credential'
         run: |
+          # The release as JSON (isDraft, body, assets), nothing when there is none; any other
+          # error fails.
+          view() {
+            if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,body,assets 2>"$RUNNER_TEMP/view.err"; then
+              [[ $(<"$RUNNER_TEMP/view.err") == "release not found" ]] ||
+                { echo "cannot read the release $TAG: $(<"$RUNNER_TEMP/view.err")" >&2; return 1; }
+            fi
+          }
+          # The notes of a release (its JSON) with the build's block written again, in
+          # release/notes-new.md.
+          renote() { # release JSON
+            local body
+            body=$(jq -r '.body // ""' <<<"$1")
+            rm -f release/notes-missing
+            tr -d '\r' <<<"$body" |
+              awk -v begin="$NOTES_BEGIN" -v end="$NOTES_END" -v block=release/notes.md -v missing=release/notes-missing '
+                { line[NR] = $0; if (NF) text = 1 }
+                $0 == begin && !b { b = NR }
+                $0 == end && b && !e { e = NR }
+                END {
+                  if (b && e) for (i = 1; i < b; i++) print line[i]
+                  while ((getline l < block) > 0) print l
+                  if (b && e) for (i = e + 1; i <= NR; i++) print line[i]
+                  else if (text) { print "" > missing; print ""; for (i = 1; i <= NR; i++) print line[i] }
+                }' > release/notes-new.md
+            if [[ -f release/notes-missing ]]; then
+              echo "::warning::the notes of $TAG had no begin and end marker of the build's block: the block is put above them, and their lines stay below it"
+            fi
+          }
           prerelease=()
           [[ $TAG == *-* ]] && prerelease=(--prerelease)
           files=(release/*.apk release/*.apk.sha256)
           if [[ -n $CANDIDATE ]]; then
+            head=$(git ls-remote origin refs/heads/main | cut -f1)
+            [[ $head == "$COMMIT" ]] ||
+              { echo "::error::a newer export replaced this candidate: main's head is ${head:-unknown}, not $COMMIT; the draft $TAG is not changed"; exit 1; }
+          fi
+          release=$(view)
+          if [[ -n $CANDIDATE ]]; then
             # A candidate's files go on a draft release only, which targets the commit built.
-            if draft=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>&1); then
-              [[ $draft == true ]] ||
+            if [[ -n $release ]]; then
+              [[ $(jq -r .isDraft <<<"$release") == true ]] ||
                 { echo "::error::the release $TAG is published; a candidate replaces the files of a draft only"; exit 1; }
               gh release upload "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --clobber
-              gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --target "$COMMIT" --notes-file release/notes.md
-            elif [[ $draft != "release not found" ]]; then
-              echo "::error::cannot read the release $TAG: $draft"
-              exit 1
+              release=$(view)
+              [[ -n $release ]] || { echo "::error::the draft $TAG went away during the upload"; exit 1; }
+              renote "$release"
+              gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --target "$COMMIT" --notes-file release/notes-new.md
             else
               gh release create "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --draft --target "$COMMIT" \
                 --title "$TAG" --notes-file release/notes.md "${prerelease[@]}"
             fi
-          elif gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          elif [[ -n $release ]]; then
             # A published APK is never replaced by a build: a person deletes it first.
-            assets=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets | length')
+            assets=$(jq '.assets | length' <<<"$release")
             [[ $assets == 0 ]] ||
               { echo "::error::the release $TAG already has $assets files; delete them to publish it again"; exit 1; }
             gh release upload "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY"
-            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file release/notes.md
+            release=$(view)
+            [[ -n $release ]] || { echo "::error::the release $TAG went away during the upload"; exit 1; }
+            renote "$release"
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file release/notes-new.md
           else
             gh release create "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --verify-tag \
               --title "$TAG" --notes-file release/notes.md "${prerelease[@]}"
