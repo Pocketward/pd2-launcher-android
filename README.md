@@ -1,7 +1,3 @@
-
-
-
-
 # PD2 Launcher for Android
 
 > **Unofficial.** PD2 Launcher is a community-made tool. It is not affiliated with or endorsed by the Project Diablo 2 team or Blizzard Entertainment.
@@ -12,16 +8,16 @@ The game runs in Wine 11.0 built for ARM64. Wine runs natively on your device's 
 
 ## See it run
 
-[![The demo video (58 s): the setup in four steps, then the game with the on-screen controls](docs/media/demo-poster.jpg)](https://github.com/user-attachments/assets/f294dbf7-d77c-46bf-a42d-584854420aa3)
+https://github.com/user-attachments/assets/f294dbf7-d77c-46bf-a42d-584854420aa3
 
 | | |
 |:---:|:---:|
-| ![The Play screen](docs/media/play.png) | ![The Download step](docs/media/download.png) |
-| **Play** starts the game. **Official PD2 launcher** opens Project Diablo 2's own launcher. | **Download** gets Blizzard's installers and Project Diablo 2, and checks each file. |
-| ![The game in town with the on-screen controls](docs/media/town.jpg) | ![The editor of the on-screen controls](docs/media/controls-editor.jpg) |
-| The game with the on-screen controls, a virtual controller. | **Edit controls** moves, resizes and fades each control, and adds buttons for keys. |
-| ![The in-game menu on a phone](docs/media/phone-menu.jpg) | ![The game on a phone with an Arm Mali GPU](docs/media/mali-town.jpg) |
-| The in-game menu on a phone. The game does not pause. | The game on a phone with an Arm Mali GPU. |
+| <img src="docs/media/setup.gif" width="420" alt="Check, then Download"> | <img src="docs/media/install.gif" width="420" alt="Install, then Play"> |
+| **Check** looks at your device. **Download** gets Blizzard's installers and Project Diablo 2, and checks each file. | **Install** runs Blizzard's installers with a live view of their windows and checks every file. Then **Play**. |
+| <img src="docs/media/town.gif" width="420" alt="The game in town with the on-screen controls"> | <img src="docs/media/controller.gif" width="420" alt="The game with the handheld's own controls"> |
+| Walk with the on-screen controls, a virtual controller. | Or with the handheld's own controls. |
+| <img src="docs/media/menu.gif" width="420" alt="The in-game menu"> | <img src="docs/media/editor.gif" width="420" alt="The editor of the on-screen controls"> |
+| The in-game menu does not pause the game. **Touch pad** shows the on-screen controls. | **Edit controls** moves, resizes and fades each control, and adds buttons for keys. |
 
 ## What your device needs
 
