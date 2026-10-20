@@ -6,6 +6,19 @@ An Android app that installs [Project Diablo 2](https://www.projectdiablo2.com/)
 
 The game runs in Wine 11.0 built for ARM64. Wine runs natively on your device's CPU; Box64's WowBox64 translates only the 32-bit x86 code of the game, the installers and Project Diablo 2's own launcher.
 
+## See it run
+
+[![The demo video (58 s): the setup in four steps, then the game with the on-screen controls](docs/media/demo-poster.jpg)](docs/media/demo.mp4)
+
+| | |
+|:---:|:---:|
+| ![The Play screen](docs/media/play.png) | ![The Download step](docs/media/download.png) |
+| **Play** starts the game. **Official PD2 launcher** opens Project Diablo 2's own launcher. | **Download** gets Blizzard's installers and Project Diablo 2, and checks each file. |
+| ![The game in town with the on-screen controls](docs/media/town.jpg) | ![The editor of the on-screen controls](docs/media/controls-editor.jpg) |
+| The game with the on-screen controls, a virtual controller. | **Edit controls** moves, resizes and fades each control, and adds buttons for keys. |
+| ![The in-game menu on a phone](docs/media/phone-menu.jpg) | ![The game on a phone with an Arm Mali GPU](docs/media/mali-town.jpg) |
+| The in-game menu on a phone. The game does not pause. | The game on a phone with an Arm Mali GPU. |
+
 ## What your device needs
 
 - An ARM64 device with Android 13 or later, using 4 KB memory pages (almost every phone and handheld does).
