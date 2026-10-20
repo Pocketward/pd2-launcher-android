@@ -135,8 +135,9 @@ object DebugPreview {
     fun notice(name: String?): InstallerDownloads.Notice? = when (name) {
         NOTICE -> InstallerDownloads.notice(2_400_000_000L, imported = false, folder = null, from = null)
         NOTICE_IMPORT -> InstallerDownloads.notice(0, imported = true, folder = "Download/Diablo II", from = SourceImport.SHARED_STORAGE)
-        NOTICE_IMPORT_DOWNLOADS ->
-            InstallerDownloads.notice(480_000_000L, imported = true, folder = "Download/Diablo II", from = SourceImport.SHARED_STORAGE)
+        NOTICE_IMPORT_DOWNLOADS -> InstallerDownloads.notice(
+            480_000_000L, imported = true, folder = "Download/Diablo II", from = SourceImport.SHARED_STORAGE, clientOnly = true,
+        )
         NOTICE_IMPORT_LITE -> InstallerDownloads.notice(0, imported = true, folder = "Diablo II", from = "com.pd2launcher.lite.documents")
         else -> null
     }

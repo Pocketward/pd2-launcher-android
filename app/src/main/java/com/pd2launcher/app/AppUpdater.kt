@@ -65,6 +65,8 @@ object AppUpdater {
     private const val NOTIFICATION_ID = 2
     /** The most a `.sha256` file may hold. */
     private const val CHECKSUM_LIMIT = 4096
+    /** The shortest time a check the player asked for shows as running ([check]). */
+    private const val CHECK_SHOWN_MS = 1_000L
     /** HTTP statuses that say the release's file is gone, or has no such part: a check follows. */
     private val GONE = setOf(404, 410, 416)
 
@@ -277,9 +279,10 @@ object AppUpdater {
             }
         }
         val offer = cachedOffer(prefs)
+        val checkedAt = prefs.getLong(LAST_SUCCESS, 0)
         return when {
             offer != null -> State.Available(offer)
-            prefs.getLong(LAST_SUCCESS, 0) > 0 -> State.UpToDate
+            checkedAt > 0 -> State.UpToDate(checkedAt)
             else -> State.Idle
         }
     }
@@ -306,12 +309,19 @@ object AppUpdater {
         prefs.edit().putLong(LAST_ATTEMPT, now).apply()
         // With a newer release in hand, About keeps it through the check.
         if (held == null) _state.value = State.Checking
+        val started = SystemClock.elapsedRealtime()
+        // A check the player asked for shows "Looking for a new version…" long enough to be seen,
+        // also when the answer comes at once and is the same as before.
+        fun shown() {
+            if (!automatic && held == null) SystemClock.sleep((CHECK_SHOWN_MS - (SystemClock.elapsedRealtime() - started)).coerceAtLeast(0))
+        }
         val answer = try {
             AppUpdateHttp.ask(feed(context), prefs.getString(ETAG, null), now)
         } catch (error: Exception) {
             log(context, "check failed: ${AppUpdate.describe(error)}")
             if (held == null) {
                 val offline = error is UnknownHostException || error is ConnectException || error is SocketTimeoutException
+                shown()
                 _state.value = State.CheckFailed(if (offline) CheckProblem.OFFLINE else CheckProblem.FAILED)
             }
             return
@@ -320,7 +330,10 @@ object AppUpdater {
             is AppUpdateHttp.Answer.Wait -> {
                 log(context, "GitHub asks to wait until ${answer.until}")
                 prefs.edit().putLong(NOT_BEFORE, answer.until).apply()
-                if (held == null) _state.value = State.CheckFailed(CheckProblem.BUSY, answer.until)
+                if (held == null) {
+                    shown()
+                    _state.value = State.CheckFailed(CheckProblem.BUSY, answer.until)
+                }
                 return
             }
             AppUpdateHttp.Answer.NotModified -> cachedOffer(prefs)
@@ -333,29 +346,33 @@ object AppUpdater {
             )
         }
         val etag = (answer as? AppUpdateHttp.Answer.Found)?.etag
+        // When the answer came: About's "Checked … ago" counts from here, also after a slow answer.
+        val checkedAt = System.currentTimeMillis()
         prefs.edit().apply {
-            putLong(LAST_SUCCESS, now)
+            putLong(LAST_SUCCESS, checkedAt)
             if (etag != null) putString(ETAG, etag) else if (answer != AppUpdateHttp.Answer.NotModified) remove(ETAG)
             if (offer != null) putString(OFFER, json.encodeToString(Offer.serializer(), offer)) else remove(OFFER)
         }.apply()
         val unchanged = if (answer == AppUpdateHttp.Answer.NotModified) "unchanged, " else ""
         log(context, "check: $unchanged${offer?.let { "${it.versionName} is out" } ?: "up to date"}")
-        found(context, offer, held, automatic)
+        shown()
+        found(context, offer, held, automatic, checkedAt)
     }
 
     /**
-     * What the check found: [offer] (null: nothing newer) replaces what was [held] unless it is the
-     * same. An automatic check gives the notice of a new version ([notice], once per version); a
-     * check the player asked for shows it in About, so it needs none.
+     * What the check found, whose answer came at [checkedAt]: [offer] (null: nothing newer)
+     * replaces what was [held] unless it is the same. An automatic check gives the notice of a new
+     * version ([notice], once per version); a check the player asked for shows it in About, so it
+     * needs none.
      */
-    private fun found(context: Context, offer: Offer?, held: Offer?, automatic: Boolean) {
+    private fun found(context: Context, offer: Offer?, held: Offer?, automatic: Boolean, checkedAt: Long) {
         if (offer != held || held == null) {
             if (held != null) {
                 // A newer release, a release built again, or one that was taken down: its download goes.
                 log(context, "the download of ${held.versionName} is removed")
                 clearDownload(context)
             }
-            _state.value = if (offer != null) State.Available(offer) else State.UpToDate
+            _state.value = if (offer != null) State.Available(offer) else State.UpToDate(checkedAt)
         }
         if (offer == null) return
         if (automatic) {

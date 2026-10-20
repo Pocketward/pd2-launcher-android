@@ -55,6 +55,8 @@ object AppUpdate {
     /** A day between automatic checks that worked, an hour after one that failed. */
     const val CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000L
     const val RETRY_INTERVAL_MS = 60 * 60 * 1000L
+    /** About says "up to date" only after a check this recent ([view]); automatic checks can be off. */
+    const val RECENT_CHECK_MS = 7 * CHECK_INTERVAL_MS
     /** The shortest wait after GitHub refused a check without saying how long ([retryAt]). */
     const val MIN_WAIT_MS = 60_000L
     /** A larger APK is not taken as this app's. */
@@ -288,8 +290,8 @@ object AppUpdate {
         /** A check runs and no newer release is known. */
         data object Checking : State
 
-        /** The last check found no newer release. */
-        data object UpToDate : State
+        /** The last check found no newer release; [checkedAt]: when its answer came (wall-clock milliseconds). */
+        data class UpToDate(val checkedAt: Long) : State
 
         /** The last check failed and no newer release is known; [retryAt]: GitHub's wait, for [CheckProblem.BUSY]. */
         data class CheckFailed(val problem: CheckProblem, val retryAt: Long = 0) : State
@@ -358,15 +360,20 @@ object AppUpdate {
     /**
      * About's view of [state]: [wait] says what the install waits for, [metered] whether the network
      * counts data, [allowed] whether Android lets this app install updates ("Install unknown apps");
-     * [now] is wall-clock time, for GitHub's wait.
+     * [now] is wall-clock time, for GitHub's wait and for when the last check was. During GitHub's
+     * wait Check now is off, as a check then does nothing; once the wait is over, the line says so.
      */
     fun view(state: State, wait: Wait?, metered: Boolean, allowed: Boolean, now: Long): View = when (state) {
         State.Idle -> View(Line(R.string.app_update_idle), Tone.PENDING, action = Action.CHECK)
         State.Checking -> View(Line(R.string.app_update_checking), Tone.WORKING, bar = true)
-        State.UpToDate -> View(Line(R.string.app_update_up_to_date), Tone.OK, action = Action.CHECK)
+        is State.UpToDate -> upToDate(state.checkedAt, now)
         is State.CheckFailed -> when (state.problem) {
             CheckProblem.OFFLINE -> View(Line(R.string.app_update_check_offline), Tone.WARNING, action = Action.CHECK)
-            CheckProblem.BUSY -> View(Line(R.string.app_update_check_busy, minutesUntil(state.retryAt, now)), Tone.WARNING, action = Action.CHECK)
+            CheckProblem.BUSY -> if (waitingForGitHub(now, state.retryAt)) {
+                View(Line(R.string.app_update_check_busy, minutesUntil(state.retryAt, now)), Tone.WARNING, action = Action.CHECK, enabled = false)
+            } else {
+                View(Line(R.string.app_update_check_busy_over), Tone.PENDING, action = Action.CHECK)
+            }
             CheckProblem.FAILED -> View(Line(R.string.app_update_check_failed), Tone.WARNING, action = Action.CHECK)
         }
         is State.Available -> available(state, metered)
@@ -407,6 +414,48 @@ object AppUpdate {
             )
         }
     }
+
+    /**
+     * The last check found nothing newer at [checkedAt]: "up to date", with when it looked
+     * ([checkedLine]), while that check is recent ([RECENT_CHECK_MS]). After that, or for a time
+     * more than [AHEAD_MS] after [now] (the clock went back), the line says that the app has not
+     * looked for a while, so an old answer does not show as a new one.
+     */
+    private fun upToDate(checkedAt: Long, now: Long): View {
+        val age = now - checkedAt
+        if (age > RECENT_CHECK_MS || age < -AHEAD_MS) {
+            return View(Line(R.string.app_update_not_checked_lately), Tone.PENDING, action = Action.CHECK)
+        }
+        return View(Line(R.string.app_update_up_to_date), Tone.OK, action = Action.CHECK, note = checkedLine(age))
+    }
+
+    /** When the last check was, [age] milliseconds ago: just now (a little ahead too), minutes, hours, then days. */
+    private fun checkedLine(age: Long): Line = when {
+        age < MINUTE_MS -> Line(R.string.app_update_checked_now)
+        age < HOUR_MS -> Line(R.string.app_update_checked_minutes, age / MINUTE_MS)
+        age < 2 * HOUR_MS -> Line(R.string.app_update_checked_one_hour)
+        age < 2 * CHECK_INTERVAL_MS -> Line(R.string.app_update_checked_hours, age / HOUR_MS)
+        else -> Line(R.string.app_update_checked_days, age / CHECK_INTERVAL_MS)
+    }
+
+    /**
+     * How long until About's words for [state] can change with the clock alone, at wall-clock
+     * [now]: GitHub's wait counts down by whole minutes and then ends, and "Checked … ago" moves on
+     * by the minute. At most a minute; About reads the clock again then.
+     */
+    fun refreshIn(state: State, now: Long): Long {
+        val step = when (state) {
+            is State.CheckFailed -> (state.retryAt - now).takeIf { it > 0 }?.let { Math.floorMod(it, MINUTE_MS) }
+            is State.UpToDate -> MINUTE_MS - Math.floorMod(now - state.checkedAt, MINUTE_MS)
+            else -> null
+        }
+        return step?.takeIf { it > 0 } ?: MINUTE_MS
+    }
+
+    private const val MINUTE_MS = 60_000L
+    private const val HOUR_MS = 60 * MINUTE_MS
+    /** The most a last check may be ahead of the clock and still count as "just now" ([upToDate]). */
+    private const val AHEAD_MS = 5 * MINUTE_MS
 
     private fun ready(state: State.Ready, wait: Wait?, allowed: Boolean): View {
         val line = when (state.problem) {

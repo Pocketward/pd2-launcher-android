@@ -19,17 +19,22 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 /**
- * The update in place from an older app, whose runtime was Wine-GE under FEX: its prefix in the
- * managed root [root] (Wine-GE's x86-64 system folders, which the ARM64 Wine cannot use) becomes a
- * copy of the new runtime's prefix [template], with what the player keeps moved over from the old
- * one: the managed game folder (`C:\Program Files (x86)\Diablo II`, with its link to the
- * characters), Blizzard's download that has not finished (`C:\pd2launcher-downloads`, which the
- * downloader continues), the Launcher's records of the game folder and an imported game, the `G:`
- * drive of a game folder used in place, and the game's registry keys (Blizzard Entertainment's:
- * the install path the Launcher checks, and the game's own settings). Then the old prefix goes.
+ * The update in place of a prefix that an older runtime or another template made: an older app's,
+ * whose runtime was Wine-GE under FEX (Wine-GE's x86-64 system folders, which the ARM64 Wine cannot
+ * use), or one of another generation of this runtime's template ([GENERATION]: another Wine, other
+ * registry values). That prefix in the managed root [root] becomes a copy of
+ * the new runtime's prefix [template], with what the player keeps moved over from the old one: the
+ * managed game folder (`C:\Program Files (x86)\Diablo II`, with its link to the characters),
+ * Blizzard's download that has not finished (`C:\pd2launcher-downloads`, which the downloader
+ * continues), the Launcher's records of the game folder and an imported game, the `G:` drive of a
+ * game folder used in place, and the game's registry keys (Blizzard Entertainment's: the install
+ * path the Launcher checks, and the game's own settings). Then the old prefix goes: its links go as
+ * links, never what they lead to. No Wine prefix update runs on the phone: most files of the
+ * prefix are links into the runtime's Wine, and `wineboot -u` would write through them.
  *
- * A prefix made from the template carries `.update-timestamp` "disable"; any other one is an older
- * runtime's. Each step can stop and run again: the new prefix is made beside the old one
+ * A prefix made from the current template carries `.update-timestamp` "disable" and the
+ * template's generation ([ours]); any other one moves. Each step can stop and run again: the
+ * new prefix is made beside the old one
  * ([MIGRATING]), the old one is renamed out of the way ([OLD]) and the new one into place, then
  * the player's files move over (each a rename), and the old one goes last. A later run finishes
  * what a stop left. When a step fails, [setAside] keeps the old game folder for Import instead.
@@ -62,8 +67,9 @@ class LegacyPrefix(
         // An older prefix [setAside] kept only waits for Ready ([removeOld]): nothing in it moves.
         if (File(old, SET_ASIDE).exists()) return
         if (!old.exists()) {
-            if (!prefix.isDirectory || ours(prefix)) return
-            log("update in place: the older runtime's prefix becomes the new runtime's")
+            if (!prefix.isDirectory || ours(prefix, template)) return
+            val made = if (stamp(prefix) == "disable") "template generation ${generation(prefix)}" else "an older runtime's"
+            log("update in place: the prefix ($made) becomes a copy of the template (generation ${generation(template)})")
             makeNew(prefix)
             Files.move(prefix.toPath(), old.toPath(), StandardCopyOption.ATOMIC_MOVE)
             syncDirectory(root.toPath())
@@ -139,7 +145,7 @@ class LegacyPrefix(
         if (found != null) unlinkSave(found)
         if (prefix.isDirectory) {
             when {
-                ours(prefix) -> {
+                ours(prefix, template) -> {
                     for (record in listOf(POINTER, IMPORT_RECEIPT, "dosdevices/g:")) {
                         Files.deleteIfExists(File(prefix, record).toPath())
                     }
@@ -444,9 +450,38 @@ class LegacyPrefix(
             return lines.joinToString("\n")
         }
 
-        /** Whether [prefix] was made from the new runtime's template. */
-        fun ours(prefix: File): Boolean =
-            File(prefix, ".update-timestamp").let { it.isFile && it.readText().trim() == "disable" }
+        /**
+         * In a template, and so in each prefix made from it: the template's generation, a number
+         * (runtime/prefix.sh writes config.sh's PREFIX_GENERATION). It is raised by hand when
+         * existing prefixes must get a change of the template (another Wine, other registry values).
+         */
+        const val GENERATION = ".pd2-prefix-generation"
+
+        /**
+         * Whether [prefix] was made from the current [template]: its `.update-timestamp` is
+         * "disable", as in every copy of a template (Wine never updates it by itself), and its
+         * [generation] is the template's. A stamp or a mark that cannot be read is no match, so
+         * such a prefix moves, once: the new one has the template's.
+         */
+        fun ours(prefix: File, template: File): Boolean =
+            stamp(prefix) == "disable" && generation(prefix) == generation(template)
+
+        /** The text of [prefix]'s `.update-timestamp`, trimmed; null when it is not there or cannot be read. */
+        private fun stamp(prefix: File): String? =
+            runCatching { File(prefix, ".update-timestamp").takeIf { it.isFile && it.length() < 64 }?.readText() }
+                .getOrNull()?.trim()
+
+        /**
+         * The template generation of [dir], a template or a prefix made from one: the whole number in
+         * its [GENERATION]; 1 when there is no such file (the templates made before the mark); null
+         * when it holds no whole number, or is a folder, a file of 64 bytes or more, or a file that
+         * cannot be read.
+         */
+        fun generation(dir: File): Int? {
+            val mark = File(dir, GENERATION)
+            if (!mark.exists()) return 1
+            return runCatching { mark.takeIf { it.isFile && it.length() < 64 }?.readText() }.getOrNull()?.trim()?.toIntOrNull()
+        }
 
         /** The folder the engine's game folder record [record] ([POINTER]) names; null: none, or it cannot be read. */
         fun recordedPath(record: File): String? = record.takeIf { it.isFile && it.length() < 64 * 1024 }?.let {

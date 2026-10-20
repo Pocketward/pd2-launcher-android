@@ -11,6 +11,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -35,6 +36,8 @@ class AppUpdateHost(private val activity: ComponentActivity) {
     private val allowed = mutableStateOf(true)
     /** The network counts data (mobile data): About says so before the download. */
     private val metered = mutableStateOf(false)
+    /** Counts the returns to the front: About reads the wall clock again then, as its timer does not run while the device sleeps. */
+    private val returns = mutableIntStateOf(0)
 
     /** Whether this build gets app updates (About's group, Settings → App's section). */
     val available: Boolean get() = AppUpdater.available(activity)
@@ -60,6 +63,7 @@ class AppUpdateHost(private val activity: ComponentActivity) {
     fun resumed() {
         allowed.value = activity.packageManager.canRequestPackageInstalls()
         metered.value = AppUpdater.metered(activity)
+        returns.intValue++
         AppUpdater.resumed(activity)
     }
 
@@ -75,8 +79,18 @@ class AppUpdateHost(private val activity: ComponentActivity) {
             delay(at + Play.LAUNCH_PENDING_MS - SystemClock.elapsedRealtime())
             clock = SystemClock.elapsedRealtime()
         }
+        // The wall clock for GitHub's wait and "Checked … ago": read again as the state changes, at
+        // each return to the front, and while About stays open whenever the words can change with
+        // the time alone.
+        var wallClock by remember { mutableLongStateOf(System.currentTimeMillis()) }
+        LaunchedEffect(state, returns.intValue) {
+            while (true) {
+                wallClock = System.currentTimeMillis()
+                delay(AppUpdate.refreshIn(state, wallClock))
+            }
+        }
         if (!available) return null
-        val view = AppUpdate.view(state, AppUpdate.waitFor(status, copying, clock), metered.value, allowed.value, System.currentTimeMillis())
+        val view = AppUpdate.view(state, AppUpdate.waitFor(status, copying, clock), metered.value, allowed.value, wallClock)
         return UpdateUi(view, ::act, ::openPage)
     }
 

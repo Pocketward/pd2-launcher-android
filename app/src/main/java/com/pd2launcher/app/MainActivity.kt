@@ -76,7 +76,7 @@ import com.pd2launcher.app.ui.PlayScreen
 import com.pd2launcher.app.ui.RefusalNotice
 import com.pd2launcher.app.ui.RepairScreen
 import com.pd2launcher.app.ui.rememberImported
-import com.pd2launcher.app.ui.rememberInstallerDownloadBytes
+import com.pd2launcher.app.ui.rememberInstallerDownloads
 import com.pd2launcher.app.ui.SettingsNav
 import com.pd2launcher.app.ui.SettingsScreen
 import com.pd2launcher.app.ui.SourceScreen
@@ -141,6 +141,12 @@ class MainActivity : ComponentActivity() {
     /** App updates: About's group, Settings → App's section and Android's window ([AppUpdateHost]). */
     private val appUpdate = AppUpdateHost(this)
     private var sessionStarted = false
+    /**
+     * Back on the first screen (Play, or Repair in its place) closes the app: Android moves it to
+     * the back, and the idle session ends after the short wait, not the long one of Home
+     * ([SessionIdle]). Until the next onStart.
+     */
+    private var closing = false
     private val paths by lazy { SessionPaths(DeviceCheck.dataDir(this)) }
     /** The debug entry points below ([readScreenExtras], [startSession], the tests in onCreate); never in a release build. */
     private val debuggable get() = BuildConfig.DEBUG
@@ -447,7 +453,14 @@ class MainActivity : ComponentActivity() {
                 },
                 // Back to Play; with the installation found broken (or Start over running) there
                 // is none: Back leaves the app, and Settings and the logs are on Repair itself.
-                onBack = { if (installed == Installed.Repair) moveTaskToBack(true) else repairOpen.value = false },
+                onBack = {
+                    if (installed == Installed.Repair) {
+                        closing = true
+                        moveTaskToBack(true)
+                    } else {
+                        repairOpen.value = false
+                    }
+                },
                 onSettings = { openSettings(SettingsNav.GAME) }.takeIf { Onboarding.repairLinks(record) },
                 // After an update in place whose moved game the engine rejected: Import of it first.
                 onImport = {
@@ -466,6 +479,11 @@ class MainActivity : ComponentActivity() {
         } else if (installed is Installed.Refused) {
             NotSupportedScreen(installed.screen, onClose = ::finish)
         } else if (installed is Installed.Play || play == Play.Mode.PLAY) Box(Modifier.fillMaxSize()) {
+            // Back on Play closes the app (the notice below takes Back first while it shows).
+            BackHandler {
+                closing = true
+                moveTaskToBack(true)
+            }
             val pressed = {
                 SessionService.dismissRefusal()
                 launchPress.value = Play.LaunchPress(SystemClock.elapsedRealtime(), status.gameEnvironmentFailure)
@@ -505,16 +523,18 @@ class MainActivity : ComponentActivity() {
             // downloads can go and, after an import from Android's own storage, so can the Diablo II
             // folder the player copied onto the device (after an import from Lite, Lite keeps its copy).
             val app by AppSettingsStore.current.collectAsState()
-            val downloadBytes by rememberInstallerDownloadBytes(status.snapshot?.installation)
+            val downloadsNow by rememberInstallerDownloads(status.snapshot?.installation)
             val importedNow by rememberImported(status.snapshot?.installation, status.snapshot?.gameFolder?.path)
-            val bytes = downloadBytes
+            val downloads = downloadsNow
             val imported = importedNow
-            if (bytes != null && imported != null && InstallerDownloads.showNotice(status.snapshot, app.downloadsNoticeAnswered, app.gamePlayed, bytes, imported)) {
+            if (downloads != null && imported != null &&
+                InstallerDownloads.showNotice(status.snapshot, app.downloadsNoticeAnswered, app.gamePlayed, downloads.bytes, imported)
+            ) {
                 val answer = { AppSettingsStore.save(this@MainActivity, AppSettingsStore.load(this@MainActivity).copy(downloadsNoticeAnswered = true)) }
                 DownloadsNotice(
                     InstallerDownloads.notice(
-                        bytes, imported, remember { SourceImport.pickedFolder(this@MainActivity) },
-                        remember { SourceImport.pickedFrom(this@MainActivity) },
+                        downloads.bytes, imported, remember { SourceImport.pickedFolder(this@MainActivity) },
+                        remember { SourceImport.pickedFrom(this@MainActivity) }, clientOnly = downloads.clientOnly,
                     ),
                     onRemove = {
                         answer()
@@ -821,12 +841,22 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
+        closing = false
         SessionService.appForeground(true)
+        // The session ends by itself while nothing runs and the app is closed; back in front, it starts again.
+        if (sessionStarted) SessionService.resume(this)
     }
 
     override fun onStop() {
         super.onStop()
-        SessionService.appForeground(false)
+        // Closed (Back on the first screen, or the activity ends), or only left (Home, the lock, another app).
+        SessionService.appForeground(false, closed = closing || isFinishing)
+    }
+
+    override fun onDestroy() {
+        // Swiped away from the recent apps after Home: closed now.
+        if (isFinishing) SessionService.appClosed()
+        super.onDestroy()
     }
 
     override fun onResume() {

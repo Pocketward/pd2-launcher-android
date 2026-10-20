@@ -26,9 +26,10 @@ import java.nio.file.attribute.PosixFilePermissions
  * them installed and downloads none of them. The files that hold the data-folder placeholder
  * (the tar's first entry, `relocate.list`) get [dataDir] in its place as they are unpacked
  * ([Relocation]). A marker naming the version is written last; a newer version replaces the trees
- * the older one unpacked, and an older app's FEX runtime goes ([LEGACY]); a prefix that older
- * runtime made becomes one of this runtime's, with the game and its records ([LegacyPrefix]).
- * When that fails, the older game folder goes to [keptGame] for Import instead.
+ * the older one unpacked, and an older app's FEX runtime goes ([LEGACY]); a prefix that an older
+ * runtime or another generation of the template made becomes a copy of this runtime's template,
+ * with the game and its records ([LegacyPrefix]). When that fails, the older game folder goes to
+ * [keptGame] for Import instead.
  */
 class AppRuntime(
     private val managedRoot: File,
@@ -59,7 +60,8 @@ class AppRuntime(
      * the App userland's unpack does, every file is synced, then every folder (deepest first),
      * and only then is the marker written (a temporary name, synced, renamed, the folder synced):
      * after a power cut the marker never names a version whose files did not all reach the disk.
-     * A prefix an older app's runtime made is moved over to this one's last, before the marker;
+     * A prefix that an older runtime or another template generation made ([LegacyPrefix.ours]) is
+     * moved over to this one's template last, before the marker;
      * when that fails, its game folder waits for Import ([LegacyPrefix.setAside]), and that folder
      * is returned (null: the update in place passed, or there was nothing to update).
      */

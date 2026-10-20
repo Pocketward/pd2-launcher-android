@@ -5,8 +5,18 @@
     <string name="app_update_idle">PD2 Launcher has not looked for a new version yet.</string>
     <string name="app_update_checking">Looking for a new version…</string>
     <string name="app_update_up_to_date">PD2 Launcher is up to date.</string>
+    <!-- Under "up to date": when the last check was. -->
+    <string name="app_update_checked_now">Checked just now.</string>
+    <string name="app_update_checked_minutes">Checked %1$d min ago.</string>
+    <string name="app_update_checked_one_hour">Checked 1 hour ago.</string>
+    <!-- 2 to 47 hours. -->
+    <string name="app_update_checked_hours">Checked %1$d hours ago.</string>
+    <string name="app_update_checked_days">Checked %1$d days ago.</string>
+    <!-- The last check that worked is more than 7 days old (automatic checks can be off), or more than 5 min ahead of the clock (it was set back). -->
+    <string name="app_update_not_checked_lately">PD2 Launcher has not looked for a new version for more than a week.</string>
     <string name="app_update_check_offline">Could not look for a new version. Check your connection, then try again.</string>
     <string name="app_update_check_busy">GitHub asks the app to wait before it looks again. Try again in %1$d min.</string>
+    <string name="app_update_check_busy_over">The wait is over. Tap Check now to look for a new version.</string>
     <string name="app_update_check_failed">Could not look for a new version. Try again later.</string>
     <string name="app_update_available">Version %1$s is out (%2$d MB).</string>
     <string name="app_update_paused">Version %1$s: %2$d of %3$d MB downloaded.</string>

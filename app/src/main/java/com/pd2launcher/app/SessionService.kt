@@ -78,6 +78,14 @@ data class SessionStatus(
 ) {
     enum class Engine { STOPPED, STARTING, CONNECTED, RESTARTING, FAILED }
 
+    companion object {
+        /**
+         * A new session's status, before its engine says more: Play shows "Getting ready…", and
+         * an app update's Install waits ([AppUpdate.waitFor]). Nothing of a session before it stays.
+         */
+        val STARTING = SessionStatus(engine = Engine.STARTING)
+    }
+
     /** The App userland unpack. */
     sealed interface Userland {
         data object Waiting : Userland
@@ -144,6 +152,12 @@ class SessionService : Service() {
     private var launchSent: Pair<Long, Long>? = null
     /** When the Game client began running ([InstallerDownloads.played]); the snapshot collection only. */
     private var gameRunningSince: Long? = null
+    /** Whether the game folder was there when the Files roots were last told ([followGameFolder]); worker thread only. */
+    private var gameFolderShown: Boolean? = null
+    /** The newest start request's id, which an idle end names ([stopWhenIdle]). */
+    @Volatile private var lastStartId = 0
+    /** An idle end has asked Android to stop this service, and Android took it ([stopWhenIdle]); worker thread only. */
+    private var stopAsked = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -159,6 +173,8 @@ class SessionService : Service() {
         // it comes over Check, once the device check passed (MainActivity).
         createChannel()
         startForeground(NOTIFICATION_ID, notification())
+        // Nothing of the session before stays: the one stopped last may not have cleared its status yet.
+        _status.value = SessionStatus.STARTING
         running = this
         log("service started (pid ${Os.getpid()}, uid ${Os.getuid()}, received ${ReceivedBytes.current() ?: "uncounted"} bytes so far)")
         // While a job downloads or installs: the app's received bytes, for the engine's stall rule.
@@ -168,9 +184,60 @@ class SessionService : Service() {
                 delay(ReceivedBytes.INTERVAL_MS)
             }
         }
+        // The session ends by itself once nothing has run for a while with the app closed: 30 s
+        // after the player closed it, 10 min after it only left the screen (SessionIdle).
+        scope.launch {
+            var since: Long? = null
+            while (true) {
+                delay(SessionIdle.POLL_MS)
+                val now = SystemClock.elapsedRealtime()
+                val gone = away
+                since = SessionIdle.idleSince(since, idle(now), now, gone)
+                val idleSince = since ?: continue
+                if (SessionIdle.due(idleSince, now, gone)) {
+                    since = null
+                    post { stopWhenIdle() }
+                }
+            }
+        }
+    }
+
+    /** The player swiped the app away while the session runs: the idle session ends after the short wait. */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        appClosed()
+    }
+
+    /** Whether the session may end now ([SessionIdle.idle]). */
+    private fun idle(now: Long): Boolean = SessionIdle.idle(
+        _status.value, appForeground, SetupRecordStore.current.value, SourceImport.copy.value is SourceCopy.Copying,
+        SessionIdle.updating(AppUpdater.state.value), now,
+    )
+
+    /**
+     * On the worker: the session ends while it is still idle; the activity starts it again when
+     * the player comes back ([resume]). Only the newest start request may end it: a start that
+     * came meanwhile keeps the session. The start id is read first, then [ending] is set, then
+     * the session looks again: so a return in between either sees [ending] and starts the session
+     * again (Android then refuses this end, or makes a new service), or this look sees the app in
+     * front.
+     */
+    private fun stopWhenIdle() {
+        // Once Android took an end, a later look must not clear [ending]: the end goes on.
+        if (stopping || stopAsked) return
+        val id = lastStartId
+        ending = true
+        if (!idle(SystemClock.elapsedRealtime())) {
+            ending = false
+            return
+        }
+        log("nothing runs and the app is closed: the session ends")
+        if (stopSelfResult(id)) stopAsked = true else ending = false
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        lastStartId = startId
+        ending = false
         // The player's Try again: the failures so far no longer count, and it starts now.
         if (intent?.action == ACTION_RETRY) {
             worker.execute {
@@ -311,7 +378,7 @@ class SessionService : Service() {
         val previous = stoppingWorker
         if (previous == null || previous === worker || previous.isTerminated) return
         log("waiting for the previous session to stop")
-        _status.value = SessionStatus()
+        _status.value = SessionStatus.STARTING
         if (!previous.awaitTermination(PREVIOUS_STOP_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
             throw IOException("the previous session did not stop within $PREVIOUS_STOP_TIMEOUT_MS ms")
         }
@@ -396,8 +463,9 @@ class SessionService : Service() {
 
     /**
      * The runtime the app provides (the ARM64 Wine, its prefix template and the official launcher's
-     * .NET), unpacked once into the Launcher's managed root before the engine starts (an older
-     * app's prefix moved over to it); shown as part of the userland unpack.
+     * .NET), unpacked once into the Launcher's managed root before the engine starts (a prefix of
+     * an older runtime or template generation moved over to it); shown as part of the userland
+     * unpack.
      */
     private fun ensureAppRuntime() {
         val (version, bytes) = AppRuntime.info(this) ?: run {
@@ -470,6 +538,25 @@ class SessionService : Service() {
         } catch (error: Exception) {
             log("after the update's Import: $error")
         }
+    }
+
+    /**
+     * The "PD2 Launcher" root of Android's Files app is there only while there is a game folder
+     * ([GameFilesProvider.queryRoots]); when that changes, the Files app and the file pickers are
+     * told to read the roots again, or they keep the old list (no root after an install or an
+     * import, until the app restarts).
+     */
+    private fun followGameFolder() {
+        val shown = try {
+            GameFilesProvider.documents(this).available()
+        } catch (error: Exception) {
+            log("game folder: $error")
+            return
+        }
+        if (shown == gameFolderShown) return
+        if (gameFolderShown != null) log(if (shown) "the game folder is there: the Files roots change" else "the game folder is gone: the Files roots change")
+        gameFolderShown = shown
+        GameFilesProvider.rootsChanged(this)
     }
 
     /**
@@ -670,6 +757,12 @@ class SessionService : Service() {
                 }
                 post { applyBackgroundSound() }
                 post { holdWorkLocks(WorkLocks.wanted(next)) }
+                // An install or an import makes the game folder, and Start over removes it.
+                if (previous == null || previous.installation != next.installation || previous.gameFolder != next.gameFolder ||
+                    (previous.activeJob == null) != (next.activeJob == null)
+                ) {
+                    post { followGameFolder() }
+                }
                 AppRuntime.sweep(previous, next)?.let { sweep -> post { keepRuntimeArchives(sweep) } }
                 // After an update in place that failed: the older game folder, for Install to import;
                 // once a session, again at the next start, until the player chooses another source.
@@ -1214,9 +1307,11 @@ class SessionService : Service() {
     }
 
     private fun notification(): Notification {
-        val open = PendingIntent.getActivity(
-            this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE,
-        )
+        // The app's own activity, with what was on top of it in its task closed (a picker, Android's
+        // installer window), not a second activity over them: one activity says whether the app shows.
+        val activity = Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        // Its own request code: a pending intent of the same intent without these flags is not reused.
+        val open = PendingIntent.getActivity(this, NOTIFICATION_ID, activity, PendingIntent.FLAG_IMMUTABLE)
         return Notification.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentTitle(getString(R.string.notification_title))
@@ -1275,11 +1370,27 @@ class SessionService : Service() {
         /** Whether the activity is started; the game's sound mutes in the background (see [applyBackgroundSound]). */
         @Volatile private var appForeground = true
 
-        /** The activity's onStart (true) and onStop (false). */
-        fun appForeground(foreground: Boolean) {
+        /**
+         * How and when the app's screens last went away: the player closed the app, or it only
+         * left the screen ([SessionIdle.Away]). A session's idle time starts no earlier, and its
+         * wait depends on it.
+         */
+        @Volatile private var away = SessionIdle.Away(closed = false, since = 0)
+
+        /**
+         * The activity's onStart (true) and onStop (false); [closed]: the player closed the app
+         * (Back on Play, or the activity ends), not only left it (Home, the lock, another app).
+         */
+        fun appForeground(foreground: Boolean, closed: Boolean = false) {
+            if (!foreground) away = SessionIdle.Away(closed, SystemClock.elapsedRealtime())
             appForeground = foreground
             val service = running ?: return
             service.post { service.applyBackgroundSound() }
+        }
+
+        /** The player closed the app after its screens went away: swiped away from the recent apps (the activity ends, or the task goes). */
+        fun appClosed() {
+            if (!appForeground) away = SessionIdle.Away(closed = true, since = SystemClock.elapsedRealtime())
         }
 
         /** The running service, for [authorize]: keys never travel in an Intent. */
@@ -1369,6 +1480,17 @@ class SessionService : Service() {
         fun dismissRefusal() {
             _status.update { it.copy(refusal = null) }
         }
+
+        /**
+         * From the activity's return to the front: starts the session again when it ended by
+         * itself meanwhile ([SessionIdle]); nothing while one runs.
+         */
+        fun resume(context: Context) {
+            if (running == null || ending) send(context)
+        }
+
+        /** The session is ending because it was idle ([stopWhenIdle]); a start request clears it. */
+        @Volatile private var ending = false
 
         /** Starts the service (or hands it [action]). */
         fun send(context: Context, action: String = ACTION_START, xScreen: String? = null) {

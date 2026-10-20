@@ -67,6 +67,16 @@ APP_RUNTIME_DIRECTORY=wine-11.0-arm64
 APP_PREFIX_TEMPLATE=wine-11.0-arm64-prefix
 APP_DOTNET_DIRECTORY=dotnet-6.0.36-x86
 
+# The generation of the prefix template, which prefix.sh writes into it (.pd2-prefix-generation): a
+# whole number from 1 to 999999999. Raise it by hand when existing prefixes must get a change of the
+# template: another Wine version, or other registry values. At a Wine change, raise it, and put the
+# old Wine folder and the old template into AppRuntime.LEGACY. The app moves each prefix of another
+# generation to a copy of the new template, with the game, its records and its registry keys
+# (LegacyPrefix); a prefix without the mark is generation 1. No Wine prefix update runs on the
+# phone: most files of the prefix are links into the runtime's Wine, and wineboot -u would write
+# through them.
+PREFIX_GENERATION=1
+
 # --- helpers --------------------------------------------------------------------------------
 
 # Runs a container with the engine. SELinux labels are off for the bind mounts (an enforcing host

@@ -1,5 +1,6 @@
 package com.pd2launcher.app
 
+import androidx.annotation.StringRes
 import com.pd2launcher.app.control.Game
 import com.pd2launcher.app.control.Installation
 import com.pd2launcher.app.control.Snapshot
@@ -26,8 +27,32 @@ import java.util.Locale
  * says that Lite still has its own copy ([notice]).
  */
 object InstallerDownloads {
-    /** Below the Launcher's managed root. */
-    val PATHS = listOf("cache/artifacts/d2-payload", "cache/artifacts/lod-payload", "cache/client")
+    /** The installers of Diablo II and Lord of Destruction that Blizzard's downloaders fetched, below the Launcher's managed root. */
+    val INSTALLERS = listOf("cache/artifacts/d2-payload", "cache/artifacts/lod-payload")
+
+    /**
+     * The Project Diablo 2 client files that the Download step keeps, below the managed root (the
+     * engine's `CLIENT_PREFETCH`): the files it downloaded and, after an import, the files of the
+     * folder's own client that matched, copied there instead of downloaded.
+     */
+    const val CLIENT = "cache/client"
+
+    /** Below the Launcher's managed root: all that Remove removes. */
+    val PATHS = INSTALLERS + CLIENT
+
+    /**
+     * What the downloads hold, in bytes: the [installers] of Diablo II and Lord of Destruction,
+     * and the Project Diablo 2 [client] files.
+     */
+    data class Downloads(val installers: Long, val client: Long) {
+        val bytes: Long get() = installers + client
+
+        /**
+         * Only the Project Diablo 2 files, as after an import: the game came with the folder, so
+         * there are no installers, and the words say so.
+         */
+        val clientOnly: Boolean get() = installers == 0L && client > 0
+    }
 
     /**
      * The engine's record that the installation was imported, below the managed root
@@ -50,7 +75,27 @@ object InstallerDownloads {
     }
 
     /** Bytes of every file below [PATHS] in [managedRoot]; links are not followed. */
-    fun bytes(managedRoot: File): Long = PATHS.sumOf { treeBytes(File(managedRoot, it).toPath()) }
+    fun bytes(managedRoot: File): Long = downloads(managedRoot).bytes
+
+    /** What [PATHS] in [managedRoot] hold, by kind ([Downloads]); links are not followed. */
+    fun downloads(managedRoot: File): Downloads = Downloads(
+        installers = INSTALLERS.sumOf { treeBytes(File(managedRoot, it).toPath()) },
+        client = treeBytes(File(managedRoot, CLIENT).toPath()),
+    )
+
+    /** Settings → App → Storage's words: the row's [title], its line with the size ([body]) and the question before Remove ([confirm]). */
+    data class Words(@param:StringRes val title: Int, @param:StringRes val body: Int, @param:StringRes val confirm: Int)
+
+    /**
+     * The words for [downloads]: the installers, or only the Project Diablo 2 files
+     * ([Downloads.clientOnly]). While nothing is counted (still counting, or nothing left after
+     * Remove) the engine's import record says which ([imported]): an import has no installers.
+     */
+    fun words(downloads: Downloads?, imported: Boolean): Words = if (downloads?.takeIf { it.bytes > 0 }?.clientOnly ?: imported) {
+        Words(R.string.settings_downloads_client, R.string.settings_downloads_client_body, R.string.settings_downloads_confirm_client)
+    } else {
+        Words(R.string.settings_downloads, R.string.settings_downloads_body, R.string.settings_downloads_confirm)
+    }
 
     /** Whether the installation in [managedRoot] was imported ([IMPORT_RECORD]). */
     fun imported(managedRoot: File): Boolean = File(managedRoot, IMPORT_RECORD).isFile
@@ -116,14 +161,15 @@ object InstallerDownloads {
     fun importedFolderShown(imported: Boolean, from: String?): Boolean = imported && folderSource(from) != FolderSource.OTHER
 
     /**
-     * The notice for [bytes] of downloads; [imported] adds what to know about the folder the
+     * The notice for [bytes] of downloads, which are only the Project Diablo 2 files when
+     * [clientOnly] ([Downloads.clientOnly]); [imported] adds what to know about the folder the
      * player picked ([importedFolderShown]), by [folder] where the app knows it
      * ([SourceImport.pickedFolder]) and by the provider it came from ([from], [folderSource]). Only
      * a folder from Android's own storage is one the player copied onto the device, so only then
      * does the notice say that the folder can be deleted; for Lite's folder it says that Lite still
      * has its own copy.
      */
-    fun notice(bytes: Long, imported: Boolean, folder: String?, from: String?): Notice {
+    fun notice(bytes: Long, imported: Boolean, folder: String?, from: String?, clientOnly: Boolean = false): Notice {
         // Another app's folder: no word on it, whatever the caller says ([importedFolderShown]).
         val shown = importedFolderShown(imported, from)
         val size = size(bytes)
@@ -134,9 +180,10 @@ object InstallerDownloads {
             downloads -> folder?.let { Line(R.string.downloads_notice_folder, it) } ?: Line(R.string.downloads_notice_folder_unnamed)
             else -> folder?.let { Line(R.string.downloads_notice_folder_only, it) } ?: Line(R.string.downloads_notice_folder_only_unnamed)
         }
+        val body = if (clientOnly) R.string.downloads_notice_body_client else R.string.downloads_notice_body
         return Notice(
             title = if (shown) Line(R.string.downloads_notice_title_import) else Line(R.string.downloads_notice_title, size),
-            body = listOfNotNull(Line(R.string.downloads_notice_body, size).takeIf { downloads }, copied),
+            body = listOfNotNull(Line(body, size).takeIf { downloads }, copied),
             remove = Line(R.string.downloads_notice_remove, size).takeIf { downloads },
         )
     }

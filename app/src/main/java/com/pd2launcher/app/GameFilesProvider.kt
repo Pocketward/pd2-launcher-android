@@ -373,7 +373,16 @@ class GameFilesProvider : DocumentsProvider() {
         /** The game folder in use, as documents ([DocumentPaths]). */
         fun documents(context: Context): DocumentPaths {
             val paths = SessionPaths(DeviceCheck.dataDir(context))
-            return DocumentPaths(gameFolder(paths), playerFolder(paths))
+            return DocumentPaths(gameFolder(paths, SessionService.status.value.snapshot?.gameFolder?.path), playerFolder(paths))
+        }
+
+        /**
+         * Tells Android's Files app and the file pickers to read the roots again ([queryRoots]):
+         * the root is there only while there is a game folder, and they keep the roots they read
+         * until they are told.
+         */
+        fun rootsChanged(context: Context) {
+            context.contentResolver.notifyChange(DocumentsContract.buildRootsUri(authority(context)), null, 0)
         }
 
         /** `files/userdata`, where the game folder's Save leads; none when a link is on the way to it ([DocumentPaths.playerFolder]). */
@@ -383,14 +392,14 @@ class GameFilesProvider : DocumentsProvider() {
         }
 
         /**
-         * The game folder in use: the engine's word while it runs, else the Launcher's record of
-         * a folder used in place (`prefix/.pd2launcher-game-folder.json`);
-         * without one, the Managed prefix's. None when that is not where a game folder can be
-         * ([DocumentPaths.gameFolder]).
+         * The game folder in use: the one the engine names ([engineFolder]), else the folder used
+         * in place by the Launcher's record ([recorded], `prefix/.pd2launcher-game-folder.json`),
+         * else the Managed prefix's. An import writes the record, and the engine names that folder
+         * only from its next start, so in the session of the import the record says where the game
+         * is. None when that is not where a game folder can be ([DocumentPaths.gameFolder]).
          */
-        private fun gameFolder(paths: SessionPaths): File? {
-            val snapshot = SessionService.status.value.snapshot
-            val folder = SaveKeeper.liveSave(paths, if (snapshot != null) snapshot.gameFolder?.path else recordedGameFolder(paths)).parentFile!!
+        fun gameFolder(paths: SessionPaths, engineFolder: String?, recorded: () -> String? = { recordedGameFolder(paths) }): File? {
+            val folder = SaveKeeper.liveSave(paths, engineFolder ?: recorded()).parentFile!!
             return DocumentPaths.gameFolder(paths, folder) ?: run {
                 if (folder.exists()) Log.w(TAG, "game folder refused: $folder")
                 null
@@ -400,7 +409,7 @@ class GameFilesProvider : DocumentsProvider() {
         /**
          * The folder used in place by the engine's own record
          * (`prefix/.pd2launcher-game-folder.json`), which holds while the engine has not said yet
-         * (starting or restarting); null without one.
+         * (starting or restarting, or in the session of an import: [gameFolder]); null without one.
          */
         fun recordedGameFolder(paths: SessionPaths): String? = try {
             val record = File(paths.managedRoot, "prefix/.pd2launcher-game-folder.json")

@@ -47,18 +47,33 @@ import com.pd2launcher.app.InstallerDownloads.Refusal
 import com.pd2launcher.app.R
 import com.pd2launcher.app.SessionPaths
 import com.pd2launcher.app.SessionService
+import com.pd2launcher.app.SessionStatus
 import com.pd2launcher.app.SourceImport
 import com.pd2launcher.app.UpgradeImport
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** The installer downloads' size now ([InstallerDownloads.bytes]), counted again when [key] changes; null while counting. */
+/** What the installer downloads hold now ([InstallerDownloads.downloads]), counted again when [key] changes; null while counting. */
 @Composable
-fun rememberInstallerDownloadBytes(key: Any?): State<Long?> {
+fun rememberInstallerDownloads(key: Any?): State<InstallerDownloads.Downloads?> {
     val context = LocalContext.current
-    return produceState<Long?>(null, key) {
+    return produceState<InstallerDownloads.Downloads?>(null, key) {
         value = withContext(Dispatchers.IO) {
-            runCatching { InstallerDownloads.bytes(SessionPaths(DeviceCheck.dataDir(context)).managedRoot) }.getOrNull()
+            runCatching { InstallerDownloads.downloads(SessionPaths(DeviceCheck.dataDir(context)).managedRoot) }.getOrNull()
+        }
+    }
+}
+
+/**
+ * Whether the engine's import record is there ([InstallerDownloads.imported]), read again when
+ * [key] changes; null while reading. One file, so it comes before a count of the downloads.
+ */
+@Composable
+fun rememberImportRecord(key: Any?): State<Boolean?> {
+    val context = LocalContext.current
+    return produceState<Boolean?>(null, key) {
+        value = withContext(Dispatchers.IO) {
+            runCatching { InstallerDownloads.imported(SessionPaths(DeviceCheck.dataDir(context)).managedRoot) }.getOrNull()
         }
     }
 }
@@ -137,13 +152,20 @@ fun DownloadsNotice(notice: InstallerDownloads.Notice, onRemove: () -> Unit, onL
 fun ColumnScope.StorageRows() {
     val status by SessionService.status.collectAsState()
     var counted by remember { mutableIntStateOf(0) }
-    val bytes by rememberInstallerDownloadBytes(counted)
+    val downloads by rememberInstallerDownloads(counted)
     val imported by rememberImported(status.snapshot?.installation, status.snapshot?.gameFolder?.path)
     var confirm by remember { mutableStateOf(false) }
     var working by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     val context = LocalContext.current
-    val known = bytes
+    val known = downloads?.bytes
+    // After an import only Project Diablo 2's files are there: the words name them, not installers.
+    // While the row counts, and once nothing is left, the import record says which words.
+    val importRecord by rememberImportRecord(status.snapshot?.installation)
+    val words = InstallerDownloads.words(downloads, importRecord == true)
+    // Only a session whose engine has said how the installation stands can remove them: while one
+    // starts again, Remove would be refused as if the game were not installed.
+    val canRemove = status.engine == SessionStatus.Engine.CONNECTED && status.snapshot != null
     val remove = {
         confirm = false
         val refusal = InstallerDownloads.refusal(status.snapshot)
@@ -170,18 +192,18 @@ fun ColumnScope.StorageRows() {
         horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(stringResource(R.string.settings_downloads), style = Type.Body, color = Palette.Text)
+            Text(stringResource(words.title), style = Type.Body, color = Palette.Text)
             Text(
                 when {
                     working -> stringResource(R.string.settings_downloads_removing)
                     known == null -> stringResource(R.string.settings_downloads_counting)
                     known == 0L -> stringResource(R.string.settings_downloads_none)
-                    else -> stringResource(R.string.settings_downloads_body, InstallerDownloads.size(known))
+                    else -> stringResource(words.body, InstallerDownloads.size(known))
                 },
                 style = Type.Hint, color = Palette.Muted,
             )
         }
-        if (known != null && known > 0 && !working && !confirm) {
+        if (known != null && known > 0 && !working && !confirm && canRemove) {
             LauncherButton(
                 stringResource(R.string.settings_downloads_remove), { message = null; confirm = true },
                 height = 48.dp, padding = 16.dp, style = Type.Hint.copy(fontWeight = FontWeight.SemiBold),
@@ -190,10 +212,12 @@ fun ColumnScope.StorageRows() {
     }
     if (confirm && known != null) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(stringResource(R.string.settings_downloads_confirm, InstallerDownloads.size(known)), style = Type.Body, color = Palette.Text)
+            Text(stringResource(words.confirm, InstallerDownloads.size(known)), style = Type.Body, color = Palette.Text)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 LauncherButton(stringResource(R.string.settings_downloads_cancel), { confirm = false }, kind = Kind.QUIET, height = 48.dp, padding = 16.dp)
-                LauncherButton(stringResource(R.string.settings_downloads_remove), remove, kind = Kind.DANGER, height = 48.dp, padding = 16.dp)
+                LauncherButton(
+                    stringResource(R.string.settings_downloads_remove), remove, kind = Kind.DANGER, enabled = canRemove, height = 48.dp, padding = 16.dp,
+                )
             }
         }
     }

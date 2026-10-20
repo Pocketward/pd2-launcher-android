@@ -3,6 +3,8 @@
     <!-- The one-time notice on Play after the first game session (InstallerDownloads). -->
     <string name="downloads_notice_title">Free %1$s on this device</string>
     <string name="downloads_notice_body">If the game works for you, you can free %1$s by removing the downloaded installers. If you ever reinstall, they are downloaded again.</string>
+    <!-- Only the Project Diablo 2 files, as after an import: no installer was downloaded. -->
+    <string name="downloads_notice_body_client">If the game works for you, you can free %1$s by removing the app\'s copy of the Project Diablo 2 files. If you ever reinstall, the app downloads them again.</string>
     <string name="downloads_notice_remove">Free %1$s</string>
     <string name="downloads_notice_later">Later</string>
     <string name="downloads_notice_where">You can also do this later in Settings → App → Storage.</string>
@@ -22,6 +24,9 @@
     <string name="settings_section_storage">Storage</string>
     <string name="settings_downloads">Downloaded installers</string>
     <string name="settings_downloads_body">%1$s · The installers of Diablo II, Lord of Destruction and Project Diablo 2. The game does not need them; a reinstall downloads them again.</string>
+    <!-- Only the Project Diablo 2 files, as after an import (downloads_notice_body_client). -->
+    <string name="settings_downloads_client">Copy of the Project Diablo 2 files</string>
+    <string name="settings_downloads_client_body">%1$s · A reinstall can use this copy. The game does not need it; without it, a reinstall downloads the files again.</string>
     <string name="settings_downloads_none">Nothing to remove.</string>
     <string name="settings_copied_folder">The app has its own copy of Diablo II, so you can safely delete the folder you copied to this device from your PC (%1$s).</string>
     <string name="settings_copied_folder_unnamed">The app has its own copy of Diablo II, so you can safely delete the Diablo II folder you copied to this device from your PC.</string>
@@ -30,11 +35,12 @@
     <string name="settings_downloads_counting">Counting…</string>
     <string name="settings_downloads_remove">Remove</string>
     <string name="settings_downloads_confirm">Remove %1$s of downloaded installers? The game keeps working.</string>
+    <string name="settings_downloads_confirm_client">Remove the %1$s copy of the Project Diablo 2 files? The game keeps working.</string>
     <string name="settings_downloads_cancel">Cancel</string>
     <string name="settings_downloads_removing">Removing…</string>
     <string name="settings_downloads_removed">Removed: %1$s freed.</string>
     <string name="downloads_refused_game_running">Not now: the game is running. Remove them once it has closed.</string>
     <string name="downloads_refused_busy">Not now: an install or repair is running. Remove them once it is done.</string>
-    <string name="downloads_refused_not_ready">Not yet: the game is not installed, so the installers are still needed.</string>
+    <string name="downloads_refused_not_ready">Not yet: the game is not installed, so these files are still needed.</string>
     <string name="downloads_failed">They could not be removed (%1$s).</string>
 </resources>

@@ -8,8 +8,9 @@ import java.io.File
 import java.nio.file.Path
 
 /**
- * The Import that follows an update in place from the FEX line that failed
- * ([LegacyPrefix.setAside]): the older installation's game folder waits in
+ * The Import that follows an update in place that failed ([LegacyPrefix.setAside]: the prefix of
+ * an older runtime, such as the FEX line's, or of another template generation): the older
+ * installation's game folder waits in
  * [SessionPaths.upgradeGame]. The session service hands it to the engine as the existing Diablo II
  * while nothing of the installation is set up yet, so Install imports it with one press and
  * nothing is downloaded: again at each start (the system's folder picker cannot reach it), until

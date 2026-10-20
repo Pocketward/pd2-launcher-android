@@ -69,7 +69,7 @@ Wine's programs are built for the placeholder data folder like the userland; the
 - The engine runs Wine's ARM64 programs directly; Wine runs the game's, the installers' and the official launcher's 32-bit x86 code in Box64's `wowbox64.dll`.
 - Box64's recompiler keeps its defaults, except for Project Diablo 2's installer (exact x86 flags) and the official launcher with its updater (strong memory order); our Box64 patch 0006 applies those settings only to the programs they name.
 - On Android the engine also installs its XInput bridge as `xinput1_4.dll`, disables `nsiproxy.sys` (Android refuses the netlink socket it needs) and Wine's HID and Bluetooth drivers (the controller goes through the bridge), seeds D2GL's settings, and reaches an imported game folder through drive `G:` on the data partition, because Android's root (Wine's `Z:`) is read-only.
-- An update from an app version with the older runtime (Wine-GE under FEX) replaces that runtime and moves the game folder, the Launcher's records and the game's registry keys into a new prefix (`LegacyPrefix.kt`).
+- An update from an app version with the older runtime (Wine-GE under FEX) replaces that runtime and moves the game folder, the Launcher's records and the game's registry keys into a new prefix (`LegacyPrefix.kt`); so does an update whose prefix template has another generation (`.pd2-prefix-generation`, `runtime/config.sh`'s `PREFIX_GENERATION`).
 
 ## Graphics
 

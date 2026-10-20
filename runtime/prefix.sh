@@ -12,6 +12,8 @@
 #     registry values are not there: the game's installers and the engine write them, and the
 #     engine's audit takes a value without a game as a damaged installation
 #   - the prefix is never updated at a start (.update-timestamp "disable")
+#   - the template carries its generation (.pd2-prefix-generation, config.sh's PREFIX_GENERATION):
+#     the app moves a prefix of another generation to a copy of the template (LegacyPrefix)
 #   - every file that is a copy of a Wine file becomes a relative link into the runtime's Wine as
 #     the managed root lays it out (prefix-dedupe.py: prefix/ next to runner/wine-11.0-arm64/);
 #     links to modules the reduced Wine leaves out dangle, as if the file were missing
@@ -32,7 +34,7 @@ identity() {
     part_identity "$here/prefix.sh" "$here/prefix-dedupe.py" "$here/stage-wineb.py" "debian=$DEBIAN_IMAGE" \
         "wine $(part_hash wine)" "wowbox64 $(part_hash wowbox64)" \
         "userland $(cat "$USERLAND_SRC/packages.lock" "$USERLAND_SRC/build-mesa.sh" "$USERLAND_SRC/userland.env.in" | sha256sum | cut -d' ' -f1)" \
-        "bridge=$XINPUT_BRIDGE_SIZE $XINPUT_BRIDGE_SHA256"
+        "bridge=$XINPUT_BRIDGE_SIZE $XINPUT_BRIDGE_SHA256" "generation=$PREFIX_GENERATION"
 }
 
 case "${1:-}" in
@@ -70,6 +72,7 @@ case "${1:-}" in
             { echo "prefix: the registry values were not imported" >&2; exit 1; }
         rm -rf "$p/.wineserver" "$p/drive_c/windows/sysarm32"
         echo disable > "$p/.update-timestamp"
+        echo "$PREFIX_GENERATION" > "$p/.pd2-prefix-generation"
         python3 /src/prefix-dedupe.py "$p" /cache/work/prefix/wine "runner/$APP_RUNTIME_DIRECTORY"
         bridge="$p/drive_c/windows/syswow64/xinput1_4.dll"
         rm -f "$bridge"
@@ -87,6 +90,9 @@ for part in wine wowbox64; do
     [[ -f "$RUNTIME_PARTS/$part/BUILDINFO" ]] || { echo "prefix: build the part $part first" >&2; exit 1; }
 done
 [[ -f "$USERLAND_TREE/etc/userland.env" ]] || { echo "prefix: build the App userland first (userland/build.sh)" >&2; exit 1; }
+# Before the slow build: the app reads the mark as a whole number (Kotlin's Int), so nine digits at most.
+[[ $PREFIX_GENERATION =~ ^[1-9][0-9]{0,8}$ ]] ||
+    { echo "prefix: PREFIX_GENERATION must be a whole number from 1 to 999999999" >&2; exit 1; }
 id="$(identity)"
 if part_ready prefix "$id"; then
     echo "prefix: reusing parts/prefix"

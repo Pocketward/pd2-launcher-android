@@ -39,7 +39,7 @@ android {
         // targetSdk, which the plugin warns about but builds.
         minSdk = 33
         targetSdk = 28
-        versionName = "0.3.0"
+        versionName = "0.3.1"
         versionCode = versionCodeOf(versionName!!)
         // App updates (AppUpdater): the public releases the app looks at (the newest 10; it takes
         // the highest version that is not a pre-release), where their files must be, the name its

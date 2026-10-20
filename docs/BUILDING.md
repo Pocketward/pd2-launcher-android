@@ -73,7 +73,7 @@ Needs the App userland of step 2 (its relocated tree in the userland cache). `ru
 | --- | --- |
 | `wine.sh` | Cross-builds Wine 11.0 for ARM64 in WoW64 mode (aarch64 and i386 PE sides, llvm-mingw) with `patches/wine/`. |
 | `wowbox64.sh` | Builds Box64's `wowbox64.dll`, Wine's x86 CPU DLL, at the pinned commit with `patches/box64/`. |
-| `prefix.sh` | Makes the prefix template with that Wine under qemu-user, links its copies of Wine's files into the runtime's Wine (`prefix-dedupe.py`), and puts in the engine's XInput bridge (from its sources) and the link to .NET. |
+| `prefix.sh` | Makes the prefix template with that Wine under qemu-user, links its copies of Wine's files into the runtime's Wine (`prefix-dedupe.py`), and puts in the engine's XInput bridge (from its sources), the link to .NET and the template's generation (`.pd2-prefix-generation`, `runtime/config.sh`'s `PREFIX_GENERATION`). |
 | `dotnet.sh` | Unpacks the .NET 6 runtime and Windows Desktop runtime, x86. |
 | `trim.py`, `stage-wineb.py`, `pack.py` | Reduce the Wine to `wine-keep.txt`, point its programs at the userland's loader, leave out what `runtime-cut.txt` names, and write `runtime.tar.zst` and `runtime.info` (the layout under the Launcher's managed root, and the files the app relocates) into the app's assets. |
 
