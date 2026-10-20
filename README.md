@@ -6,16 +6,6 @@ An Android app that installs [Project Diablo 2](https://www.projectdiablo2.com/)
 
 The game runs in Wine 11.0 built for ARM64. Wine runs natively on your device's CPU; Box64's WowBox64 translates only the 32-bit x86 code of the game, the installers and Project Diablo 2's own launcher.
 
-## PD2 Launcher Lite
-
-[PD2 Launcher Lite](https://github.com/Pocketward/pd2-launcher-android-lite) was the small version of this app. Its runtime, Wine built for ARM64 with Box64's WowBox64, is now this app's runtime. This app keeps everything that it did before: it installs the game, it has its own **Update** for Project Diablo 2, and it supports the official PD2 launcher. Lite gets no more updates.
-
-To move from Lite to this app:
-
-1. Install this app. It installs beside Lite.
-2. In this app, choose **Import an existing installation** and pick a Diablo II folder that has Project Diablo 2. This can be your folder from a PC, or a copy of Lite's game folder, which Android's Files app shows under **PD2 Launcher Lite**. You can also pick that folder directly in Import, without a copy. Your characters come with the folder.
-3. Uninstall Lite only after the import works. Uninstalling Lite removes Lite's copy of the game folder.
-
 ## What your device needs
 
 - An ARM64 device with Android 13 or later, using 4 KB memory pages (almost every phone and handheld does).
