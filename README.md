@@ -1,3 +1,7 @@
+
+
+
+
 # PD2 Launcher for Android
 
 > **Unofficial.** PD2 Launcher is a community-made tool. It is not affiliated with or endorsed by the Project Diablo 2 team or Blizzard Entertainment.
@@ -8,7 +12,7 @@ The game runs in Wine 11.0 built for ARM64. Wine runs natively on your device's 
 
 ## See it run
 
-[![The demo video (58 s): the setup in four steps, then the game with the on-screen controls](docs/media/demo-poster.jpg)](docs/media/demo.mp4)
+[![The demo video (58 s): the setup in four steps, then the game with the on-screen controls](docs/media/demo-poster.jpg)](https://github.com/user-attachments/assets/f294dbf7-d77c-46bf-a42d-584854420aa3)
 
 | | |
 |:---:|:---:|
