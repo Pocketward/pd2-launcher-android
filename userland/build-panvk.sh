@@ -3,7 +3,7 @@
 # mali_kbase (mesa-kbase/), separately from Turnip: its own Mesa pin
 # (PANVK_MESA_* in config.sh), image (containers/Containerfile.panvk) and cache (PANVK_CACHE).
 #
-#   1. the Mesa tree: the pinned archive; patches/mesa/*.patch, the Vulkan WSI series Turnip's build
+#   1. the Mesa tree: the pinned archive; patches/mesa/*-wsi-*.patch, the Vulkan WSI series Mesa's build
 #      applies too (the software present's cached reads, present counter, pacing by the Game view and
 #      direct present into the app's buffers, which falls back to the X screen while our backend
 #      imports no dma-buf); then patches/mesa-panvk/*.patch; then our files from mesa-kbase/ and
@@ -48,7 +48,7 @@ lib="$USERLAND/usr/$libdir/libvulkan_panfrost.so"
 # The WSI series shared with Turnip first, then PanVK's own.
 patches=()
 for set in mesa mesa-panvk; do
-    while IFS= read -r p; do patches+=("$p"); done < <(find "$here/patches/$set" -name '*.patch' | sort)
+    while IFS= read -r p; do patches+=("$p"); done < <(find "$here/patches/$set" -name "$([[ $set == mesa ]] && echo '*-wsi-*.patch' || echo '*.patch')" | sort)
 done
 mapfile -t kbase_files < <(find "$here/mesa-kbase" -type f | LC_ALL=C sort)
 identity="$(build_identity "mesa=$PANVK_MESA_COMMIT $PANVK_MESA_SHA256" "kbase-uapi=$KBASE_UAPI_COMMIT" \

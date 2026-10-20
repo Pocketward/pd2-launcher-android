@@ -163,7 +163,8 @@ fun GameView(
     var asking by remember { mutableStateOf(false) }
     LaunchedEffect(layer) { asking = false }
     val controller = controllerConnected(onRemoved = { surface?.releaseController() })
-    val launcher = previewLauncher || Play.officialLauncherRunning(SessionService.status.collectAsState().value)
+    // The launcher's own window; a game it started is the game's ([Play.officialLauncherShown]).
+    val launcher = previewLauncher || Play.officialLauncherShown(SessionService.status.collectAsState().value)
     // The launcher is a mouse/touch window: no menu/world picture to read.
     val picture = gamePicture(framebuffer, if (running && !launcher) header else null)
     // Android's keyboard as it is, closed by its own controls too: here it opens only for the game.

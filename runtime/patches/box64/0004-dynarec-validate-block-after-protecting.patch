@@ -1,0 +1,50 @@
+Subject: [PATCH] A block is validated with its code protected: a write just before is not lost
+
+DBGetBlock validates a block whose page was written (its jump-table entry is jmpnext) by hashing
+its x86 code and, when the hash is the same, protecting the code and putting the block back in the
+jump table. The hash was taken before the protection: another thread's write that landed in
+between (the page is still writable then) raised no fault and marked nothing, and the block went
+back into the jump table with code that is no longer there, for good.
+
+.NET writes a method's precode once (call PrecodeFixupThunk becomes a jump to the compiled code)
+and from then on sends callers to the precode. Two threads that call a new method at the same
+time hit this: the one that compiled it patched the precode while the other was validating the
+old block, and both then ran the old precode, the prestub found the method compiled and sent them
+back to the precode, for ever, each at a full core (the official PD2 launcher's two spinning
+".NET ThreadPool" threads).
+
+The hash is now taken again after the protection; on a change the block is marked again
+(unprotectDB) and this entry runs without it. A write after the protection faults as before.
+---
+--- a/src/dynarec/dynablock.c
++++ b/src/dynarec/dynablock.c
+@@ -516,6 +516,12 @@
+                     if(db->always_test==2) {
+                         db->always_test = 0;
+                         protectDB((uintptr_t)db->x64_addr, db->x64_size);
++                        // as below: a write between the hash and the protection
++                        if(X31_hash_code((void*)db->x64_readaddr, db->x64_size)!=db->hash) {
++                            unprotectDB((uintptr_t)db->x64_addr, db->x64_size, 1);
++                            db->always_test = 2;
++                            db = NULL;
++                        }
+                     }
+                     // always_test==1 (NEVERCLEAN): skip protectDB, the page has mixed
+                     // code+data and mprotect would strip writability from data regions
+@@ -529,6 +535,16 @@
+                     }
+                     #endif
+                     protectDBJumpTable((uintptr_t)db->x64_addr, db->x64_size, db->block, db->jmpnext);
++                    // The hash above was taken before the protection. Another thread's write that
++                    // landed in between (on a page still writable) raised no fault and marked
++                    // nothing, so the block would stay in the jump table with code that is no
++                    // longer there (.NET patches a method's precode once: a thread that then runs
++                    // the old precode calls the prestub for ever). Hash again now that a later
++                    // write faults; on a change, mark the block again and run the new code.
++                    if(X31_hash_code((void*)db->x64_readaddr, db->x64_size)!=db->hash) {
++                        unprotectDB((uintptr_t)db->x64_addr, db->x64_size, 1);
++                        db = NULL;
++                    }
+                 }
+             }
+         }

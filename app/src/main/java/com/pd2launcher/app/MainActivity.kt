@@ -228,7 +228,11 @@ class MainActivity : ComponentActivity() {
         // Start over's reset ends it (the record goes): Repair closes and Check follows.
         val record by SetupRecordStore.current.collectAsState()
         val installed = if (record == SetupRecord.INSTALLED) Onboarding.installed(device, status) else null
-        LaunchedEffect(record) { if (record == SetupRecord.NONE) repairOpen.value = false }
+        LaunchedEffect(record) {
+            if (record == SetupRecord.NONE) repairOpen.value = false
+            // An update in place that failed while the app showed Play: Install, as on a start.
+            if (record == SetupRecord.STARTED && nav.value.page == FlowPage.CHECK) nav.value = FlowNav.opening(record)
+        }
         // While the Game client runs the Game view stays; it ends when the game exits.
         val playing = play == Play.Mode.GAME
         BackHandler(enabled = playing) {}
@@ -429,6 +433,19 @@ class MainActivity : ComponentActivity() {
                 // Back to Play; with the installation found broken (or Start over running) there
                 // is none: Back leaves the app.
                 onBack = { if (installed == Installed.Repair) moveTaskToBack(true) else repairOpen.value = false },
+                // After an update in place whose moved game the engine rejected: Import of it first.
+                onImport = {
+                    repairOpen.value = false
+                    SessionService.send(this, SessionService.ACTION_IMPORT_UPDATED_GAME)
+                }.takeIf {
+                    remember(status.snapshot, record) {
+                        UpgradeImport.offersImport(
+                            status.snapshot, record,
+                            updated = File(paths.managedRoot, LegacyPrefix.UPDATED).exists(),
+                            gameThere = paths.managedGame.isDirectory,
+                        )
+                    }
+                },
             )
         } else if (installed is Installed.Refused) {
             NotSupportedScreen(installed.screen, onClose = ::finish)
@@ -468,7 +485,7 @@ class MainActivity : ComponentActivity() {
             // downloads and, after an import, the Diablo II folder the player copied onto the device can go.
             val app by AppSettingsStore.current.collectAsState()
             val downloadBytes by rememberInstallerDownloadBytes(status.snapshot?.installation)
-            val importedNow by rememberImported(status.snapshot?.installation)
+            val importedNow by rememberImported(status.snapshot?.installation, status.snapshot?.gameFolder?.path)
             val bytes = downloadBytes
             val imported = importedNow
             if (bytes != null && imported != null && InstallerDownloads.showNotice(status.snapshot, app.downloadsNoticeAnswered, app.gamePlayed, bytes, imported)) {

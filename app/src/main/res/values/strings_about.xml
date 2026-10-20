@@ -6,8 +6,10 @@
     <string name="about_what">PD2 Launcher installs Project Diablo 2 on your device. It checks your device, downloads the game from its official sources, and starts it with touch and controller controls.</string>
     <string name="about_disclaimer">PD2 Launcher is a community-made tool. It is not affiliated with or endorsed by the Project Diablo 2 team or Blizzard Entertainment.</string>
     <string name="about_built_title">Built with</string>
-    <string name="about_built_fex">FEX-Emu 2609.1 + patches</string>
-    <string name="about_built_wine">Wine-GE 8-26 + patches</string>
+    <string name="about_built_wine">Wine 11.0 (ARM64) + patches</string>
+    <string name="about_built_box64">Box64 + patches</string>
+    <string name="about_built_mesa">Mesa 26.2.3 + patches</string>
+    <string name="about_built_dotnet">.NET 6.0.36 (x86)</string>
     <!-- The App userland's version: Check calls it "Game support files". -->
     <string name="about_runtime">Runtime build %1$s</string>
     <string name="about_end">qbzWmZ79geA</string>

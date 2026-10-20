@@ -1,0 +1,18 @@
+Subject: [PATCH] WowBox64: the interpreter reads FS's base from the emulator
+
+The interpreter took FS's base from GetSegmentBase, which WowBox64 does not have, so a block
+it ran read the 32-bit TEB from address 0. WowBox64 keeps the base in segs_offs[_FS].
+---
+--- a/src/emu/x64emu.c
++++ b/src/emu/x64emu.c
+@@ -1686,6 +1686,10 @@
+ #ifdef BOX64EC
+     if (seg == _GS)
+         return emu->win64_teb;
++#endif
++#if defined(BOX64EC) || defined(_WIN32)
++    // WowBox64 sets the 32-bit TEB as FS's base when it enters the emulation; there is no
++    // descriptor table to read it from.
+     if (seg == _FS)
+         return emu->segs_offs[_FS];
+ #endif

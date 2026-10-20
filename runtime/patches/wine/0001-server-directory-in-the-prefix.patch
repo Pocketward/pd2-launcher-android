@@ -1,0 +1,34 @@
+diff -ru a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
+--- a/dlls/ntdll/unix/server.c
++++ b/dlls/ntdll/unix/server.c
+@@ -1305,11 +1305,8 @@
+ {
+     char *dir = NULL;
+ 
+-#ifdef __ANDROID__  /* there's no /tmp dir on Android */
++    /* Android has no /tmp: the server directory is in the prefix, as Wine's own Android build does. */
+     asprintf( &dir, "%s/.wineserver/server-%llx-%llx", config_dir, (unsigned long long)dev, (unsigned long long)ino );
+-#else
+-    asprintf( &dir, "/tmp/.wine-%u/server-%llx-%llx", getuid(), (unsigned long long)dev, (unsigned long long)ino );
+-#endif
+     return dir;
+ }
+ 
+diff -ru a/server/request.c b/server/request.c
+--- a/server/request.c
++++ b/server/request.c
+@@ -640,13 +640,9 @@
+ 
+     /* create the base directory if needed */
+ 
+-#ifdef __ANDROID__  /* there's no /tmp dir on Android */
++    /* Android has no /tmp: the server directory is in the prefix, as Wine's own Android build does. */
+     if (asprintf( &base_dir, "%s/.wineserver", config_dir ) == -1)
+         fatal_error( "out of memory\n" );
+-#else
+-    if (asprintf( &base_dir, "/tmp/.wine-%u", getuid() ) == -1)
+-        fatal_error( "out of memory\n" );
+-#endif
+     create_dir( base_dir, &st2 );
+ 
+     /* now create the server directory */

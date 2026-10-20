@@ -19,9 +19,8 @@ import java.util.Locale
  * Kept, they let a reinstall reuse them. Nothing removes them by itself: the one-time notice on
  * Play and Settings → App → Storage run the engine's `--remove-downloads`, which removes these
  * folders (the engine's `INSTALLER_DOWNLOADS`); the notice waits for the first game
- * session to end ([showNotice]). The environment dependency installers
- * (Gecko, Mono, .NET, the prefix's Windows Installer cache) are not here: the app removes those
- * by itself ([AppRuntime.removeArchives], [InstallerCache]). After an import the notice also says
+ * session to end ([showNotice]). The prefix's Windows Installer cache is not here: the app
+ * removes it by itself ([InstallerCache]). After an import the notice also says
  * the Diablo II folder the player copied onto the device can go: the app has its own copy, and it
  * never deletes the player's folder itself.
  */

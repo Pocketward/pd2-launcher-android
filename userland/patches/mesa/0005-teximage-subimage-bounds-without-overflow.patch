@@ -1,0 +1,31 @@
+--- a/src/mesa/main/teximage.c
++++ b/src/mesa/main/teximage.c
+@@ -1207,7 +1207,9 @@
+       return GL_TRUE;
+    }
+ 
+-   if (xoffset + subWidth > (GLint) destImage->Width) {
++   /* 64-bit sums: an offset near INT_MAX plus the size must not wrap to a small number and pass
++    * (D2GL passes such a yoffset, and the copy then writes far out of the texture). */
++   if ((int64_t) xoffset + subWidth > (int64_t) destImage->Width) {
+       _mesa_error(ctx, GL_INVALID_VALUE, "%s(xoffset %d + width %d > %u)", func,
+                   xoffset, subWidth, destImage->Width);
+       return GL_TRUE;
+@@ -1220,7 +1222,7 @@
+          _mesa_error(ctx, GL_INVALID_VALUE, "%s(yoffset)", func);
+          return GL_TRUE;
+       }
+-      if (yoffset + subHeight > (GLint) destImage->Height) {
++      if ((int64_t) yoffset + subHeight > (int64_t) destImage->Height) {
+          _mesa_error(ctx, GL_INVALID_VALUE, "%s(yoffset %d + height %d > %u)",
+                      func, yoffset, subHeight, destImage->Height);
+          return GL_TRUE;
+@@ -1242,7 +1244,7 @@
+       depth = (GLint) destImage->Depth;
+       if (target == GL_TEXTURE_CUBE_MAP)
+          depth = 6;
+-      if (zoffset + subDepth  > depth) {
++      if ((int64_t) zoffset + subDepth > depth) {
+          _mesa_error(ctx, GL_INVALID_VALUE, "%s(zoffset %d + depth %d > %u)",
+                      func, zoffset, subDepth, depth);
+          return GL_TRUE;

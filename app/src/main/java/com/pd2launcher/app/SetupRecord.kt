@@ -59,6 +59,16 @@ object SetupRecordStore {
     }
 
     /**
+     * After an update in place that failed ([UpgradeImport]): an install started and not finished,
+     * so the app opens on Install, where one press imports the older game folder.
+     */
+    @Synchronized
+    fun setUpAgain(context: Context) {
+        context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).edit().putString(KEY, SetupRecord.STARTED.name).commit()
+        _current.value = SetupRecord.STARTED
+    }
+
+    /**
      * The record after the engine's [snapshot] ([SetupRecord.after]); a change is written at once
      * (commit, not apply: the next start lands by it, even right after a force stop). Returns the
      * new record when it changed, else null.

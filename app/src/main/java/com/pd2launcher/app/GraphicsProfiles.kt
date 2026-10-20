@@ -4,7 +4,7 @@ import com.pd2launcher.app.control.GraphicsProfile
 
 /**
  * D2GL's graphics profile (Settings → Game → Graphics profile): the D2GL values the engine writes
- * into the game's `d2gl.json` when the profile a Play sends is not the one it applied last, so the player's own changes in the game (Ctrl+O) stay until the
+ * into the game's `d2gl.json` when the profile a Play sends is not the one it applied last, so the player's own changes in the game (Options, Video Options, D2GL) stay until the
  * profile changes. The player's pick is [AppSettings.graphicsProfile]; none is Automatic
  * ([automatic]), resolved here like the game resolution's ([GameResolution.automaticLines]).
  */

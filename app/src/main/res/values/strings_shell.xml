@@ -114,6 +114,8 @@
     <string name="repair_start_over">Start over…</string>
     <string name="repair_keep">Keep it</string>
     <string name="repair_confirm">Remove and start over</string>
+    <string name="repair_import">Use your game</string>
+    <string name="repair_import_body">The update moved your game, but it did not pass the check. Use your game sets it up again from the same files: nothing is downloaded. Start over is the other way.</string>
     <string name="repair_confirm_body">Start over removes the Launcher\'s game environment: the installed Diablo II, Lord of Destruction and Project Diablo 2 files and their settings. Your characters are kept: they live in a folder of their own. Everything already downloaded is kept, so reinstalling doesn\'t download it again. You\'ll need your CD keys again to reinstall.</string>
 
     <!-- The engine did not take a command: shown on the screen it came from. -->

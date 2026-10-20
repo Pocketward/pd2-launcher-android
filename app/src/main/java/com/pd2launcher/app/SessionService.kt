@@ -45,6 +45,8 @@ import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 
 /** What the session runs now, for the screens. */
@@ -67,6 +69,12 @@ data class SessionStatus(
      * ([DocumentPaths.gameStarting]).
      */
     val launchRequestedAt: Long? = null,
+    /**
+     * The official PD2 launcher's session runs a game it started (Game.exe among the app's
+     * processes, [LauncherGame]): the Game view shows the game's menu and controls, not the
+     * launcher's.
+     */
+    val launcherGame: Boolean = false,
 ) {
     enum class Engine { STOPPED, STARTING, CONNECTED, RESTARTING, FAILED }
 
@@ -112,6 +120,10 @@ class SessionService : Service() {
     private val restartPolicy = RestartPolicy()
     /** The engine's start after [RestartPolicy]'s wait, while it waits. */
     private var restartJob: Job? = null
+    /** Looks for the official PD2 launcher's game while its session runs ([watchLauncherGame]). */
+    private var launcherGameWatch: Job? = null
+    /** The older game folder of a failed update went to the engine as the existing Diablo II ([UpgradeImport]). */
+    @Volatile private var upgradeImportSent = false
     /** Keeps the userland's resolv.conf on the default network's DNS servers. */
     private var dns: Dns? = null
     /** The install job running, or ending until the engine settles its outcome ([InstallProgress]). */
@@ -183,6 +195,7 @@ class SessionService : Service() {
             ACTION_PLAY -> worker.execute { play() }
             ACTION_OFFICIAL_LAUNCHER -> worker.execute { officialLauncher() }
             ACTION_CHECK_AGAIN -> worker.execute { sendCommand(Command.CheckAgain) }
+            ACTION_IMPORT_UPDATED_GAME -> worker.execute { importUpdatedGame() }
             ACTION_USE_BLIZZARD_DOWNLOAD -> worker.execute { sendCommand(Command.UseBlizzardDownload) }
             ACTION_DOWNLOAD -> worker.execute { sendCommand(Command.DownloadAll) }
             ACTION_STOP_SAFELY -> worker.execute { sendCommand(Command.RequestSafeStop) }
@@ -195,6 +208,12 @@ class SessionService : Service() {
      * Holds (and renews) or releases [workLocks] on the worker, never once the service stops, and
      * says so in the service log when that changes.
      */
+    /** The engine's environment for this GPU (a Mali's values; `noconform` on an Adreno that needs it). */
+    private fun engineEnvironment(): List<String> = paths.engineEnvironment(
+        mali = gpu is MaliGpu,
+        noconform = (gpu as? KgslGpu)?.let { adrenoWithoutMultiview(it.chipId) } ?: false,
+    )
+
     private fun holdWorkLocks(wanted: Boolean) {
         val want = wanted && !stopping
         val changed = workLocks.held != want
@@ -262,7 +281,7 @@ class SessionService : Service() {
             if (known != null) {
                 known.rewrite()
             } else {
-                dns = Dns(this, listOf(paths.resolvConf, paths.guestResolvConf), ::log).also { it.start() }
+                dns = Dns(this, listOf(paths.resolvConf), ::log).also { it.start() }
             }
             startEngine()
         } catch (error: Exception) {
@@ -334,12 +353,22 @@ class SessionService : Service() {
     }
 
     /**
+     * The other GPU family's Vulkan driver, which this device never loads: the unpack leaves it
+     * out (PanVK on an Adreno, Turnip on a Mali). Nothing is left out when no GPU answers.
+     */
+    private fun otherGpuDriver(): Set<String> = when (gpu) {
+        is MaliGpu -> setOf("usr/lib/aarch64-linux-gnu/libvulkan_freedreno.so")
+        null -> emptySet()
+        else -> setOf("usr/lib/aarch64-linux-gnu/libvulkan_panfrost.so")
+    }
+
+    /**
      * The App userland's version from the APK, current and its critical files as the APK has them
      * ([UserlandInstaller.prepare]: unpacked, or unpacked again, as needed); anything else fails
      * the session start, and the engine does not start.
      */
     private fun ensureUserland() {
-        val installer = UserlandInstaller(paths.userlandRoot, OwnedProcesses) { log("userland: $it") }
+        val installer = UserlandInstaller(paths.userlandRoot, OwnedProcesses, skip = otherGpuDriver()) { log("userland: $it") }
         val manifest = UserlandAssets.manifest(this)
         // A restart's check stays out of sight while it finds the version as it was.
         if (_status.value.userland != SessionStatus.Userland.Ready(manifest.version)) setUserland(SessionStatus.Userland.Checking)
@@ -366,15 +395,34 @@ class SessionService : Service() {
     }
 
     /**
-     * The runtime the app provides (RootFS, Wine-GE, the .NET Desktop Runtime installer), unpacked once into the
-     * Launcher's managed root before the engine starts; shown as part of the userland unpack.
+     * The runtime the app provides (the ARM64 Wine, its prefix template and the official launcher's
+     * .NET), unpacked once into the Launcher's managed root before the engine starts (an older
+     * app's prefix moved over to it); shown as part of the userland unpack.
      */
     private fun ensureAppRuntime() {
         val (version, bytes) = AppRuntime.info(this) ?: run {
             log("app runtime: none in the APK")
             return
         }
-        val runtime = AppRuntime(paths.managedRoot, ::log)
+        val runtime = AppRuntime(
+            paths.managedRoot, paths.data, ::log,
+            keptGame = { paths.upgradeGame },
+            userSave = paths.userSave,
+            failUpdateForTest = BuildConfig.DEBUG && paths.failUpdateForTest.exists(),
+            failUpdateLateForTest = BuildConfig.DEBUG && paths.failUpdateLateForTest.exists(),
+        )
+        // A failed update's Import that a stop left before the record changed: Install still.
+        if (File(paths.managedRoot, "${LegacyPrefix.OLD}/${LegacyPrefix.SET_ASIDE}").exists() &&
+            SetupRecordStore.load(this) == SetupRecord.INSTALLED
+        ) {
+            SetupRecordStore.setUpAgain(this)
+        }
+        // Repair's Import of the updated game that a stop left part way: finished before the engine starts.
+        val legacy = legacyPrefix()
+        if (legacy.takingOut()) {
+            log("the Import of the updated game was stopped part way; it goes on")
+            tookOutUpdatedGame(legacy, legacy.takeOut(paths.upgradeGame))
+        }
         if (runtime.isCurrent(version)) return
         val ready = _status.value.userland
         val started = SystemClock.elapsedRealtime()
@@ -382,7 +430,7 @@ class SessionService : Service() {
         // As unpacking from the start: the older version's trees are removed first, which takes
         // seconds on a phone, and Play says "Updating game files…" through it.
         setUserland(SessionStatus.Userland.Unpacking(0, bytes))
-        AppRuntime.openTar(this).use { tar ->
+        val kept = AppRuntime.openTar(this).use { tar ->
             runtime.install(version, tar) { done ->
                 val percent = if (bytes > 0) done * 100 / bytes else 0
                 if (percent != shownPercent) {
@@ -392,34 +440,73 @@ class SessionService : Service() {
             }
         }
         log("app runtime $version in ${SystemClock.elapsedRealtime() - started} ms")
+        kept?.let {
+            log("the update in place failed; Install imports the older game folder $it")
+            SetupRecordStore.setUpAgain(this)
+        }
         setUserland(ready)
     }
 
     /**
-     * The prefix's Windows Installer cache ([InstallerCache]) and the runtime's archive copies
-     * ([AppRuntime.ARCHIVES]) go once the game is installed; the archive copies come
-     * back from the APK when the installation needs setting up again (after Start over, say),
-     * before the player can start that install: commands run on this worker thread after it.
+     * The prefix's Windows Installer cache ([InstallerCache]) goes once the game is installed.
      * Run only as the installation's state changes ([AppRuntime.sweep]): never before the
      * engine's audit ends, nor while a job or the game runs.
      */
     private fun keepRuntimeArchives(sweep: AppRuntime.Sweep) {
-        val runtime = AppRuntime(paths.managedRoot, ::log)
         try {
-            when (sweep) {
-                AppRuntime.Sweep.REMOVE -> {
-                    runtime.removeArchives().takeIf { it.isNotEmpty() }?.let { log("runtime archive copies removed: $it") }
-                    InstallerCache.remove(paths.managedRoot).takeIf { it > 0 }?.let { log("Windows Installer cache: $it .msi files removed") }
-                }
-                AppRuntime.Sweep.RESTORE -> if (runtime.archivesMissing() && AppRuntime.info(this) != null) {
-                    val restored = AppRuntime.openTar(this).use { runtime.restoreArchives(it) }
-                    log("runtime archive copies restored from the APK: $restored")
-                }
+            if (sweep == AppRuntime.Sweep.REMOVE) {
+                InstallerCache.remove(paths.managedRoot).takeIf { it > 0 }?.let { log("Windows Installer cache: $it .msi files removed") }
             }
         } catch (error: Exception) {
-            log("runtime archive copies: $error")
+            log("Windows Installer cache: $error")
+        }
+        // Ready again after an update in place that failed: the older prefix, and the older game
+        // folder unless the installation uses it.
+        try {
+            if (sweep == AppRuntime.Sweep.REMOVE) {
+                val inUse = listOf(_status.value.snapshot?.gameFolder?.path, GameFilesProvider.recordedGameFolder(paths))
+                UpgradeImport.cleanUp(paths, inUse, ::log)
+            }
+        } catch (error: Exception) {
+            log("after the update's Import: $error")
         }
     }
+
+    /**
+     * Repair's first choice after an update in place whose moved game the engine rejected
+     * ([UpgradeImport.offersImport]): the game folder goes from the prefix to the waiting folder
+     * ([LegacyPrefix.takeOut]), the app opens on Install, and the engine checks the installation
+     * again; once it finds nothing set up, the waiting folder goes to it as the existing Diablo II
+     * (the snapshot collector), so one press of Install imports it.
+     */
+    private fun importUpdatedGame() {
+        val snapshot = _status.value.snapshot
+        if (snapshot == null || snapshot.activeJob != null || snapshot.game == Game.RUNNING) return
+        try {
+            val legacy = legacyPrefix()
+            if (tookOutUpdatedGame(legacy, legacy.takeOut(paths.upgradeGame))) sendCommand(Command.CheckAgain)
+        } catch (error: Exception) {
+            log("Import of the updated game: $error")
+        }
+    }
+
+    /**
+     * After [LegacyPrefix.takeOut] put the game folder [kept] in the waiting folder (null: there was
+     * none): the player chose it, the app opens on Install, and the take-out's mark goes last.
+     * Whether a folder waits.
+     */
+    private fun tookOutUpdatedGame(legacy: LegacyPrefix, kept: File?): Boolean {
+        if (kept != null) {
+            File(kept.parentFile, UpgradeImport.DECLINED).delete()
+            upgradeImportSent = false
+            SetupRecordStore.setUpAgain(this)
+        }
+        legacy.tookOut()
+        return kept != null
+    }
+
+    private fun legacyPrefix() =
+        LegacyPrefix(paths.managedRoot, File(paths.managedRoot, AppRuntime.PREFIX_TEMPLATE), paths.userSave, ::log)
 
     private fun setUserland(userland: SessionStatus.Userland) {
         _status.update { it.copy(userland = userland) }
@@ -439,10 +526,28 @@ class SessionService : Service() {
                 _status.update { status -> status.copy(refusal = null) }
                 // No paused Install Diablo II goes on after Start over or an import.
                 if (HeldKeys.forgets(command)) heldKeys.clear()
+                noteSourceChoice(command)
             }
         } catch (error: Exception) {
             log("command $command failed: $error")
             null
+        }
+    }
+
+    /**
+     * The older game folder of a failed update ([UpgradeImport]) after [command]: Start over sets
+     * nothing up, so it goes to the engine again; another source the player chose stands
+     * ([UpgradeImport.DECLINED]).
+     */
+    private fun noteSourceChoice(command: Command) {
+        val kept = paths.upgradeGame
+        if (command is Command.StartOver) upgradeImportSent = false
+        if (!kept.isDirectory || !UpgradeImport.declines(command, kept)) return
+        try {
+            File(kept.parentFile, UpgradeImport.DECLINED).createNewFile()
+            log("another source than the older game folder of the update: it is not offered again")
+        } catch (error: IOException) {
+            log("the update's Import: $error")
         }
     }
 
@@ -495,7 +600,7 @@ class SessionService : Service() {
             // Started through the userland's loader.
             starter.start(
                 "engine", loader, listOf(loader, enginePath.path, "--engine"),
-                paths.engineEnvironment(mali = gpu is MaliGpu) + gameSessionEnvironment(), pair.child,
+                engineEnvironment() + gameSessionEnvironment(), pair.child,
                 // Debug builds: the engine's own lines (`pd2-launcher: …`) also in logcat.
                 mirror = if (BuildConfig.DEBUG) { line -> if (line.startsWith(ENGINE_LINE)) Log.i(ENGINE_TAG, line) } else null,
             ) { exited, status -> post { onEngineExit(exited, status) } }
@@ -566,6 +671,15 @@ class SessionService : Service() {
                 post { applyBackgroundSound() }
                 post { holdWorkLocks(WorkLocks.wanted(next)) }
                 AppRuntime.sweep(previous, next)?.let { sweep -> post { keepRuntimeArchives(sweep) } }
+                // After an update in place that failed: the older game folder, for Install to import;
+                // once a session, again at the next start, until the player chooses another source.
+                val kept = paths.upgradeGame
+                val declined = File(kept.parentFile, UpgradeImport.DECLINED)
+                if (!upgradeImportSent && UpgradeImport.selects(next, kept, kept.isDirectory, declined.exists())) {
+                    upgradeImportSent = true
+                    log("the older game folder of the update goes to the engine for Import: $kept")
+                    post { sendCommand(DiabloSource.selectCommand(kept.path)) }
+                }
                 // Diablo II and Lord of Destruction are in, or their install failed: the held keys are done with.
                 if (HeldKeys.spent(previous, next)) heldKeys.clear()
                 // The launch sent has shown: Play and the official PD2 launcher take presses again, and
@@ -592,6 +706,8 @@ class SessionService : Service() {
                 }
                 // So does the official PD2 launcher's session.
                 if (Play.officialLauncherEnded(previous?.activeJob, next.activeJob)) post { stopGameEnvironment() }
+                // While it runs, whether it has started the game.
+                post { watchLauncherGame(next.activeJob == com.pd2launcher.app.control.Job.OFFICIAL_LAUNCHER) }
                 // Install Diablo II done: Install Project Diablo 2 follows; after the last
                 // install job the game environment stops.
                 val ending = endingInstall
@@ -628,6 +744,8 @@ class SessionService : Service() {
         val cause = (connection.state.value as? ControlChannel.State.Closed)?.cause
         log("the Control channel closed (${cause ?: "the engine ended it"}); engine pid ${process.pid} has $ENGINE_STOP_TIMEOUT_MS ms to exit")
         _status.update { it.copy(engine = SessionStatus.Engine.RESTARTING, snapshotSeq = null, snapshot = null) }
+        // No session without the engine: no launcher's game to look for.
+        watchLauncherGame(false)
         scope.launch {
             delay(ENGINE_STOP_TIMEOUT_MS)
             post {
@@ -648,6 +766,7 @@ class SessionService : Service() {
         val ended = SystemClock.elapsedRealtime()
         log("engine pid ${process.pid} ended unexpectedly (${ProcessStarter.describe(status)}); cleaning up before a restart")
         _status.update { it.copy(engine = SessionStatus.Engine.RESTARTING, snapshotSeq = null, snapshot = null) }
+        watchLauncherGame(false)
         holdWorkLocks(false)
         // Awake for the cleanup: with the screen off the device suspends between polls, and the
         // 5 s grace is counted in elapsed real time (which includes suspend).
@@ -696,7 +815,7 @@ class SessionService : Service() {
         val loader = paths.loader.path
         try {
             val process = starter.start(
-                "stop-wine", loader, listOf(loader, enginePath.path, "--stop-wine"), paths.engineEnvironment(mali = gpu is MaliGpu),
+                "stop-wine", loader, listOf(loader, enginePath.path, "--stop-wine"), engineEnvironment(),
             )
             if (!awaitExit(process, WINESERVER_TIMEOUT_MS)) {
                 log("wineserver -k did not finish within $WINESERVER_TIMEOUT_MS ms; SIGKILL to its process group, then the uid's others")
@@ -738,7 +857,7 @@ class SessionService : Service() {
         val process = try {
             starter.start(
                 "remove-downloads", loader, listOf(loader, enginePath.path, "--remove-downloads"),
-                paths.engineEnvironment(mali = gpu is MaliGpu),
+                engineEnvironment(),
             ) { _, status ->
                 code = status.code.takeIf { status.signal == null }
                 exited.countDown()
@@ -853,6 +972,8 @@ class SessionService : Service() {
             launchRequested(null)
             return
         }
+        // Its Play starts the game: the characters as for the app's own Play.
+        linkSaves()
         val seq = sendCommand(Command.OpenOfficialLauncher)
         if (seq == null && started) {
             log("official launcher not sent; stopping the game environment started for it")
@@ -887,10 +1008,12 @@ class SessionService : Service() {
     }
 
     /**
-     * Before a launch the game folder's Save links to the player's own folder ([SaveKeeper.link]),
-     * so the game reads and writes the characters there; only for an installed game nothing runs in.
-     * Only a ready installation is linked: a folder copy still being installed must stay free of
-     * links, as the engine refuses a copy that holds one when it checks it again.
+     * Before a launch (Play, the official PD2 launcher) the game folder's Save links to the
+     * player's own folder ([SaveKeeper.link]), so the game reads and writes the characters there;
+     * only for an installed game nothing runs in. Only a ready installation is linked: a folder copy
+     * still being installed must stay free of links, as the engine refuses a copy that holds one
+     * when it checks it again. The game folder is the one the engine names, else the Launcher's
+     * record: the engine names a folder an install starts to use in place only from its next start.
      */
     private fun linkSaves() {
         val paths = SessionPaths(DeviceCheck.dataDir(this))
@@ -898,7 +1021,7 @@ class SessionService : Service() {
         if (snapshot.installation != Installation.READY) return
         val folder = snapshot.gameFolder
         if (folder?.available == false || snapshot.activeJob != null || snapshot.game == Game.RUNNING) return
-        val save = SaveKeeper.liveSave(paths, folder?.path)
+        val save = SaveKeeper.liveSave(paths, folder?.path ?: GameFilesProvider.recordedGameFolder(paths))
         if (save.parentFile?.isDirectory != true) return
         try {
             SaveKeeper.link(save, paths.userSave, paths.saveBackups, log = ::log)
@@ -944,7 +1067,41 @@ class SessionService : Service() {
     private fun applyBackgroundSound() {
         val snapshot = _status.value.snapshot
         val setting = snapshot?.settings?.soundInBackground ?: true
-        game.setBackground(!appForeground, setting, gameRunning = snapshot?.game == Game.RUNNING)
+        game.setBackground(!appForeground, setting, gameRunning = snapshot?.game == Game.RUNNING || _status.value.launcherGame)
+    }
+
+    /**
+     * While the official PD2 launcher's session runs ([on]), every [LauncherGame.POLL_MS] whether
+     * it has started the game ([SessionStatus.launcherGame]); a session that ended clears it.
+     * Worker thread only; the looking runs in [scope] and reads only the app's own processes.
+     */
+    private fun watchLauncherGame(on: Boolean) {
+        if (!on) {
+            launcherGameWatch?.cancel()
+            launcherGameWatch = null
+            // Also the sound's game state, which the next session's audio starts from.
+            launcherGameSeen(false)
+            return
+        }
+        if (launcherGameWatch != null) return
+        launcherGameWatch = scope.launch {
+            val watch = coroutineContext.job
+            while (isActive) {
+                val running = LauncherGame.running(UidCleanup.scan(File("/proc"), Os.getuid(), Os.getpid(), ::owner))
+                // Taken on the worker, and only from the watch still running there: a session
+                // that ended stays cleared.
+                if (running != _status.value.launcherGame) post { if (launcherGameWatch === watch) launcherGameSeen(running) }
+                delay(LauncherGame.POLL_MS)
+            }
+        }
+    }
+
+    /** The official PD2 launcher's game [running] or not ([watchLauncherGame]). Worker thread only. */
+    private fun launcherGameSeen(running: Boolean) {
+        if (running == _status.value.launcherGame) return
+        _status.update { it.copy(launcherGame = running) }
+        log(if (running) "official PD2 launcher: its game runs" else "official PD2 launcher: its game ended")
+        applyBackgroundSound()
     }
 
     /**
@@ -973,15 +1130,10 @@ class SessionService : Service() {
     }
 
     /**
-     * The game ended [ranMs] after it started ([EarlyGameEnd]): the FEX telemetry written since the
-     * launch (FEX's data folder in the managed root, as the engine sets it) and the app's other
-     * processes, each with the binary it runs.
+     * The game ended [ranMs] after it started ([EarlyGameEnd]): the app's other processes, each
+     * with the binary it runs.
      */
     private fun logEarlyGameEnd(ranMs: Long) {
-        val now = System.currentTimeMillis()
-        val telemetry = EarlyGameEnd.telemetry(
-            File(paths.managedRoot, "fex/data/Telemetry"), now - ranMs - EarlyGameEnd.LAUNCH_MS, now,
-        )
         val processes = UidCleanup.scan(File("/proc"), Os.getuid(), Os.getpid(), ::owner).map { process ->
             val exe = try {
                 Os.readlink("/proc/${process.pid}/exe")
@@ -991,9 +1143,8 @@ class SessionService : Service() {
             "${process.pid} ${process.name} ($exe)"
         }
         log(
-            "the game ended $ranMs ms after it started; FEX telemetry since the launch: " +
-                telemetry.ifEmpty { listOf("none") }.joinToString("; ") +
-                "; the app's processes: " + processes.ifEmpty { listOf("none") }.joinToString("; "),
+            "the game ended $ranMs ms after it started; the app's processes: " +
+                processes.ifEmpty { listOf("none") }.joinToString("; "),
         )
     }
 
@@ -1090,6 +1241,8 @@ class SessionService : Service() {
         const val ACTION_OFFICIAL_LAUNCHER = "com.pd2launcher.app.action.OFFICIAL_LAUNCHER"
         /** Step 1's Check again: the engine runs its startup check once more. */
         const val ACTION_CHECK_AGAIN = "com.pd2launcher.app.action.CHECK_AGAIN"
+        /** Repair's Import after an update in place whose moved game the engine rejected ([importUpdatedGame]). */
+        const val ACTION_IMPORT_UPDATED_GAME = "com.pd2launcher.app.action.IMPORT_UPDATED_GAME"
         /** Diablo II source: download from Blizzard. */
         const val ACTION_USE_BLIZZARD_DOWNLOAD = "com.pd2launcher.app.action.USE_BLIZZARD_DOWNLOAD"
         /** Step 3, Download: start it, or continue it after a stop. */

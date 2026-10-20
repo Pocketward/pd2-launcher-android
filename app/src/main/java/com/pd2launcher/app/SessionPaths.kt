@@ -35,13 +35,13 @@ class SessionPaths(val data: String) {
      * The game's present counter: the App userland's Mesa (patch 0002) adds one to its first
      * 32-bit word for every frame the game sends to the X screen; the Game view's fps counter
      * reads it ([FrameCopy.presents]). [GameEnvironment] makes it; the engine passes its path to
-     * the GL thunk's host side as `PD2_PRESENT_COUNTER` ([engineEnvironment]).
+     * the game's Wine processes as `PD2_PRESENT_COUNTER` ([engineEnvironment]).
      */
     val presentCounter = File(runtimeDir, "presents")
     /**
      * The game's direct present ([PresentServer], Mesa patch 0004): the app listens on this Unix
-     * socket for the game environment's lifetime; the engine passes its path to the GL thunk's
-     * host side as `PD2_PRESENT_SOCKET` ([engineEnvironment]).
+     * socket for the game environment's lifetime; the engine passes its path to the game's Wine
+     * processes as `PD2_PRESENT_SOCKET` ([engineEnvironment]).
      */
     val presentSocket = File(runtimeDir, "present.sock")
     /**
@@ -71,6 +71,19 @@ class SessionPaths(val data: String) {
      */
     fun importedGame(token: String) = File(imports, "$token/Diablo II")
 
+    /**
+     * Where an older (FEX) installation's game folder waits for Import when the update in place
+     * failed ([LegacyPrefix.setAside], [UpgradeImport]): one fixed token, so a start that follows a
+     * stop finds it again.
+     */
+    val upgradeGame = importedGame(UpgradeImport.TOKEN)
+
+    /** Debug builds only: with this file the update in place fails on purpose ([LegacyPrefix.failForTest]). */
+    val failUpdateForTest = File(files, "debug-fail-update")
+
+    /** Debug builds only: with this file it fails after the new prefix took its place ([LegacyPrefix.failLateForTest]). */
+    val failUpdateLateForTest = File(files, "debug-fail-update-late")
+
     /** The Managed prefix's Diablo II folder (the engine's `GAME_RELATIVE`). */
     val managedGame = File(managedRoot, "prefix/drive_c/Program Files (x86)/Diablo II")
 
@@ -97,64 +110,97 @@ class SessionPaths(val data: String) {
         if (userlandEnvFile.isFile) parseEnvironment(userlandEnvFile.readText()) else emptyList()
 
     /**
-     * Exactly the contract's variables, FEX's runtime folder, the userland's library environment
-     * (`LD_*` from userland.env), its CA certificates (`SSL_CERT_FILE`: the engine's rustls reads
-     * its roots from there, Android has no `/etc/ssl`) and its App-provided FEX values
-     * (`PD2_APP_FEX*`: the entry point, the thunk folders and the GL thunk's host values), which
-     * only the engine gets, plus the [presentCounter] and the [presentSocket] as two of those host
-     * values, and the [receivedBytes] file for the engine itself.
-     * The host values are the Adreno's (Turnip) unless [mali] (a Mali GPU, PanVK:
-     * [maliHostValues]); [devDriver] lets a hand-placed Mali driver build replace the bundled one
-     * (debug builds only, [devDriverValues]).
+     * Exactly the contract's variables, the userland's library environment (`LD_*` from
+     * userland.env), its CA certificates (`SSL_CERT_FILE`: the engine's rustls reads its roots from
+     * there, Android has no `/etc/ssl`), the app's marker (`PD2_ANDROID_APP=1`), and what the
+     * engine passes on to the game's Wine processes: userland.env's GL and Vulkan values
+     * (`PD2_APP_WINE_<NAME>` as `<NAME>`), the Compatibility driver's (`PD2_APP_WINE_COMPATIBILITY_<NAME>`
+     * as `PD2_APP_COMPATIBILITY_<NAME>`, which the engine uses for a Play with that driver), the
+     * font and X locale configuration, Box64's quiet settings, the [presentCounter] and the
+     * [presentSocket]; and the [receivedBytes] file for the engine itself.
+     * The GPU values are the Adreno's (Turnip) unless [mali] (a Mali GPU, PanVK: [maliValues]);
+     * [devDriver] lets a hand-placed Mali driver build replace the bundled one (debug builds only,
+     * [devDriverValues]).
      */
-    fun engineEnvironment(mali: Boolean = false, devDriver: Boolean = BuildConfig.DEBUG): List<String> {
-        val values = userlandEnvironment().filter { (key, _) ->
-            key.startsWith("LD_") || key == SSL_CERT_FILE || key.startsWith(APP_FEX)
+    fun engineEnvironment(
+        mali: Boolean = false,
+        devDriver: Boolean = BuildConfig.DEBUG,
+        noconform: Boolean = false,
+    ): List<String> {
+        val values = userlandEnvironment()
+        val own = values.filter { (key, _) ->
+            key.startsWith("LD_") || key == SSL_CERT_FILE || key == "FONTCONFIG_FILE" || key == "XLOCALEDIR"
         }
-        val host = if (mali) maliHostValues(values, devDriver) else values.filterNot { (key, _) -> key.startsWith(MALI_HOST) }
-        return base() + "XDG_RUNTIME_DIR=${runtimeDir.path}" + host.map { (key, value) -> "$key=$value" } +
-            "${HOST}PD2_PRESENT_COUNTER=${presentCounter.path}" +
-            "${HOST}PD2_PRESENT_SOCKET=${presentSocket.path}" +
+        val wine = values.filter { (key, _) ->
+            key.startsWith(WINE) && !key.startsWith(MALI) && !key.startsWith(COMPATIBILITY)
+        }.map { (key, value) -> key.removePrefix(WINE) to value }
+        val compatibility = values.filter { (key, _) -> key.startsWith(COMPATIBILITY) }
+            .map { (key, value) -> ENGINE_COMPATIBILITY + key.removePrefix(COMPATIBILITY) to value }
+            .let { if (noconform) withNoconform(it, ENGINE_COMPATIBILITY + TU_DEBUG) else it }
+        val gpu = if (mali) {
+            maliValues(values, wine, devDriver)
+        } else {
+            (if (noconform) withNoconform(wine, TU_DEBUG) else wine) + compatibility +
+                if (devDriver) debugHostValues() else emptyList()
+        }
+        return base() + "XDG_RUNTIME_DIR=${runtimeDir.path}" + "PD2_ANDROID_APP=1" +
+            (own + gpu).map { (key, value) -> "$key=$value" } +
+            "BOX64_LOG=0" + "BOX64_NOBANNER=1" +
+            "PD2_PRESENT_COUNTER=${presentCounter.path}" +
+            "PD2_PRESENT_SOCKET=${presentSocket.path}" +
             "PD2_RECEIVED_BYTES_FILE=${receivedBytes.path}"
     }
 
     /**
-     * On a Mali: userland.env's Mali set (`PD2_APP_FEX_MALI_HOSTENV_<NAME>`) as host values
-     * (`PD2_APP_FEX_HOSTENV_<NAME>`), each replacing the host value of its name, without Turnip's
-     * own (`TU_DEBUG` and the Compatibility driver's values, which PanVK does not read); with
-     * [devDriver], [devDriverValues] over those (a later value of a name wins).
+     * On a Mali: userland.env's Mali set (`PD2_APP_WINE_MALI_<NAME>`) as `<NAME>`, each replacing
+     * the [wine] value of its name, without Turnip's own (`TU_DEBUG` and the Compatibility
+     * driver's values, which PanVK does not read); with [devDriver], [devDriverValues] over those
+     * (a later value of a name wins).
      */
-    private fun maliHostValues(values: List<Pair<String, String>>, devDriver: Boolean): List<Pair<String, String>> {
-        val mali = values.filter { (key, _) -> key.startsWith(MALI_HOST) }.map { (key, value) -> HOST + key.removePrefix(MALI_HOST) to value }
+    private fun maliValues(
+        values: List<Pair<String, String>>,
+        wine: List<Pair<String, String>>,
+        devDriver: Boolean,
+    ): List<Pair<String, String>> {
+        val mali = values.filter { (key, _) -> key.startsWith(MALI) }.map { (key, value) -> key.removePrefix(MALI) to value }
         val over = (mali + if (devDriver) devDriverValues() else emptyList()).toMap()
-        return values.filterNot { (key, _) ->
-            key in over || key == "${HOST}TU_DEBUG" || key.startsWith(MALI_HOST) || key.startsWith(COMPATIBILITY_HOST)
-        } + over.toList()
+        return wine.filterNot { (key, _) -> key in over || key == "TU_DEBUG" } + over.toList()
     }
 
     /**
-     * Debug builds, for work on the Mali driver: a PanVK build placed by hand as
+     * Debug builds, for work on the GPU drivers: a PanVK build placed by hand as
      * `files/kbase/panfrost_icd.json` (its library beside it) in place of the bundled one, and the
-     * `NAME=value` lines of `files/kbase/hostenv` as extra host values (such as GFXReconstruct's
-     * capture layer), in that order. Empty when neither file is there.
+     * `NAME=value` lines of `files/kbase/hostenv` as extra values for the game's Wine processes
+     * ([debugHostValues], which an Adreno gets too, for example for Mesa's debug output), in that
+     * order. Empty when neither file is there.
      */
     private fun devDriverValues(): List<Pair<String, String>> {
-        val dir = File(files, "kbase")
-        val icd = File(dir, "panfrost_icd.json").takeIf { it.isFile }
-            ?.let { listOf("${HOST}VK_DRIVER_FILES" to it.path, "${HOST}VK_ICD_FILENAMES" to it.path) }.orEmpty()
-        val extra = File(dir, "hostenv").takeIf { it.isFile }?.let { parseEnvironment(it.readText()) }.orEmpty()
-        return icd + extra.map { (name, value) -> HOST + name to value }
+        val icd = File(files, "kbase/panfrost_icd.json").takeIf { it.isFile }
+            ?.let { listOf("VK_DRIVER_FILES" to it.path, "VK_ICD_FILENAMES" to it.path) }.orEmpty()
+        return icd + debugHostValues()
     }
+
+    /**
+     * [values] with `noconform` added to the Turnip debug value [key] (an Adreno without hardware
+     * multiview, [adrenoWithoutMultiview]); the value is added when it is missing.
+     */
+    private fun withNoconform(values: List<Pair<String, String>>, key: String): List<Pair<String, String>> =
+        if (values.none { it.first == key }) {
+            values + (key to NOCONFORM)
+        } else {
+            values.map { (name, value) -> if (name == key) name to "$value,$NOCONFORM" else name to value }
+        }
+
+    /** The `NAME=value` lines of `files/kbase/hostenv` (debug builds, every GPU); else empty. */
+    private fun debugHostValues(): List<Pair<String, String>> =
+        File(files, "kbase/hostenv").takeIf { it.isFile }?.let { parseEnvironment(it.readText()) }.orEmpty()
 
     /** The resolver configuration the userland's glibc reads ([Dns] writes it). */
     val resolvConf = File(userland, "etc/resolv.conf")
 
-    /** The one Wine's x86 glibc reads in the FEX RootFS (runtime/pack.sh lays it out). */
-    val guestResolvConf = File(managedRoot, "fex/rootfs/Ubuntu_24_04/etc/resolv.conf")
-
     /** The contract's variables plus the userland.env values for Xvfb, PulseAudio and X clients. */
     fun userlandProgramEnvironment(): List<String> {
-        val extra = userlandEnvironment().filterNot { (key, _) -> key.startsWith(APP_FEX) }
+        val extra = userlandEnvironment().filterNot { (key, _) -> key.startsWith(WINE) }
         val overridden = extra.map { it.first }.toSet()
         return base().filter { it.substringBefore('=') !in overridden } + extra.map { (key, value) -> "$key=$value" }
     }
@@ -168,14 +214,16 @@ class SessionPaths(val data: String) {
     )
 
     companion object {
-        /** The prefix of every App-provided FEX value in userland.env. */
-        private const val APP_FEX = "PD2_APP_FEX"
-        /** A host value of FEX's GL thunk (`PD2_APP_FEX_HOSTENV_<NAME>`, read by the engine). */
-        private const val HOST = "PD2_APP_FEX_HOSTENV_"
-        /** A host value for a Mali GPU (PanVK) in userland.env, given to the engine as [HOST] on a Mali only. */
-        private const val MALI_HOST = "PD2_APP_FEX_MALI_HOSTENV_"
-        /** A host value of the Compatibility graphics driver (Turnip only). */
-        private const val COMPATIBILITY_HOST = "PD2_APP_FEX_COMPATIBILITY_HOSTENV_"
+        /** A value in userland.env for the game's Wine processes only (`PD2_APP_WINE_<NAME>`). */
+        private const val WINE = "PD2_APP_WINE_"
+        /** Such a value for a Mali GPU (PanVK), given as `<NAME>` on a Mali only. */
+        private const val MALI = "PD2_APP_WINE_MALI_"
+        /** Such a value of the Compatibility graphics driver (Turnip only). */
+        private const val COMPATIBILITY = "PD2_APP_WINE_COMPATIBILITY_"
+        /** How the engine reads a Compatibility driver's value (`PD2_APP_COMPATIBILITY_<NAME>`). */
+        private const val ENGINE_COMPATIBILITY = "PD2_APP_COMPATIBILITY_"
+        private const val TU_DEBUG = "TU_DEBUG"
+        private const val NOCONFORM = "noconform"
         private const val SSL_CERT_FILE = "SSL_CERT_FILE"
         private val ASSIGNMENT = Regex("""^([A-Za-z_][A-Za-z0-9_]*)=(.*)$""")
 

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Pre-fills the development build's key screen: writes D2_KEY and D2_LOD_KEY from
 # the developer's .env.local into the private storage of the development build on the device adb
-# reaches (com.pd2launcher.app.dev, files/debug-keys.properties, through run-as), where only a
+# reaches (com.pd2launcher.app.dev3, or PD2_DEBUG_PACKAGE such as com.pd2launcher.app.dev for a build
+# with PD2_DEV_AS_FEX_DEV=1; files/debug-keys.properties, through run-as), where only a
 # debug build reads it (app: DebugKeys.kt). No APK carries the keys. They go to the device on
 # standard input, never on a command line, and are never printed.
 # The file is PD2_DEBUG_KEYS_FILE, else the first .env.local of: this folder; where this folder is
@@ -11,7 +12,7 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-package=com.pd2launcher.app.dev
+package="${PD2_DEBUG_PACKAGE:-com.pd2launcher.app.dev3}"
 file=files/debug-keys.properties
 die() { printf 'debug-keys.sh: %s\n' "$*" >&2; exit 1; }
 

@@ -23,7 +23,7 @@ DEBIAN_IMAGE=docker.io/library/debian@sha256:a29215f6a35e51e22adffa17f89e9d2ef06
 # snapshot.debian.org timestamp for trixie, trixie-updates and trixie-security (Debian 13.7).
 DEBIAN_SNAPSHOT=20261006T000000Z
 
-# Mesa release for Turnip (KGSL build); SHA-256 matches docs.mesa3d.org/relnotes/26.2.3.html
+# Mesa release (build-mesa.sh: Zink, GLX, EGL, Turnip); SHA-256 matches docs.mesa3d.org/relnotes/26.2.3.html
 MESA_VERSION=26.2.3
 MESA_SHA256=1628058a8d2c0615975de5a15ab7bbb9638c50000b5bed9456ff423ea034a81f
 MESA_URL="https://archive.mesa3d.org/mesa-$MESA_VERSION.tar.xz"
@@ -154,7 +154,7 @@ endian = 'little'
 EOF
 }
 
-# Prints the identity of a component build inside a container (build-xvfb.sh, build-turnip.sh,
+# Prints the identity of a component build inside a container (build-xvfb.sh, build-mesa.sh,
 # build-panvk.sh): the image it builds in (PD2_IMAGE, which names the toolchain and its pins), the
 # package lock (the sysroot), the prefix, the cross file, then each argument: a pin as given, a
 # file as its path under /src and SHA-256. A build whose recorded identity (its BUILDINFO) equals
@@ -277,12 +277,7 @@ panvk_image() {
     echo "$image"
 }
 
-# The names of fex/build.sh's and glibc/build.sh's images: the tags hash their Containerfiles and
-# the two pins.
-fex_image_name() {
-    echo "localhost/pd2-userland-fex:$( (cat "$USERLAND_SRC/fex/Containerfile"
-        echo "$DEBIAN_IMAGE $DEBIAN_SNAPSHOT") | sha256sum | cut -c1-16)"
-}
+# The name of glibc/build.sh's image: the tag hashes its Containerfile and the two pins.
 glibc_image_name() {
     echo "localhost/pd2-glibc-build:$( (cat "$USERLAND_SRC/glibc/Containerfile"
         echo "$DEBIAN_IMAGE $DEBIAN_SNAPSHOT") | sha256sum | cut -c1-16)"

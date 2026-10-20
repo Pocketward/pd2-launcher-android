@@ -1,0 +1,119 @@
+Subject: [PATCH] DynaRec arm64: a conditional jump that is not taken does not end a STRONGMEM SEQ
+
+With BOX64_DYNAREC_STRONGMEM, a SEQ (stores between two jumps) gets a barrier before its first
+store, before its last store and after it. Every jump ended the SEQ on both of its paths, the
+conditional jump too. Code that checks a condition between its stores, such as .NET's array bound
+checks (a compare and a jump before each indexed access) in an x86 loop that keeps its values in
+stack slots, then had a pair of barriers around each store; the official PD2 launcher's CRC-32C
+check of the game files at each Play (about 1 GB) spent most of its time in them.
+
+A jump that is not taken changes nothing in memory, so the stores before and after it are one SEQ,
+as in straight code with the same stores: Jcc (70-7F, 0F 80-8F) ends the SEQ only where it jumps,
+with the SEQ's end barrier on that path (SMTAKEN), and the path that goes on keeps the SEQ open. The
+barriers at each SEQ's start, before its last store and at its end stay; LOOP, JCXZ, JMP, CALL and
+RET still end the SEQ on every path, and a jump target that other code reaches too still ends it.
+---
+--- a/src/dynarec/arm64/dynarec_arm64_00.c
++++ b/src/dynarec/arm64/dynarec_arm64_00.c
+@@ -1233,13 +1233,14 @@
+         #define GO(GETFLAGS, NO, YES, F)                                \
+             READFLAGS(F);                                               \
+             i8 = F8S;                                                   \
+-            JUMP(addr+i8, 1);                                           \
++            JUMPCOND(addr+i8);                                          \
+             GETFLAGS;                                                   \
+             if(dyn->insts[ninst].x64.jmp_insts==-1 ||                   \
+-                CHECK_CACHE()) {                                        \
+-                /* out of the block */                                  \
++                CHECK_CACHE() || (STRONGMEM_LEVEL() && dyn->smwrite)) { \
++                /* out of the block (or a SEQ to end where it jumps) */ \
+                 i32 = dyn->insts[ninst].epilog-(dyn->native_size);      \
+                 Bcond(NO, i32);                                         \
++                SMTAKEN();                                              \
+                 if(dyn->insts[ninst].x64.jmp_insts==-1) {               \
+                     if(!(dyn->insts[ninst].x64.barrier&BARRIER_FLOAT))  \
+                         fpu_purgecache(dyn, ninst, 1, x1, x2, x3, 0);   \
+--- a/src/dynarec/arm64/dynarec_arm64_0f.c
++++ b/src/dynarec/arm64/dynarec_arm64_0f.c
+@@ -1769,13 +1769,14 @@
+                 j64 = (uint32_t)(addr+i32_);                            \
+             else                                                        \
+                 j64 = addr+i32_;                                        \
+-            JUMP(j64, 1);                                               \
++            JUMPCOND(j64);                                              \
+             GETFLAGS;                                                   \
+             if(dyn->insts[ninst].x64.jmp_insts==-1 ||                   \
+-                CHECK_CACHE()) {                                        \
+-                /* out of the block */                                  \
++                CHECK_CACHE() || (STRONGMEM_LEVEL() && dyn->smwrite)) { \
++                /* out of the block (or a SEQ to end where it jumps) */ \
+                 i32 = dyn->insts[ninst].epilog-(dyn->native_size);      \
+                 Bcond(NO, i32);                                         \
++                SMTAKEN();                                              \
+                 if(dyn->insts[ninst].x64.jmp_insts==-1) {               \
+                     if(!(dyn->insts[ninst].x64.barrier&BARRIER_FLOAT))  \
+                         fpu_purgecache(dyn, ninst, 1, x1, x2, x3, 0);   \
+--- a/src/dynarec/arm64/dynarec_arm64_helper.h
++++ b/src/dynarec/arm64/dynarec_arm64_helper.h
+@@ -1059,6 +1059,10 @@
+ #ifndef JUMP
+ #define JUMP(A, C) SMEND()
+ #endif
++#ifndef JUMPCOND
++// A conditional jump (Jcc): as JUMP(A, 1), but the SEQ goes on (SMTAKEN ends it where it jumps).
++#define JUMPCOND(A)
++#endif
+ #ifndef BARRIER
+ #define BARRIER(A)
+ #endif
+--- a/src/dynarec/arm64/dynarec_arm64_pass0.h
++++ b/src/dynarec/arm64/dynarec_arm64_pass0.h
+@@ -30,6 +30,14 @@
+         dyn->insts[ninst].x64.jmp_cond = C;         \
+         dyn->insts[ninst].x64.jmp_insts = 0;        \
+     } while (0)
++#define JUMPCOND(A)                                 \
++    do {                                            \
++        dyn->insts[ninst].x64.jmp = (uintptr_t)(A); \
++        add_jump(dyn, ninst);                       \
++        add_next(dyn, dyn->insts[ninst].x64.jmp);   \
++        dyn->insts[ninst].x64.jmp_cond = 1;         \
++        dyn->insts[ninst].x64.jmp_insts = 0;        \
++    } while (0)
+ #define BARRIER(A)      if(A!=BARRIER_MAYBE) {fpu_purgecache(dyn, ninst, 0, x1, x2, x3, 0); dyn->insts[ninst].x64.barrier = A;} else dyn->insts[ninst].barrier_maybe = 1
+ #define SET_HASCALLRET()    dyn->insts[ninst].x64.has_callret = 1
+ #define NEW_INST \
+--- a/src/dynarec/dynarec_helper.h
++++ b/src/dynarec/dynarec_helper.h
+@@ -93,6 +93,9 @@
+         dyn->smwrite = 0;                                                                      \
+     } while (0)
+ 
++// A conditional jump does not end the SEQ: it goes on along the path that does not jump (SMTAKEN).
++#define SMTAKEN()
++
+ #define SMDMB()
+ 
+ #else
+@@ -204,6 +207,21 @@
+         dyn->smwrite = 0;                                               \
+     } while (0)
+ 
++// On the path where a conditional jump jumps: the SEQ ends there, as at any jump (the barrier of
++// SMEND), while it goes on along the path that does not jump. A jump that is not taken changes
++// nothing in memory, so the stores before and after it make one SEQ, as in straight code; only the
++// path that leaves needs the end barrier. (A jump that ends the SEQ on both paths puts a barrier
++// pair around each store of code that checks between its stores, such as .NET's array bounds.)
++#define SMTAKEN()                                \
++    do {                                         \
++        if (STRONGMEM_LEVEL() && dyn->smwrite) { \
++            if (BOX64ENV(dynarec_weakbarrier))   \
++                DMB_ISHST();                     \
++            else                                 \
++                DMB_ISH();                       \
++        }                                        \
++    } while (0)
++
+ // The barrier.
+ #define SMDMB() DMB_ISH()
+ #endif

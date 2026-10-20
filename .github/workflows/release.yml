@@ -6,15 +6,16 @@
 # Running on main keeps the build caches where every later release can use them
 # (a tag's own caches serve only that tag).
 #
-#   userland  userland/build.sh with our glibc and FEX, unless the cache holds the
-#             archive for these inputs. Its parts are cached apart, together: the
-#             FEX, glibc, Xvfb, Turnip and PanVK builds (each reused while its
-#             BUILDINFO names the current inputs), PanVK's host tools, the Debian
-#             packages and the source archives; and so are its build images, which
-#             the scripts load from their archives (PD2_IMAGE_ARCHIVE) instead of
-#             building them again
-#   runtime   runtime/pack.sh, unless the cache holds it for the runtime's pins
-#             (pack.sh --version), which a new engine often leaves as they were
+#   userland  userland/build.sh with our glibc, unless the cache holds the
+#             archive for these inputs, then runtime/build.sh (its prefix template
+#             is made with the userland's tree), unless the cache holds the
+#             runtime for its inputs. The userland's parts are cached apart,
+#             together: the glibc, Xvfb, Mesa and PanVK builds (each reused while
+#             its BUILDINFO names the current inputs), PanVK's host tools, the
+#             Debian packages and the source archives; so are the runtime's parts
+#             (Wine, wowbox64.dll, the prefix template, the downloads) and the
+#             build images, which the scripts load from their archives
+#             (PD2_IMAGE_ARCHIVE) instead of building them again
 #   apk       the release executable of the engine that engine.lock pins (its
 #             SHA-256 checked), build.sh release signed with the release key from
 #             the secrets of the environment "release", which only this job
@@ -34,7 +35,7 @@
 # still be on main; the tag must still not exist when the APK is published on a
 # draft release of the tag that targets that commit (a draft's files are
 # replaced, and a newer candidate moves its target). The engine that
-# engine.lock pins may be a draft release too: the runtime job then fetches its
+# engine.lock pins may be a draft release too: the userland job then fetches its
 # sources by the pinned commit (PD2_ENGINE_UNRELEASED), and the apk job takes
 # its executable and build evidence from this repository's draft release
 # engine-candidate. Publishing the draft after its test makes the tag on that
@@ -97,6 +98,7 @@ jobs:
       commit: ${{ steps.release.outputs.commit }}
       candidate: ${{ steps.tag.outputs.candidate }}
       userland: ${{ steps.keys.outputs.userland }}
+      runtime: ${{ steps.keys.outputs.runtime }}
     steps:
       # The whole history: the release's commit must be on main.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -206,12 +208,16 @@ jobs:
 
       # The userland's cache key, from the release's tree before any build writes into it: it
       # covers every input of its version (userland/pack.sh) and more, leaving out only the
-      # build's out/ folders and the READMEs.
+      # build's out/ folders and the READMEs. The runtime's covers its own folder and the
+      # userland's (its prefix template is made with the userland), and the engine pin (whose
+      # XInput bridge the template carries).
       - name: Name the caches
         id: keys
         if: steps.tag.outputs.tag != ''
         run: |
-          echo "userland=userland-${{ hashFiles('userland/**', '!userland/**/out*/**', '!userland/README.md', '!userland/fex/README.md', '!userland/glibc/README.md') }}" |
+          echo "userland=userland-${{ hashFiles('userland/**', '!userland/**/out*/**', '!userland/README.md', '!userland/glibc/README.md') }}" |
+            tee -a "$GITHUB_OUTPUT"
+          echo "runtime=runtime-${{ hashFiles('runtime/**', 'userland/**', '!userland/**/out*/**', '!userland/README.md', '!userland/glibc/README.md', 'engine.lock') }}" |
             tee -a "$GITHUB_OUTPUT"
 
   # A candidate keeps its draft's APK, which was tested, when the APK was built from this commit
@@ -322,13 +328,15 @@ jobs:
     if: needs.tag.outputs.tag != '' && needs.draft.outputs.reuse != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 340
+    # A candidate's engine may be a draft release, without its tag yet: engine/build.sh --source
+    # (which runtime/prefix.sh runs for the XInput bridge) then fetches the pinned commit by its SHA.
     env:
+      PD2_ENGINE_UNRELEASED: ${{ needs.tag.outputs.candidate == 'true' && '1' || '' }}
       PARTS: |
-        userland/fex/out
         userland/glibc/out
         ~/.cache/pd2-android/userland/debs
         ~/.cache/pd2-android/userland/sources
-        ~/.cache/pd2-android/userland/turnip-out
+        ~/.cache/pd2-android/userland/mesa-out
         ~/.cache/pd2-android/userland/xvfb-out
         ~/.cache/pd2-android/kbase/sources
         ~/.cache/pd2-android/kbase/out
@@ -345,9 +353,16 @@ jobs:
           path: app/src/main/assets/userland
           key: ${{ needs.tag.outputs.userland }}
 
+      - name: Restore the runtime
+        id: runtime
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: app/src/main/assets/runtime
+          key: ${{ needs.tag.outputs.runtime }}
+
       # In the background: deleting is slow, and the room is needed only later.
       - name: Make room on the disk
-        if: steps.userland.outputs.cache-hit != 'true'
+        if: steps.userland.outputs.cache-hit != 'true' || steps.runtime.outputs.cache-hit != 'true'
         run: |
           df -h / "$GITHUB_WORKSPACE"
           nproc
@@ -356,7 +371,7 @@ jobs:
             /opt/hostedtoolcache/CodeQL /usr/local/share/powershell /usr/share/swift >/dev/null 2>&1 &
 
       - name: Install a static qemu-aarch64 binfmt_misc handler
-        if: steps.userland.outputs.cache-hit != 'true'
+        if: steps.userland.outputs.cache-hit != 'true' || steps.runtime.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update -qq
           sudo apt-get install --yes --no-install-recommends qemu-user-static
@@ -364,42 +379,85 @@ jobs:
           cat /proc/sys/fs/binfmt_misc/qemu-aarch64
 
       # The build images, as archives the scripts load a missing image from and add an image
-      # they build to (PD2_IMAGE_ARCHIVE, config.sh): the tools and PanVK images, and FEX's
-      # and glibc's, which only their builds need. Images are named by tags that hash their
-      # Containerfiles and pins, so the newest archives are safe to restore.
+      # they build to (PD2_IMAGE_ARCHIVE, config.sh): the tools, Mesa and PanVK images, glibc's,
+      # which only its build needs, and the runtime's Wine and tools images. Images are named by
+      # tags that hash their Containerfiles and pins, so the newest archives are safe to restore.
       - name: Restore the build images
         id: images
-        if: steps.userland.outputs.cache-hit != 'true'
+        if: steps.userland.outputs.cache-hit != 'true' || steps.runtime.outputs.cache-hit != 'true'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/pd2-android/images/userland
           key: userland-images-${{ needs.tag.outputs.userland }}
           restore-keys: userland-images-
 
-      # The newest parts are safe to restore: build-fex.sh, build-glibc.sh, build-xvfb.sh,
-      # build-turnip.sh and build-panvk.sh reuse a build only while its BUILDINFO names the
-      # current inputs, and every download is checked by SHA-256.
+      # The newest parts are safe to restore: build-glibc.sh, build-xvfb.sh, build-mesa.sh and
+      # build-panvk.sh reuse a build only while its BUILDINFO names the current inputs, and every
+      # download is checked by SHA-256.
       - name: Restore the userland's parts
         id: parts
-        if: steps.userland.outputs.cache-hit != 'true'
+        if: steps.userland.outputs.cache-hit != 'true' || steps.runtime.outputs.cache-hit != 'true'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.PARTS }}
           key: userland-parts-${{ needs.tag.outputs.userland }}
           restore-keys: userland-parts-
 
+      # Also for a runtime to build when the userland is cached: the prefix template is made with
+      # the userland's tree, which only a build leaves in the cache.
       - name: Build the userland
-        if: steps.userland.outputs.cache-hit != 'true'
+        if: steps.userland.outputs.cache-hit != 'true' || steps.runtime.outputs.cache-hit != 'true'
         env:
           PD2_USERLAND_WITH_GLIBC: 1
-          PD2_USERLAND_WITH_FEX: 1
         run: PD2_IMAGE_ARCHIVE=~/.cache/pd2-android/images/userland userland/build.sh
+
+      # The newest parts are safe to restore: each is used again only while its BUILDINFO names
+      # the current inputs, and every download is checked by its SHA-256 or SHA-512.
+      - name: Restore the runtime's parts
+        id: runtime-parts
+        if: steps.runtime.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/pd2-android/runtime/parts
+            ~/.cache/pd2-android/runtime/dl
+          key: runtime-parts-${{ needs.tag.outputs.runtime }}
+          restore-keys: runtime-parts-
+
+      - name: Build the runtime
+        if: steps.runtime.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.ENGINE_REPO_TOKEN }}
+          GIT_CONFIG_COUNT: 1
+          GIT_CONFIG_KEY_0: credential.https://github.com.helper
+          GIT_CONFIG_VALUE_0: '!gh auth git-credential'
+        run: |
+          df -h /
+          PD2_IMAGE_ARCHIVE=~/.cache/pd2-android/images/userland runtime/build.sh
+
+      # Kept also when a later step failed: a part's BUILDINFO is written only once it is built.
+      - name: Save the runtime's parts
+        if: ${{ !cancelled() && steps.runtime.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/pd2-android/runtime/parts
+            ~/.cache/pd2-android/runtime/dl
+          key: runtime-parts-${{ needs.tag.outputs.runtime }}
+
+      - name: Save the runtime
+        if: steps.runtime.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: app/src/main/assets/runtime
+          key: ${{ needs.tag.outputs.runtime }}
 
       # Named by what they hold, so the cache takes them again only when a part changed. Kept
       # also when a later step failed: a part's BUILDINFO is written only once it is built.
       - name: Name the userland's parts
         id: parts-key
-        if: ${{ !cancelled() && steps.userland.outputs.cache-hit != 'true' }}
+        if: ${{ !cancelled() && (steps.userland.outputs.cache-hit != 'true' || steps.runtime.outputs.cache-hit != 'true') }}
         run: |
           . userland/config.sh
           # Host tools of another Mesa commit are of no further use.
@@ -407,8 +465,8 @@ jobs:
             if [[ -d $d && $d != */host-tools-$PANVK_MESA_COMMIT ]]; then rm -rf "$d"; fi
           done
           key=$({
-            cat userland/fex/out/BUILDINFO userland/glibc/out/BUILDINFO \
-              "$USERLAND_CACHE"/turnip-out/BUILDINFO "$USERLAND_CACHE"/xvfb-out/BUILDINFO \
+            cat userland/glibc/out/BUILDINFO \
+              "$USERLAND_CACHE"/mesa-out/BUILDINFO "$USERLAND_CACHE"/xvfb-out/BUILDINFO \
               "$PANVK_CACHE"/out/BUILDINFO "$PANVK_CACHE"/work/host-tools-*/IMAGE 2>/dev/null || true
             find "$USERLAND_CACHE"/debs "$USERLAND_CACHE"/sources "$PANVK_CACHE"/sources \
               -type f -printf '%P %s\n' 2>/dev/null | sort
@@ -426,13 +484,18 @@ jobs:
       # Only the current images' archives are kept, and saved again only when one was added.
       - name: Name the build images
         id: images-key
-        if: ${{ !cancelled() && steps.userland.outputs.cache-hit != 'true' }}
+        if: ${{ !cancelled() && (steps.userland.outputs.cache-hit != 'true' || steps.runtime.outputs.cache-hit != 'true') }}
         run: |
           . userland/config.sh
           PD2_IMAGE_ARCHIVE=~/.cache/pd2-android/images/userland
           mkdir -p "$PD2_IMAGE_ARCHIVE"
+          # The tag of an image a script names by its Containerfile and the Debian pins.
+          tagged() { echo "localhost/$1:$( (cat "$2"; echo "$DEBIAN_IMAGE $DEBIAN_SNAPSHOT") | sha256sum | cut -c1-16)"; }
           current=()
-          for name in "$(tools_image_name)" "$(panvk_image_name)" "$(fex_image_name)" "$(glibc_image_name)"; do
+          for name in "$(tools_image_name)" "$(panvk_image_name)" "$(glibc_image_name)" \
+            "$(tagged pd2-userland-mesa userland/containers/Containerfile.mesa)" \
+            "$(tagged pd2-runtime-wine runtime/containers/Containerfile.wine)" \
+            "$(tagged pd2-runtime-tools runtime/containers/Containerfile.tools)"; do
             current+=("$(image_archive "$name")")
           done
           for f in "$PD2_IMAGE_ARCHIVE"/*.tar.zst; do
@@ -458,75 +521,8 @@ jobs:
           path: app/src/main/assets/userland
           key: ${{ needs.tag.outputs.userland }}
 
-  runtime:
-    needs: [tag, draft]
-    if: needs.tag.outputs.tag != '' && needs.draft.outputs.reuse != 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    outputs:
-      key: ${{ steps.version.outputs.key }}
-    # A candidate's engine may be a draft release, without its tag yet: engine/build.sh --source
-    # (which runtime/pack.sh runs) then fetches the pinned commit by its SHA.
-    env:
-      PD2_ENGINE_UNRELEASED: ${{ needs.tag.outputs.candidate == 'true' && '1' || '' }}
-    steps:
-      # Not persisted: git would send the checkout's token to the engine repository too,
-      # and never ask the credential helper for ENGINE_REPO_TOKEN.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ needs.tag.outputs.commit }}
-          persist-credentials: false
-
-      # The runtime's pins are in the engine's sources at the release engine.lock pins; the
-      # version they give names the cache.
-      - name: Name the runtime
-        id: version
-        env:
-          GH_TOKEN: ${{ secrets.ENGINE_REPO_TOKEN }}
-          GIT_CONFIG_COUNT: 1
-          GIT_CONFIG_KEY_0: credential.https://github.com.helper
-          GIT_CONFIG_VALUE_0: '!gh auth git-credential'
-        run: |
-          url=$(sed -n 's/^url=//p' engine.lock)
-          git ls-remote "$url" HEAD >/dev/null || {
-            echo "::error::cannot read $url; while it is private, the secret ENGINE_REPO_TOKEN must give read access to it"
-            exit 1
-          }
-          version=$(runtime/pack.sh --version)
-          echo "key=runtime-$version" | tee -a "$GITHUB_OUTPUT"
-
-      - name: Restore the runtime
-        id: runtime
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: app/src/main/assets/runtime
-          key: ${{ steps.version.outputs.key }}
-
-      # A few GB at most, which the runner has free without deleting anything.
-      - name: Pack the runtime
-        if: steps.runtime.outputs.cache-hit != 'true'
-        env:
-          GH_TOKEN: ${{ secrets.ENGINE_REPO_TOKEN }}
-          GIT_CONFIG_COUNT: 1
-          GIT_CONFIG_KEY_0: credential.https://github.com.helper
-          GIT_CONFIG_VALUE_0: '!gh auth git-credential'
-        run: |
-          if ! command -v unsquashfs >/dev/null || ! command -v readelf >/dev/null; then
-            sudo apt-get update -qq
-            sudo apt-get install --yes --no-install-recommends squashfs-tools binutils
-          fi
-          df -h /
-          runtime/pack.sh
-
-      - name: Save the runtime
-        if: steps.runtime.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: app/src/main/assets/runtime
-          key: ${{ steps.version.outputs.key }}
-
   apk:
-    needs: [tag, userland, runtime]
+    needs: [tag, userland]
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     # The release key's secrets are the environment's, so no other job can read them.
@@ -536,7 +532,7 @@ jobs:
     env:
       TAG: ${{ needs.tag.outputs.tag }}
     steps:
-      # Not persisted, as in the runtime job; the release is published with gh, not git.
+      # Not persisted: the release is published with gh, not git.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.tag.outputs.commit }}
@@ -561,7 +557,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: app/src/main/assets/runtime
-          key: ${{ needs.runtime.outputs.key }}
+          key: ${{ needs.tag.outputs.runtime }}
           fail-on-cache-miss: true
 
       # build.sh's image under the name build.sh gives it: its tag hashes the Containerfile.

@@ -12,18 +12,15 @@
 #             rather than in place (the real path padded with '/' to the placeholder's length).
 #             A partial copy of the placeholder anywhere is refused.
 #   critical  the paths the app checks again before every engine start, as programs open them:
-#             the loader, etc/userland.env, etc/nsswitch.conf, the CA bundle, App-provided FEX
-#             (pd2-fex, FEX, FEXServer, and what userland.env names as PD2_APP_FEX or LD_PRELOAD),
-#             and every library the engine (ENGINE_NEEDED in config.sh) and those programs need,
-#             directly or through another library, as the loader finds it
+#             the loader, etc/userland.env, etc/nsswitch.conf, the CA bundle, what userland.env
+#             names as LD_PRELOAD, and every library the engine (ENGINE_NEEDED in config.sh) and
+#             those need, directly or through another library, as the loader finds it
 #   absent    paths that must not exist: glibc reads etc/ld.so.cache from its sysconfdir
 #   version   the first 16 hex digits of a SHA-256 over this directory's inputs (scripts, pins,
-#             package lock, patches, our PanVK backend's files in mesa-kbase/, opt-in switches, and
-#             with glibc or FEX their patches and build files), so equal inputs give an equal version
+#             package lock, patches, our PanVK backend's files in mesa-kbase/, the opt-in switch, and
+#             with glibc its patches and build files), so equal inputs give an equal version
 #   glibc     with PD2_USERLAND_WITH_GLIBC=1, the manifest's "glibc" key is build-glibc.sh's record
 #             (BUILDINFO fields, patch SHA-256s, SHA-256 of every installed file)
-#   fex       with PD2_USERLAND_WITH_FEX=1, the manifest's "fex" key is build-fex.sh's record (same
-#             shape)
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,8 +29,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [[ "${PD2_USERLAND_IN_CONTAINER:-}" != 1 ]]; then
     mkdir -p "$USERLAND_OUT"
-    RUN_EXTRA=(-v "$USERLAND_OUT:/out" -e "PD2_USERLAND_WITH_GLIBC=${PD2_USERLAND_WITH_GLIBC:-0}"
-        -e "PD2_USERLAND_WITH_FEX=${PD2_USERLAND_WITH_FEX:-0}")
+    RUN_EXTRA=(-v "$USERLAND_OUT:/out" -e "PD2_USERLAND_WITH_GLIBC=${PD2_USERLAND_WITH_GLIBC:-0}")
     run_in_tools pack.sh "$@"
     mkdir -p "$USERLAND_ASSETS"
     cp "$USERLAND_OUT/userland.tar.zst" "$USERLAND_OUT/manifest.json" "$USERLAND_ASSETS/"
@@ -53,11 +49,8 @@ version="$(
         if [[ "${PD2_USERLAND_WITH_GLIBC:-0}" == 1 ]]; then
             find ./glibc/patches ./glibc/build.sh ./glibc/Containerfile -type f
         fi
-        if [[ "${PD2_USERLAND_WITH_FEX:-0}" == 1 ]]; then
-            find ./fex/patches ./fex/build.sh ./fex/Containerfile ./fex/toolchain-i686-guest.cmake -type f
-        fi
     } | LC_ALL=C sort | xargs sha256sum
-    echo "glibc=${PD2_USERLAND_WITH_GLIBC:-0} fex=${PD2_USERLAND_WITH_FEX:-0}"
+    echo "glibc=${PD2_USERLAND_WITH_GLIBC:-0}"
 )"
 version="$(sha256sum <<<"$version" | cut -c1-16)"
 
@@ -66,11 +59,6 @@ if [[ "${PD2_USERLAND_WITH_GLIBC:-0}" == 1 ]]; then
     glibc_record=/cache/work/glibc.json
     [[ -f "$glibc_record" ]] || { echo "no glibc record: run build-glibc.sh first" >&2; exit 1; }
 fi
-fex_record=""
-if [[ "${PD2_USERLAND_WITH_FEX:-0}" == 1 ]]; then
-    fex_record=/cache/work/fex.json
-    [[ -f "$fex_record" ]] || { echo "no FEX record: run build-fex.sh first" >&2; exit 1; }
-fi
 
 rm -f "$out/userland.tar.zst" "$out/manifest.json"
 mapfile -t top < <(cd "$root" && ls -A | LC_ALL=C sort)
@@ -78,10 +66,10 @@ tar --create --file=- --directory="$root" --format=gnu --sort=name \
     --mtime=@0 --owner=0 --group=0 --numeric-owner --hard-dereference "${top[@]}" \
     | zstd -19 -T0 -q -o "$out/userland.tar.zst"
 
-python3 - "$root" "$out" "$version" "$DATA_PLACEHOLDER" "$USERLAND" "$glibc_record" "$fex_record" \
+python3 - "$root" "$out" "$version" "$DATA_PLACEHOLDER" "$USERLAND" "$glibc_record" \
     "${ENGINE_NEEDED[*]}" <<'EOF'
 import collections, hashlib, json, os, re, stat, subprocess, sys
-root, out, version, placeholder, prefix, glibc_record, fex_record, engine_needed = sys.argv[1:]
+root, out, version, placeholder, prefix, glibc_record, engine_needed = sys.argv[1:]
 P = placeholder.encode()
 # The placeholder's first part: a copy of it that is not the whole placeholder would be left
 # half rewritten.
@@ -163,8 +151,7 @@ def find(soname):
     sys.exit(f'{soname} is not in the tree')
 
 critical = [loader, 'etc/userland.env', 'etc/nsswitch.conf', 'etc/ssl/certs/ca-certificates.crt']
-programs = [p for p in ('usr/bin/pd2-fex', 'usr/bin/FEX', 'usr/bin/FEXServer') if p in by_path]
-programs += in_tree(env.get('PD2_APP_FEX', '')) + in_tree(env.get('LD_PRELOAD', ''))
+programs = in_tree(env.get('LD_PRELOAD', ''))
 queue = collections.deque(engine_needed.split())
 for p in dict.fromkeys(programs):
     critical.append(p)
@@ -201,8 +188,6 @@ manifest = {
 }
 if glibc_record:
     manifest['glibc'] = json.load(open(glibc_record))
-if fex_record:
-    manifest['fex'] = json.load(open(fex_record))
 with open(os.path.join(out, 'manifest.json'), 'w') as f:
     json.dump(manifest, f, indent=1, sort_keys=True)
     f.write('\n')

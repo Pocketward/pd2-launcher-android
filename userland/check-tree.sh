@@ -23,15 +23,9 @@
 #     libc6 .deb is left in the tree (files in the record are ours, even where byte-identical to
 #     Debian's, such as gconv-modules)
 #     and etc/userland.env does not set LD_LIBRARY_PATH
-#   - when the manifest has a "fex" record (PD2_USERLAND_WITH_FEX=1): every recorded file is in the
-#     tree with its SHA-256 and equals fex/out/userland's copy; the record's patch, build.sh and
-#     Containerfile hashes are those in fex/; thunks were built; FEX and FEXServer carry FEX-2609.1;
-#     every NEEDED library of the aarch64 FEX files and each library a host thunk dlopen()s is in
-#     lib/aarch64-linux-gnu or usr/lib/aarch64-linux-gnu (ld.so's default path), and none has a
-#     run path
 #   - last, the tree rewritten for a scratch data folder as the app rewrites it (padded binaries,
 #     exact text files) holds no placeholder, and with the host's qemu-aarch64 binfmt handler
-#     Xvfb prints its usage and xkbcomp, PulseAudio and FEXServer their versions from there:
+#     Xvfb prints its usage and xkbcomp and PulseAudio their versions from there:
 #     interpreter, run paths and the loader's own folders all at the padded path
 set -euo pipefail
 
@@ -289,60 +283,6 @@ EOF
     if grep -q '^LD_LIBRARY_PATH=' "$tree/etc/userland.env"; then bad "etc/userland.env sets LD_LIBRARY_PATH with our glibc"; fi
 fi
 
-if jq -e .fex /out/manifest.json >/dev/null; then
-    python3 - "$tree" /out/manifest.json /src/fex /src/fex/out/userland <<'EOF' || fail=1
-import hashlib, json, os, re, subprocess, sys
-tree, manifest, fexdir, fexout = sys.argv[1:]
-x = json.load(open(manifest))['fex']
-sha = lambda p: hashlib.sha256(open(p, 'rb').read()).hexdigest()
-bad = []
-for rel, want in x['files'].items():
-    p = os.path.join(tree, rel)
-    if os.path.islink(p) or not os.path.isfile(p) or sha(p) != want:
-        bad.append(f'{rel}: not the recorded file')
-    elif sha(os.path.join(fexout, rel)) != want:
-        bad.append(f'{rel}: differs from fex/out/userland')
-pdir = os.path.join(fexdir, 'patches')
-patches = {n: sha(os.path.join(pdir, n)) for n in sorted(os.listdir(pdir)) if n.endswith('.patch')}
-if x['buildinfo']['patches'] != patches:
-    bad.append('recorded patch hashes differ from fex/patches')
-inputs = {n: sha(os.path.join(fexdir, n)) for n in ('build.sh', 'Containerfile', 'toolchain-i686-guest.cmake')}
-if x['buildinfo']['inputs'] != inputs:
-    bad.append('recorded build.sh/Containerfile/toolchain hashes differ from fex/')
-if x['buildinfo'].get('thunks') != 'ON':
-    bad.append('FEX built without thunks')
-for exe in ('usr/bin/FEX', 'usr/bin/FEXServer'):
-    if exe not in x['files'] or b'FEX-2609.1' not in open(os.path.join(tree, exe), 'rb').read():
-        bad.append(f'{exe}: missing or no FEX-2609.1 version string')
-# Every aarch64 ELF's DT_NEEDED, and each host thunk's dlopen()ed library (lib*.so.N strings),
-# must be in ld.so's default directories (our glibc: slibdir and libdir, no LD_LIBRARY_PATH).
-search = ['lib/aarch64-linux-gnu', 'usr/lib/aarch64-linux-gnu']
-found = lambda lib: any(os.path.exists(os.path.join(tree, d, lib)) for d in search)
-checked = 0
-for rel in x['files']:
-    data = open(os.path.join(tree, rel), 'rb').read()
-    if data[:4] != b'\x7fELF' or int.from_bytes(data[18:20], 'little') != 183:  # EM_AARCH64
-        continue
-    dyn = subprocess.run(['aarch64-linux-gnu-readelf', '-d', os.path.join(tree, rel)],
-                         capture_output=True, text=True, check=True).stdout
-    libs = set(re.findall(r'\(NEEDED\)\s+Shared library: \[(.+?)\]', dyn))
-    if '/HostThunks' in rel:
-        libs |= {m.decode() for m in re.findall(rb'lib[A-Za-z0-9_+-]+\.so\.[0-9]+', data)}
-    for lib in sorted(libs):
-        checked += 1
-        if not found(lib):
-            bad.append(f'{rel}: {lib} not found in {" or ".join(search)}')
-    if re.search(r'\((RPATH|RUNPATH)\)', dyn):
-        bad.append(f'{rel}: has a run path')
-for b in bad:
-    print('FAIL:', b, file=sys.stderr)
-b = x['buildinfo']
-print(f"FEX {b['fex_tag']} ({b['fex_commit'][:12]}) + {len(patches)} patches, thunks={b['thunks']}: "
-      f"{len(x['files'])} recorded files match fex/out/userland; {checked} needed/dlopen libraries resolve")
-sys.exit(1 if bad else 0)
-EOF
-fi
-
 echo "archive: $(stat -c %s "$archive") bytes; regular files: $(find "$tree" -type f | wc -l); unpacked: $(du -sb "$tree" | cut -f1) bytes"
 
 # The tree rewritten for $data as the app rewrites it (UserlandInstaller), then run from there.
@@ -382,7 +322,6 @@ if [[ "${PD2_HOST_BINFMT_AARCH64:-0}" == 1 ]]; then
     bin="$data/files/userland/current/usr/bin"
     # Each: the command, then what its output must hold.
     runs=("Xvfb -help|use: X" "xkbcomp -version|xkbcomp" "pulseaudio --version|pulseaudio [0-9]")
-    [[ -f "$bin/FEXServer" ]] && runs+=("FEXServer --version|FEX-[0-9]")
     for run in "${runs[@]}"; do
         command="${run%%|*}"
         # Interpreter and libraries only at the padded path: no library environment.

@@ -152,11 +152,12 @@ object SourceImport {
      * holding a folder of [inUse], the folder the installation uses in place as the engine and
      * the Launcher's record name it. Removing that one would leave the installation without its
      * game (the engine's `game-folder-unavailable`) until Start over; it goes with the next copy
-     * after Start over.
+     * after Start over. The older game folder a failed update keeps ([UpgradeImport]) stays too:
+     * the engine may refuse the new copy; it goes once the installation is Ready.
      */
     fun replacedCopies(imports: File, inUse: Collection<String>): List<File> {
         val kept = inUse.mapNotNull { File(it).parentFile }.toSet()
-        return imports.listFiles()?.filter { it !in kept } ?: emptyList()
+        return imports.listFiles()?.filter { it !in kept && it.name != UpgradeImport.TOKEN } ?: emptyList()
     }
 
     /**

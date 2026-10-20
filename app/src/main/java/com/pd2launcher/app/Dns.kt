@@ -15,8 +15,8 @@ import java.nio.file.StandardOpenOption
  * starts, again whenever they change, and again at every later session start ([rewrite]): an
  * unpack puts back the packed file, which names no server. The userland's glibc reads it from
  * `<userland>/etc` (its SYSCONFDIR patch, userland/glibc/patches); Android itself has none. The
- * same file goes to every one of [targets] whose folder exists: the FEX RootFS's `/etc` too, where
- * Wine's x86 glibc reads it (FEX falls back to Android's `/etc`).
+ * same file goes to every one of [targets] whose folder exists. The ARM64 Wine's Unix side uses the
+ * same glibc, so Wine resolves names through this file too.
  */
 class Dns(private val context: Context, private val targets: List<File>, private val log: (String) -> Unit) {
     private var callback: ConnectivityManager.NetworkCallback? = null

@@ -100,6 +100,11 @@ data class InstallResult(val outcome: Outcome, val version: String, val detail: 
 class UserlandInstaller(
     private val root: File,
     private val processes: UserlandProcesses,
+    /**
+     * Files of the archive this device never loads (the other GPU family's Vulkan driver): checked
+     * against the manifest like every file, but not written, so they take no space.
+     */
+    private val skip: Set<String> = emptySet(),
     /** Makes a folder's entries durable (fsync on the folder); the JVM tests record the calls. */
     private val syncDirectory: (Path) -> Unit = ::fsyncDirectory,
     private val log: (String) -> Unit = {},
@@ -355,6 +360,18 @@ class UserlandInstaller(
                     relocation.offsetProblem(wanted)?.let { throw CorruptUserland(it) }
                     digest.reset()
                     writtenDigest.reset()
+                    if (path in skip) {
+                        while (true) {
+                            val n = tar.read(buffer)
+                            if (n < 0) break
+                            digest.update(buffer, 0, n)
+                        }
+                        val hash = digest.digest().toHex()
+                        if (hash != wanted.sha256) throw CorruptUserland("SHA-256 of $path: $hash, manifest ${wanted.sha256}")
+                        written += entry.size
+                        progress(written, total)
+                        continue
+                    }
                     FileOutputStream(out.toFile()).use { file ->
                         val write = { bytes: ByteArray, offset: Int, length: Int ->
                             file.write(bytes, offset, length)

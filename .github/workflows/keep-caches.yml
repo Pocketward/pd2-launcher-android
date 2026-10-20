@@ -64,7 +64,8 @@ jobs:
           newest userland '^userland-[0-9a-f]{64}$'
           newest images '^userland-images-[0-9a-f]{16}$'
           newest parts '^userland-parts-[0-9a-f]{16}$'
-          newest runtime '^runtime-[0-9a-f]+$'
+          newest runtime '^runtime-[0-9a-f]{64}$'
+          newest runtime_parts '^runtime-parts-runtime-[0-9a-f]{64}$'
           newest image '^android-image-[0-9a-f]{16}$'
           newest gradle '^gradle-release-[0-9a-f]{64}$'
 
@@ -89,11 +90,10 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            userland/fex/out
             userland/glibc/out
             ~/.cache/pd2-android/userland/debs
             ~/.cache/pd2-android/userland/sources
-            ~/.cache/pd2-android/userland/turnip-out
+            ~/.cache/pd2-android/userland/mesa-out
             ~/.cache/pd2-android/userland/xvfb-out
             ~/.cache/pd2-android/kbase/sources
             ~/.cache/pd2-android/kbase/out
@@ -107,6 +107,16 @@ jobs:
         with:
           path: app/src/main/assets/runtime
           key: ${{ steps.keys.outputs.runtime }}
+          fail-on-cache-miss: true
+
+      - name: Restore the runtime's parts
+        if: steps.keys.outputs.runtime_parts != ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/pd2-android/runtime/parts
+            ~/.cache/pd2-android/runtime/dl
+          key: ${{ steps.keys.outputs.runtime_parts }}
           fail-on-cache-miss: true
 
       - name: Restore the APK's build image

@@ -1,0 +1,28 @@
+diff -ru a/dlls/win32u/dce.c b/dlls/win32u/dce.c
+--- a/dlls/win32u/dce.c
++++ b/dlls/win32u/dce.c
+@@ -528,6 +528,7 @@
+                                                       const RECT *rect, BITMAPINFO *info, HBITMAP bitmap )
+ {
+     struct window_surface *surface;
++    void *color;
+ 
+     if (!(surface = calloc( 1, size ))) return NULL;
+     surface->funcs = funcs;
+@@ -548,7 +549,15 @@
+ 
+     pthread_mutex_init( &surface->mutex, NULL );
+ 
+-    memset( window_surface_get_color( surface, info ), 0xff, info->bmiHeader.biSizeImage );
++    /* Black, not Windows' white: a window that has not drawn yet (the game's before its renderer
++     * starts) shows black on the phone's screen. 32-bit pixels stay opaque. */
++    color = window_surface_get_color( surface, info );
++    if (info->bmiHeader.biBitCount == 32)
++    {
++        UINT i, count = info->bmiHeader.biSizeImage / 4;
++        for (i = 0; i < count; i++) ((UINT32 *)color)[i] = 0xff000000;
++    }
++    else memset( color, 0, info->bmiHeader.biSizeImage );
+ 
+     TRACE( "created surface %p for hwnd %p rect %s\n", surface, hwnd, wine_dbgstr_rect( &surface->rect ) );
+     return surface;

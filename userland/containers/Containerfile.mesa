@@ -1,0 +1,35 @@
+# Mesa cross-build image (build/mesa.sh; amd64 host, arm64 target through Debian multiarch): Zink
+# (OpenGL on Vulkan) without LLVM, Turnip, GLX and EGL for glvnd, in one Mesa build. The Debian
+# image and snapshot are ../config.sh's pins, so every package version is fixed.
+ARG DEBIAN_IMAGE
+FROM ${DEBIAN_IMAGE}
+
+ARG DEBIAN_SNAPSHOT
+RUN rm -f /etc/apt/sources.list.d/debian.sources \
+    && printf '%s\n' \
+        'Types: deb' \
+        "URIs: http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}" \
+        'Suites: trixie trixie-updates' \
+        'Components: main' \
+        'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+        'Check-Valid-Until: no' \
+        '' \
+        'Types: deb' \
+        "URIs: http://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}" \
+        'Suites: trixie-security' \
+        'Components: main' \
+        'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+        'Check-Valid-Until: no' \
+        > /etc/apt/sources.list.d/snapshot.sources \
+    && dpkg --add-architecture arm64 \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates xz-utils file patch python3 python3-mako python3-yaml python3-packaging \
+        meson ninja-build pkgconf bison flex glslang-tools \
+        gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross \
+        libx11-dev:arm64 libx11-xcb-dev:arm64 libxext-dev:arm64 libxfixes-dev:arm64 libxrandr-dev:arm64 \
+        libxxf86vm-dev:arm64 libxshmfence-dev:arm64 libxcb1-dev:arm64 libxcb-glx0-dev:arm64 \
+        libxcb-dri3-dev:arm64 libxcb-present-dev:arm64 libxcb-randr0-dev:arm64 libxcb-shm0-dev:arm64 \
+        libxcb-sync-dev:arm64 libxcb-xfixes0-dev:arm64 libdrm-dev:arm64 libexpat1-dev:arm64 \
+        zlib1g-dev:arm64 libzstd-dev:arm64 libglvnd-dev:arm64 \
+    && rm -rf /var/lib/apt/lists/*

@@ -8,6 +8,7 @@ import com.pd2launcher.app.control.Game
 import com.pd2launcher.app.control.Installation
 import com.pd2launcher.app.control.Snapshot
 import java.io.BufferedInputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.io.InputStream
@@ -19,19 +20,35 @@ import java.nio.file.StandardCopyOption
 import java.nio.file.attribute.PosixFilePermissions
 
 /**
- * The runtime the app provides (runtime/pack.sh): FEX's RootFS with its App-provided
- * FEX record, Wine-GE with the Launcher's receipt, and the .NET Desktop Runtime's installer in
- * the Launcher's download cache, unpacked once into the Launcher's managed root [managedRoot], so
- * the engine finds them installed and downloads none of them. A marker naming the version is
- * written last; a newer version replaces the trees the older one unpacked.
+ * The runtime the app provides (runtime/build.sh): the ARM64 Wine 11.0 with Box64's
+ * wowbox64.dll, its prefix template and the official launcher's x86 .NET runtime, unpacked once
+ * into the Launcher's managed root [managedRoot] as the engine names them, so the engine finds
+ * them installed and downloads none of them. The files that hold the data-folder placeholder
+ * (the tar's first entry, `relocate.list`) get [dataDir] in its place as they are unpacked
+ * ([Relocation]). A marker naming the version is written last; a newer version replaces the trees
+ * the older one unpacked, and an older app's FEX runtime goes ([LEGACY]); a prefix that older
+ * runtime made becomes one of this runtime's, with the game and its records ([LegacyPrefix]).
+ * When that fails, the older game folder goes to [keptGame] for Import instead.
  */
 class AppRuntime(
     private val managedRoot: File,
+    private val dataDir: String,
     private val log: (String) -> Unit,
-    /** Sets a mode with its sticky bit (the RootFS's /tmp is 1777); Java's API cannot. */
+    /**
+     * Where an older installation's game folder waits for Import when the update in place fails
+     * ([SessionPaths.upgradeGame]: outside the managed root, which the engine refuses for Import).
+     */
+    private val keptGame: () -> File,
+    /** The player's characters ([SessionPaths.userSave]): characters left in an older prefix go below it. */
+    private val userSave: File,
+    /** Sets a mode with its sticky bit; Java's API cannot. */
     private val chmod: (File, Int) -> Unit = { file, mode -> Os.chmod(file.path, mode) },
     /** Makes a folder's entries durable (fsync on the folder); the JVM tests pass their own. */
     private val syncDirectory: (Path) -> Unit = ::fsyncDirectory,
+    /** Debug builds only: the update in place fails on purpose ([LegacyPrefix.failForTest]). */
+    private val failUpdateForTest: Boolean = false,
+    /** Debug builds only: it fails after the new prefix took its place ([LegacyPrefix.failLateForTest]). */
+    private val failUpdateLateForTest: Boolean = false,
 ) {
     private val marker = File(managedRoot, MARKER)
 
@@ -42,17 +59,22 @@ class AppRuntime(
      * the App userland's unpack does, every file is synced, then every folder (deepest first),
      * and only then is the marker written (a temporary name, synced, renamed, the folder synced):
      * after a power cut the marker never names a version whose files did not all reach the disk.
+     * A prefix an older app's runtime made is moved over to this one's last, before the marker;
+     * when that fails, its game folder waits for Import ([LegacyPrefix.setAside]), and that folder
+     * is returned (null: the update in place passed, or there was nothing to update).
      */
-    fun install(version: String, tar: InputStream, progress: (Long) -> Unit = {}) {
+    fun install(version: String, tar: InputStream, progress: (Long) -> Unit = {}): File? {
         ownerOnly(managedRoot)
         // Gone for good before any tree goes, or a power cut could bring it back over half a tree.
         marker.delete()
         syncDirectory(managedRoot.toPath())
-        // What an older version (or a stopped unpack) left.
-        for (path in PROVIDED + RETIRED) UserlandInstaller.deleteTree(File(managedRoot, path).toPath())
+        // What an older version (or a stopped unpack) left, and an older app's FEX runtime.
+        for (path in PROVIDED + LEGACY) UserlandInstaller.deleteTree(File(managedRoot, path).toPath())
+        val relocation = Relocation(PLACEHOLDER, dataDir)
         val reader = TarReader(tar)
         val directories = ArrayList<Pair<File, Int>>()
         val buffer = ByteArray(1 shl 18)
+        var relocated = emptySet<String>()
         var read = 0L
         while (true) {
             val entry = reader.next() ?: break
@@ -60,6 +82,20 @@ class AppRuntime(
             if (path.isEmpty()) continue
             if (path.startsWith("/") || path.split('/').any { it == "" || it == "." || it == ".." }) {
                 throw CorruptUserland("unsafe path in the runtime: ${entry.name}")
+            }
+            if (path == RELOCATE_LIST) {
+                relocated = String(readAll(reader, buffer)).lines()
+                    .mapNotNull { line -> line.trim().takeIf { it.isNotEmpty() } }
+                    .map { line ->
+                        val (kind, file) = line.split(' ', limit = 2).takeIf { it.size == 2 }
+                            ?: throw CorruptUserland("bad relocate.list line: $line")
+                        if (kind != "binary") throw CorruptUserland("unsupported relocation '$kind' for $file")
+                        file
+                    }.toSet()
+                continue
+            }
+            if (PROVIDED.none { path == it || path.startsWith("$it/") }) {
+                throw CorruptUserland("the runtime has a path outside its trees: $path")
             }
             val out = File(managedRoot, path)
             out.parentFile?.let { if (!it.isDirectory) Files.createDirectories(it.toPath()) }
@@ -70,10 +106,14 @@ class AppRuntime(
                 }
                 TarReader.FILE, TarReader.FILE_OLD -> {
                     FileOutputStream(out).use { file ->
-                        while (true) {
-                            val n = reader.read(buffer)
-                            if (n < 0) break
-                            file.write(buffer, 0, n)
+                        if (path in relocated) {
+                            file.write(relocate(readAll(reader, buffer), relocation, path))
+                        } else {
+                            while (true) {
+                                val n = reader.read(buffer)
+                                if (n < 0) break
+                                file.write(buffer, 0, n)
+                            }
                         }
                         file.fd.sync()
                     }
@@ -97,6 +137,19 @@ class AppRuntime(
             if (!Files.isSymbolicLink(dir.toPath())) syncDirectory(dir.toPath())
         }
         syncDirectory(managedRoot.toPath())
+        val legacy = LegacyPrefix(
+            managedRoot, File(managedRoot, PREFIX_TEMPLATE), userSave, log,
+            failForTest = failUpdateForTest, failLateForTest = failUpdateLateForTest, syncDirectory = syncDirectory,
+        )
+        val kept = try {
+            legacy.migrate(keptGame())
+            null
+        } catch (error: Exception) {
+            log("update in place failed: $error")
+            // Nothing is lost when this fails too: the older prefix still holds the game, and the
+            // next start tries again.
+            legacy.setAside(keptGame())
+        }
         val temporary = File(managedRoot, "$MARKER.tmp")
         FileOutputStream(temporary).use {
             it.write(version.toByteArray())
@@ -105,58 +158,44 @@ class AppRuntime(
         Files.move(temporary.toPath(), marker.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
         syncDirectory(managedRoot.toPath())
         log("app runtime $version unpacked")
+        return kept
     }
 
-    /**
-     * Once the game is installed, the runtime's archives in the download cache ([ARCHIVES]) are
-     * only a second copy of what is unpacked: they go, with an older Launcher's Wine-GE archive.
-     * The names removed.
-     */
-    fun removeArchives(): List<String> = (ARCHIVES + LEGACY_WINE_ARCHIVE + RETIRED).filter { File(managedRoot, it).delete() }
-
-    /** Whether an install that sets the game up again would miss one of [ARCHIVES]. */
-    fun archivesMissing(): Boolean = ARCHIVES.any { !File(managedRoot, it).isFile }
-
-    /**
-     * Lays [ARCHIVES] out again from the runtime's [tar], skipping everything else; pack.sh sorts
-     * the tar by name, so `cache/` comes first and the rest is not read. Each is written under a
-     * temporary name, synced, checked against the entry's size and only then renamed into place,
-     * so a restore cut short never leaves a short copy where [archivesMissing] (and the engine)
-     * would take it for whole. The names restored.
-     */
-    fun restoreArchives(tar: InputStream): List<String> {
-        val reader = TarReader(tar)
-        val buffer = ByteArray(1 shl 18)
-        val restored = ArrayList<String>()
-        while (restored.size < ARCHIVES.size) {
-            val entry = reader.next() ?: break
-            val path = entry.name.removePrefix("./")
-            if (path !in ARCHIVES || (entry.type != TarReader.FILE && entry.type != TarReader.FILE_OLD)) continue
-            val out = File(managedRoot, path)
-            val folder = out.parentFile!!
-            Files.createDirectories(folder.toPath())
-            val temporary = File(folder, ".${out.name}.part")
-            try {
-                var written = 0L
-                FileOutputStream(temporary).use { file ->
-                    while (true) {
-                        val n = reader.read(buffer)
-                        if (n < 0) break
-                        file.write(buffer, 0, n)
-                        written += n
-                    }
-                    file.fd.sync()
-                }
-                if (written != entry.size) throw CorruptUserland("$path: $written of its ${entry.size} bytes")
-                chmod(temporary, entry.mode and 0x1ff)
-                Files.move(temporary.toPath(), out.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-                syncDirectory(folder.toPath())
-            } finally {
-                temporary.delete()
-            }
-            restored += path
+    private fun readAll(reader: TarReader, buffer: ByteArray): ByteArray {
+        val all = ByteArrayOutputStream()
+        while (true) {
+            val n = reader.read(buffer)
+            if (n < 0) break
+            all.write(buffer, 0, n)
         }
-        return restored
+        return all.toByteArray()
+    }
+
+    /** [data] with each copy of the placeholder replaced in place (the data folder padded with '/'). */
+    private fun relocate(data: ByteArray, relocation: Relocation, path: String): ByteArray {
+        val placeholder = relocation.placeholder
+        val at = ArrayList<Long>()
+        var i = indexOf(data, placeholder, 0)
+        while (i >= 0) {
+            at += i.toLong()
+            i = indexOf(data, placeholder, i + placeholder.size)
+        }
+        if (at.isEmpty()) throw CorruptUserland("$path: no placeholder to relocate")
+        val out = ByteArrayOutputStream(data.size)
+        val writer = PlaceholderWriter(at, placeholder, relocation.replacement(BINARY)) { bytes, offset, length ->
+            out.write(bytes, offset, length)
+        }
+        writer.write(data, data.size)
+        writer.finish()
+        return out.toByteArray()
+    }
+
+    private fun indexOf(data: ByteArray, needle: ByteArray, from: Int): Int {
+        outer@ for (i in from..data.size - needle.size) {
+            for (j in needle.indices) if (data[i + j] != needle[j]) continue@outer
+            return i
+        }
+        return -1
     }
 
     private fun ownerOnly(dir: File) {
@@ -165,37 +204,44 @@ class AppRuntime(
         }
     }
 
-    /** What the archive copies and the Windows Installer cache need ([sweep]). */
+    /** What the Windows Installer cache needs ([sweep]). */
     enum class Sweep {
-        /** The installation is Ready: the copies and the Installer cache go. */
+        /** The installation is Ready: the Installer cache goes. */
         REMOVE,
 
-        /** The installation needs setting up (again): the copies come back from the APK if missing. */
+        /** The installation needs setting up (again): nothing to do. */
         RESTORE,
     }
 
     companion object {
         const val MARKER = ".pd2-app-runtime"
-        /** The trees an unpack replaces (pack.sh's layout); the Launcher's own files stay. */
-        private val PROVIDED = listOf(
-            "fex",
-            "runner/lutris-GE-Proton8-26-x86_64",
-            // In the tar's order (pack.sh sorts it by name), as restoreArchives reads them.
-            "cache/artifacts/windowsdesktop-runtime-6.0.36-win-x86.verified",
+        /** The data-folder placeholder the runtime's programs are built for (userland/config.sh). */
+        val PLACEHOLDER = "/pd2launcher-data-placeholder-" + "0".repeat(170)
+        private const val RELOCATE_LIST = "relocate.list"
+        /** The prefix template (the engine's `APP_PREFIX_TEMPLATE`). */
+        const val PREFIX_TEMPLATE = "runner/wine-11.0-arm64-prefix"
+        /** The trees an unpack replaces (runtime/pack.py's layout); the Launcher's own files stay. */
+        val PROVIDED = listOf(
+            "runner/dotnet-6.0.36-x86",
+            "runner/wine-11.0-arm64",
+            PREFIX_TEMPLATE,
         )
-
-        /** The .NET Desktop Runtime installer: only an install that sets the game up (again) reads it. */
-        val ARCHIVES = PROVIDED.filter { it.startsWith("cache/") }
 
         /**
-         * What older runtimes laid into the download cache and none lays out any more: the Wine
-         * Gecko and Wine Mono installers (the prefix has neither). They go with the first unpack
-         * of a newer runtime, and with the other copies once the game is installed.
+         * What an older app's FEX runtime left in the managed root: FEX's RootFS and folders,
+         * Wine-GE, and the Wine Gecko, Wine Mono and .NET installers in the download cache.
          */
-        val RETIRED = listOf(
+        val LEGACY = listOf(
+            "fex",
+            "runner/lutris-GE-Proton8-26-x86_64",
+            "cache/artifacts/windowsdesktop-runtime-6.0.36-win-x86.verified",
             "cache/artifacts/wine-gecko-2.47.4-x86.verified",
             "cache/artifacts/wine-mono-11.3.0-x86.verified",
+            "cache/artifacts/wine-ge-8-26.verified",
         )
+
+        /** A binary file's relocation (the data folder padded in place). */
+        private val BINARY = ManifestEntry(path = "", type = "file", mode = "0755")
 
         /**
          * What [snapshot]'s state needs: nothing before the engine's audit has ended (its
@@ -215,9 +261,6 @@ class AppRuntime(
          * nothing running, not on every snapshot.
          */
         fun sweep(previous: Snapshot?, next: Snapshot): Sweep? = need(next)?.takeIf { it != need(previous) }
-
-        /** Wine-GE's archive, which an older Launcher downloaded; the APK carries Wine-GE unpacked. */
-        const val LEGACY_WINE_ARCHIVE = "cache/artifacts/wine-ge-8-26.verified"
 
         private const val ARCHIVE = "runtime/runtime.tar.zst"
         private const val INFO = "runtime/runtime.info"

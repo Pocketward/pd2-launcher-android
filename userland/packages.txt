@@ -3,7 +3,7 @@
 #
 # Line format:  <set> <package>=<version>   or   exclude <package>
 #   runtime  goes into the App userland (and the build sysroot)
-#   build    goes only into the cross-build sysroot (headers and .pc files for build-xvfb.sh, build-turnip.sh)
+#   build    goes only into the cross-build sysroot (headers and .pc files for build-xvfb.sh, build-panvk.sh)
 #   exclude  dropped from the closure: needed only by maintainer scripts, which are never run
 
 # X server: Xvfb itself is built from source by build-xvfb.sh (compiled-in XKB paths, lock file);
@@ -33,17 +33,31 @@ runtime libxrandr2=2:1.5.4-1+b3
 # x-input-relay injects touch and keyboard input through XTEST
 runtime libxtst6=2:1.2.5-1
 
-# Vulkan loader and Mesa's Gallium (Zink lives in libgallium; dri/zink_dri.so is linked by relocate.sh)
+# Vulkan loader and glvnd's GL and EGL; Mesa itself (Zink, Turnip, GLX, EGL) is built by
+# build-mesa.sh, so Debian's Mesa packages are excluded below
 runtime libvulkan1=1.4.309.0-1
-runtime libgl1-mesa-dri=25.0.7-2+deb13u1
-runtime mesa-libgallium=25.0.7-2+deb13u1
-runtime libglx-mesa0=25.0.7-2+deb13u1
-runtime libegl-mesa0=25.0.7-2+deb13u1
 runtime libgl1=1.7.0-1+b2
 runtime libegl1=1.7.0-1+b2
 
-# Native diagnostics (glxinfo, glxgears)
-runtime mesa-utils=9.0.0-2+b2
+# What the ARM64 Wine's Unix side and our Mesa load: X11 (Xrender, Xfixes, Xext, the xcb
+# extensions of GLX and Mesa's X11 WSI), FreeType, GnuTLS (schannel, bcrypt)
+runtime libxext6=2:1.3.4-1+b3
+runtime libxrender1=1:0.9.12-1
+runtime libxfixes3=1:6.0.0-2+b4
+runtime libxshmfence1=1.3.3-1
+runtime libxcb-dri3-0=1.17.0-2+b1
+runtime libxcb-present0=1.17.0-2+b1
+runtime libxcb-randr0=1.17.0-2+b1
+runtime libxcb-shm0=1.17.0-2+b1
+runtime libxcb-sync1=1.17.0-2+b1
+runtime libxcb-xfixes0=1.17.0-2+b1
+runtime libxcb-glx0=1.17.0-2+b1
+runtime libxxf86vm1=1:1.1.4-1+b4
+runtime libexpat1=2.8.3-1~deb13u1
+runtime libzstd1=1.5.7+dfsg-1
+runtime zlib1g=1:1.3.dfsg+really1.3.1-1+b1
+runtime libfreetype6=2.13.3+dfsg-1+deb13u1
+runtime libgnutls30t64=3.8.9-3+deb13u4
 
 # Fonts and certificates
 runtime fonts-dejavu-core=2.37-8
@@ -68,7 +82,7 @@ build libmd-dev=1.1.0-2+b1
 build libgl-dev=1.7.0-1+b2
 build mesa-common-dev=25.0.7-2+deb13u1
 
-# Cross-build sysroot for Turnip (build-turnip.sh): Mesa's Vulkan X11 WSI and its other deps
+# Cross-build sysroot for PanVK (build-panvk.sh): Mesa's Vulkan X11 WSI and its other deps
 build libc6-dev=2.41-12+deb13u4
 build libx11-dev=2:1.8.12-1
 build libx11-xcb-dev=2:1.8.12-1
@@ -110,3 +124,9 @@ exclude openssl
 exclude libasound2-plugins
 # Excluded: language-name data for GStreamer's tag library, unused here
 exclude iso-codes
+# Excluded: Debian's Mesa; build-mesa.sh builds ours (with our patches) in its place
+exclude libglx-mesa0
+exclude libegl-mesa0
+exclude libgl1-mesa-dri
+exclude mesa-libgallium
+exclude mesa-vulkan-drivers

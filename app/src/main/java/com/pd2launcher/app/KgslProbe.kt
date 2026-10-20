@@ -147,6 +147,17 @@ fun adrenoModel(chipId: Long): Int? {
     return if (core in 1..9 && major <= 9 && minor <= 9) (core * 100 + major * 10 + minor).toInt() else null
 }
 
+/**
+ * The Adrenos that Turnip drives without hardware multiview (Mesa's freedreno_devices.py: the 6xx
+ * "gen1 low" parts and the 702). Turnip reports Vulkan 1.0 for them, and Zink (the game's OpenGL)
+ * refuses a 1.0 device, so OpenGL fell back to software on the Adreno 610 (a black picture);
+ * TU_DEBUG's `noconform` makes Turnip report its Vulkan 1.3 there too.
+ */
+private val adrenosWithoutMultiview = setOf(605, 608, 610, 612, 613, 702)
+
+/** Whether the game's Turnip needs `noconform` on this KGSL GPU ([adrenosWithoutMultiview]). */
+fun adrenoWithoutMultiview(chipId: Long?): Boolean = chipId?.let(::adrenoModel) in adrenosWithoutMultiview
+
 /** A readable GPU name for a KGSL chip id ([adrenoModel]). */
 fun adrenoName(chipId: Long, generation: Int): String =
     namedChips[chipId] ?: adrenoModel(chipId)?.let { "Adreno $it" } ?: "Adreno ${generation}xx (chip id 0x%08x)".format(chipId)

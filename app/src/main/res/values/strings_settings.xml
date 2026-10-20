@@ -21,7 +21,7 @@
     <string name="settings_renderer_direct_draw">DirectDraw</string>
     <string name="settings_renderer_direct_draw_body">The game\'s own renderer through Wine. For when Glide does not start.</string>
     <string name="settings_section_resolution">Game resolution</string>
-    <string name="settings_resolution_body">Fewer lines are smoother; the game is scaled up to fill the screen. Its graphics options are in the game (Ctrl+O).</string>
+    <string name="settings_resolution_body">Fewer lines are smoother; the game is scaled up to fill the screen. Its graphics options are in the game: Options, Video Options, D2GL.</string>
     <string name="settings_resolution_automatic">Automatic: %1$s</string>
     <string name="settings_resolution_automatic_body">480 lines on older or entry-level Adreno GPUs, a medium size on Mali GPUs, full size on newer Adrenos.</string>
     <string name="settings_section_launcher_resolution">Official launcher resolution</string>
@@ -29,7 +29,7 @@
     <string name="settings_resolution_full">%1$d × %2$d (full)</string>
     <string name="settings_resolution_size">%1$d × %2$d</string>
     <string name="settings_graphics_profile">Graphics profile</string>
-    <string name="settings_graphics_profile_body">D2GL\'s settings for the game\'s look, written at the next Play. What you change in the game (Ctrl+O) stays until you pick another profile.</string>
+    <string name="settings_graphics_profile_body">D2GL\'s settings for the game\'s look, written at the next Play. What you change in the game (Options, Video Options, D2GL) stays until you pick another profile.</string>
     <string name="settings_graphics_automatic_default">Automatic: Default</string>
     <string name="settings_graphics_automatic_performance">Automatic: Performance</string>
     <string name="settings_graphics_automatic_body">Performance on older or entry-level Adreno GPUs and on Mali GPUs, Default on newer Adrenos.</string>

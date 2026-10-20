@@ -40,6 +40,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.pd2launcher.app.DeviceCheck
+import com.pd2launcher.app.GameFilesProvider
 import com.pd2launcher.app.InstallerDownloads
 import com.pd2launcher.app.InstallerDownloads.Outcome
 import com.pd2launcher.app.InstallerDownloads.Refusal
@@ -47,6 +48,7 @@ import com.pd2launcher.app.R
 import com.pd2launcher.app.SessionPaths
 import com.pd2launcher.app.SessionService
 import com.pd2launcher.app.SourceImport
+import com.pd2launcher.app.UpgradeImport
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -61,13 +63,23 @@ fun rememberInstallerDownloadBytes(key: Any?): State<Long?> {
     }
 }
 
-/** Whether the installation was imported ([InstallerDownloads.imported]), read again when [key] changes; null while reading. */
+/**
+ * Whether the installation was imported from a folder the player copied onto the device
+ * ([InstallerDownloads.imported], [UpgradeImport.playerCopied] with the engine's [gameFolder] and the
+ * Launcher's record), read again when [key] or [gameFolder] changes; null while reading.
+ */
 @Composable
-fun rememberImported(key: Any?): State<Boolean?> {
+fun rememberImported(key: Any?, gameFolder: String?): State<Boolean?> {
     val context = LocalContext.current
-    return produceState<Boolean?>(null, key) {
+    return produceState<Boolean?>(null, key, gameFolder) {
         value = withContext(Dispatchers.IO) {
-            runCatching { InstallerDownloads.imported(SessionPaths(DeviceCheck.dataDir(context)).managedRoot) }.getOrNull()
+            runCatching {
+                val paths = SessionPaths(DeviceCheck.dataDir(context))
+                InstallerDownloads.imported(paths.managedRoot) &&
+                    UpgradeImport.playerCopied(
+                        gameFolder, GameFilesProvider.recordedGameFolder(paths), paths.upgradeGame, SourceImport.pickedFolder(context),
+                    )
+            }.getOrNull()
         }
     }
 }
@@ -120,7 +132,7 @@ fun ColumnScope.StorageRows() {
     val status by SessionService.status.collectAsState()
     var counted by remember { mutableIntStateOf(0) }
     val bytes by rememberInstallerDownloadBytes(counted)
-    val imported by rememberImported(status.snapshot?.installation)
+    val imported by rememberImported(status.snapshot?.installation, status.snapshot?.gameFolder?.path)
     var confirm by remember { mutableStateOf(false) }
     var working by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }

@@ -119,20 +119,24 @@ data class Segment(val task: InstallTask, val phases: Set<Phase>, val seconds: I
 object InstallPlan {
     /**
      * The game environment's parts and their typical seconds, which the engine names as each
-     * starts (`environment` in its operation): Windows (Wine's first start in the new prefix,
-     * with the Launcher's registry values) 74 s and the .NET Desktop Runtime the official PD2
-     * launcher needs 68 s, with the closing check; web components (Wine Gecko) 24 s and .NET
-     * (Wine Mono) 61 s only from an engine that installs those, which this app's does not.
+     * starts (`environment` in its operation): Windows (a copy of the app's prefix template,
+     * with the XInput bridge, the Launcher's registry values and the link to the app's .NET)
+     * 8 s, with the closing check; web components (Wine Gecko) 24 s, .NET (Wine Mono) 61 s and
+     * the .NET Desktop Runtime the official PD2 launcher needs 68 s only from an engine that
+     * installs those, which this app's does not.
      */
     val ENVIRONMENT_PARTS: Map<EnvironmentPart, Int> = mapOf(
-        EnvironmentPart.WINDOWS to 74,
+        EnvironmentPart.WINDOWS to 8,
         EnvironmentPart.WEB_COMPONENTS to 24,
         EnvironmentPart.DOTNET to 61,
         EnvironmentPart.LAUNCHER_SUPPORT to 68,
     )
 
-    /** The parts the engine plans for the app's prefix: no Wine Gecko and no Wine Mono. */
-    val PLANNED_PARTS: List<EnvironmentPart> = listOf(EnvironmentPart.WINDOWS, EnvironmentPart.LAUNCHER_SUPPORT)
+    /**
+     * The parts the engine plans for the app's prefix: Windows only (the app provides the .NET
+     * runtime, and the prefix has no Wine Gecko and no Wine Mono).
+     */
+    val PLANNED_PARTS: List<EnvironmentPart> = listOf(EnvironmentPart.WINDOWS)
     private val ENVIRONMENT = Segment(
         InstallTask.ENVIRONMENT,
         setOf(Phase.RUNTIME_ACQUISITION, Phase.PREFIX_INITIALIZATION),
@@ -236,6 +240,8 @@ data class InstallRun(
 /** Maps the engine's snapshot onto the install screen. Pure, so every state is unit tested. */
 object InstallProgress {
     private val INSTALL_JOBS = setOf(Job.INSTALL_BASE_GAME, Job.INSTALL_PROJECT_DIABLO)
+    /** The audit's verdicts that no install step can follow: only Repair. */
+    private val DAMAGED = setOf(Installation.REPAIR_REQUIRED, Installation.INDETERMINATE)
     private val RUNNING = setOf(
         OperationStatus.QUEUED, OperationStatus.PLANNING, OperationStatus.RUNNING,
         OperationStatus.VERIFYING, OperationStatus.COMMITTING,
@@ -555,7 +561,11 @@ object InstallProgress {
         KEYS,
         /** An install job runs, or Install Project Diablo 2 is next. */
         PROGRESS,
-        /** A stage was interrupted: the engine takes no keys until Start over (Repair). */
+        /**
+         * A stage was interrupted, or the engine's audit, with nothing running, finds the
+         * installation damaged or not known: it takes no install until Repair (Check again, Start
+         * over).
+         */
         REPAIR,
     }
 
@@ -564,6 +574,7 @@ object InstallProgress {
         return when {
             snapshot.activeJob in INSTALL_JOBS -> Page.PROGRESS
             snapshot.installation == Installation.STAGE_INTERRUPTED -> Page.REPAIR
+            snapshot.installation in DAMAGED && snapshot.activeJob == null && Onboarding.audited(snapshot) -> Page.REPAIR
             snapshot.step == Step.INSTALL_D2 -> Page.KEYS
             snapshot.step == Step.INSTALL_PD2 -> Page.PROGRESS
             else -> null
@@ -763,10 +774,18 @@ fun installNote(view: InstallView): Note? = when {
  * last checked it, Check again (the engine audits the installation again and repairs recorded
  * work), and Start over, which removes the installation after an in-place confirmation that says
  * what goes and what is kept. From the press of Start over until its reset ends or is refused,
- * nothing can be pressed again.
+ * nothing can be pressed again. [onImport]: after an update in place whose moved game the engine
+ * rejected, Import of that game comes first (the corner Check again takes otherwise; Check again
+ * moves under the rows), and Start over second.
  */
 @Composable
-fun RepairScreen(session: SessionStatus, onCheckAgain: () -> Unit, onStartOver: () -> Unit, onBack: () -> Unit) {
+fun RepairScreen(
+    session: SessionStatus,
+    onCheckAgain: () -> Unit,
+    onStartOver: () -> Unit,
+    onBack: () -> Unit,
+    onImport: (() -> Unit)? = null,
+) {
     val snapshot = session.snapshot
     val focus = remember { FocusRequester() }
     var confirm by remember { mutableStateOf(false) }
@@ -802,7 +821,9 @@ fun RepairScreen(session: SessionStatus, onCheckAgain: () -> Unit, onStartOver: 
             }
         },
         action = {
-            if (!confirm) {
+            if (!confirm && onImport != null) {
+                CornerPill(stringResource(R.string.repair_import), onImport, Kind.PRIMARY, enabled = !checking, focusRequester = focus)
+            } else if (!confirm) {
                 CornerPill(stringResource(R.string.action_check_again), onCheckAgain, Kind.PRIMARY, enabled = !checking, focusRequester = focus)
             } else {
                 CornerPill(
@@ -818,6 +839,9 @@ fun RepairScreen(session: SessionStatus, onCheckAgain: () -> Unit, onStartOver: 
     ) {
         if (confirm) {
             Banner(stringResource(R.string.repair_confirm_body), Palette.Red, Modifier.padding(vertical = 8.dp))
+        } else if (onImport != null) {
+            Banner(stringResource(R.string.repair_import_body), Palette.Teal, Modifier.padding(vertical = 8.dp))
+            LauncherButton(stringResource(R.string.action_check_again), onCheckAgain, Modifier.padding(bottom = 8.dp), enabled = !checking)
         }
         val installation = snapshot?.installation
         // The folder it uses in place is gone: only Start over goes on, and nothing else can be checked.

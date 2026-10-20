@@ -4,7 +4,8 @@
 #   - drops documentation (all of usr/share/doc) and translations
 #   - absolute symlinks become relative; hard links become separate files (SELinux forbids
 #     hard links in app storage); setuid/setgid bits are cleared
-#   - ensures dri/zink_dri.so -> libdril_dri.so (Zink's DRI driver name, as Debian ships it)
+#   - ensures dri/zink_dri.so (Zink's DRI driver name; a link to libdril_dri.so where Mesa's
+#     install left none)
 #   - every ELF's PT_INTERP becomes $USERLAND/lib/ld-linux-aarch64.so.1; absolute RUNPATH/RPATH
 #     entries get the $USERLAND prefix (patchelf, pinned in the tools image)
 #   - writes etc/: fonts.conf, resolv.conf placeholder, nsswitch.conf, hosts, the CA bundle and
@@ -32,7 +33,8 @@ rm -rf "$root"/etc/init.d "$root"/usr/lib/systemd "$root"/usr/lib/udev
 
 # --- links and modes -----------------------------------------------------------------------
 relativize_symlinks "$root"
-ln -sfn libdril_dri.so "$root/usr/lib/aarch64-linux-gnu/dri/zink_dri.so"
+[[ -e "$root/usr/lib/aarch64-linux-gnu/dri/zink_dri.so" ]] ||
+    ln -sfn libdril_dri.so "$root/usr/lib/aarch64-linux-gnu/dri/zink_dri.so"
 while IFS= read -r -d '' f; do
     cp -p "$f" "$f.unlink" && mv -f "$f.unlink" "$f"
 done < <(find "$root" -type f -links +1 -print0)

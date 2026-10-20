@@ -240,7 +240,7 @@ data class DisplaySize(val width: Long, val height: Long)
 
 /**
  * The graphics driver a Play uses: the App userland's Turnip as it is, or with its Compatibility
- * values (`PD2_APP_FEX_COMPATIBILITY_HOSTENV_*` in userland.env).
+ * values (`PD2_APP_WINE_COMPATIBILITY_*` in userland.env).
  */
 @Serializable
 enum class GraphicsDriver {

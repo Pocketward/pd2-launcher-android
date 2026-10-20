@@ -1,0 +1,92 @@
+--- a/src/vulkan/wsi/wsi_common.c
++++ b/src/vulkan/wsi/wsi_common.c
+@@ -2889,7 +2889,7 @@
+ #endif
+       }
+ 
+-      if (wsi->sw) {
++      if (wsi->sw && !swapchain->present_thread_waits_fences) {
+          wsi->WaitForFences(vk_device_to_handle(dev),
+                             1, &swapchain->fences[image_index], true, ~0ull);
+       }
+--- a/src/vulkan/wsi/wsi_common_private.h
++++ b/src/vulkan/wsi/wsi_common_private.h
+@@ -242,6 +242,10 @@
+     */
+    VkSemaphore present_id_timeline;
+    bool present_wait_enabled;
++   /* A software swapchain whose present thread waits for each image's fence itself:
++    * vkQueuePresentKHR then does not wait for the GPU.
++    */
++   bool present_thread_waits_fences;
+ 
+    int signal_dma_buf_from_semaphore;
+    /**
+--- a/src/vulkan/wsi/wsi_common_x11.c
++++ b/src/vulkan/wsi/wsi_common_x11.c
+@@ -3336,10 +3336,12 @@
+ 
+       VkPresentModeKHR present_mode = chain->images[image_index].present_mode;
+ 
+-      /* Not necessary to block when we have explicit sync */
++      /* Not necessary to block when we have explicit sync. The software present reads the
++       * image on the CPU: it waits here, not in vkQueuePresentKHR's caller. */
+       bool need_fence_wait =
+-            x11_needs_wait_for_fences(chain->base.wsi, wsi_conn, present_mode) &&
+-            !chain->base.image_info.explicit_sync;
++            (x11_needs_wait_for_fences(chain->base.wsi, wsi_conn, present_mode) &&
++             !chain->base.image_info.explicit_sync) ||
++            chain->base.present_thread_waits_fences;
+ 
+       bool need_timing_fence_wait = x11_swapchain_present_timing_is_out_of_order_completion(
+             chain, wsi_conn, &chain->images[image_index].timing_request);
+@@ -3350,7 +3352,10 @@
+                                                  &chain->base.fences[image_index],
+                                                  true, UINT64_MAX);
+          if (result != VK_SUCCESS) {
+-            result = VK_ERROR_OUT_OF_DATE_KHR;
++            /* A lost device stays lost: the application must see it, not a swapchain to make
++             * again. */
++            if (result != VK_ERROR_DEVICE_LOST)
++               result = VK_ERROR_OUT_OF_DATE_KHR;
+             break;
+          }
+       }
+@@ -3796,6 +3801,25 @@
+    thrd_join(chain->queue_manager, NULL);
+    thrd_join(chain->event_manager, NULL);
+ 
++   /* vkQueuePresentKHR's caller did not wait for the GPU (the present thread waits for each
++    * image's fence): an image still in the present queue may be in use there. Its memory,
++    * command buffers and fence go below, so first wait for the fences of the presented images,
++    * at most a second.
++    */
++   if (chain->base.present_thread_waits_fences) {
++      STACK_ARRAY(VkFence, pending, chain->base.image_count);
++      uint32_t pending_count = 0;
++      for (uint32_t i = 0; i < chain->base.image_count; i++) {
++         if (chain->base.fences[i] != VK_NULL_HANDLE)
++            pending[pending_count++] = chain->base.fences[i];
++      }
++      if (pending_count > 0) {
++         chain->base.wsi->WaitForFences(chain->base.device, pending_count, pending,
++                                        true, 1000ull * 1000 * 1000);
++      }
++      STACK_ARRAY_FINISH(pending);
++   }
++
+ #ifdef __linux__
+    /* Before the acquire queue goes: the direct present's reader pushes to it. */
+    if (chain->direct != NULL) {
+@@ -4076,6 +4100,11 @@
+ 
+    chain->base.destroy = x11_swapchain_destroy;
+    chain->base.get_wsi_image = x11_get_wsi_image;
++   /* The software present reads each image on the CPU, after its present thread has waited
++    * for the image's fence: vkQueuePresentKHR's caller (Zink's submit thread) is not held up
++    * by the GPU, so the next frame's work reaches the GPU meanwhile.
++    */
++   chain->base.present_thread_waits_fences = wsi_device->sw;
+ #ifdef __linux__
+    chain->base.direct_blit = x11_direct_blit;
+ #endif

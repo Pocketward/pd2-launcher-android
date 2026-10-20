@@ -52,8 +52,10 @@ fun AboutScreen(onBack: () -> Unit, runtime: String? = null) {
                 Text(stringResource(R.string.about_what), style = Type.Body, color = Palette.Text, modifier = Modifier.padding(top = 8.dp))
                 Text(stringResource(R.string.about_disclaimer), style = Type.Hint, color = Palette.Muted)
                 GroupLabel(stringResource(R.string.about_built_title), Modifier.padding(top = 16.dp))
-                Text(stringResource(R.string.about_built_fex), style = Type.Body, color = Palette.Text)
                 Text(stringResource(R.string.about_built_wine), style = Type.Body, color = Palette.Text)
+                Text(stringResource(R.string.about_built_box64), style = Type.Body, color = Palette.Text)
+                Text(stringResource(R.string.about_built_mesa), style = Type.Body, color = Palette.Text)
+                Text(stringResource(R.string.about_built_dotnet), style = Type.Body, color = Palette.Text)
                 if (runtime != null) Text(stringResource(R.string.about_runtime, runtime), style = Type.Hint, color = Palette.Muted)
                 Text(stringResource(R.string.about_end), style = Type.Hint, color = Palette.Muted, modifier = Modifier.padding(top = 16.dp))
             }

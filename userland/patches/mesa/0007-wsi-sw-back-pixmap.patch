@@ -1,0 +1,205 @@
+--- a/src/vulkan/wsi/wsi_common_x11.c
++++ b/src/vulkan/wsi/wsi_common_x11.c
+@@ -1283,6 +1283,15 @@
+ 
+    xcb_connection_t *                           conn;
+    xcb_window_t                                 window;
++   /* The software present's back pixmap (x11_sw_back_prepare), or XCB_NONE; whether the frame
++    * in hand goes there; and the frame it holds for the window, with the damaged areas, until
++    * the Game view's take. */
++   xcb_pixmap_t                                 sw_back;
++   bool                                         sw_back_tried;
++   bool                                         sw_frame_to_back;
++   bool                                         sw_copy_pending;
++   int                                          sw_copy_rect_count;
++   xcb_rectangle_t                              sw_copy_rects[MAX_DAMAGE_RECTS];
+    xcb_gc_t                                     gc;
+    uint32_t                                     depth;
+    VkExtent2D                                   extent;
+@@ -2662,6 +2671,82 @@
+ }
+ #endif
+ 
++#ifdef __linux__
++/* The software present's back pixmap, while the Game view paces: the game must never wait for
++ * the Game view's take. PutImage sends the whole frame through the X socket, and with the view's
++ * pacing it could only start once the view had taken the frame before. When the PutImage took
++ * longer (about 13 ms instead of 7 for 1616 x 720 on a Mali-G715 in some runs), the PutImage and
++ * the view's copy no longer fitted into one display frame, every frame took two, and the game
++ * waited in acquire for the images the present thread held. So the frame goes into this pixmap
++ * in the X server while the view still reads the window, the image goes back to the game at
++ * once, and only the copy into the window, fast and inside the server, waits for the take
++ * (x11_sw_back_copy, outside the thread state lock). Made at the first such frame, at the
++ * swapchain's size (a resized window makes the swapchain again, and with it the pixmap); none
++ * when the server refuses it. A frame while the view does not pace (the app in the background)
++ * goes to the window as before: no copy and no round trip.
++ */
++static void
++x11_sw_back_prepare(struct x11_swapchain *chain)
++{
++   if (chain->sw_back != XCB_NONE || chain->sw_back_tried)
++      return;
++   chain->sw_back_tried = true;
++   xcb_pixmap_t back = xcb_generate_id(chain->conn);
++   xcb_generic_error_t *err =
++      xcb_request_check(chain->conn,
++                        xcb_create_pixmap_checked(chain->conn, chain->depth, back, chain->window,
++                                                  chain->extent.width, chain->extent.height));
++   if (err == NULL)
++      chain->sw_back = back;
++   free(err);
++}
++
++/* Whether the frame in hand goes to the back pixmap: the Game view paces (its word at byte 128
++ * is not 0) and the pixmap is there. */
++static bool
++x11_sw_back_wanted(struct x11_swapchain *chain)
++{
++   call_once(&sw_present_counter_once, sw_present_counter_open);
++   if (!sw_pacing_mapped ||
++       __atomic_load_n(&sw_present_counter[SW_PACED_WORD], __ATOMIC_ACQUIRE) == 0)
++      return false;
++   x11_sw_back_prepare(chain);
++   return chain->sw_back != XCB_NONE;
++}
++#else
++static bool
++x11_sw_back_wanted(struct x11_swapchain *chain)
++{
++   return false;
++}
++#endif
++
++/* The back pixmap's frame into the window, once the Game view has taken the frame before; a
++ * round trip makes sure that the window has it before the frame is counted. The X server takes
++ * the copy after the frame's PutImage, in request order. */
++static void
++x11_sw_back_copy(struct x11_swapchain *chain)
++{
++   chain->sw_copy_pending = false;
++   sw_present_paced();
++   if (chain->sw_copy_rect_count > 0) {
++      for (int i = 0; i < chain->sw_copy_rect_count; i++) {
++         const xcb_rectangle_t *rect = &chain->sw_copy_rects[i];
++         xcb_discard_reply(chain->conn,
++                           xcb_copy_area(chain->conn, chain->sw_back, chain->window, chain->gc,
++                                         rect->x, rect->y, rect->x, rect->y,
++                                         rect->width, rect->height).sequence);
++      }
++   } else {
++      xcb_discard_reply(chain->conn,
++                        xcb_copy_area(chain->conn, chain->sw_back, chain->window, chain->gc,
++                                      0, 0, 0, 0,
++                                      chain->extent.width, chain->extent.height).sequence);
++   }
++   free(xcb_get_input_focus_reply(chain->conn, xcb_get_input_focus(chain->conn), NULL));
++   sw_present_counted();
++}
++
+ /**
+  * Send image to X server unaccelerated (software drivers).
+  */
+@@ -2670,6 +2755,7 @@
+ {
+    assert(!chain->base.image_info.explicit_sync);
+    struct x11_image *image = &chain->images[image_index];
++   xcb_drawable_t target = chain->sw_frame_to_back ? chain->sw_back : chain->window;
+ 
+    /* Begin querying this before submitting the frame for improved async performance.
+     * In this _sw() mode we're expecting network round-trip delay, not just UNIX socket delay. */
+@@ -2697,7 +2783,7 @@
+          const uint8_t *data = (const uint8_t*)myptr + (rect.y * stride_b) + (rect.x * 4);
+          for (int j = 0; j < rect.height; j++) {
+             cookie = xcb_put_image(chain->conn, XCB_IMAGE_FORMAT_Z_PIXMAP,
+-                                   chain->window, chain->gc,
++                                   target, chain->gc,
+                                    rect.width,
+                                    1,
+                                    rect.x, rect.y + j,
+@@ -2710,7 +2796,7 @@
+       }
+    } else if (size < max_req_len) {
+       cookie = xcb_put_image(chain->conn, XCB_IMAGE_FORMAT_Z_PIXMAP,
+-                             chain->window,
++                             target,
+                              chain->gc,
+                              image->base.row_pitches[0] / 4,
+                              chain->extent.height,
+@@ -2725,7 +2811,7 @@
+       while (y_todo) {
+          int this_lines = MIN2(num_lines, y_todo);
+          cookie = xcb_put_image(chain->conn, XCB_IMAGE_FORMAT_Z_PIXMAP,
+-                                chain->window,
++                                target,
+                                 chain->gc,
+                                 image->base.row_pitches[0] / 4,
+                                 this_lines,
+@@ -2757,7 +2843,25 @@
+    free(err);
+    free(geom);
+ 
+-   /* The geometry reply came after the frame: the X server has it. */
++   if (chain->sw_frame_to_back) {
++      /* All of the frame has gone to the X server (xcb_flush), so the image is the game's again
++       * at once; the server takes the frame into the back pixmap in request order, before the
++       * copy (x11_sw_back_copy). The damaged areas are noted first, as the game may present the
++       * image again before the copy. A frame of a resized or lost window stays in the pixmap: it
++       * is neither copied nor counted, and the swapchain goes. */
++      if (result == VK_SUCCESS) {
++         chain->sw_copy_rect_count = image->rectangle_count;
++         memcpy(chain->sw_copy_rects, image->rects,
++                image->rectangle_count * sizeof(chain->sw_copy_rects[0]));
++         chain->sw_copy_pending = true;
++      }
++      wsi_queue_push(&chain->acquire_queue, image_index);
++      return result;
++   }
++
++   /* The frame is counted once all of it has gone to the X server (xcb_flush), which takes it in
++    * request order. The geometry was asked before the frame, so its reply does not show that the
++    * server has taken the frame. */
+    sw_present_counted();
+ 
+    wsi_queue_push(&chain->acquire_queue, image_index);
+@@ -3380,9 +3484,15 @@
+          }
+       }
+ 
+-      /* A frame for the app's buffer is paced by the app giving buffers back. */
+-      if (chain->base.wsi->sw && !chain->has_mit_shm && !sw_direct_chosen(chain, image_index))
+-         sw_present_paced();
++      /* A frame for the app's buffer is paced by the app giving buffers back. A frame for the
++       * back pixmap waits for the Game view's take later, once the image is the game's again
++       * (x11_sw_back_prepare). */
++      chain->sw_frame_to_back = false;
++      if (chain->base.wsi->sw && !chain->has_mit_shm && !sw_direct_chosen(chain, image_index)) {
++         chain->sw_frame_to_back = x11_sw_back_wanted(chain);
++         if (!chain->sw_frame_to_back)
++            sw_present_paced();
++      }
+ 
+       mtx_lock(&chain->thread_state_lock);
+ 
+@@ -3424,6 +3534,11 @@
+       }
+ 
+       mtx_unlock(&chain->thread_state_lock);
++
++      /* The back pixmap's frame reaches the window after the Game view's take, outside the
++       * lock (x11_sw_back_prepare). */
++      if (chain->sw_copy_pending)
++         x11_sw_back_copy(chain);
+    }
+ 
+    mtx_lock(&chain->thread_state_lock);
+@@ -3867,6 +3982,10 @@
+    mtx_destroy(&chain->thread_state_lock);
+    u_cnd_monotonic_destroy(&chain->thread_state_cond);
+ 
++   /* The present thread has ended: no copy from the back pixmap is left. */
++   if (chain->sw_back != XCB_NONE)
++      xcb_free_pixmap(chain->conn, chain->sw_back);
++
+    wsi_swapchain_finish(&chain->base);
+ 
+    vk_free(pAllocator, chain);

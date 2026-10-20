@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Builds the debug APK inside the pinned build container; never runs Gradle on the host.
 # Output: build/outputs/app-debug.apk (paths are relative to this script's folder): the
-# development build, com.pd2launcher.app.dev, which installs beside the release app.
+# development build, com.pd2launcher.app.dev3, which installs beside the release app and the 0.2
+# line's development build (PD2_DEV_AS_FEX_DEV=1 builds it as com.pd2launcher.app.dev).
 # `build.sh release` builds the signed release APK instead: build/outputs/app-release.apk
 # (com.pd2launcher.app; the release key and engine below).
 # `build.sh check` compiles the debug APK without the App userland, the CI check; it copies no APK
@@ -43,6 +44,13 @@ case "$target" in
         ;;
     *) echo "usage: build.sh [$targets]" >&2; exit 2 ;;
 esac
+
+# PD2_DEV_AS_FEX_DEV=1: the development build gets the 0.2 line's development id
+# (com.pd2launcher.app.dev) instead of its own (com.pd2launcher.app.dev3), so it installs over
+# that build as an update in place (app/build.gradle.kts, pd2.asFexDev).
+if [[ "${PD2_DEV_AS_FEX_DEV:-}" == 1 ]]; then
+    tasks="-Ppd2.asFexDev=true $tasks"
+fi
 
 # Without unit tests the test task would only compile the debug variant again.
 [[ -d "$here/app/src/test" ]] || tasks="${tasks/ :app:testDebugUnitTest/}"
@@ -124,7 +132,7 @@ fi
 # The App userland is built for userland/config.sh's placeholder data folder, which the app
 # rewrites to its own as it unpacks it, so the release app and the development build carry the
 # same one, from app/src/main/assets/userland. A debug build makes it first when it is missing
-# (userland/build.sh with our glibc and FEX); a release build needs it built. The engine may need
+# (userland/build.sh with our glibc); a release build needs it built. The engine may need
 # only libraries the userland's critical set covers (its manifest's engine_needed).
 if [[ "$target" == app || "$target" == release ]]; then
     # shellcheck source=userland/config.sh
@@ -137,7 +145,7 @@ if [[ "$target" == app || "$target" == release ]]; then
     fi
     if [[ "$target" == app && ! -f "$manifest" ]]; then
         echo "no userland in ${USERLAND_ASSETS#"$here/"}: building it (userland/build.sh)"
-        PD2_USERLAND_WITH_GLIBC=1 PD2_USERLAND_WITH_FEX=1 "$here/userland/build.sh"
+        PD2_USERLAND_WITH_GLIBC=1 "$here/userland/build.sh"
     fi
     prefix="$(sed -n 's/^ "prefix": "\(.*\)",$/\1/p' "$manifest" 2>/dev/null || true)"
     if [[ "$prefix" != "$USERLAND" ]]; then

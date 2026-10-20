@@ -80,8 +80,14 @@ object Play {
         }
     }
 
-    /** The Game view shows the official PD2 launcher (a mouse/touch window), not the game. */
+    /** The official PD2 launcher's session runs: its window, or a game it started ([officialLauncherShown]). */
     fun officialLauncherRunning(status: SessionStatus): Boolean = status.snapshot?.activeJob == Job.OFFICIAL_LAUNCHER
+
+    /**
+     * The official PD2 launcher's own window shows: its session runs and has not started the game
+     * ([SessionStatus.launcherGame]). While its game runs, the Game view is the game's.
+     */
+    fun officialLauncherShown(status: SessionStatus): Boolean = officialLauncherRunning(status) && !status.launcherGame
 
     /** The overlay's status line: what runs. */
     fun overlayStatus(launcher: Boolean): Int = if (launcher) R.string.launcher_running else R.string.game_running

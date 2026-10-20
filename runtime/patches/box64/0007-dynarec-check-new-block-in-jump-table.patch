@@ -1,0 +1,54 @@
+Subject: [PATCH] A new block is checked again once it is in the jump table: a write just before is not lost
+
+FillBlock64 builds a block with its x86 code protected and, at its end, checks that the code
+stayed protected and the same. internalDBGetBlock puts the block into the jump table only after
+that. Another thread's write to the page in between faults, and the fault (unprotectDB) marks the
+blocks it finds through the jump table, which do not include this one yet, and lifts the
+protection. The block then went into the jump table clean, on a page that was writable again:
+a later write to its code raised no fault and marked nothing, and the block stayed with code that
+was no longer there.
+
+.NET writes a method's precode once (call PrecodeFixupThunk becomes a jump to the compiled code)
+and from then on sends callers to the precode. A precode whose block went in this way, and that was
+patched while its page was still writable, kept its old block: every thread that called the method
+ran the old precode, and the prestub found the method compiled and sent it back to the precode, for
+ever, at a full core. The official PD2 launcher stopped so at its start, before its window showed.
+A diagnostic build found a block put into the jump table clean on a page whose protection a write
+had lifted in about a third of the launcher's starts, most of them precodes.
+
+Once the block is in the jump table, a later write marks it, so it is checked again then: on a page
+that is no longer protected, or code that changed, it is marked (its jump-table entry becomes
+jmpnext), and its next run validates it with its code protected, or builds it again.
+---
+--- a/src/dynarec/dynablock.c
++++ b/src/dynarec/dynablock.c
+@@ -437,7 +437,8 @@
+     // check size
+     if(block) {
+         // fill-in jumptable
+-        if(!addJumpTableIfDefault64((void*)addr, (block->dirty || block->always_test)?block->jmpnext:block->block)) {
++        void* jmp = (block->dirty || block->always_test)?block->jmpnext:block->block;
++        if(!addJumpTableIfDefault64((void*)addr, jmp)) {
+             FreeDynablock(block, 0, 0);
+             block = getDB(addr);
+             MarkDynablock(block);   // just in case...
+@@ -451,6 +452,19 @@
+                 }
+                 block->done = 1;    // don't validate the block if the size is null, but keep the block
+                 rb_inc(my_context->db_sizes, block->x64_size, block->x64_size+1);
++                // FillBlock64 built the block with its code protected and checked that the code
++                // stayed protected and the same, but the block goes into the jump table only now.
++                // Another thread's write in between faulted, and the fault marked the blocks of
++                // the jump table only (not this one) and lifted the protection: the block would
++                // stay there clean on a writable page, and a later write to its code would mark
++                // nothing (.NET patches a method's precode once; a thread that then runs the old
++                // precode calls the prestub for ever). Look again now that a later write marks the
++                // block: on an unprotected page or a change, mark it, so its next run validates it.
++                if(jmp==block->block && (!isprotectedDB((uintptr_t)block->x64_addr, block->x64_size)
++                    || X31_hash_code((void*)block->x64_readaddr, block->x64_size)!=block->hash)) {
++                    dynarec_log(LOG_INFO, "Block %p at %p written before it went into the jump table: marked\n", block, block->x64_addr);
++                    MarkDynablock(block);
++                }
+             }
+         }
+     }

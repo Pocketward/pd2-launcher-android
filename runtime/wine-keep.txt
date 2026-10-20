@@ -1,0 +1,176 @@
+# Wine modules the reduced Wine keeps (trim.py), each with its Unix library
+# (aarch64-unix/<name>.so) when there is one. [both]: on both PE sides where Wine builds them;
+# [i386]: only for 32-bit processes (the game); [x86_64]: only for 64-bit processes (Wine's
+# services, the WoW64 layer; aarch64 in the ARM64 Wine). Made from +loaddll logs of PD2
+# (Game.exe -3dfx and -ddraw to the main menu: a module loaded below 4 GB counts as i386), and the
+# extras marked below.
+[both]
+advapi32.dll
+apisetschema.dll
+combase.dll
+coml2.dll
+cryptbase.dll
+dnsapi.dll
+gdi32.dll
+imm32.dll
+iphlpapi.dll
+kernel32.dll
+kernelbase.dll
+msvcrt.dll
+nsi.dll
+ntdll.dll
+ole32.dll
+oleaut32.dll
+rpcrt4.dll
+sechost.dll
+setupapi.dll
+shcore.dll
+shell32.dll
+shlwapi.dll
+ucrtbase.dll
+user32.dll
+uxtheme.dll
+win32u.dll
+winex11.drv
+ws2_32.dll
+# Extras: the registry tool used to set up the prefix, the console.
+reg.exe
+conhost.exe
+cmd.exe
+
+[i386]
+bcrypt.dll
+comctl32.dll
+comdlg32.dll
+concrt140.dll
+dbghelp.dll
+dsound.dll
+dwmapi.dll
+hid.dll
+mmdevapi.dll
+msacm32.dll
+msvcp140.dll
+opengl32.dll
+vcruntime140.dll
+version.dll
+winepulse.drv
+winmm.dll
+wsock32.dll
+xinput1_4.dll
+# Extras: what a game session can load later (in game, the XInput path, the crash handler, DNS,
+# sockets).
+xinput1_3.dll
+xinput9_1_0.dll
+mswsock.dll
+imagehlp.dll
+psapi.dll
+winhttp.dll
+crypt32.dll
+rsaenh.dll
+secur32.dll
+
+[x86_64]
+actxprxy.dll
+explorer.exe
+hidclass.sys
+hidparse.sys
+mountmgr.sys
+mpr.dll
+ndis.sys
+nsiproxy.sys
+ntoskrnl.exe
+plugplay.exe
+rpcss.exe
+services.exe
+start.exe
+svchost.exe
+userenv.dll
+wevtsvc.dll
+wineboot.exe
+winebus.sys
+winedevice.exe
+winehid.sys
+wininet.dll
+wow64.dll
+wow64cpu.dll
+wow64win.dll
+
+# The official PD2 launcher (PD2Launcher.exe, a .NET 6 WPF program) to its main window: WPF draws
+# through d3d9/wined3d in software, text through DirectWrite (with its Unix library), images
+# through WIC; the rest is its web requests and accessibility.
+[i386]
+d3d9.dll
+dwrite.dll
+jsproxy.dll
+mpr.dll
+oleacc.dll
+propsys.dll
+uiautomationcore.dll
+urlmon.dll
+windowscodecs.dll
+wined3d.dll
+wininet.dll
+wtsapi32.dll
+
+# The launcher's HTTPS: .NET's SslStream through SSPI and SChannel (GnuTLS on the Unix side), the
+# certificate chain checks through crypt32, wintrust and cryptnet, and its key storage providers.
+[i386]
+bcryptprimitives.dll
+cryptnet.dll
+cryptsp.dll
+msasn1.dll
+ncrypt.dll
+schannel.dll
+sspicli.dll
+userenv.dll
+wintrust.dll
+normaliz.dll
+
+# The launcher's web links (its news, Donate): ShellExecute runs winebrowser.exe (the registry's
+# http/https handler), which hands the link to xdg-open; the app's xdg-open passes it to Android.
+[i386]
+winebrowser.exe
+
+# The install chain (Blizzard's downloaders and installers, PD2's installer; the modules their
+# sessions mapped): Windows Installer, cabinets, the
+# installers' UI (common controls 6, rich edit, GDI+, the shell's frames), XML, networking, and
+# the restart, patch and file-protection helpers they call.
+[i386]
+cabinet.dll
+comctl32_v6.dll
+explorerframe.dll
+gdiplus.dll
+hnetcfg.dll
+ieframe.dll
+msi.dll
+mspatcha.dll
+msv1_0.dll
+msxml3.dll
+netapi32.dll
+netutils.dll
+odbccp32.dll
+pdh.dll
+riched20.dll
+rstrtmgr.dll
+sfc.dll
+sfc_os.dll
+shfolder.dll
+srclient.dll
+sxs.dll
+wuapi.dll
+wineboot.exe
+# Both sides: what the chain maps on the ARM64 side too (msimg32), and what Wine's prefix setup
+# runs (wineboot, setupapi, newdev, regedit, rundll32).
+[both]
+msimg32.dll
+newdev.dll
+regedit.exe
+rundll32.exe
+
+# PD2's installer runs its MpqFixer (ProjectD2/MpqFixer/WinMPQ.exe, a Visual Basic 4 program),
+# which deletes the "(attributes)" file in d2char, d2data and d2sfx.mpq. Its VB40032.DLL needs
+# these two; without them WinMPQ.exe does not start, and the archives stay as they are, unlike on
+# the FEX line's full Wine.
+[i386]
+msvcrt20.dll
+olepro32.dll

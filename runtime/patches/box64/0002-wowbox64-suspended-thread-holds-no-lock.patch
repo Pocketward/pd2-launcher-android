@@ -1,0 +1,463 @@
+Subject: [PATCH] WowBox64: a suspended thread holds no lock and shows its live x86 context
+
+.NET's garbage collector suspends threads at any point of their code, then reads and sets their
+context. Two things went wrong under WowBox64, and the official PD2 launcher (a .NET program)
+stopped in about one start of five:
+- A thread suspended while it held one of Box64's locks (or the process heap's, in Box64's own
+  allocations) kept it; the suspending thread then needed that lock to run its own code (to
+  translate a block, change a page's protection, allocate) and both waited for ever. Wine suspends
+  a thread with SIGUSR1: it stays blocked while a thread holds such a lock (mypthread.h, the heap
+  wrappers in os_wine.c), so the thread stops once it lets go of the last one.
+- Wine reports the x86 context in the thread's CPU area, which WowBox64 writes only at a system
+  call; for a thread in translated code the collector read a stale EIP and ESP. BTCpuGetContext now
+  rebuilds the live registers of a thread stopped in translated code from its ARM64 context (as
+  BTCpuResetToConsistentState does for an exception, with adjust_arch's flags, SSE and x87 values,
+  ported to Wine's CONTEXT); a thread stopped in Box64's own code runs on a moment and is stopped
+  again. BTCpuSetContext makes such a thread start again from the context set: its native context
+  goes back to the one BTCpuSimulate captured before it entered the translated code.
+---
+--- a/src/dynarec/arm64/dynarec_arm64_arch.c
++++ b/src/dynarec/arm64/dynarec_arm64_arch.c
+@@ -2,6 +2,9 @@
+ #include <stddef.h>
+ #include <stdio.h>
+ #include <signal.h>
++#ifdef _WIN32
++#include <windows.h>
++#endif
+ #include <string.h>
+ 
+ #include "debug.h"
+@@ -345,6 +348,130 @@
+     if(sse) {
+         dynarec_log_prefix(0, LOG_INFO, " sse[%x (fpsimd=%p)] ", sse->sse, fpsimd);
+         for(int i=0; i<16; ++i)
++            if(fpsimd && (sse->sse>>i)&1) {
++                int idx = 0;
++                if(i>7) {
++                    idx = XMM8 + i - 8;
++                } else {
++                    idx = XMM0 + i;
++                }
++                emu->xmm[i].u128 = fpsimd->vregs[idx];
++            }
++    }
++    if(ymm) {
++        dynarec_log_prefix(0, LOG_INFO, " ymm[%x, pos=%x, 0=%x (fpsimd=%p)] ", ymm->ymm, ymm->ymm_pos, ymm->ymm0, fpsimd);
++        for(int i=0; i<16; ++i) {
++            if(fpsimd && (ymm->ymm>>i)&1) {
++                int pos = (ymm->ymm_pos>>(i*4))&0xf;
++                int idx = (pos>7) ? (SCRATCH0 + pos - 8) : (EMM0 + pos);
++                emu->ymm[i].u128 = fpsimd->vregs[idx];
++            }
++            if(ymm->ymm0&(1<<i))
++                emu->ymm[i].u128 = 0;
++        }
++    }
++    if(mmx) {
++        dynarec_log_prefix(0, LOG_INFO, " mmx[%x (fpsimd=%p)] ", mmx->mmx, fpsimd);
++        for(int i=0; i<8; ++i)
++            if(fpsimd && (mmx->mmx>>i)&1) {
++                int idx = EMM0 + i;
++                emu->mmx[i].q = fpsimd->vregs[idx]&0xffffffffffffffffLL;
++            }
++    }
++    if(x87) {
++        dynarec_log_prefix(0, LOG_INFO, " x87[%x, pos=%x, type=%x (fpsimd=%p)] ", x87->x87, x87->x87_pos, x87->x87_type, fpsimd);
++        if (x87->delta) emu->top = (emu->top - x87->delta) & 7;
++        for(int i=0; i<8; ++i) {
++            if(x87->x87&(1<<i)) {
++                int idx = EMM0 + ((x87->x87_pos>>(i*4))&0x0f);
++                int t = (x87->x87_type>>(i*2))&0x3;
++                switch (t) {
++                    case X87_ST_F:
++                        emu->x87[(emu->top+i)&7].d = *(float*)&fpsimd->vregs[idx];
++                        break;
++                    case X87_ST_I64:
++                        emu->x87[(emu->top+i)&7].d = *(int64_t*)&fpsimd->vregs[idx];
++                        break;
++                    case X87_ST_D:
++                        emu->x87[(emu->top+i)&7].d = *(double*)&fpsimd->vregs[idx];
++                        break;
++                }
++            }
++        }
++    }
++    dynarec_log_prefix(0, LOG_INFO, "\n");
++}
++#else
++// WowBox64: adjust_arch for a thread stopped in translated code, from its ARM64 CONTEXT (wowbox64.c).
++void adjust_arch_context(dynablock_t* db, x64emu_t* emu, CONTEXT* p, uintptr_t x64pc)
++{
++    if(!db->arch_size || !db->arch)
++        return;
++    int ninst = getX64AddressInst(db, x64pc);
++    dynarec_log(LOG_INFO, "adjust_arch(...), db=%p, x64pc=%p, nints=%d", db, (void*)x64pc, ninst);
++    if(ninst<0) {
++    dynarec_log_prefix(0, LOG_INFO, "\n");
++        return;
++    }
++    if(ninst==0) {
++    dynarec_log_prefix(0, LOG_INFO, "\n");
++        CHECK_FLAGS(emu);
++        return;
++    }
++    // look for state at ninst-1
++    arch_arch_t* arch = db->arch;
++    arch_arch_t* next = arch;
++    #define GO(A) arch_##A##_t* A = NULL;
++    SUPER()
++    #undef GO
++    int i = 0;
++    while(i<(ninst)) {  // this will look for ninst-1 state
++        arch = next;
++        dynarec_log_prefix(0, (i<(ninst-1))?LOG_DEBUG:LOG_INFO, "[ seq=%d%s%s%s%s%s ] ", arch->seq, arch->flags?" Flags":"", arch->x87?" x87":"", arch->mmx?" MMX":"", arch->sse?" SSE":"", arch->ymm?" YMM":"");
++        i += 1+arch->seq;
++        next = (arch_arch_t*)((uintptr_t)next + sizeof_arch(arch));
++    }
++    int sz = sizeof(arch_arch_t);
++    #define GO(A)                                   \
++    if(arch->A) {                                   \
++        A = (arch_##A##_t*)((uintptr_t)arch + sz);  \
++        sz+=sizeof(arch_##A##_t);                   \
++    }
++    SUPER()
++    #undef GO
++    if(flags) {
++        dynarec_log_prefix(0, LOG_INFO, " flags[%s-%s%s%s%s] ", flags->defered?"defered":"", flags->nf?"S":"", flags->vf?"O":"", flags->eq?"Z":"", flags->cf?(flags->inv_cf?"C(inv)":"C"):"");
++        if(flags->defered) {
++            CHECK_FLAGS(emu);
++            //return;
++        }
++        if(flags->nf) {
++            CONDITIONAL_SET_FLAG(p->Cpsr&(1<<NZCV_N), F_SF);
++        }
++        if(flags->vf) {
++            CONDITIONAL_SET_FLAG(p->Cpsr&(1<<NZCV_V), F_OF);
++        }
++        if(flags->eq) {
++            CONDITIONAL_SET_FLAG(p->Cpsr&(1<<NZCV_Z), F_ZF);
++        }
++        if(flags->cf) {
++            if(flags->inv_cf) {
++                CONDITIONAL_SET_FLAG((p->Cpsr&(1<<NZCV_C))==0, F_CF);
++            } else {
++                CONDITIONAL_SET_FLAG(p->Cpsr&(1<<NZCV_C), F_CF);
++            }
++        }
++        if(flags->pf_v) {
++            CONDITIONAL_SET_FLAG(p->Cpsr&(1<<NZCV_V), F_PF);
++        }
++    }
++    // The NEON registers as Linux's fpsimd_context has them.
++    struct { __uint128_t vregs[32]; } fpsimd_regs, *fpsimd = &fpsimd_regs;
++    for(int i=0; i<32; ++i)
++        fpsimd->vregs[i] = ((__uint128_t)(uint64_t)p->V[i].High << 64) | p->V[i].Low;
++    if(sse) {
++        dynarec_log_prefix(0, LOG_INFO, " sse[%x (fpsimd=%p)] ", sse->sse, fpsimd);
++        for(int i=0; i<16; ++i)
+             if(fpsimd && (sse->sse>>i)&1) {
+                 int idx = 0;
+                 if(i>7) {
+--- a/src/include/mypthread.h
++++ b/src/include/mypthread.h
+@@ -16,9 +16,15 @@
+ typedef void* pthread_mutexattr_t;
+ #define pthread_mutex_t RTL_CRITICAL_SECTION
+ #define pthread_mutex_init(x, y) RtlInitializeCriticalSection(x)
+-#define pthread_mutex_lock(x) RtlEnterCriticalSection(x)
+-#define pthread_mutex_unlock(x) RtlLeaveCriticalSection(x)
+-#define pthread_mutex_trylock(x) !RtlTryEnterCriticalSection(x)
++// WowBox64 (wowbox64.c): a thread is not suspended while it holds one of Box64's locks.
++NTSTATUS WowLockEnter(RTL_CRITICAL_SECTION *);
++NTSTATUS WowLockLeave(RTL_CRITICAL_SECTION *);
++BOOL WowLockTry(RTL_CRITICAL_SECTION *);
++void WowHoldEnter(void);
++void WowHoldLeave(void);
++#define pthread_mutex_lock(x) WowLockEnter(x)
++#define pthread_mutex_unlock(x) WowLockLeave(x)
++#define pthread_mutex_trylock(x) !WowLockTry(x)
+ 
+ #define pthread_mutex_destroy(x) 0
+ #define pthread_mutexattr_init(x) 0
+--- a/src/os/os_wine.c
++++ b/src/os/os_wine.c
+@@ -263,10 +263,15 @@
+     return munmap(addr, length);
+ }
+ 
++// The process heap's lock, like Box64's own (mypthread.h): never held by a suspended thread.
++void WowHoldEnter(void);
++void WowHoldLeave(void);
+ void* WinMalloc(size_t size)
+ {
+     void* ret;
++    WowHoldEnter();
+     ret = RtlAllocateHeap(GetProcessHeap(), 0, size);
++    WowHoldLeave();
+     return ret;
+ }
+ 
+@@ -275,25 +280,33 @@
+     void* ret;
+     if (!ptr)
+         return WinMalloc(size);
++    WowHoldEnter();
+     ret = RtlReAllocateHeap(GetProcessHeap(), HEAP_ZERO_MEMORY, ptr, size);
++    WowHoldLeave();
+     return ret;
+ }
+ 
+ void* WinCalloc(size_t nmemb, size_t size)
+ {
+     void* ret;
++    WowHoldEnter();
+     ret = RtlAllocateHeap(GetProcessHeap(), HEAP_ZERO_MEMORY, nmemb * size);
++    WowHoldLeave();
+     return ret;
+ }
+ 
+ void WinFree(void* ptr)
+ {
++    WowHoldEnter();
+     RtlFreeHeap(GetProcessHeap(), 0, ptr);
++    WowHoldLeave();
+ }
+ 
+ void free(void* ptr)
+ {
++    WowHoldEnter();
+     RtlFreeHeap(GetProcessHeap(), 0, ptr);
++    WowHoldLeave();
+ }
+ 
+ int VolatileRangesContains(uintptr_t addr)
+--- a/wine/wow64/wowbox64.c
++++ b/wine/wow64/wowbox64.c
+@@ -198,10 +198,199 @@
+     return (UINT32*)&unxcode;
+ }
+ 
++/*
++ * Threads that another thread suspends (SuspendThread; .NET's garbage collector does it at any
++ * point of a thread's code, then reads and sets its context).
++ *
++ * 1. A thread is not suspended while it holds one of Box64's locks (or the process heap's, in
++ *    Box64's own allocations): the thread that suspended it may need that lock before it resumes
++ *    it (to translate the code it runs, to change a page's protection, to allocate), and both
++ *    would wait for ever. Wine suspends a thread with SIGUSR1; it stays blocked while the thread
++ *    holds a lock, so the thread stops when it lets go of the last one.
++ * 2. Wine reports the x86 context that the thread's CPU area holds, which WowBox64 writes only at
++ *    a system call. For a thread stopped in translated code, BTCpuGetContext rebuilds the live
++ *    registers from its ARM64 context, as BTCpuResetToConsistentState does for an exception; a
++ *    thread stopped in Box64's own code runs on a moment and is stopped again. BTCpuSetContext
++ *    makes such a thread start again from the context set (its native context goes back to the
++ *    one BTCpuSimulate captured before it entered the translated code).
++ */
++#define WOW64_TLS_BOX64_HELD (WOW64_TLS_MAX_NUMBER - 4) /* slot 16 is ntdll's errno */
++#define HELD_WAS_MASKED ((ULONG_PTR)1 << 62)
++#define SIGUSR1_BIT ((uint64_t)1 << (10 - 1))
++#define SUSPEND_TRIES 200
++
++typedef struct {
++    NTSTATUS ExitStatus;
++    PVOID TebBaseAddress;
++    CLIENT_ID ClientId;
++    ULONG_PTR AffinityMask;
++    LONG Priority;
++    LONG BasePriority;
++} BOX64_THREAD_BASIC_INFORMATION;
++
++NTSTATUS WINAPI NtSuspendThread(HANDLE, ULONG*);
++NTSTATUS WINAPI NtResumeThread(HANDLE, ULONG*);
++NTSTATUS WINAPI NtGetContextThread(HANDLE, CONTEXT*);
++NTSTATUS WINAPI NtSetContextThread(HANDLE, const CONTEXT*);
++NTSTATUS WINAPI NtYieldExecution(void);
++void adjust_arch_context(dynablock_t* db, x64emu_t* emu, CONTEXT* p, uintptr_t x64pc);
++extern IMAGE_DOS_HEADER __ImageBase;
++
++/* rt_sigprocmask(2) of the Linux kernel under Wine (a 64-bit signal set): SIG_BLOCK 0, SIG_UNBLOCK 1. */
++static int64_t raw_sigprocmask(int64_t how, const uint64_t* set, uint64_t* old)
++{
++    register int64_t x0 __asm__("x0") = how;
++    register int64_t x1 __asm__("x1") = (int64_t)(uintptr_t)set;
++    register int64_t x2 __asm__("x2") = (int64_t)(uintptr_t)old;
++    register int64_t x3 __asm__("x3") = sizeof(uint64_t);
++    register int64_t x8 __asm__("x8") = 135; /* __NR_rt_sigprocmask */
++    __asm__ volatile("svc #0" : "+r"(x0) : "r"(x1), "r"(x2), "r"(x3), "r"(x8) : "memory");
++    return x0;
++}
++
++void WowHoldEnter(void)
++{
++    ULONG_PTR* held = (ULONG_PTR*)&NtCurrentTeb()->TlsSlots[WOW64_TLS_BOX64_HELD];
++    if (!(*held & ~HELD_WAS_MASKED)) {
++        uint64_t set = SIGUSR1_BIT, old = 0;
++        raw_sigprocmask(0, &set, &old);
++        *held = (old & SIGUSR1_BIT) ? HELD_WAS_MASKED : 0;
++    }
++    (*held)++;
++}
++
++void WowHoldLeave(void)
++{
++    ULONG_PTR* held = (ULONG_PTR*)&NtCurrentTeb()->TlsSlots[WOW64_TLS_BOX64_HELD];
++    if (!(*held & ~HELD_WAS_MASKED)) return;
++    if (!(--(*held) & ~HELD_WAS_MASKED)) {
++        if (!(*held & HELD_WAS_MASKED)) {
++            uint64_t set = SIGUSR1_BIT;
++            raw_sigprocmask(1, &set, NULL);
++        }
++        *held = 0;
++    }
++}
++
++NTSTATUS WowLockEnter(RTL_CRITICAL_SECTION* cs)
++{
++    WowHoldEnter();
++    return RtlEnterCriticalSection(cs);
++}
++
++NTSTATUS WowLockLeave(RTL_CRITICAL_SECTION* cs)
++{
++    NTSTATUS status = RtlLeaveCriticalSection(cs);
++    WowHoldLeave();
++    return status;
++}
++
++BOOL WowLockTry(RTL_CRITICAL_SECTION* cs)
++{
++    WowHoldEnter();
++    if (RtlTryEnterCriticalSection(cs)) return TRUE;
++    WowHoldLeave();
++    return FALSE;
++}
++
++/* [thread]'s TEB when it is another thread of this process; NULL otherwise. */
++static TEB* other_local_thread(HANDLE thread)
++{
++    BOX64_THREAD_BASIC_INFORMATION info, self;
++    if (thread == ((HANDLE)(LONG_PTR)-2)) return NULL;
++    if (NtQueryInformationThread(thread, ThreadBasicInformation, &info, sizeof(info), NULL)) return NULL;
++    if (NtQueryInformationThread(((HANDLE)(LONG_PTR)-2), ThreadBasicInformation, &self, sizeof(self), NULL)) return NULL;
++    if (info.ClientId.UniqueProcess != self.ClientId.UniqueProcess || info.TebBaseAddress == self.TebBaseAddress) return NULL;
++    return info.TebBaseAddress;
++}
++
++/* Whether [pc] is in WowBox64's own code (its C code, the interpreter, the jumps between blocks). */
++static BOOL in_wowbox64(DWORD64 pc)
++{
++    IMAGE_NT_HEADERS* nt = (IMAGE_NT_HEADERS*)((char*)&__ImageBase + __ImageBase.e_lfanew);
++    return pc >= (DWORD64)&__ImageBase && pc < (DWORD64)&__ImageBase + nt->OptionalHeader.SizeOfImage;
++}
++
++/* [ctx]'s integer and control registers (and the floating point ones asked for) from [emu]. */
++static void emu_to_context(x64emu_t* emu, WOW64_CONTEXT* ctx)
++{
++    if ((ctx->ContextFlags & WOW64_CONTEXT_INTEGER) == WOW64_CONTEXT_INTEGER) {
++        ctx->Eax = R_EAX;
++        ctx->Ecx = R_ECX;
++        ctx->Edx = R_EDX;
++        ctx->Ebx = R_EBX;
++        ctx->Esi = R_ESI;
++        ctx->Edi = R_EDI;
++    }
++    if ((ctx->ContextFlags & WOW64_CONTEXT_CONTROL) == WOW64_CONTEXT_CONTROL) {
++        ctx->Esp = R_ESP;
++        ctx->Ebp = R_EBP;
++        ctx->Eip = R_RIP;
++        ctx->EFlags = emu->eflags.x64;
++    }
++    if ((ctx->ContextFlags & (WOW64_CONTEXT_FLOATING_POINT & 0xffff)) || (ctx->ContextFlags & (WOW64_CONTEXT_EXTENDED_REGISTERS & 0xffff)))
++        box_to_fpu(ctx, emu);
++}
++
+ NTSTATUS WINAPI BTCpuGetContext(HANDLE thread, HANDLE process, void* unknown, WOW64_CONTEXT* ctx)
+ {
+     printf_log(LOG_DEBUG, "BTCpuGetContext(%p, %p, %p, %p)\n", thread, process, unknown, ctx);
+-    return NtQueryInformationThread(thread, ThreadWow64Context, ctx, sizeof(*ctx), NULL);
++    NTSTATUS status = NtQueryInformationThread(thread, ThreadWow64Context, ctx, sizeof(*ctx), NULL);
++    if (status || !(ctx->ContextFlags & 3)) return status;
++    TEB* teb = other_local_thread(thread);
++    x64emu_t* emu = teb ? teb->TlsSlots[WOW64_TLS_EMU] : NULL;
++    if (!emu) return status;
++    /* A hold of our own; [caller] is how many times it was suspended before (0: it runs). */
++    ULONG caller = 0;
++    if (NtSuspendThread(thread, &caller)) return status;
++    if (!caller) {
++        NtResumeThread(thread, NULL);
++        return status;
++    }
++    BOOL moved = FALSE;
++    for (int tries = 0;; tries++) {
++        CONTEXT native;
++        memset(&native, 0, sizeof(native));
++        native.ContextFlags = CONTEXT_ARM64_FULL;
++        if (NtGetContextThread(thread, &native)) break;
++        dynablock_t* db = FindDynablockFromNativeAddress((void*)native.Pc);
++        if (db) {
++            /* Stopped in translated code: its registers, flags and SSE/x87 values as they are now. */
++            x64emu_t live = *emu;
++            for (int i = 0; i < 8; i++)
++                live.regs[i].q[0] = (uint32_t)native.X[10 + i];
++            live.eflags.x64 = (uint32_t)native.X[26];
++            uintptr_t x64pc = getX64Address(db, native.Pc);
++            live.ip.q[0] = x64pc ? x64pc : (uint32_t)native.X[27];
++            if (x64pc) adjust_arch_context(db, &live, &native, x64pc);
++            CHECK_FLAGS((&live));
++            if (moved) NtQueryInformationThread(thread, ThreadWow64Context, ctx, sizeof(*ctx), NULL);
++            emu_to_context(&live, ctx);
++            break;
++        }
++        if (!in_wowbox64(native.Pc)) {
++            /* In Wine's code (a system call): the CPU area holds its x86 context. */
++            if (moved) NtQueryInformationThread(thread, ThreadWow64Context, ctx, sizeof(*ctx), NULL);
++            break;
++        }
++        if (caller != 1 || tries == SUSPEND_TRIES) {
++            /* In Box64's own code for long (the interpreter): the emulator holds the state. */
++            if (moved) NtQueryInformationThread(thread, ThreadWow64Context, ctx, sizeof(*ctx), NULL);
++            x64emu_t live = *emu;
++            CHECK_FLAGS((&live));
++            emu_to_context(&live, ctx);
++            break;
++        }
++        /* Between two blocks or in a helper: it runs on a moment and is stopped again. */
++        NtResumeThread(thread, NULL);
++        NtResumeThread(thread, NULL);
++        NtYieldExecution();
++        if (NtSuspendThread(thread, NULL)) return status;
++        NtSuspendThread(thread, NULL);
++        moved = TRUE;
++    }
++    NtResumeThread(thread, NULL);
++    return status;
+ }
+ 
+ BOOLEAN WINAPI BTCpuIsProcessorFeaturePresent(UINT feature)
+@@ -365,7 +554,24 @@
+ NTSTATUS WINAPI BTCpuSetContext(HANDLE thread, HANDLE process, void* unknown, WOW64_CONTEXT* ctx)
+ {
+     printf_log(LOG_DEBUG, "BTCpuSetContext(%p, %p, %p, %p)\n", thread, process, unknown, ctx);
+-    return NtSetInformationThread(thread, ThreadWow64Context, ctx, sizeof(*ctx));
++    NTSTATUS status = NtSetInformationThread(thread, ThreadWow64Context, ctx, sizeof(*ctx));
++    if (status || !(ctx->ContextFlags & 3)) return status;
++    /* Another thread, suspended in translated code or in Box64's own code: it would go on from its
++       native registers and never read the context set. It starts again from the one BTCpuSimulate
++       captured before it entered the translated code, which loads the context set. */
++    TEB* teb = other_local_thread(thread);
++    CONTEXT* entry = teb ? teb->TlsSlots[WOW64_TLS_ENTRY_CONTEXT] : NULL;
++    if (!entry) return status;
++    CONTEXT native;
++    memset(&native, 0, sizeof(native));
++    native.ContextFlags = CONTEXT_ARM64_CONTROL;
++    if (NtGetContextThread(thread, &native)) return status;
++    if (FindDynablockFromNativeAddress((void*)native.Pc) || in_wowbox64(native.Pc)) {
++        CONTEXT restart = *entry;
++        restart.ContextFlags = CONTEXT_ARM64_FULL;
++        NtSetContextThread(thread, &restart);
++    }
++    return status;
+ }
+ 
+ void WINAPI BTCpuSimulate(void)

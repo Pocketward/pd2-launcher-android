@@ -1,0 +1,227 @@
+Subject: [PATCH] LOCK CMPXCHG8B on an address that is not 8-byte aligned is atomic
+
+Where CASP cannot do the 8 bytes (without LSE2 any address that is not 8-byte aligned, with LSE2
+8 bytes across a 16-byte boundary), the dynarec read the 8 bytes with a plain load, compared them
+under a byte exclusive, and wrote them with a plain store after the exclusive store; the
+interpreter did the same. A second CPU's compare-exchange could land between the exclusive store
+and the plain store (or between the plain load and the exclusive load) and be lost. 32-bit x86
+.NET aligns objects to 4 bytes and changes their 64-bit fields with this instruction
+(Interlocked.CompareExchange on a long).
+
+Both now call arm64_lock_cmpxchg8b_unaligned (dynarec_arm64_functions.c), so they agree for each
+address:
+- 8 bytes inside one 16-byte block: an exclusive pair (LDAXP/STLXP) on the whole block; a failed
+  compare writes the same bytes back, which makes the read atomic.
+- 8 bytes across a 16-byte boundary: one lock for all such compare-exchanges (atomic with each
+  other, not with other instructions on the same bytes); under WowBox64 the thread holds no
+  suspend signal while it holds it (WowHoldEnter, mypthread.h).
+- A barrier before and after: a full barrier, as an x86 locked instruction is.
+---
+--- a/src/dynarec/arm64/arm64_lock.h
++++ b/src/dynarec/arm64/arm64_lock.h
+@@ -98,4 +98,9 @@
+ // atomic get (with memory barrier)
+ extern void* arm64_lock_get_dd(void*p);
+ 
++// LOCK CMPXCHG8B at an address that is not 8-byte aligned (dynarec_arm64_functions.c): returns the
++// 8 bytes found at addr, replaced by desired when they were equal to expected. emu is not used (the
++// dynarec's call passes it first).
++extern uint64_t arm64_lock_cmpxchg8b_unaligned(void* emu, void* addr, uint64_t expected, uint64_t desired);
++
+ #endif  //__ARM64_LOCK__H__
+--- a/src/dynarec/arm64/dynarec_arm64_consts.c
++++ b/src/dynarec/arm64/dynarec_arm64_consts.c
+@@ -24,6 +24,7 @@
+ #include "x64test.h"
+ #include "dynarec/dynarec_next.h"
+ #include "random.h"
++#include "arm64_lock.h"
+ 
+ static const int8_t mask_shift8[] = { -7, -6, -5, -4, -3, -2, -1, 0 };
+ static const int8_t mask_string8[] = { 7, 6, 5, 4, 3, 2, 1, 0 };
+@@ -141,6 +142,7 @@
+         case const_4f_1_m1_1_m1: return (uintptr_t)&subaddps;
+         case const_2d_m1_1: return (uintptr_t)&addsubpd;
+         case const_2d_1_m1: return (uintptr_t)&subaddpd;
++        case const_lock_cmpxchg8b_unaligned: return (uintptr_t)arm64_lock_cmpxchg8b_unaligned;
+ 
+         case const_last: dynarec_log(LOG_NONE, "Warning, const last used\n");
+             return 0;
+--- a/src/dynarec/arm64/dynarec_arm64_consts.h
++++ b/src/dynarec/arm64/dynarec_arm64_consts.h
+@@ -104,6 +104,7 @@
+     const_2d_m1_1,
+     const_4f_1_m1_1_m1,
+     const_2d_1_m1,
++    const_lock_cmpxchg8b_unaligned,
+ 
+     const_last
+ } arm64_consts_t;
+--- a/src/dynarec/arm64/dynarec_arm64_f0.c
++++ b/src/dynarec/arm64/dynarec_arm64_f0.c
+@@ -705,8 +705,8 @@
+                             SETFLAGS(X_ZF, SF_SUBSET);
+                             addr = geted(dyn, addr, ninst, nextop, &wback, x1, &fixedaddress, NULL, 0, 0, rex, LOCK_LOCK, 0, 0);
+                             if(!ALIGNED_ATOMICxw) {
+-                                // commit df before branch, CALL_S in GPF path has FORCE_DFNONE
+-                                if(rex.w && BOX64DRENV(dynarec_safeflags)>1)
++                                // commit df before branch, the call in the unaligned path (GPF or CMPXCHG8B helper) has FORCE_DFNONE
++                                if(!rex.w || BOX64DRENV(dynarec_safeflags)>1)
+                                     CHECK_DFNONE(0);
+                                 if(cpuext.uscat) {
+                                     if(rex.w) {
+@@ -770,6 +770,26 @@
+                                     STORE_XEMU_CALL(xRIP);
+                                     CALL_S(const_native_gpf, -1);
+                                     LOAD_XEMU_CALL(xRIP);
++                                } else if(!rex.w) {
++                                    // 8 bytes CASP cannot do: a byte exclusive and a plain 8-byte store after
++                                    // it would lose a concurrent update, the helper is atomic
++                                    if(wback!=x1) {
++                                        MOVx_REG(x1, wback);
++                                    }
++                                    MOVw_REG(x2, xRAX);
++                                    BFIx(x2, xRDX, 32, 32);
++                                    MOVw_REG(x3, xRBX);
++                                    BFIx(x3, xRCX, 32, 32);
++                                    CALL(const_lock_cmpxchg8b_unaligned, x4);
++                                    LSRx(x5, x4, 32);
++                                    CMPSw_REG(x4, xRAX);
++                                    CCMPw(x5, xRDX, 0, cEQ);
++                                    MOVw_REG(x2, x4);
++                                    CSELx(xRAX, xRAX, x2, cEQ);
++                                    CSELx(xRDX, xRDX, x5, cEQ);
++                                    UFLAG_IF {
++                                        IFNATIVE(NF_EQ) {} else {CSETw(x1, cEQ);}
++                                    }
+                                 } else {
+                                     LDPxw_S7_offset(x2, x3, wback, 0);
+                                     LDAXRB(x5, wback);
+--- a/src/dynarec/arm64/dynarec_arm64_functions.c
++++ b/src/dynarec/arm64/dynarec_arm64_functions.c
+@@ -25,6 +25,7 @@
+ #include "bridge.h"
+ #include "gdbjit.h"
+ #include "perfmap.h"
++#include "arm64_lock.h"
+ 
+ // Get a FPU scratch reg
+ int fpu_get_scratch(dynarec_arm_t* dyn, int ninst)
+@@ -1619,3 +1620,86 @@
+     dyn->insts[i2].n.xmm_unneeded |= preload&0xffff;
+     dyn->insts[i2].n.ymm_unneeded |= ymm_mask;
+ }
++
++/*
++ * LOCK CMPXCHG8B at an address that is not 8-byte aligned. The dynarec calls it where CASP cannot
++ * do the 8 bytes (without LSE2, or across 16 bytes with it), the interpreter for every such
++ * address, so both agree for each address. A byte exclusive followed by a plain 8-byte store let a
++ * second CPU's compare-exchange land between the two and be lost (32-bit .NET has 4-byte aligned
++ * 64-bit counters that its thread pool changes only this way).
++ * - The 8 bytes inside one 16-byte block: an exclusive pair (LDAXP/STLXP) on the whole block, so
++ *   the compare and the write are one atomic access. A failed compare writes the same bytes back,
++ *   which makes the 16-byte read atomic.
++ * - Across a 16-byte boundary no exclusive access covers them: such compare-exchanges take one
++ *   lock, so they are atomic with each other (not with other instructions on the same bytes).
++ *   Under WowBox64 the thread is not suspended while it holds it (mypthread.h).
++ * The barriers before and after make it a full barrier, as an x86 locked instruction is.
++ */
++static uint32_t cmpxchg8b_split_lock;
++uint64_t arm64_lock_cmpxchg8b_unaligned(void* emu, void* addr, uint64_t expected, uint64_t desired)
++{
++    (void)emu;
++    uintptr_t a = (uintptr_t)addr;
++    uint64_t old, lo, hi, t, nlo, nhi;
++    uint32_t fail;
++    __asm__ volatile("dmb ish" ::: "memory");
++    if(!(a&7)) {
++        __asm__ volatile(
++            "1: ldaxr   %[old], [%[p]]\n"
++            "   cmp     %[old], %[exp]\n"
++            "   b.ne    2f\n"
++            "   stlxr   %w[fail], %[des], [%[p]]\n"
++            "   cbnz    %w[fail], 1b\n"
++            "   b       3f\n"
++            "2: clrex\n"
++            "3:\n"
++            : [old]"=&r"(old), [fail]"=&r"(fail)
++            : [p]"r"(a), [exp]"r"(expected), [des]"r"(desired)
++            : "memory", "cc");
++    } else if((a&15)<8) {
++        uint64_t sh = (a&15)*8;             // 8..56: the value is bits sh..sh+63 of the block
++        uint64_t rsh = 64-sh;
++        uint64_t lomask = (1ULL<<sh)-1;     // the block's bits below the value
++        uint64_t dlo = desired<<sh;
++        uint64_t dhi = desired>>rsh;
++        __asm__ volatile(
++            "1: ldaxp   %[lo], %[hi], [%[blk]]\n"
++            "   lsr     %[old], %[lo], %[sh]\n"
++            "   lsl     %[t], %[hi], %[rsh]\n"
++            "   orr     %[old], %[old], %[t]\n"
++            "   cmp     %[old], %[exp]\n"
++            "   b.ne    2f\n"
++            "   and     %[nlo], %[lo], %[lomask]\n"
++            "   orr     %[nlo], %[nlo], %[dlo]\n"
++            "   bic     %[nhi], %[hi], %[lomask]\n"
++            "   orr     %[nhi], %[nhi], %[dhi]\n"
++            "   stlxp   %w[fail], %[nlo], %[nhi], [%[blk]]\n"
++            "   cbnz    %w[fail], 1b\n"
++            "   b       3f\n"
++            "2: stlxp   %w[fail], %[lo], %[hi], [%[blk]]\n"
++            "   cbnz    %w[fail], 1b\n"
++            "3:\n"
++            : [lo]"=&r"(lo), [hi]"=&r"(hi), [old]"=&r"(old), [t]"=&r"(t), [nlo]"=&r"(nlo),
++              [nhi]"=&r"(nhi), [fail]"=&r"(fail)
++            : [blk]"r"(a&~(uintptr_t)15), [sh]"r"(sh), [rsh]"r"(rsh), [exp]"r"(expected),
++              [lomask]"r"(lomask), [dlo]"r"(dlo), [dhi]"r"(dhi)
++            : "memory", "cc");
++    } else {
++        typedef uint64_t __attribute__((aligned(1))) u64_unaligned_t;
++        volatile u64_unaligned_t* p = (volatile u64_unaligned_t*)a;
++        #ifdef _WIN32
++        WowHoldEnter();
++        #endif
++        while(arm64_lock_xchg_d(&cmpxchg8b_split_lock, 1))
++            __asm__ volatile("yield");
++        old = *p;
++        if(old==expected)
++            *p = desired;
++        arm64_lock_xchg_d(&cmpxchg8b_split_lock, 0);
++        #ifdef _WIN32
++        WowHoldLeave();
++        #endif
++    }
++    __asm__ volatile("dmb ish" ::: "memory");
++    return old;
++}
+--- a/src/dynarec/native_lock.h
++++ b/src/dynarec/native_lock.h
+@@ -35,6 +35,7 @@
+ #define native_lock_get_b(A)                arm64_lock_get_b(A)
+ #define native_lock_get_d(A)                arm64_lock_get_d(A)
+ #define native_lock_get_dd(A)               arm64_lock_get_dd(A)
++#define native_lock_cmpxchg8b_unaligned(A, B, C) arm64_lock_cmpxchg8b_unaligned(NULL, A, B, C)
+ 
+ #elif defined(RV64)
+ #include "rv64/rv64_lock.h"
+--- a/src/emu/x64runf0.c
++++ b/src/emu/x64runf0.c
+@@ -880,6 +880,18 @@
+                                             R_RDX = (tmp64u4>>32)&0xffffffff;
+                                         }
+                                     } while(tmp32s);
++                                    #elif defined(ARM64)
++                                    // as the dynarec does: atomic (a byte exclusive and a plain 8-byte store
++                                    // after it would lose a concurrent update)
++                                    tmp64u = R_EAX | (((uint64_t)R_EDX)<<32);
++                                    tmp64u2 = native_lock_cmpxchg8b_unaligned(ED, tmp64u, R_EBX|(((uint64_t)R_ECX)<<32));
++                                    if(tmp64u == tmp64u2) {
++                                        SET_FLAG(F_ZF);
++                                    } else {
++                                        CLEAR_FLAG(F_ZF);
++                                        R_RAX = tmp64u2&0xffffffff;
++                                        R_RDX = (tmp64u2>>32)&0xffffffff;
++                                    }
+                                     #else
+                                     tmp64u = R_EAX | (((uint64_t)R_EDX)<<32);
+                                     do {
