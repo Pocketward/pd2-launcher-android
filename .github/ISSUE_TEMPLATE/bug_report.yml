@@ -1,0 +1,43 @@
+name: Problem report
+description: Something does not work in PD2 Launcher for Android.
+labels: ["bug"]
+body:
+  - type: input
+    id: app-version
+    attributes:
+      label: App version
+      description: About shows it.
+      placeholder: "0.3.1"
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Device
+      placeholder: "Samsung Galaxy S24"
+    validations:
+      required: true
+  - type: input
+    id: android-version
+    attributes:
+      label: Android version
+      placeholder: "Android 14"
+    validations:
+      required: true
+  - type: dropdown
+    id: setup
+    attributes:
+      label: How is the game set up?
+      options:
+        - The app installed it
+        - I imported a Diablo II folder
+        - It is not set up yet
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is the problem?
+      description: "If you can, attach the app's logs: in the app, use Settings → App → Share logs or Save logs, then drag the file here."
+    validations:
+      required: true
