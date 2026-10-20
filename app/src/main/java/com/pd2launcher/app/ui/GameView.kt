@@ -119,8 +119,9 @@ enum class GameLayer {
 /**
  * The Game view: the X screen ([framebuffer]) copied into a SurfaceView every display frame,
  * letterboxed to the X screen's shape, or the game's own buffers on a layer above it while it
- * presents them there ([PresentServer]), the display asked for its full rate or 60
- * ([AppSettings.limitFrameRate]), and the player's input into the game: touch as the X screen's
+ * presents them there ([PresentServer]), the display asked for its full rate or the player's
+ * reduced frame rate, which also holds the game to it ([AppSettings.frameRate]), and the player's
+ * input into the game: touch as the X screen's
  * mouse, keyboard keys and Android's keyboard as X keys, the controller as the game's XInput pad
  * (the chord pressed briefly: mouse mode), and the on-screen controls as game keys. The menu rail
  * opens from the glyph, the chord held, or Back; the game keeps running and showing beside it, the on-screen controls stay shown and playable
@@ -212,7 +213,7 @@ fun GameView(
                 AndroidView(
                     modifier = Modifier.aspectRatio(screen.width.toFloat() / screen.height),
                     factory = { context ->
-                        GameSurface(context, framebuffer, presentCounter, screen, app.limitFrameRate).also { surface = it }
+                        GameSurface(context, framebuffer, presentCounter, screen, app.frameRate).also { surface = it }
                     },
                     update = {
                         it.onMenu = { layer = GameLayer.MENU }
@@ -337,15 +338,16 @@ private const val PICTURE_MS = 250L
  * never applies here), and it is the editor Android's keyboard types into. While [suspended]
  * (an overlay layer shows, [GameLayer.suspends]) it lets go of the controller and touch and
  * passes keys on, so the controller drives the native screens; the on-screen controls still
- * reach the game ([virtual], [send]). [limitFrameRate]: the display is asked for 60 frames a
- * second at most ([FrameRateVote]).
+ * reach the game ([virtual], [send]). [frameRate]: the player's reduced frame rate, which the
+ * display is asked for and the game held to where the screen is faster; null: the screen's full
+ * rate ([FrameRateVote]).
  */
 private class GameSurface(
     context: Context,
     framebuffer: Framebuffer,
     presentCounter: File?,
     private val screen: XwdHeader,
-    limitFrameRate: Boolean,
+    frameRate: Int?,
 ) : SurfaceView(context) {
     private val window: Window? = context.activity()?.window
     private var callback: Window.Callback? = null
@@ -452,12 +454,20 @@ private class GameSurface(
             override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
                 val shape = listOf(display?.rotation ?: Surface.ROTATION_0, width, height)
                 if (shape == copyShape) return
+                val returning = copy == null
                 copy?.stop()
                 copyShape = shape
-                val rate = FrameRateVote.vote(FrameRateVote.highest(display), limitFrameRate)
-                copy = FrameCopy.start(holder.surface, framebuffer, screen, shape[0], presentCounter, rate)
+                val highest = FrameRateVote.highest(display)
+                val rate = FrameRateVote.vote(highest, frameRate)
+                val interval = FrameRateVote.intervalNanos(FrameRateVote.cap(highest, frameRate))
                 // The game's own buffers, when it presents them here, on a layer above the copy's.
-                PresentServer.current.value?.attach(holder.surface, rate)
+                // On a return first: a frame the game drew while away shows at once, so the copy,
+                // which rests under the layer, never posts the X screen's older picture. On a new
+                // shape the copy first: it shows the game while the old layer's frames come back.
+                val server = PresentServer.current.value
+                if (returning) server?.attach(holder.surface, rate, interval)
+                copy = FrameCopy.start(holder.surface, framebuffer, screen, shape[0], presentCounter, rate, interval)
+                if (!returning) server?.attach(holder.surface, rate, interval)
             }
             override fun surfaceDestroyed(holder: SurfaceHolder) {
                 PresentServer.current.value?.detach(holder.surface)

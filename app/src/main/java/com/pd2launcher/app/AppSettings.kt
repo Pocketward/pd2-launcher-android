@@ -16,15 +16,20 @@ data class AppSettings(
     val keepScreenOn: Boolean = true,
     /** A small counter of the game's frames per second shows over the Game view. */
     val showFps: Boolean = false,
-    /** The game resolution the player picked, in lines; null: Automatic ([GameResolution]). */
+    /** The game resolution the player picked, in lines or [GameResolution.GAME_SIZE]; null: Automatic ([GameResolution]). */
     val gameResolution: Int? = null,
     /** D2GL's graphics profile the player picked; null: Automatic ([GraphicsProfiles]). */
     val graphicsProfile: GraphicsProfile? = null,
     /**
-     * On a screen faster than 60 Hz the game is limited to 60 frames a second; off: the screen's
-     * full rate ([FrameRateVote]).
+     * The game's frame rate on the screen, in frames a second: one of [FrameRateVote.CAPS] (60 only
+     * on a screen faster than 60 Hz); null: the screen's full rate ([FrameRateVote.cap]).
      */
-    val limitFrameRate: Boolean = false,
+    val frameRate: Int? = null,
+    /**
+     * While the game is not on the screen (the app in the background, the screen off, the app's own
+     * screens over the game), it draws at most [BackgroundPacer.FPS] frames a second.
+     */
+    val lowFrameRateInBackground: Boolean = true,
     /**
      * The official PD2 launcher's screen the player picked, in lines; null: the display's full
      * size ([GameResolution.forLauncher]). Its own, not the game's: its window needs room.
@@ -59,7 +64,10 @@ data class AppSettings(
             SHOW_FPS to showFps,
             GAME_RESOLUTION to gameResolution,
             GRAPHICS_PROFILE to graphicsProfile?.name,
-            LIMIT_FRAME_RATE to limitFrameRate,
+            FRAME_RATE to frameRate,
+            // The older "Limit to 60 fps" switch, now FRAME_RATE's 60: removed at the first save.
+            LIMIT_FRAME_RATE to null,
+            LOW_FRAME_RATE_IN_BACKGROUND to lowFrameRateInBackground,
             LAUNCHER_RESOLUTION to launcherResolution,
             DOWNLOADS_NOTICE_ANSWERED to downloadsNoticeAnswered,
             GAME_PLAYED to gamePlayed,
@@ -71,7 +79,12 @@ data class AppSettings(
         const val SHOW_FPS = "show_fps"
         const val GAME_RESOLUTION = "game_resolution"
         const val GRAPHICS_PROFILE = "graphics_profile"
+        const val FRAME_RATE = "frame_rate"
+        /** The older "Limit to 60 fps" switch (a Boolean), read while [FRAME_RATE] has no value. */
         const val LIMIT_FRAME_RATE = "limit_frame_rate"
+        /** The frame rate that switch, on, stands for. */
+        private const val LIMITED_FRAME_RATE = 60
+        const val LOW_FRAME_RATE_IN_BACKGROUND = "low_frame_rate_in_background"
         const val LAUNCHER_RESOLUTION = "launcher_resolution"
         const val DOWNLOADS_NOTICE_ANSWERED = "downloads_notice_answered"
         const val GAME_PLAYED = "game_played"
@@ -83,9 +96,11 @@ data class AppSettings(
             return AppSettings(
                 keepScreenOn = values[KEEP_SCREEN_ON] as? Boolean ?: defaults.keepScreenOn,
                 showFps = values[SHOW_FPS] as? Boolean ?: defaults.showFps,
-                gameResolution = (values[GAME_RESOLUTION] as? Int)?.takeIf { it >= GameResolution.MIN_LINES },
+                gameResolution = (values[GAME_RESOLUTION] as? Int)?.takeIf { it >= GameResolution.MIN_LINES || it == GameResolution.GAME_SIZE },
                 graphicsProfile = GraphicsProfile.entries.firstOrNull { it.name == values[GRAPHICS_PROFILE] },
-                limitFrameRate = values[LIMIT_FRAME_RATE] as? Boolean ?: defaults.limitFrameRate,
+                frameRate = (values[FRAME_RATE] as? Int)?.takeIf { it in FrameRateVote.CAPS }
+                    ?: LIMITED_FRAME_RATE.takeIf { values[FRAME_RATE] == null && values[LIMIT_FRAME_RATE] == true },
+                lowFrameRateInBackground = values[LOW_FRAME_RATE_IN_BACKGROUND] as? Boolean ?: defaults.lowFrameRateInBackground,
                 launcherResolution = (values[LAUNCHER_RESOLUTION] as? Int)?.takeIf { it >= GameResolution.MIN_LINES },
                 downloadsNoticeAnswered = values[DOWNLOADS_NOTICE_ANSWERED] as? Boolean ?: defaults.downloadsNoticeAnswered,
                 gamePlayed = values[GAME_PLAYED] as? Boolean ?: defaults.gamePlayed,

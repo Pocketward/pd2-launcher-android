@@ -23,9 +23,13 @@ class PresentServer private constructor(private val handle: Long) {
     private val lock = Any()
     @Volatile private var stopped = false
 
-    /** The Game view's [surface] carries the game's layer, asking the display for [frameRate]. */
-    fun attach(surface: Surface, frameRate: Float) = synchronized(lock) {
-        if (!stopped) nativeAttach(handle, surface, frameRate)
+    /**
+     * The Game view's [surface] carries the game's layer, asking the display for [frameRate], its
+     * frames shown at least [intervalNanos] apart at a reduced frame rate
+     * ([FrameRateVote.intervalNanos]; 0: as they come).
+     */
+    fun attach(surface: Surface, frameRate: Float, intervalNanos: Long) = synchronized(lock) {
+        if (!stopped) nativeAttach(handle, surface, frameRate, intervalNanos)
     }
 
     /**
@@ -103,7 +107,7 @@ class PresentServer private constructor(private val handle: Long) {
         private external fun nativeStart(socket: String, counter: String?): Long
 
         @JvmStatic
-        private external fun nativeAttach(handle: Long, surface: Surface, frameRate: Float)
+        private external fun nativeAttach(handle: Long, surface: Surface, frameRate: Float, minInterval: Long)
 
         @JvmStatic
         private external fun nativeDetach(handle: Long, surface: Surface)

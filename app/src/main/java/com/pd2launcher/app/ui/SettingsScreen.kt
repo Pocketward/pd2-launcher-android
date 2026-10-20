@@ -51,6 +51,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.pd2launcher.app.AppSettings
+import com.pd2launcher.app.BackgroundPacer
 import com.pd2launcher.app.FrameRateVote
 import com.pd2launcher.app.GameResolution
 import com.pd2launcher.app.GraphicsProfiles
@@ -80,6 +81,7 @@ class SettingsNav {
     var resolutions by mutableStateOf(false)
     var launcherResolutions by mutableStateOf(false)
     var profiles by mutableStateOf(false)
+    var frameRates by mutableStateOf(false)
     val scroll = List(3) { ScrollState(0) }
 
     fun open(tab: Int) {
@@ -88,6 +90,7 @@ class SettingsNav {
         resolutions = false
         launcherResolutions = false
         profiles = false
+        frameRates = false
     }
 
     companion object {
@@ -100,8 +103,9 @@ class SettingsNav {
 /**
  * Settings, in three text tabs: Game (the Launcher's settings that apply on Android, [launcher],
  * changed with [onCommand], and the game resolution and D2GL's graphics profile, whose Automatic
- * follows the [gpu], the resolution's choices following the landscape [display], and the limit to
- * 60 frames a second on a screen whose [highestFrameRate] is higher; next Play), App (the app's
+ * follows the [gpu], the resolution's choices following the landscape [display], the frame rate,
+ * whose choices follow the screen's [highestFrameRate], and the lower frame rate in the
+ * background; next Play), App (the app's
  * own, [app], and the system settings it depends on; at once) and Controller (the physical
  * controller, [ControlsStore]; at once, in the game too). Each tab opens with when its settings
  * apply. Controller leads with Edit on-screen controls, the one way to the on-screen controls
@@ -138,7 +142,7 @@ fun SettingsScreen(
     val phone = LocalFormFactor.current == FormFactor.PHONE
     val tabFocus = remember { FocusRequester() }
     InitialFocus(tabFocus, nav.tab)
-    BackHandler(enabled = nav.picker == null && !nav.resolutions && !nav.launcherResolutions && !nav.profiles, onBack = onBack)
+    BackHandler(enabled = nav.picker == null && !nav.resolutions && !nav.launcherResolutions && !nav.profiles && !nav.frameRates, onBack = onBack)
     Box(Modifier.fillMaxSize().background(Palette.Background)) {
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
             Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(start = 8.dp, end = 20.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -172,6 +176,7 @@ fun SettingsScreen(
         if (nav.resolutions) ResolutionSheet(app, display, gpu, phone, onAppChange) { nav.resolutions = false }
         if (nav.launcherResolutions) LauncherResolutionSheet(app, display, phone, onAppChange) { nav.launcherResolutions = false }
         if (nav.profiles) GraphicsProfileSheet(app, gpu, phone, onAppChange) { nav.profiles = false }
+        if (nav.frameRates) FrameRateSheet(app, highestFrameRate, phone, onAppChange) { nav.frameRates = false }
     }
 }
 
@@ -256,18 +261,17 @@ private fun GameTab(
     }
     ResolutionSection(app, display, gpu) { nav.resolutions = true }
     LauncherResolutionSection(app, display) { nav.launcherResolutions = true }
-    // The settings that control the game itself: D2GL's graphics, how it starts, its sound.
+    // The settings that control the game itself: D2GL's graphics, its frame rate, how it starts, its sound.
     Section(stringResource(R.string.settings_section_start)) {
         GraphicsProfileRow(app, gpu) { nav.profiles = true }
-        // Only on a screen faster than 60 Hz, where the game otherwise runs at the screen's rate.
-        if (FrameRateVote.limitApplies(highestFrameRate)) {
-            RowRule()
-            ToggleRow(
-                stringResource(R.string.settings_limit_frame_rate),
-                stringResource(R.string.settings_limit_frame_rate_body, Math.round(highestFrameRate)),
-                app.limitFrameRate, { onAppChange(app.copy(limitFrameRate = it)) },
-            )
-        }
+        RowRule()
+        FrameRateRow(app, highestFrameRate) { nav.frameRates = true }
+        RowRule()
+        ToggleRow(
+            stringResource(R.string.settings_background_frame_rate),
+            stringResource(R.string.settings_background_frame_rate_body, BackgroundPacer.FPS),
+            app.lowFrameRateInBackground, { onAppChange(app.copy(lowFrameRateInBackground = it)) },
+        )
         RowRule()
         ToggleRow(
             stringResource(R.string.settings_skip_to_bnet), stringResource(R.string.settings_skip_to_bnet_body),
@@ -321,6 +325,64 @@ private fun BoxScope.GraphicsProfileSheet(
     }
 }
 
+/**
+ * The game's frame rate on the screen, as the player reads it: "Full: up to 120 fps" for the
+ * screen's [highest] rate ("Full" when no display mode could be read), else the reduced rate
+ * ([FrameRateVote.cap]).
+ */
+@Composable
+private fun frameRateLabel(cap: Int?, highest: Float): String = when {
+    cap != null -> stringResource(R.string.settings_frame_rate_cap, cap)
+    highest > 0f -> stringResource(R.string.settings_frame_rate_full, Math.round(highest))
+    else -> stringResource(R.string.settings_frame_rate_full_unknown)
+}
+
+/** The app's own setting beside the graphics profile: the game's frame rate on the screen, its choices in a sheet. */
+@Composable
+private fun FrameRateRow(app: AppSettings, highest: Float, onOpen: () -> Unit) {
+    FocusRow(onOpen, minHeight = 60.dp) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(stringResource(R.string.settings_frame_rate), style = Type.Body, color = Palette.Text)
+            Text(frameRateLabel(FrameRateVote.cap(highest, app.frameRate), highest), style = Type.Hint, color = Palette.Teal)
+            Text(stringResource(R.string.settings_frame_rate_body), style = Type.Hint, color = Palette.Muted)
+        }
+        Text("›", style = Type.Title, color = Palette.Teal)
+    }
+}
+
+/**
+ * The frame rates this screen offers, in the game resolution's sheet: its full rate (the default),
+ * then each reduced rate below it ([FrameRateVote.caps]). A pick closes it.
+ */
+@Composable
+private fun BoxScope.FrameRateSheet(
+    app: AppSettings,
+    highest: Float,
+    phone: Boolean,
+    onAppChange: (AppSettings) -> Unit,
+    onClose: () -> Unit,
+) {
+    val current = FrameRateVote.cap(highest, app.frameRate)
+    ChoiceSheet(stringResource(R.string.settings_frame_rate), phone, onClose) { first ->
+        (listOf<Int?>(null) + FrameRateVote.caps(highest)).forEachIndexed { index, cap ->
+            if (index > 0) RowRule()
+            val body = when (cap) {
+                null -> R.string.settings_frame_rate_full_body
+                60 -> R.string.settings_frame_rate_60_body
+                else -> R.string.settings_frame_rate_30_body
+            }
+            OptionRow(
+                frameRateLabel(cap, highest), stringResource(body), current == cap,
+                {
+                    onAppChange(app.copy(frameRate = cap))
+                    onClose()
+                },
+                focusRequester = first.takeIf { index == 0 },
+            )
+        }
+    }
+}
+
 /** A size as the player reads it, "1600 × 720", with "(full)" for the display's own. */
 @Composable
 private fun resolutionLabel(size: Pair<Int, Int>, display: Pair<Int, Int>): String =
@@ -331,7 +393,12 @@ private fun resolutionLabel(size: Pair<Int, Int>, display: Pair<Int, Int>): Stri
 private fun ResolutionSection(app: AppSettings, display: Pair<Int, Int>, gpu: HostGpu?, onOpen: () -> Unit) {
     Section(stringResource(R.string.settings_section_resolution)) {
         val size = GameResolution.forPlay(display.first, display.second, app.gameResolution, gpu)
-        val label = resolutionLabel(size, display)
+        // The game's own size by its name, also for a kept pick of the lines it took ([GameResolution.offered]).
+        val label = if (GameResolution.offered(display.first, display.second, app.gameResolution) == GameResolution.GAME_SIZE) {
+            text(GameResolution.gameSizeLabel(size))
+        } else {
+            resolutionLabel(size, display)
+        }
         FocusRow(onOpen) {
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(
@@ -413,7 +480,8 @@ private fun BoxScope.ChoiceSheet(title: String, phone: Boolean, onClose: () -> U
 
 /**
  * The game resolution's choices, as the binding picker's sheet: Automatic (what it picks on this
- * GPU), then the display's full size down to 480 lines ([GameResolution.choices]). A pick closes it.
+ * GPU), then the display's full size down to 480 lines with the game's own size among them by its
+ * lines ([GameResolution.gameChoices]). A pick closes it.
  */
 @Composable
 private fun BoxScope.ResolutionSheet(
@@ -437,9 +505,15 @@ private fun BoxScope.ResolutionSheet(
                 app.gameResolution == null, { pick(null) },
                 focusRequester = first,
             )
-            GameResolution.choices(width, height).forEach { size ->
+            val picked = GameResolution.offered(width, height, app.gameResolution)
+            GameResolution.gameChoices(width, height).forEach { (size, kept) ->
                 RowRule()
-                OptionRow(resolutionLabel(size, display), null, app.gameResolution == size.second, { pick(size.second) })
+                val own = kept == GameResolution.GAME_SIZE
+                OptionRow(
+                    if (own) text(GameResolution.gameSizeLabel(size)) else resolutionLabel(size, display),
+                    if (own) stringResource(R.string.settings_resolution_game_size_body) else null,
+                    picked == kept, { pick(kept) },
+                )
             }
     }
 }

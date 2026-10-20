@@ -4,7 +4,7 @@
 # checks it against this pin (--build builds the release from its sources instead);
 # `engine/build.sh --pin <tag>` sets tag, commit and SHA-256 from the repository.
 url=https://github.com/Pocketward/pd2-launcher.git
-tag=v0.1.5
-commit=ad761c08a8ca840eb89e54aff42cfd1e53ed9c0a
-asset=pd2-launcher-0.1.5-aarch64
-sha256=fc8728d14e522df34d3593f1971df73cad3e00a37929a79c2b3922aafbf92491
+tag=v0.1.6
+commit=35506338fe89e39e3b293ec5d3432e6aae0f3fc7
+asset=pd2-launcher-0.1.6-aarch64
+sha256=cf466aa2869c7f2afb4f3a21dc431b67daa4ad3e1ca66e7353bbd00a0c4c5e80

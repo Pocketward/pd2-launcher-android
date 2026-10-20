@@ -22,8 +22,10 @@ target_compile_options(kgslprobe PRIVATE -Wall -Wextra -Werror)
 add_library(maliprobe SHARED mali_probe.c)
 target_compile_options(maliprobe PRIVATE -Wall -Wextra -Werror)
 
-# The Game view: the copy of the X screen (frame_copy.c, frame_layer.cpp) and the game's direct present (present_server.cpp).
-add_library(framecopy SHARED frame_copy.c frame_layer.cpp present_server.cpp)
+# The Game view: the copy of the X screen (frame_copy.c, frame_layer.cpp), the game's direct present (present_server.cpp),
+# their rules for a reduced frame rate (frame_pacing.c, which a host program checks: app/build.gradle.kts), and the game's
+# pacing while the Game view does not pace it (background_pacer.c).
+add_library(framecopy SHARED frame_copy.c frame_layer.cpp present_server.cpp frame_pacing.c background_pacer.c)
 target_compile_options(framecopy PRIVATE -Wall -Wextra -Werror -O3)
 target_link_libraries(framecopy android nativewindow log)
 

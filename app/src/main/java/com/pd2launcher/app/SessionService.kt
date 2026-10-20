@@ -1,5 +1,6 @@
 package com.pd2launcher.app
 
+import android.app.ActivityManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -158,6 +159,8 @@ class SessionService : Service() {
     @Volatile private var lastStartId = 0
     /** An idle end has asked Android to stop this service, and Android took it ([stopWhenIdle]); worker thread only. */
     private var stopAsked = false
+    /** The device's memory lines while the game runs ([MemoryLog.Watch]); worker thread only. */
+    private val memoryWatch = MemoryLog.Watch()
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -177,6 +180,15 @@ class SessionService : Service() {
         _status.value = SessionStatus.STARTING
         running = this
         log("service started (pid ${Os.getpid()}, uid ${Os.getuid()}, received ${ReceivedBytes.current() ?: "uncounted"} bytes so far)")
+        // How the app's earlier processes ended: a kill for low memory shows in the logs.
+        scope.launch(Dispatchers.IO) { logProcessExits() }
+        // While the game runs: the device's memory at its start and stop, and when it moves (MemoryLog).
+        scope.launch {
+            while (true) {
+                delay(MemoryLog.POLL_MS)
+                post { followMemory() }
+            }
+        }
         // While a job downloads or installs: the app's received bytes, for the engine's stall rule.
         scope.launch(Dispatchers.IO) {
             while (true) {
@@ -206,6 +218,16 @@ class SessionService : Service() {
     override fun onTaskRemoved(rootIntent: Intent?) {
         super.onTaskRemoved(rootIntent)
         appClosed()
+    }
+
+    /**
+     * Android's memory pressure on the app's process: the level and the device's memory go to the
+     * service log ([MemoryLog]). Nothing is freed for it, and the app keeps its place for Android's
+     * memory killer.
+     */
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        log("onTrimMemory ${MemoryLog.trimLevel(level)}: ${MemoryLog.available(MemoryLog.read())}")
     }
 
     /** Whether the session may end now ([SessionIdle.idle]). */
@@ -785,10 +807,16 @@ class SessionService : Service() {
                         launchRequested(null)
                     }
                 }
-                if (Play.gameStarted(previous?.game, next.game)) gameRunningSince = now
+                if (Play.gameStarted(previous?.game, next.game)) {
+                    gameRunningSince = now
+                    post { followMemory() }
+                }
                 // The Game client exited: the game environment goes with it.
                 if (Play.gameEnded(previous?.game, next.game)) {
                     val since = gameRunningSince
+                    // The device's memory after the game's end: Game.exe has exited, and after Stop
+                    // in the Game view the game environment has stopped too.
+                    post { followMemory() }
                     // Logged before wineserver -k, while what the launch left still runs.
                     if (EarlyGameEnd.early(since, now)) post { logEarlyGameEnd(now - since!!) }
                     post { stopGameEnvironment() }
@@ -1195,6 +1223,7 @@ class SessionService : Service() {
         _status.update { it.copy(launcherGame = running) }
         log(if (running) "official PD2 launcher: its game runs" else "official PD2 launcher: its game ended")
         applyBackgroundSound()
+        followMemory()
     }
 
     /**
@@ -1239,6 +1268,40 @@ class SessionService : Service() {
             "the game ended $ranMs ms after it started; the app's processes: " +
                 processes.ifEmpty { listOf("none") }.joinToString("; "),
         )
+    }
+
+    /**
+     * On the worker: the line [memoryWatch] gives for now, if any. The game runs while the Game
+     * client or the official PD2 launcher's game runs; while neither runs and none ran at the last
+     * look, nothing is read.
+     */
+    private fun followMemory() {
+        val status = _status.value
+        val running = status.snapshot?.game == Game.RUNNING || status.launcherGame
+        if (!running && !memoryWatch.running) return
+        memoryWatch.next(running, MemoryLog.read(), SystemClock.elapsedRealtime())?.let(::log)
+    }
+
+    /**
+     * How the app's earlier processes ended ([ActivityManager.getHistoricalProcessExitReasons]),
+     * each once: the ones whose keys the last look did not have; the keys of the list now are kept
+     * for the next look ([MemoryLog.SEEN_EXITS]). A kill for low memory shows as LOW_MEMORY.
+     */
+    private fun logProcessExits() {
+        try {
+            val exits = getSystemService(ActivityManager::class.java).getHistoricalProcessExitReasons(packageName, 0, 0).map {
+                MemoryLog.Exit(it.timestamp, it.pid, it.processName, it.reason, it.status, it.importance, it.pss, it.rss, it.description)
+            }
+            val preferences = getSharedPreferences(MemoryLog.PREFERENCES, Context.MODE_PRIVATE)
+            val seen = preferences.getStringSet(MemoryLog.SEEN_EXITS, null).orEmpty()
+            val ended = MemoryLog.unseen(exits, seen)
+            if (ended.isEmpty()) log("no earlier app process ended since the last look")
+            ended.forEach { log(MemoryLog.describe(it)) }
+            val keys = MemoryLog.keys(exits)
+            if (keys != seen) preferences.edit().putStringSet(MemoryLog.SEEN_EXITS, keys).apply()
+        } catch (error: Exception) {
+            log("earlier app processes: $error")
+        }
     }
 
     /**

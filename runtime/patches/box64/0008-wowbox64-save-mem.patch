@@ -1,0 +1,19 @@
+Subject: [PATCH] WowBox64 is built with SAVE_MEM: a smaller jump table
+
+Box64 builds wowbox64.dll as a separate CMake project (ExternalProject_Add of wine/wow64) and
+gives it no SAVE_MEM, so -DSAVE_MEM=ON does not reach the DLL. With SAVE_MEM, the jump table has
+one more level, and each last-level block has 1024 entries (8 KB) in place of 16 384 (128 KB).
+Box64 writes all the entries of a block when it makes the block, so the table uses less memory.
+Each jump that Box64 looks up while it runs reads one more level.
+---
+--- a/wine/wow64/CMakeLists.txt
++++ b/wine/wow64/CMakeLists.txt
+@@ -154,7 +154,7 @@
+ import_dll(wow64)
+ 
+ # always enable DynaRec, only supports ARM64 for now.
+-add_compile_definitions(DYNAREC ARM64)
++add_compile_definitions(DYNAREC ARM64 SAVE_MEM)
+ 
+ target_compile_options(wowbox64 PRIVATE -Wno-inconsistent-dllimport)
+ target_link_options(wowbox64 PRIVATE -nostdlib -nodefaultlibs 

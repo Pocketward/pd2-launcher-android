@@ -92,16 +92,18 @@ class FrameCopy private constructor(private var handle: Long) {
          * a rotation: on display hardware that cannot rotate, a rotation puts every frame through
          * GPU composition. [presentCounter] is the game's present counter
          * ([SessionPaths.presentCounter]); without it [counts] has no presents and the game is not
-         * paced. [frameRate] is the rate asked of the display ([FrameRateVote]; 0: none).
+         * paced. [frameRate] is the rate asked of the display ([FrameRateVote]; 0: none), and
+         * [takeIntervalNanos] the shortest time between two frames it takes at a reduced frame
+         * rate ([FrameRateVote.intervalNanos]; 0: one a display frame).
          */
         fun start(
             surface: Surface, framebuffer: Framebuffer, header: XwdHeader, displayRotation: Int, presentCounter: File?,
-            frameRate: Float,
+            frameRate: Float, takeIntervalNanos: Long,
         ): FrameCopy? {
             if (header.bitsPerPixel != 32) return null
             val handle = nativeStart(
                 surface, framebuffer.descriptor(), header.pixelOffset, header.width, header.height, header.bytesPerLine,
-                bufferTransform(displayRotation), presentCounter?.path, frameRate,
+                bufferTransform(displayRotation), presentCounter?.path, frameRate, takeIntervalNanos,
             )
             return if (handle == 0L) null else FrameCopy(handle)
         }
@@ -119,7 +121,7 @@ class FrameCopy private constructor(private var handle: Long) {
         @JvmStatic
         private external fun nativeStart(
             surface: Surface, fd: Int, offset: Long, width: Int, height: Int, stride: Int, transform: Int,
-            presents: String?, frameRate: Float,
+            presents: String?, frameRate: Float, takeInterval: Long,
         ): Long
 
         @JvmStatic
@@ -137,13 +139,16 @@ class FrameCopy private constructor(private var handle: Long) {
 }
 
 /**
- * The frame rate the Game view asks the display for: the panel's full rate, or [CAP] when the
- * player limits it (Settings, Game) on a faster screen. The vote
- * (`ASurfaceTransaction_setFrameRate`) lets a 90 or 120 Hz phone leave 60 Hz, where
- * the display's own heuristic would keep a layer that posts 60 times a second.
+ * The frame rate the Game view asks the display for, and how far apart it takes the game's frames:
+ * the panel's full rate, or the reduced frame rate the player picks (Settings, Game) where the
+ * screen is faster. The vote (`ASurfaceTransaction_setFrameRate`) lets a 90 or 120 Hz phone leave
+ * 60 Hz, where the display's own heuristic would keep a layer that posts 60 times a second, and
+ * lets a display run slower at a reduced rate. The Game view's copy and the game's direct present
+ * hold the game to the reduced rate whatever rate the display runs at ([intervalNanos]).
  */
 object FrameRateVote {
-    const val CAP = 60f
+    /** The reduced frame rates a player can pick, each on a screen faster than it ([caps]). */
+    val CAPS = listOf(60, 30)
 
     /** The highest refresh rate [display] offers at its current resolution; 0 without a display. */
     fun highest(display: Display?): Float {
@@ -158,11 +163,20 @@ object FrameRateVote {
     fun highest(context: Context): Float =
         highest(context.getSystemService(DisplayManager::class.java)?.getDisplay(Display.DEFAULT_DISPLAY))
 
-    /** Whether the limit means anything on a screen whose highest rate is [highest]: one faster than [CAP]. */
-    fun limitApplies(highest: Float): Boolean = highest > CAP + 1f
+    /**
+     * The reduced frame rates a screen whose highest rate is [highest] offers: those below it (a 60
+     * Hz panel, whose modes read 60.000004 or 59.94, has no 60 to offer).
+     */
+    fun caps(highest: Float): List<Int> = CAPS.filter { highest > it + 1f }
 
-    /** The rate to ask for on a screen whose highest rate is [highest], [limited] to [CAP] or not. */
-    fun vote(highest: Float, limited: Boolean): Float = if (limited && limitApplies(highest)) CAP else highest
+    /** The player's [pick] where the screen is faster than it, else null: the screen's full rate. */
+    fun cap(highest: Float, pick: Int?): Int? = pick?.takeIf { it in caps(highest) }
+
+    /** The rate to ask for on a screen whose highest rate is [highest]: the [pick] where it applies, else the full rate. */
+    fun vote(highest: Float, pick: Int?): Float = cap(highest, pick)?.toFloat() ?: highest
+
+    /** The shortest time between two frames at [fps] frames a second, in nanoseconds; 0 for none (no limit). */
+    fun intervalNanos(fps: Int?): Long = if (fps == null || fps <= 0) 0L else 1_000_000_000L / fps
 }
 
 /**
@@ -196,10 +210,11 @@ class FrameRate(private val windowNanos: Long = 1_000_000_000L) {
  * The game's present counter file (Mesa patch 0002, [SessionPaths.presentCounter]): Mesa adds one
  * to its first 32-bit word for each frame the game sends to the X screen, and only opens a file
  * that exists with at least 4 bytes, so the app makes it before the game starts. A page long, it
- * also carries the Game view's pacing (patch 0003): the last present the copy has taken at byte
- * 64, and at byte 128 a word that is non-zero while the copy runs; Mesa holds each present (vsync
- * on or off) back until the one before is taken (at most 100 ms), so the game draws one frame per
- * display frame.
+ * also carries the game's pacing (patch 0003): the last present taken at byte 64, and at byte 128
+ * a word that is non-zero while the Game view's copy paces the game, or, while no copy runs, the
+ * background pacer ([BackgroundPacer]); Mesa holds each present (vsync on or off) back until the
+ * one before is taken (at most 100 ms), so the game draws one frame per display frame, at a
+ * reduced frame rate one per due display frame, and with no copy one per pacer's take.
  */
 object PresentCounter {
     const val SIZE = 4096L

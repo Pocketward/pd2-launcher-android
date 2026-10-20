@@ -39,7 +39,7 @@ android {
         // targetSdk, which the plugin warns about but builds.
         minSdk = 33
         targetSdk = 28
-        versionName = "0.3.1"
+        versionName = "0.3.2"
         versionCode = versionCodeOf(versionName!!)
         // App updates (AppUpdater): the public releases the app looks at (the newest 10; it takes
         // the highest version that is not a pre-release), where their files must be, the name its
@@ -143,6 +143,36 @@ tasks.matching { it.name == "preReleaseBuild" }.configureEach {
         }
     }
 }
+
+// The Game view's rules for a reduced frame rate (src/main/cpp/frame_pacing.c), checked by a host
+// program before the JVM tests: the NDK's clang builds them with src/test/cpp/frame_pacing_test.c
+// as a static x86_64 program, which the build image (linux/amd64) runs. Skipped where the test, the
+// NDK's Linux x86_64 clang or a Linux x86_64 host to run the program is not.
+val nativeHostTestSource = file("src/test/cpp/frame_pacing_test.c")
+val nativeHostTestProgram = layout.buildDirectory.file("native-host-tests/frame_pacing_test").get().asFile
+// Read only when a host-test task is configured: not on every Gradle run.
+val nativeHostClang by lazy { android.ndkDirectory.resolve("toolchains/llvm/prebuilt/linux-x86_64/bin/clang") }
+val nativeHostIsLinuxX64 = System.getProperty("os.name") == "Linux" && System.getProperty("os.arch") in setOf("amd64", "x86_64")
+val buildNativeHostTests by tasks.registering(Exec::class) {
+    onlyIf { nativeHostTestSource.isFile && nativeHostClang.canExecute() && nativeHostIsLinuxX64 }
+    val sources = listOf(nativeHostTestSource, file("src/main/cpp/frame_pacing.c"))
+    inputs.files(sources + file("src/main/cpp/frame_pacing.h"))
+    outputs.file(nativeHostTestProgram)
+    doFirst { nativeHostTestProgram.parentFile.mkdirs() }
+    commandLine(
+        listOf(
+            nativeHostClang.path,
+            "--target=x86_64-linux-android33", "-static", "-O2", "-Wall", "-Wextra", "-Werror",
+            "-I", file("src/main/cpp").path, "-o", nativeHostTestProgram.path,
+        ) + sources.map { it.path },
+    )
+}
+val nativeHostTests by tasks.registering(Exec::class) {
+    dependsOn(buildNativeHostTests)
+    onlyIf { nativeHostTestSource.isFile && nativeHostClang.canExecute() && nativeHostIsLinuxX64 }
+    commandLine(nativeHostTestProgram.path)
+}
+tasks.matching { it.name == "testDebugUnitTest" }.configureEach { dependsOn(nativeHostTests) }
 
 kotlin {
     compilerOptions {

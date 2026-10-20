@@ -76,6 +76,16 @@ class GameEnvironment(
         }
         // Before the game: its Mesa asks for the app's buffers when it makes its swapchain.
         if (PresentServer.start(paths.presentSocket, paths.presentCounter) == null) log("no direct present: the X screen only")
+        // Settings, Game: while the game is not on the screen, it draws no more than this.
+        if (AppSettingsStore.load(context).lowFrameRateInBackground) {
+            log(
+                if (BackgroundPacer.start(paths.presentCounter)) {
+                    "the game draws at most ${BackgroundPacer.FPS} frames a second while it is not on the screen"
+                } else {
+                    "no background frame rate: the game draws as fast as it can while it is not on the screen"
+                },
+            )
+        }
         val env = paths.userlandProgramEnvironment()
         val bin = File(paths.userland, "usr/bin")
         try {
@@ -206,6 +216,7 @@ class GameEnvironment(
         closeInput()
         stopAudio()
         PresentServer.stopCurrent()
+        BackgroundPacer.stop()
         closeScreen()
         val owned = listOfNotNull(relay, pulse, xvfb)
         if (owned.isEmpty()) return
@@ -222,6 +233,7 @@ class GameEnvironment(
         closeInput()
         stopAudio()
         PresentServer.stopCurrent()
+        BackgroundPacer.stop()
         closeScreen()
         relay = null
         pulse = null

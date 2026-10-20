@@ -24,6 +24,8 @@
     <string name="settings_resolution_body">Fewer lines are smoother; the game is scaled up to fill the screen. Its graphics options are in the game: Options, Video Options, D2GL.</string>
     <string name="settings_resolution_automatic">Automatic: %1$s</string>
     <string name="settings_resolution_automatic_body">480 lines on older or entry-level Adreno GPUs, a medium size on Mali GPUs, full size on newer Adrenos.</string>
+    <string name="settings_resolution_game_size">Game\'s own size (%1$d × %2$d)</string>
+    <string name="settings_resolution_game_size_body">The game does not make its 1068 × 600 picture smaller. The app scales it up to fill the screen.</string>
     <string name="settings_section_launcher_resolution">Official launcher resolution</string>
     <string name="settings_launcher_resolution_body">The screen the official PD2 launcher opens on. Its window needs room: the full size shows all of it.</string>
     <string name="settings_resolution_full">%1$d × %2$d (full)</string>
@@ -37,8 +39,16 @@
     <string name="settings_graphics_default_body">Project Diablo 2\'s own D2GL settings.</string>
     <string name="settings_graphics_performance">Performance</string>
     <string name="settings_graphics_performance_body">D2GL\'s advanced settings tuned down for older devices: a simpler shader, no sharpening, no bloom.</string>
-    <string name="settings_limit_frame_rate">Limit to 60 fps</string>
-    <string name="settings_limit_frame_rate_body">This screen shows up to %1$d frames a second. At 60 the game uses less battery and stays cooler, but moves less smoothly.</string>
+    <string name="settings_frame_rate">Frame rate</string>
+    <string name="settings_frame_rate_body">Fewer frames a second use less battery and keep the device cooler, but the game moves less smoothly.</string>
+    <string name="settings_frame_rate_full">Full: up to %1$d fps</string>
+    <string name="settings_frame_rate_full_unknown">Full</string>
+    <string name="settings_frame_rate_cap">%1$d fps</string>
+    <string name="settings_frame_rate_full_body">As many frames as this screen shows.</string>
+    <string name="settings_frame_rate_60_body">Less battery and heat than the full rate, and still smooth.</string>
+    <string name="settings_frame_rate_30_body">The least battery and heat. The game moves less smoothly.</string>
+    <string name="settings_background_frame_rate">Lower frame rate in the background</string>
+    <string name="settings_background_frame_rate_body">While you do not see the game (another app in front, the screen off, or these settings open), it draws only %1$d frames a second. This saves battery.</string>
     <string name="settings_skip_to_bnet">Skip to Battle.net</string>
     <string name="settings_skip_to_bnet_body">The game opens on the online screen.</string>
     <string name="settings_sound_in_background">Sound in background</string>

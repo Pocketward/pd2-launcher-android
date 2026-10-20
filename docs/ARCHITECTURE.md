@@ -88,6 +88,7 @@ PD2 (32-bit OpenGL, D2GL) → Wine's OpenGL (ARM64) → Mesa: Zink (OpenGL on Vu
 - **Xvfb** runs at the device's landscape size or the chosen game resolution, with its framebuffer in a memfd the app passes as descriptor 3 (`-fbfd 3`): never on flash. Without DRI3, Mesa presents through its software X11 path (`MESA_VK_WSI_DEBUG=sw`); our Mesa patches read the frame from cached memory, count the game's presents and pace them by the Game view.
 - **The Game view** (`ui/GameView.kt`, `FrameCopy.kt`, `frame_copy.c`) maps that framebuffer and copies each new picture into an Android surface once per display frame, scaled to fill the screen.
 - **Direct present** (`PresentServer.kt`, `present_server.cpp`, Mesa patch 0004): while the game's full-screen window is alone on the X screen, Mesa renders into AHardwareBuffers the app allocates and the Game view shows them on a layer above the copy, with no Xvfb or CPU copy. `x-input-relay` tells the app when a window covers the game; then the game presents to Xvfb again.
+- **Frame rate:** both hold the game to the player's reduced frame rate (Settings, Game, Frame rate: 60 or 30; `frame_pacing.c`), and while the game is not on the screen a pacer (`BackgroundPacer.kt`, `background_pacer.c`) holds it to 25 frames a second (Lower frame rate in the background).
 - The Install screen shows a small read-only view of the same framebuffer.
 
 ## Input and sound
