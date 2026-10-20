@@ -37,6 +37,8 @@ data class AppSettings(
      * installed: that notice waits for it.
      */
     val gamePlayed: Boolean = false,
+    /** The app looks for a newer release of itself once a day ([AppUpdater]); off: only About's Check now. */
+    val updateChecks: Boolean = true,
 ) {
     /**
      * Start over took the installation ([SetupRecord.NONE]): the downloads notice belongs to it,
@@ -61,6 +63,7 @@ data class AppSettings(
             LAUNCHER_RESOLUTION to launcherResolution,
             DOWNLOADS_NOTICE_ANSWERED to downloadsNoticeAnswered,
             GAME_PLAYED to gamePlayed,
+            UPDATE_CHECKS to updateChecks,
         )
 
     companion object {
@@ -72,6 +75,7 @@ data class AppSettings(
         const val LAUNCHER_RESOLUTION = "launcher_resolution"
         const val DOWNLOADS_NOTICE_ANSWERED = "downloads_notice_answered"
         const val GAME_PLAYED = "game_played"
+        const val UPDATE_CHECKS = "update_checks"
 
         /** A missing or mistyped value is the default, one by one. */
         fun fromPreferences(values: Map<String, *>): AppSettings {
@@ -85,6 +89,7 @@ data class AppSettings(
                 launcherResolution = (values[LAUNCHER_RESOLUTION] as? Int)?.takeIf { it >= GameResolution.MIN_LINES },
                 downloadsNoticeAnswered = values[DOWNLOADS_NOTICE_ANSWERED] as? Boolean ?: defaults.downloadsNoticeAnswered,
                 gamePlayed = values[GAME_PLAYED] as? Boolean ?: defaults.gamePlayed,
+                updateChecks = values[UPDATE_CHECKS] as? Boolean ?: defaults.updateChecks,
             )
         }
     }

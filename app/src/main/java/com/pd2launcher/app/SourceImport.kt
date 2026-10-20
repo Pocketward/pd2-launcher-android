@@ -32,8 +32,12 @@ object SourceImport {
     /** Where the last folder the engine got came from ([pickedFolder]): the notice after an import names it. */
     private const val PREFERENCES = "source"
     private const val PICKED_FOLDER = "picked_folder"
+    /** The provider the last copied folder came from ([pickedFrom]): the notice's words depend on it. */
+    private const val PICKED_FROM = "picked_from"
     /** Android's own provider for shared storage: its document ids are `<volume>:<path>`. */
     const val SHARED_STORAGE = "com.android.externalstorage.documents"
+    /** Android's Downloads provider: the folders it gives are on the device's shared storage too. */
+    const val DOWNLOADS = "com.android.providers.downloads.documents"
     /** How long a copied folder waits for the engine's check of it. */
     private const val VERDICT_TIMEOUT_MS = 120_000L
     /** The deepest a picked folder may nest, and the most files and folders it may hold ([walk]). */
@@ -94,7 +98,8 @@ object SourceImport {
                         copyAll(app.contentResolver, into, picks, total)
                         Log.i(TAG, "copied ${picks.size} entries (${total shr 20} MB)")
                         val picked = folderName(tree.authority, DocumentsContract.getTreeDocumentId(tree), displayName(resolver, tree))
-                        app.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).edit().putString(PICKED_FOLDER, picked).apply()
+                        app.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).edit()
+                            .putString(PICKED_FOLDER, picked).putString(PICKED_FROM, tree.authority).apply()
                         SessionService.command(DiabloSource.selectCommand(into.path))
                         check as ExistingFolder.Check.Usable
                         val current = { generation.get() == copy }
@@ -128,6 +133,10 @@ object SourceImport {
     /** Where the last copied folder is on the device, as the player finds it ("Download/Diablo II"); null: not known. */
     fun pickedFolder(context: Context): String? =
         context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).getString(PICKED_FOLDER, null)
+
+    /** The documents provider the last copied folder came from ([SHARED_STORAGE], say); null: not known. */
+    fun pickedFrom(context: Context): String? =
+        context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).getString(PICKED_FROM, null)
 
     /**
      * A picked folder as the player finds it: its path on shared storage ("primary:Download/Diablo

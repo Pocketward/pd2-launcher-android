@@ -13,6 +13,9 @@
          and the notification prompt where the target allows. -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- App updates: the app hands a newer release of itself to Android's installer, which asks
+         the player. Android also asks once to allow installs from this app. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:allowBackup="false"
@@ -37,6 +40,11 @@
         </activity>
         <service
             android:name=".SessionService"
+            android:exported="false" />
+        <!-- Android's installer reports an app update's progress here, through the app's own
+             PendingIntent: not exported. -->
+        <receiver
+            android:name=".AppUpdateReceiver"
             android:exported="false" />
         <!-- The "PD2 Launcher" root in the Files app and file pickers: the Diablo II folder in
              use. Only the system's document UI (MANAGE_DOCUMENTS) binds it; other apps reach

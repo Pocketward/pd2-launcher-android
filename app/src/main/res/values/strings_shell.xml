@@ -7,6 +7,7 @@
     <string name="stepper_more">+</string>
     <string name="back_to_play">‹ Play</string>
     <string name="back_to_game">‹ Game</string>
+    <string name="back_to_repair">‹ Repair</string>
     <string name="back_to_menu">‹ Menu</string>
 
     <string name="action_resume">Resume</string>
@@ -84,6 +85,12 @@
     <!-- Project Diablo 2's Available update on Play: the main button, the line above it, the running figure. -->
     <string name="action_update">Update</string>
     <string name="play_update_headline">Project Diablo 2 has an update</string>
+    <!-- Only Project Diablo 2's files differ from what the app installed (the official PD2 launcher updated
+         them, say): Check files checks them once and fetches what differs; Play waits for it. -->
+    <string name="play_update_client_headline">Some game files changed. Check them once to play.</string>
+    <string name="action_check_files">Check files</string>
+    <string name="play_checking_files">Checking files</string>
+    <string name="play_check_stopped">Check stopped</string>
     <string name="play_update_stopped">Update stopped</string>
     <string name="play_updating">Updating Project Diablo 2</string>
     <string name="play_update_stopping">Stopping safely</string>
@@ -95,6 +102,8 @@
     <string name="update_step_checking">Checking the game files…</string>
     <string name="update_step_installing">Installing the new files…</string>
     <string name="update_failed">The update didn\'t finish. Try again, or play without updating.</string>
+    <string name="update_client_failed">The check didn\'t finish. Check the connection, then try again.</string>
+    <string name="update_client_refused">The check can\'t start now. Wait until nothing else runs, then try again.</string>
     <string name="update_refused">The update can\'t start now. Wait until nothing else runs, then try again.</string>
 
     <!-- Repair. -->

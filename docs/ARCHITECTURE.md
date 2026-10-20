@@ -25,6 +25,7 @@ A Kotlin app with Jetpack Compose and one activity, `com.pd2launcher.app` (debug
 - **First-start check** (`DeviceCheck.kt`): the GPU (an Adreno read from `/dev/kgsl-3d0` by `kgsl_probe.c`, or a CSF Mali on `/dev/mali0` read by `mali_probe.c`), 4 KB pages and free space. It does not look at the kernel version, which only goes into its log line.
 - **Screens** (`ui/`): Check, the Diablo II source, Download, Install, Play, Settings and About, for touch and controller; one column on phones, two panes on squarer handhelds.
 - **The player's files:** characters live in `files/userdata/Save`; the game folder's `Save` is a link to it (`SaveKeeper.kt`), so reinstalling or updating never touches them. `GameFilesProvider.kt` shows the game folder in Android's Files app.
+- **App updates** (`AppUpdater.kt`, `AppUpdate.kt`): once a day, while Settings → App allows it, the app asks GitHub's API for this repository's releases and takes the highest newer version that is not a pre-release. About downloads its APK into the app's own folder, checks its size, its SHA-256 (the release's `.sha256` and GitHub's digest) and its one signing certificate (the release key's), and hands it to Android's installer, which asks the player. Only while no game, official launcher or job runs: Android ends all of the app's processes when it replaces the app.
 
 ## The session service
 

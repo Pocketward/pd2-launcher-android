@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The development build's network rules: as Android's defaults, and HTTP to localhost, where a
+     test feed for app updates can be served (the update_feed extra, MainActivity). -->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+</network-security-config>

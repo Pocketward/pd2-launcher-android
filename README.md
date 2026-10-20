@@ -6,22 +6,15 @@ An Android app that installs [Project Diablo 2](https://www.projectdiablo2.com/)
 
 The game runs in Wine 11.0 built for ARM64. Wine runs natively on your device's CPU; Box64's WowBox64 translates only the 32-bit x86 code of the game, the installers and Project Diablo 2's own launcher.
 
-## PD2 Launcher for Android and PD2 Launcher Lite
+## PD2 Launcher Lite
 
-**Project Diablo 2 already on a PC?** [PD2 Launcher Lite](https://github.com/Pocketward/pd2-launcher-android-lite) is the small version of this app. It has the same screens, controls, in-game menu and runtime, but it does not install the game.
+[PD2 Launcher Lite](https://github.com/Pocketward/pd2-launcher-android-lite) was the small version of this app. Its runtime, Wine built for ARM64 with Box64's WowBox64, is now this app's runtime. This app keeps everything that it did before: it installs the game, it has its own **Update** for Project Diablo 2, and it supports the official PD2 launcher. Lite gets no more updates.
 
-**Which app to use:** this app is the hands-off, all-in-one choice: it downloads and installs everything for you. If you do not need that, because Project Diablo 2 is already installed on your PC, use Lite: a smaller app that needs no installer downloads.
+To move from Lite to this app:
 
-| | PD2 Launcher for Android | PD2 Launcher Lite |
-|---|---|---|
-| Getting the game | Downloads Blizzard's installers and installs Diablo II, Lord of Destruction and Project Diablo 2 (CD keys needed), or imports a folder | **Imports only:** a Diablo II folder that already has Project Diablo 2. No game downloads, no installers, no CD keys |
-| Project Diablo 2 updates | The app's own **Update** | Project Diablo 2's **official launcher** |
-| Starting the game | **Play** starts the game. The official launcher is optional but supported: **Official PD2 launcher** opens it, for example to manage loot filters | **Start launcher** opens the official launcher; its Play starts the game, and the launcher then closes |
-| Runtime | Wine built for ARM64 runs natively; Box64's WowBox64 translates only the 32-bit x86 code of the game, the installers and the launcher. The .NET runtime that the launcher needs is included | The same |
-| App size | About 150 MB | About 100 MB |
-| Storage | About 0.6 GB for the app and its runtime, plus the game (about 3 GB), plus about 2.6 GB of installer downloads during the installation, which the app offers to remove once the game works | About 0.5 GB for the app and its runtime, plus your game folder (about 3 GB) |
-
-The two apps can be installed side by side. Lite's icon has a gold **LITE** ribbon.
+1. Install this app. It installs beside Lite.
+2. In this app, choose **Import an existing installation** and pick a Diablo II folder that has Project Diablo 2. This can be your folder from a PC, or a copy of Lite's game folder, which Android's Files app shows under **PD2 Launcher Lite**. You can also pick that folder directly in Import, without a copy. Your characters come with the folder.
+3. Uninstall Lite only after the import works. Uninstalling Lite removes Lite's copy of the game folder.
 
 ## What your device needs
 
@@ -39,6 +32,10 @@ Download the APK from the [releases page](https://github.com/Pocketward/pd2-laun
 
 You need your Diablo II and Lord of Destruction CD keys (two different keys) and an internet connection; the app downloads Blizzard's official installers and Project Diablo 2's files from their official sources. If you already have Diablo II and Lord of Destruction 1.14b or 1.14d installed on a PC, you can copy that folder to the device instead and need no CD keys.
 
+## Updates of this app
+
+From version 0.3.0, the app looks for a new version of itself once a day, while **Settings → App → Look for new versions** is on. It is on by default. When a new version is out, Android shows one notification for it, and **About** shows it under **App updates**. The download starts only when you tap **Download**. On a network that can count data, for example mobile data, a note gives the size first. Android always asks you to confirm the update. The first time, you allow **Install unknown apps** for PD2 Launcher in Android's settings, and Android can restart the app when you do this. Your game, characters and settings stay. Nothing about app updates shows on **Play**. A version before 0.3.0 cannot update itself: install 0.3.0 over it by hand.
+
 ## Using it
 
 The app walks you through four steps:
@@ -46,7 +43,7 @@ The app walks you through four steps:
 1. **Check:** your device, notifications and battery settings (both optional, but without them Android may stop the game while the app is in the background), and the game's support files, which the app unpacks once.
 2. **Download:** pick **Download** (Diablo II and Lord of Destruction from Blizzard, about 2 GB) or **Import an existing installation** (your Diablo II folder copied from a PC; the app makes its own copy). The installers download and are checked.
 3. **Install:** enter your CD keys and accept Blizzard's terms; the app then runs Blizzard's installers and Project Diablo 2's unattended, with a small live view of their windows. Expect half an hour or more. **Stop** pauses safely and **Resume** continues where it stopped. The app never saves your CD keys: it passes them to Blizzard's installer only. Blizzard's installer stores them in the installed game, as Diablo II requires; **Repair → Start over** removes the installed game and with it the keys.
-4. **Play:** starts Project Diablo 2. When Project Diablo 2 has an update, the button offers **Update** first; you can always play without updating. **Official PD2 launcher** opens Project Diablo 2's own launcher, for example to manage loot filters.
+4. **Play:** starts Project Diablo 2. When Project Diablo 2 has an update, the button offers **Update** first; you can also play without updating. **Official PD2 launcher** opens Project Diablo 2's own launcher, for example to manage loot filters. When the official launcher has updated the game files, Play asks you to check them once with **Check files**.
 
 In the game:
 

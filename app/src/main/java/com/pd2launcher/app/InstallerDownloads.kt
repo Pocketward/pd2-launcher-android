@@ -20,9 +20,10 @@ import java.util.Locale
  * Play and Settings → App → Storage run the engine's `--remove-downloads`, which removes these
  * folders (the engine's `INSTALLER_DOWNLOADS`); the notice waits for the first game
  * session to end ([showNotice]). The prefix's Windows Installer cache is not here: the app
- * removes it by itself ([InstallerCache]). After an import the notice also says
- * the Diablo II folder the player copied onto the device can go: the app has its own copy, and it
- * never deletes the player's folder itself.
+ * removes it by itself ([InstallerCache]). After an import from Android's own storage the notice
+ * also says the Diablo II folder the player copied onto the device can go: the app has its own
+ * copy, and it never deletes the player's folder itself. After an import of Lite's game folder it
+ * says that Lite still has its own copy ([notice]).
  */
 object InstallerDownloads {
     /** Below the Launcher's managed root. */
@@ -66,7 +67,8 @@ object InstallerDownloads {
      * The notice on Play shows once, after the first game session: never on the first arrival
      * right after the install, only once a game has run and ended ([gamePlayed]; the player has
      * tried the game, [played]), while the installation is Ready with downloads to remove or
-     * [imported] (its copied folder can go, even with nothing downloaded), until the player
+     * [imported] (a folder from Android's own storage can go, or Lite still has its own copy, even
+     * with nothing downloaded; [importedFolderShown]), until the player
      * answers it (Remove, Later or OK; [answered]). Start over forgets both answers
      * ([AppSettings.afterStartOver]).
      */
@@ -89,27 +91,66 @@ object InstallerDownloads {
     data class Notice(val title: Line, val body: List<Line>, val remove: Line?)
 
     /**
-     * The notice for [bytes] of downloads; [imported] adds the folder the player copied onto the
-     * device from their PC, by [folder] where the app knows it ([SourceImport.pickedFolder]).
+     * Where an imported folder came from, by the documents provider [authority] that gave it
+     * ([SourceImport.pickedFrom]): Android's own storage ([SourceImport.SHARED_STORAGE], also a USB
+     * drive or an SD card, or [SourceImport.DOWNLOADS]), PD2 Launcher Lite's game folder, or
+     * another app's. A folder recorded without its provider (by an older version) counts as
+     * Android's own storage, as it did then.
      */
-    fun notice(bytes: Long, imported: Boolean, folder: String?): Notice {
+    enum class FolderSource { SHARED_STORAGE, LITE, OTHER }
+
+    fun folderSource(authority: String?): FolderSource = when (authority) {
+        null, SourceImport.SHARED_STORAGE, SourceImport.DOWNLOADS -> FolderSource.SHARED_STORAGE
+        in LITE_FOLDERS -> FolderSource.LITE
+        else -> FolderSource.OTHER
+    }
+
+    /** The game folders of PD2 Launcher Lite and of its development build, as their providers name them. */
+    private val LITE_FOLDERS = setOf("com.pd2launcher.lite.documents", "com.pd2launcher.lite.dev.documents")
+
+    /**
+     * Whether the notice and Settings → App → Storage speak of the imported folder: only after an
+     * import ([imported]) from Android's own storage or from Lite ([from]). After an import from
+     * another app's folder they say nothing about it: the notice shows only for downloads to free.
+     */
+    fun importedFolderShown(imported: Boolean, from: String?): Boolean = imported && folderSource(from) != FolderSource.OTHER
+
+    /**
+     * The notice for [bytes] of downloads; [imported] adds what to know about the folder the
+     * player picked ([importedFolderShown]), by [folder] where the app knows it
+     * ([SourceImport.pickedFolder]) and by the provider it came from ([from], [folderSource]). Only
+     * a folder from Android's own storage is one the player copied onto the device, so only then
+     * does the notice say that the folder can be deleted; for Lite's folder it says that Lite still
+     * has its own copy.
+     */
+    fun notice(bytes: Long, imported: Boolean, folder: String?, from: String?): Notice {
+        // Another app's folder: no word on it, whatever the caller says ([importedFolderShown]).
+        val shown = importedFolderShown(imported, from)
         val size = size(bytes)
         val downloads = bytes > 0
         val copied = when {
-            !imported -> null
+            !shown -> null
+            folderSource(from) == FolderSource.LITE -> Line(R.string.downloads_notice_lite)
             downloads -> folder?.let { Line(R.string.downloads_notice_folder, it) } ?: Line(R.string.downloads_notice_folder_unnamed)
             else -> folder?.let { Line(R.string.downloads_notice_folder_only, it) } ?: Line(R.string.downloads_notice_folder_only_unnamed)
         }
         return Notice(
-            title = if (imported) Line(R.string.downloads_notice_title_import) else Line(R.string.downloads_notice_title, size),
+            title = if (shown) Line(R.string.downloads_notice_title_import) else Line(R.string.downloads_notice_title, size),
             body = listOfNotNull(Line(R.string.downloads_notice_body, size).takeIf { downloads }, copied),
             remove = Line(R.string.downloads_notice_remove, size).takeIf { downloads },
         )
     }
 
-    /** Settings → App → Storage's line for an imported installation: the copied folder can go. */
-    fun copiedFolder(folder: String?): Line =
-        folder?.let { Line(R.string.settings_copied_folder, it) } ?: Line(R.string.settings_copied_folder_unnamed)
+    /**
+     * Settings → App → Storage's line for an imported installation: a folder from Android's own
+     * storage can be deleted; for Lite's folder, Lite still has its own copy; for another app's
+     * folder, none ([importedFolderShown], [from]).
+     */
+    fun copiedFolder(folder: String?, from: String?): Line? = when {
+        !importedFolderShown(true, from) -> null
+        folderSource(from) == FolderSource.LITE -> Line(R.string.settings_copied_folder_lite)
+        else -> folder?.let { Line(R.string.settings_copied_folder, it) } ?: Line(R.string.settings_copied_folder_unnamed)
+    }
 
     /** The engine's `--remove-downloads` exit status as an outcome. */
     fun outcome(exitCode: Int?): Outcome = when (exitCode) {

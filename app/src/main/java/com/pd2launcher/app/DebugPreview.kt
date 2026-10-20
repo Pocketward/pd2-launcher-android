@@ -62,7 +62,7 @@ object DebugPreview {
     const val SOURCE = "source"
     /** Settings over the live session; `--ei tab`, `--es picker`, `--ez mouse` pick where. */
     const val SETTINGS = "settings"
-    /** Repair over the live session; its actions do nothing here. */
+    /** Repair over the live session, as where the app holds it on screen; its actions do nothing here. */
     const val REPAIR = "repair"
     /** Play over the live session, also before an install (its buttons do nothing here). */
     const val PLAY = "play"
@@ -74,6 +74,8 @@ object DebugPreview {
     const val NOTICE = "notice"
     const val NOTICE_IMPORT = "notice-import"
     const val NOTICE_IMPORT_DOWNLOADS = "notice-import-downloads"
+    /** The notice after an import of PD2 Launcher Lite's game folder with nothing downloaded. */
+    const val NOTICE_IMPORT_LITE = "notice-import-lite"
     /** About over the live session. */
     const val ABOUT = "about"
     /** The Game view's overlay over an empty screen: the glyph, the menu rail, the Controls panel, the controls editor. */
@@ -131,9 +133,11 @@ object DebugPreview {
 
     /** The notice preview [name] shows; null for other previews. */
     fun notice(name: String?): InstallerDownloads.Notice? = when (name) {
-        NOTICE -> InstallerDownloads.notice(2_400_000_000L, imported = false, folder = null)
-        NOTICE_IMPORT -> InstallerDownloads.notice(0, imported = true, folder = "Download/Diablo II")
-        NOTICE_IMPORT_DOWNLOADS -> InstallerDownloads.notice(480_000_000L, imported = true, folder = "Download/Diablo II")
+        NOTICE -> InstallerDownloads.notice(2_400_000_000L, imported = false, folder = null, from = null)
+        NOTICE_IMPORT -> InstallerDownloads.notice(0, imported = true, folder = "Download/Diablo II", from = SourceImport.SHARED_STORAGE)
+        NOTICE_IMPORT_DOWNLOADS ->
+            InstallerDownloads.notice(480_000_000L, imported = true, folder = "Download/Diablo II", from = SourceImport.SHARED_STORAGE)
+        NOTICE_IMPORT_LITE -> InstallerDownloads.notice(0, imported = true, folder = "Diablo II", from = "com.pd2launcher.lite.documents")
         else -> null
     }
 

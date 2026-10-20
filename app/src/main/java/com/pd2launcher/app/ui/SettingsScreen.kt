@@ -1,6 +1,7 @@
 package com.pd2launcher.app.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.annotation.StringRes
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
@@ -105,7 +106,10 @@ class SettingsNav {
  * controller, [ControlsStore]; at once, in the game too). Each tab opens with when its settings
  * apply. Controller leads with Edit on-screen controls, the one way to the on-screen controls
  * ([onEditOnScreen]: their editor holds all their options); a binding opens the picker as a
- * sheet over the column, as the game resolution opens its choices. [fromGame]: opened from the game's menu.
+ * sheet over the column, as the game resolution opens its choices. [back]: the back label, to where
+ * Settings returns ([com.pd2launcher.app.Onboarding.settingsBack]). [updates]: this build gets app
+ * updates (the App tab's App updates: the daily check, and [newVersion] when one is out, which
+ * About installs).
  */
 @Composable
 fun SettingsScreen(
@@ -116,7 +120,7 @@ fun SettingsScreen(
     gpu: HostGpu?,
     system: SystemState,
     nav: SettingsNav,
-    fromGame: Boolean,
+    @StringRes back: Int,
     onCommand: (Command) -> Unit,
     onAppChange: (AppSettings) -> Unit,
     onBatterySettings: () -> Unit,
@@ -124,6 +128,8 @@ fun SettingsScreen(
     onEditOnScreen: () -> Unit,
     onAbout: () -> Unit,
     onBack: () -> Unit,
+    updates: Boolean = false,
+    newVersion: String? = null,
 ) {
     val context = LocalContext.current
     remember { ControlsStore.load(context) }
@@ -137,7 +143,7 @@ fun SettingsScreen(
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
             Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(start = 8.dp, end = 20.dp), verticalAlignment = Alignment.CenterVertically) {
                 LauncherButton(
-                    stringResource(if (fromGame) R.string.back_to_game else R.string.back_to_play), onBack,
+                    stringResource(back), onBack,
                     kind = Kind.QUIET, height = 48.dp, padding = 14.dp,
                 )
                 ScreenTitle(stringResource(R.string.settings_title), Modifier.weight(1f).padding(start = 4.dp))
@@ -156,7 +162,7 @@ fun SettingsScreen(
                 Column(Modifier.widthIn(max = 560.dp).fillMaxWidth().padding(horizontal = 8.dp).padding(top = 12.dp, bottom = 24.dp)) {
                     when (nav.tab) {
                         SettingsNav.GAME -> GameTab(launcher, onCommand, app, display, highestFrameRate, gpu, nav, onAppChange)
-                        SettingsNav.APP -> AppTab(app, system, onAppChange, onBatterySettings, onNotificationSettings, onAbout)
+                        SettingsNav.APP -> AppTab(app, system, onAppChange, onBatterySettings, onNotificationSettings, onAbout, updates, newVersion)
                         else -> ControllerTab(controls, nav, phone, save, onEditOnScreen)
                     }
                 }
@@ -446,6 +452,8 @@ private fun AppTab(
     onBatterySettings: () -> Unit,
     onNotificationSettings: () -> Unit,
     onAbout: () -> Unit,
+    updates: Boolean,
+    newVersion: String?,
 ) {
     Applies(stringResource(R.string.settings_applies_app))
     Section(stringResource(R.string.settings_section_screen)) {
@@ -478,6 +486,23 @@ private fun AppTab(
         ShareLogsRow(LogShareUi.Action.SHARE)
         RowRule()
         ShareLogsRow(LogShareUi.Action.SAVE)
+    }
+    // The app's own updates: the daily check, and a new version's way to About, which installs it.
+    if (updates) Section(stringResource(R.string.app_update_title)) {
+        ToggleRow(
+            stringResource(R.string.app_update_auto), stringResource(R.string.app_update_auto_body),
+            app.updateChecks, { onAppChange(app.copy(updateChecks = it)) },
+        )
+        if (newVersion != null) {
+            RowRule()
+            FocusRow(onAbout) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(stringResource(R.string.app_update_new_version, newVersion), style = Type.Body, color = Palette.Teal)
+                    Text(stringResource(R.string.app_update_new_version_body), style = Type.Hint, color = Palette.Muted)
+                }
+                Text("›", style = Type.Title, color = Palette.Teal)
+            }
+        }
     }
     Section(stringResource(R.string.settings_section_about)) {
         FocusRow(onAbout) {

@@ -146,7 +146,7 @@ object Play {
     enum class UpdateState {
         /** Nothing to offer: up to date, not checked yet, checking, or the check failed. Play stays Play. */
         NONE,
-        /** An Available update: the main button reads Update. */
+        /** An Available update: the main button reads Update (Check files when only the client differs, [UpdateView.client]). */
         OFFERED,
         /** The update runs: its figure above the main button, which reads Stop. */
         RUNNING,
@@ -173,13 +173,15 @@ object Play {
 
     /**
      * The check after a finished update, from [current] (where it stood after [previous]) and the
-     * engine's [next] snapshot: it begins when an update's success lands, runs while the check
+     * engine's [next] snapshot: it begins when an update's (or Check files') success lands, runs while the check
      * says Checking, and ends once the check says anything else (Up to date, or Available again
      * after it ran: a newer update), or another operation replaces the update's. Until then the
      * snapshot's Available is the one from before the update, which Play must not offer again.
      */
     fun recheck(current: Recheck?, previous: Snapshot?, next: Snapshot): Recheck? {
-        val succeeded = next.operation?.let { it.job == Job.UPDATE && it.status == OperationStatus.SUCCEEDED } == true
+        val succeeded = next.operation?.let {
+            (it.job == Job.UPDATE || it.job == Job.INSTALL_PROJECT_DIABLO) && it.status == OperationStatus.SUCCEEDED
+        } == true
         if (!succeeded) return null
         val stands = if (previous?.operation != next.operation) Recheck.WAITING else current
         return when {
@@ -194,7 +196,9 @@ object Play {
      * The update on Play. [canStart]: the engine takes Update (Resume, Try again) now: no other job
      * runs. While it runs, [percent] of the file downloading now and [summary] (its amount, speed
      * and time left) are the engine's, each when known; [step] says what runs when there is no
-     * summary. [problem]: why it failed.
+     * summary. [problem]: why it failed. [client]: only Project Diablo 2's files differ from the
+     * Launcher's record ([clientDiffers]); the update is then Check files, the engine's Install
+     * Project Diablo 2, and Play waits for it.
      */
     data class UpdateView(
         val state: UpdateState = UpdateState.NONE,
@@ -203,12 +207,17 @@ object Play {
         val summary: String? = null,
         @param:StringRes val step: Int? = null,
         @param:StringRes val problem: Int? = null,
+        val client: Boolean = false,
     ) {
         /** The update's job runs (or stops): its figure shows and Play waits. */
         val working: Boolean get() = state == UpdateState.RUNNING || state == UpdateState.STOPPING
 
-        /** Play stays possible beside the update: [PlayScreen]'s "Play without updating". */
-        val playWithout: Boolean get() = state == UpdateState.OFFERED || state == UpdateState.STOPPED || state == UpdateState.FAILED
+        /**
+         * Play stays possible beside the update: [PlayScreen]'s "Play without updating". Not for
+         * [client]: the engine plays only a Ready installation.
+         */
+        val playWithout: Boolean get() =
+            !client && (state == UpdateState.OFFERED || state == UpdateState.STOPPED || state == UpdateState.FAILED)
     }
 
     private val UPDATE_RUNNING = setOf(
@@ -217,22 +226,46 @@ object Play {
     )
 
     /**
-     * The update on Play from the engine's audited snapshot. Offered only for a Ready installation
-     * while neither the game nor the official PD2 launcher runs, and only once the check said
-     * Available: a failed check never stands in the way of Play. Running from its job's start
-     * until its operation ends; stopped or failed by that operation, until another replaces it.
+     * The installed game is complete but Project Diablo 2's files differ from the Launcher's
+     * record (the audit's needs_client, with the game environment set up: the audit names the
+     * client before the environment): the official PD2 launcher updated them, say, which writes
+     * no record of the Launcher's. The engine's Install Project Diablo 2 brings them in line: it
+     * checks each file against the current release, fetches only those that differ and writes the
+     * record, so after the official launcher's update nothing downloads.
+     */
+    fun clientDiffers(snapshot: Snapshot): Boolean =
+        snapshot.host == Host.SUPPORTED && snapshot.installation == Installation.NEEDS_CLIENT &&
+            snapshot.environmentReady && snapshot.gameFolder?.available != false
+
+    /**
+     * Whether a press of the main button that sends [command] (Update, Check files, Resume, Try
+     * again) holds both buttons as a press of Play does ([launchPending]): until the engine shows
+     * the job, refuses it or the game environment fails, so a second press sends nothing. Stop
+     * never waits.
+     */
+    fun holdsButtons(command: Command): Boolean = command !is Command.RequestSafeStop
+
+    /**
+     * The update on Play from the engine's audited snapshot, while neither the game nor the
+     * official PD2 launcher runs. For a Ready installation offered only once the check said
+     * Available: a failed check never stands in the way of Play. When only the client differs
+     * ([clientDiffers]) always offered, as Check files, without Play beside it.
+     * Running from its job's start until its operation ends; stopped or failed by that operation,
+     * until another replaces it.
      */
     fun update(status: SessionStatus): UpdateView {
         val snapshot = status.snapshot?.takeIf(Onboarding::audited) ?: return UpdateView()
+        val client = clientDiffers(snapshot)
         if (status.engine != SessionStatus.Engine.CONNECTED || snapshot.host != Host.SUPPORTED ||
-            snapshot.installation != Installation.READY || snapshot.game == Game.RUNNING ||
+            (snapshot.installation != Installation.READY && !client) || snapshot.game == Game.RUNNING ||
             snapshot.activeJob == Job.OFFICIAL_LAUNCHER
         ) {
             return UpdateView()
         }
-        val operation = snapshot.operation?.takeIf { it.job == Job.UPDATE }
+        val job = if (client) Job.INSTALL_PROJECT_DIABLO else Job.UPDATE
+        val operation = snapshot.operation?.takeIf { it.job == job }
         // The job's end lands a moment before its operation's outcome.
-        if (snapshot.activeJob == Job.UPDATE || operation?.status in UPDATE_RUNNING) {
+        if (snapshot.activeJob == job || operation?.status in UPDATE_RUNNING) {
             val progress = operation?.progress
             return UpdateView(
                 state = if (operation?.status == OperationStatus.SAFE_STOPPING) UpdateState.STOPPING else UpdateState.RUNNING,
@@ -244,13 +277,24 @@ object Play {
                     operation?.phase == Phase.VERIFICATION -> R.string.update_step_checking
                     else -> R.string.update_step_looking
                 },
+                client = client,
             )
+        }
+        val canStart = snapshot.activeJob == null && !snapshot.unresolvedJournal
+        if (client) {
+            return when {
+                status.refusal?.reason == INSTALL_REFUSED ->
+                    UpdateView(UpdateState.FAILED, canStart, problem = R.string.update_client_refused, client = true)
+                operation?.status == OperationStatus.FAILED || operation?.status == OperationStatus.INDETERMINATE ->
+                    UpdateView(UpdateState.FAILED, canStart, problem = R.string.update_client_failed, client = true)
+                operation?.status == OperationStatus.CANCELLED -> UpdateView(UpdateState.STOPPED, canStart, client = true)
+                else -> UpdateView(UpdateState.OFFERED, canStart, client = true)
+            }
         }
         // The update finished: until the check after it says, neither the update (its Available is
         // from before) nor Play.
         if (status.updateRecheck != null) return UpdateView(UpdateState.RECHECKING)
         if (snapshot.update != Update.AVAILABLE) return UpdateView()
-        val canStart = snapshot.activeJob == null && !snapshot.unresolvedJournal
         return when {
             status.refusal?.reason == UPDATE_REFUSED ->
                 UpdateView(UpdateState.FAILED, canStart, problem = R.string.update_refused)
@@ -264,11 +308,14 @@ object Play {
     /** The engine's refusal of an update start (its guard: something runs, or nothing is Available). */
     const val UPDATE_REFUSED = "update-not-permitted"
 
+    /** The engine's refusal of Install Project Diablo 2 ([UpdateView.client]): something runs, or the installation changed. */
+    const val INSTALL_REFUSED = "install-not-permitted"
+
     /** The main button's label: Play, or the update's next step. */
     @StringRes
     fun primaryLabel(update: UpdateView): Int = when (update.state) {
         UpdateState.NONE, UpdateState.RECHECKING -> R.string.action_play
-        UpdateState.OFFERED -> R.string.action_update
+        UpdateState.OFFERED -> if (update.client) R.string.action_check_files else R.string.action_update
         UpdateState.RUNNING -> R.string.action_stop
         UpdateState.STOPPING -> R.string.action_stopping
         UpdateState.STOPPED -> R.string.action_resume
@@ -278,7 +325,8 @@ object Play {
     /** The engine command the main button sends; null for Play (its own action) and while the update stops. */
     fun primaryCommand(update: UpdateView): Command? = when (update.state) {
         UpdateState.NONE, UpdateState.STOPPING, UpdateState.RECHECKING -> null
-        UpdateState.OFFERED, UpdateState.STOPPED, UpdateState.FAILED -> Command.ApplyUpdate
+        UpdateState.OFFERED, UpdateState.STOPPED, UpdateState.FAILED ->
+            if (update.client) Command.InstallProjectDiablo else Command.ApplyUpdate
         UpdateState.RUNNING -> Command.RequestSafeStop
     }
 
@@ -299,13 +347,15 @@ object Play {
 
     /**
      * The one line of facts under Play: the renderer the next launch uses, the GPU it runs on,
-     * and Project Diablo 2's update state once the engine has checked. Only what is known.
+     * and Project Diablo 2's update state once the engine has checked. Only what is known; no
+     * update state while the game files wait for their check ([clientDiffers]), which comes first.
      */
     fun facts(snapshot: Snapshot?, gpu: String?): List<Line> = buildList {
         snapshot?.settings?.renderer?.let {
             add(Line(if (it == Renderer.GLIDE) R.string.play_fact_glide else R.string.play_fact_direct_draw))
         }
         if (!gpu.isNullOrBlank()) add(Line(R.string.play_fact_plain, gpu))
+        if (snapshot != null && clientDiffers(snapshot)) return@buildList
         when (snapshot?.update) {
             Update.UP_TO_DATE -> add(Line(R.string.update_up_to_date))
             Update.AVAILABLE -> add(Line(R.string.update_available))
@@ -332,9 +382,10 @@ class PlayDestinations(
  * [waiting]: why Play cannot start yet ("Getting ready…"), shown where "Ready to play" goes; both
  * buttons are disabled while it shows.
  * [update]: Project Diablo 2's Available update ([Play.update]): the main button then reads Update
- * and sends [onCommand]'s commands (Stop while it runs, Resume, Try again); where "Ready to play"
- * goes, its figure while it runs and a red banner once it failed; "Play without updating"
- * ([onPlay]) under the buttons while it does not run.
+ * (Check files when only the client differs) and sends [onCommand]'s commands (Stop while it runs,
+ * Resume, Try again); where "Ready to play" goes, its figure while it runs and a red banner once it
+ * failed (with Share logs and Save logs under the check's); "Play without updating" ([onPlay])
+ * under the buttons while it does not run, never beside Check files.
  * [launching]: Play or the official PD2 launcher was pressed and the engine has not shown it yet
  * ([Play.launchPending]): both buttons and "Play without updating" wait.
  */
@@ -379,10 +430,14 @@ fun PlayScreen(
                             UpdateFigure(update, wide)
                         } else if (failure != null && waiting == null) {
                             Banner(stringResource(failure), Palette.Red, wide)
+                            // The check's failure: its logs, for a report.
+                            if (update.client) ShareLogsLink(Modifier.padding(top = 4.dp))
                         } else {
                             val headline = when (update.state) {
-                                Play.UpdateState.OFFERED -> stringResource(R.string.play_update_headline)
-                                Play.UpdateState.STOPPED -> stringResource(R.string.play_update_stopped)
+                                Play.UpdateState.OFFERED ->
+                                    stringResource(if (update.client) R.string.play_update_client_headline else R.string.play_update_headline)
+                                Play.UpdateState.STOPPED ->
+                                    stringResource(if (update.client) R.string.play_check_stopped else R.string.play_update_stopped)
                                 Play.UpdateState.RECHECKING -> stringResource(R.string.play_update_rechecking)
                                 else -> stringResource(R.string.play_ready)
                             }
@@ -460,7 +515,13 @@ private fun UpdateFigure(update: Play.UpdateView, modifier: Modifier = Modifier)
             )
             Spacer(Modifier.weight(1f).widthIn(min = 12.dp))
             Text(
-                stringResource(if (update.state == Play.UpdateState.STOPPING) R.string.play_update_stopping else R.string.play_updating),
+                stringResource(
+                    when {
+                        update.state == Play.UpdateState.STOPPING -> R.string.play_update_stopping
+                        update.client -> R.string.play_checking_files
+                        else -> R.string.play_updating
+                    },
+                ),
                 style = Type.Hint, color = Palette.Muted, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.alignByBaseline(),
             )

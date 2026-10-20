@@ -10,6 +10,7 @@ import com.pd2launcher.app.control.Phase
 import com.pd2launcher.app.control.Snapshot
 import com.pd2launcher.app.control.Step
 import com.pd2launcher.app.ui.NetworkState
+import com.pd2launcher.app.ui.Play
 import com.pd2launcher.app.ui.TaskState
 import com.pd2launcher.app.ui.networkText
 import com.pd2launcher.app.control.Finding as HostFinding
@@ -248,8 +249,9 @@ sealed interface Installed {
     data class Play(val waiting: Line? = null, val problem: Line? = null) : Installed
 
     /**
-     * The audit found the installation broken (files missing, needs_client and needs_runtime
-     * included: Start over is the way on), its folder gone or the device unable to run it; or
+     * The audit found the installation broken (files missing, needs_runtime included: Start over
+     * is the way on; not needs_client alone, which Play's Check files brings in line, except before
+     * the first Ready after an update in place), its folder gone or the device unable to run it; or
      * Start over runs.
      */
     data object Repair : Installed
@@ -332,11 +334,15 @@ object Onboarding {
      * Where the app stands once its record says the game is installed ([SetupRecord.INSTALLED]):
      * Play from the first frame, waiting in place ("Getting ready…", "Updating game files… 40%")
      * while the device check, an unpack after an app update and the engine's first audit run, and
-     * startable only once that audit says Ready; Repair when the audit finds the installation
-     * broken (or the device unable to run it), and while Start over resets it. Never Check or the
-     * install flow: the engine's placeholder before its audit is not evidence ([audited]).
+     * startable only once that audit says Ready; with Check files in Play's place when only Project
+     * Diablo 2's files differ from the Launcher's record ([Play.clientDiffers]); Repair when the
+     * audit finds the installation broken otherwise (or the device unable to run it), and while
+     * Start over resets it. Never Check or the install flow: the engine's placeholder before its
+     * audit is not evidence ([audited]). [updatedInPlace]: an update in place moved the game and
+     * the installation was not Ready since ([LegacyPrefix.UPDATED], the managed game folder there):
+     * any audit short of Ready is Repair's, with "Use your game" first ([UpgradeImport.offersImport]).
      */
-    fun installed(device: DeviceCheckState, session: SessionStatus): Installed {
+    fun installed(device: DeviceCheckState, session: SessionStatus, updatedInPlace: Boolean = false): Installed {
         if (device == DeviceCheckState.Running) return Installed.Play(waiting = Line(R.string.play_getting_ready))
         refusal(device)?.let { return Installed.Refused(it) }
         val userland = session.userland
@@ -358,12 +364,33 @@ object Onboarding {
             snapshot.activeJob == Job.RESET || snapshot.operation?.let { it.phase == Phase.RESET && it.status in RUNNING } == true ->
                 Installed.Repair
             snapshot.host == Host.SUPPORTED && snapshot.installation == Installation.READY -> Installed.Play()
-            // Anything else is broken for an installed game, needs_client and needs_runtime too:
-            // nothing is set up in place on Android, Repair's Start over is the way on (an APK that
-            // adds a part to the game environment sends installed players there).
+            // Only Project Diablo 2's files differ from the Launcher's record (the official PD2
+            // launcher's update, say): Play, whose Check files brings them in line ([Play.clientDiffers]);
+            // before the first Ready after an update in place, Repair ([updatedInPlace]).
+            !updatedInPlace && Play.clientDiffers(snapshot) -> Installed.Play()
+            // Anything else is broken for an installed game, needs_runtime too: nothing else is set
+            // up in place on Android, Repair's Start over is the way on (an APK that adds a part to
+            // the game environment sends installed players there).
             else -> Installed.Repair
         }
     }
+
+    /**
+     * Settings' back label: to the Game view it opened over ([gameView]), to Repair when Repair
+     * shows under it ([repairShown]: the preview, opened from Play or held on screen), else to Play.
+     */
+    @StringRes
+    fun settingsBack(gameView: Boolean, repairShown: Boolean): Int = when {
+        gameView -> R.string.back_to_game
+        repairShown -> R.string.back_to_repair
+        else -> R.string.back_to_play
+    }
+
+    /**
+     * Repair shows Settings and Share logs and Save logs for an installed game ([record]): held on
+     * screen (its Back leaves the app), opened from Play, and through Check again alike.
+     */
+    fun repairLinks(record: SetupRecord): Boolean = record == SetupRecord.INSTALLED
 
     /** Step 3, Download, from the engine's snapshot. */
     fun download(session: SessionStatus): Screen.Download {

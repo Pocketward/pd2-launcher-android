@@ -64,9 +64,10 @@ fun rememberInstallerDownloadBytes(key: Any?): State<Long?> {
 }
 
 /**
- * Whether the installation was imported from a folder the player copied onto the device
+ * Whether the installation was imported from a folder the notice and Settings speak of
  * ([InstallerDownloads.imported], [UpgradeImport.playerCopied] with the engine's [gameFolder] and the
- * Launcher's record), read again when [key] or [gameFolder] changes; null while reading.
+ * Launcher's record, and [InstallerDownloads.importedFolderShown]: not another app's folder), read
+ * again when [key] or [gameFolder] changes; null while reading.
  */
 @Composable
 fun rememberImported(key: Any?, gameFolder: String?): State<Boolean?> {
@@ -75,10 +76,13 @@ fun rememberImported(key: Any?, gameFolder: String?): State<Boolean?> {
         value = withContext(Dispatchers.IO) {
             runCatching {
                 val paths = SessionPaths(DeviceCheck.dataDir(context))
-                InstallerDownloads.imported(paths.managedRoot) &&
-                    UpgradeImport.playerCopied(
-                        gameFolder, GameFilesProvider.recordedGameFolder(paths), paths.upgradeGame, SourceImport.pickedFolder(context),
-                    )
+                InstallerDownloads.importedFolderShown(
+                    InstallerDownloads.imported(paths.managedRoot) &&
+                        UpgradeImport.playerCopied(
+                            gameFolder, GameFilesProvider.recordedGameFolder(paths), paths.upgradeGame, SourceImport.pickedFolder(context),
+                        ),
+                    SourceImport.pickedFrom(context),
+                )
             }.getOrNull()
         }
     }
@@ -86,8 +90,9 @@ fun rememberImported(key: Any?, gameFolder: String?): State<Boolean?> {
 
 /**
  * The one-time notice over Play after the first game session: it offers to free the installer
- * downloads and, after an import, says the copied Diablo II folder can go
- * ([InstallerDownloads.notice]). A sheet from the bottom on phones, a panel in the middle on
+ * downloads and, after an import, says what to know about the picked folder
+ * ([InstallerDownloads.notice]): one from Android's own storage can be deleted; for Lite's
+ * folder, Lite still has its own copy. A sheet from the bottom on phones, a panel in the middle on
  * handhelds; Back is Later (or OK).
  */
 @Composable
@@ -125,7 +130,8 @@ fun DownloadsNotice(notice: InstallerDownloads.Notice, onRemove: () -> Unit, onL
 
 /**
  * Settings → App → Storage: the installer downloads' size and Remove, with a confirmation in
- * place; after an import, that the copied Diablo II folder can go.
+ * place; after an import from Android's own storage, that the copied Diablo II folder can go, and
+ * after an import of Lite's game folder, that Lite still has its own copy.
  */
 @Composable
 fun ColumnScope.StorageRows() {
@@ -194,10 +200,13 @@ fun ColumnScope.StorageRows() {
     message?.let { Text(it, style = Type.Hint, color = Palette.Text, modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)) }
     if (imported == true) {
         val folder = remember { SourceImport.pickedFolder(context) }
-        Text(
-            text(InstallerDownloads.copiedFolder(folder)), style = Type.Hint, color = Palette.Muted,
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
-        )
+        val from = remember { SourceImport.pickedFrom(context) }
+        InstallerDownloads.copiedFolder(folder, from)?.let {
+            Text(
+                text(it), style = Type.Hint, color = Palette.Muted,
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+            )
+        }
     }
 }
 

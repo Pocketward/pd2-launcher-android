@@ -41,6 +41,15 @@ android {
         targetSdk = 28
         versionName = "0.3.0"
         versionCode = versionCodeOf(versionName!!)
+        // App updates (AppUpdater): the public releases the app looks at (the newest 10; it takes
+        // the highest version that is not a pre-release), where their files must be, the name its
+        // APKs have there (the release workflow's), and the SHA-256 of the certificate they are
+        // signed with (the release workflow's key). A debug build looks only at a test feed, whose
+        // files may be anywhere, and takes its own certificate.
+        buildConfigField("String", "UPDATE_FEED", "\"https://api.github.com/repos/Pocketward/pd2-launcher-android/releases?per_page=10\"")
+        buildConfigField("String", "UPDATE_RELEASES", "\"https://github.com/Pocketward/pd2-launcher-android/releases/\"")
+        buildConfigField("String", "UPDATE_APK_PREFIX", "\"pd2-launcher-android-\"")
+        buildConfigField("String", "UPDATE_CERTIFICATE", "\"90b7d9adf3f0c2c1bac5351f8cc972c9f984704c181f03f8cc206d2711a2972d\"")
     }
 
     compileOptions {

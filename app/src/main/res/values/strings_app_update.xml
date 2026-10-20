@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- App updates: a new version of this app (About, Settings → App, the notice). Not Project Diablo 2's updates. -->
+    <string name="app_update_title">App updates</string>
+    <string name="app_update_idle">PD2 Launcher has not looked for a new version yet.</string>
+    <string name="app_update_checking">Looking for a new version…</string>
+    <string name="app_update_up_to_date">PD2 Launcher is up to date.</string>
+    <string name="app_update_check_offline">Could not look for a new version. Check your connection, then try again.</string>
+    <string name="app_update_check_busy">GitHub asks the app to wait before it looks again. Try again in %1$d min.</string>
+    <string name="app_update_check_failed">Could not look for a new version. Try again later.</string>
+    <string name="app_update_available">Version %1$s is out (%2$d MB).</string>
+    <string name="app_update_paused">Version %1$s: %2$d of %3$d MB downloaded.</string>
+    <string name="app_update_downloading">Downloading version %1$s: %2$d of %3$d MB</string>
+    <string name="app_update_download_network">The download stopped. Check your connection, then tap Resume. The app keeps what it downloaded.</string>
+    <string name="app_update_download_network_nothing_kept">The download stopped. Check your connection, then tap Download.</string>
+    <string name="app_update_download_failed">The download stopped. Tap Resume to try again.</string>
+    <string name="app_update_download_failed_nothing_kept">The download stopped. Tap Download to try again.</string>
+    <string name="app_update_no_space">Not enough free space. The update needs about %1$d MB, and %2$d MB are free. To free space, go to Settings → App → Storage.</string>
+    <string name="app_update_no_checksum">The app cannot check this version, so it does not download it. Try again later.</string>
+    <string name="app_update_refused">The download failed the app\'s check and was deleted. Tap Download to get it again.</string>
+    <string name="app_update_verifying">Checking the download…</string>
+    <string name="app_update_ready">Version %1$s is ready to install.</string>
+    <string name="app_update_install_note">Android asks you to confirm. The app closes while Android updates it. Your game, characters and settings stay.</string>
+    <string name="app_update_allow_note">First, let PD2 Launcher install updates: in Android\'s settings, turn on \"Allow from this source\", then come back. Android can restart the app when you do this.</string>
+    <string name="app_update_cancelled">The update was cancelled. Nothing changed.</string>
+    <string name="app_update_put_off">The update stopped because the game or other work started. Tap Install again when it ends.</string>
+    <string name="app_update_install_no_space">Android needs more free space to install the update. Free some space, then tap Install.</string>
+    <string name="app_update_install_failed">Android did not install the update. Tap Install to try again.</string>
+    <string name="app_update_installing">Android asks you to confirm the update.</string>
+    <string name="app_update_installing_note">If Android\'s window is not open, tap Install again.</string>
+    <string name="app_update_wait_game">Close the game first. The update closes the app, and the game with it.</string>
+    <string name="app_update_wait_launcher">Close the official PD2 launcher first. The update closes the app, and the launcher with it.</string>
+    <string name="app_update_wait_work">Wait until the game\'s download or install ends, or stop it. The update closes the app.</string>
+    <string name="app_update_wait_starting">Wait a moment: the game is starting.</string>
+    <string name="app_update_wait_preparing">Wait a moment: the app is getting ready.</string>
+    <string name="app_update_metered">This network can count data, for example mobile data. The download is about %1$d MB.</string>
+    <string name="app_update_check_now">Check now</string>
+    <string name="app_update_install">Install</string>
+    <string name="app_update_allow">Open Android settings</string>
+    <string name="app_update_whats_new">What\'s new</string>
+    <!-- Settings → App. -->
+    <string name="app_update_auto">Look for new versions</string>
+    <string name="app_update_auto_body">Once a day, the app asks its GitHub release page if a new version is out. It downloads nothing until you tap Download.</string>
+    <string name="app_update_new_version">Version %1$s is out</string>
+    <string name="app_update_new_version_body">Open About to download and install it.</string>
+    <!-- The notice: an Android notification, once per version. -->
+    <string name="app_update_channel">App updates</string>
+    <string name="app_update_notice_title">A new version of PD2 Launcher is out</string>
+    <string name="app_update_notice_text">Version %1$s. Tap to see it in About.</string>
+</resources>

@@ -17,6 +17,8 @@ import java.nio.file.Path
  * older prefix goes, and so does the waiting folder unless the installation uses it.
  * An update in place that passed, whose moved game the engine's audit then rejects, gets the same
  * Import as Repair's first choice ([offersImport], [LegacyPrefix.takeOut]); Start over comes second.
+ * Until that first Ready a needs_client goes there too, not to Play's Check files
+ * ([Onboarding.installed]'s updatedInPlace).
  */
 object UpgradeImport {
     /** [SessionPaths.importedGame]'s token for the waiting folder. */
@@ -58,8 +60,9 @@ object UpgradeImport {
             snapshot.activeJob == null && snapshot.installation != Installation.READY
 
     /**
-     * Whether an imported installation's game came from a folder the player copied onto the device,
-     * so the notice after the first game and Settings → App → Storage say that folder can go: not
+     * Whether an imported installation's game came from a folder the player picked, so the notice
+     * after the first game and Settings → App → Storage speak of it (one from Android's own storage
+     * can go; for Lite's folder, Lite still has its own copy; [InstallerDownloads.importedFolderShown]): not
      * when the game in use is the waiting folder [kept] and the player never picked a folder
      * ([picked], [SourceImport.pickedFolder]): that game is the older app's own install, and
      * nothing was copied. The game in use is the one the engine names ([gameFolder]), else the

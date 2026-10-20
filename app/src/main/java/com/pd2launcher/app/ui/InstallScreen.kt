@@ -776,7 +776,9 @@ fun installNote(view: InstallView): Note? = when {
  * what goes and what is kept. From the press of Start over until its reset ends or is refused,
  * nothing can be pressed again. [onImport]: after an update in place whose moved game the engine
  * rejected, Import of that game comes first (the corner Check again takes otherwise; Check again
- * moves under the rows), and Start over second.
+ * moves under the rows), and Start over second. [onSettings]: on every Repair of an installed game
+ * ([Onboarding.repairLinks]: held on screen, where its Back leaves the app, opened from Play, or
+ * through Check again), Settings and Share logs and Save logs under the rows.
  */
 @Composable
 fun RepairScreen(
@@ -785,6 +787,7 @@ fun RepairScreen(
     onStartOver: () -> Unit,
     onBack: () -> Unit,
     onImport: (() -> Unit)? = null,
+    onSettings: (() -> Unit)? = null,
 ) {
     val snapshot = session.snapshot
     val focus = remember { FocusRequester() }
@@ -885,6 +888,11 @@ fun RepairScreen(
             ),
         )
         repairWaits(resetting, checking)?.let { WaitNote(stringResource(it)) }
+        if (onSettings != null) {
+            Rule()
+            TextLink(stringResource(R.string.play_settings), onSettings, Modifier.padding(top = 4.dp))
+            ShareLogsLink()
+        }
     }
 }
 

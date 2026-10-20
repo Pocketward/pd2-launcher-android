@@ -6,12 +6,16 @@
     <string name="downloads_notice_remove">Free %1$s</string>
     <string name="downloads_notice_later">Later</string>
     <string name="downloads_notice_where">You can also do this later in Settings → App → Storage.</string>
-    <!-- After an import: the folder the player copied onto the device can go (the app never deletes it). -->
+    <!-- After an import. A folder from Android's own storage, which the player copied onto the device, can go (the
+         app never deletes it): only then the lines below say so. Lite's folder has its own line further down, and
+         another app's folder gets no line. -->
     <string name="downloads_notice_title_import">Free space on this device</string>
     <string name="downloads_notice_folder">The app also has its own copy of Diablo II now, so you can safely delete the Diablo II folder you copied to this device from your PC (%1$s).</string>
     <string name="downloads_notice_folder_unnamed">The app also has its own copy of Diablo II now, so you can safely delete the Diablo II folder you copied to this device from your PC.</string>
     <string name="downloads_notice_folder_only">If the game works for you, you can safely delete the Diablo II folder you copied to this device from your PC (%1$s). The app has its own copy now.</string>
     <string name="downloads_notice_folder_only_unnamed">If the game works for you, you can safely delete the Diablo II folder you copied to this device from your PC. The app has its own copy now.</string>
+    <!-- After an import of PD2 Launcher Lite's game folder: Lite still has its own copy. -->
+    <string name="downloads_notice_lite">The app has its own copy of Diablo II now. PD2 Launcher Lite still has its own copy. To free that space, uninstall Lite.</string>
     <string name="downloads_notice_ok">OK</string>
 
     <!-- Settings → App → Storage. -->
@@ -21,6 +25,8 @@
     <string name="settings_downloads_none">Nothing to remove.</string>
     <string name="settings_copied_folder">The app has its own copy of Diablo II, so you can safely delete the folder you copied to this device from your PC (%1$s).</string>
     <string name="settings_copied_folder_unnamed">The app has its own copy of Diablo II, so you can safely delete the Diablo II folder you copied to this device from your PC.</string>
+    <!-- Lite's folder: as downloads_notice_lite. -->
+    <string name="settings_copied_folder_lite">The app has its own copy of Diablo II. PD2 Launcher Lite still has its own copy. To free that space, uninstall Lite.</string>
     <string name="settings_downloads_counting">Counting…</string>
     <string name="settings_downloads_remove">Remove</string>
     <string name="settings_downloads_confirm">Remove %1$s of downloaded installers? The game keeps working.</string>

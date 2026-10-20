@@ -138,6 +138,8 @@ class MainActivity : ComponentActivity() {
     /** Which layout the launcher screens use, from the display's shape (ui/FormFactor.kt). */
     private lateinit var formFactor: FormFactor
     private val batteryRestricted = mutableStateOf(false)
+    /** App updates: About's group, Settings → App's section and Android's window ([AppUpdateHost]). */
+    private val appUpdate = AppUpdateHost(this)
     private var sessionStarted = false
     private val paths by lazy { SessionPaths(DeviceCheck.dataDir(this)) }
     /** The debug entry points below ([readScreenExtras], [startSession], the tests in onCreate); never in a release build. */
@@ -165,8 +167,12 @@ class MainActivity : ComponentActivity() {
 
         formFactor = FormFactor.of(this)
         requestedOrientation = formFactor.launcherOrientation
+        // About stays open when Android restarted the app under it (allowing app updates can);
+        // a new start from the notice of a new app version opens it.
+        aboutOpen.value = savedInstanceState?.getBoolean(STATE_ABOUT) ?: intent.getBooleanExtra(AppUpdater.EXTRA_ABOUT, false)
         readScreenExtras(intent)
         AppSettingsStore.load(this)
+        appUpdate.create(intent, fresh = savedInstanceState == null)
         // An install started and not finished opens on Install; an installed game on Play (Root).
         nav.value = FlowNav.opening(SetupRecordStore.load(this))
         // The device check comes before anything is unpacked; the session service (which
@@ -227,7 +233,9 @@ class MainActivity : ComponentActivity() {
         // Once installed (the app's own record), Play or Repair, never Check or the install flow;
         // Start over's reset ends it (the record goes): Repair closes and Check follows.
         val record by SetupRecordStore.current.collectAsState()
-        val installed = if (record == SetupRecord.INSTALLED) Onboarding.installed(device, status) else null
+        // After an update in place, until its first Ready: Repair for any audit short of Ready (Use your game).
+        val updatedInPlace = remember(status.snapshot, record) { File(paths.managedRoot, LegacyPrefix.UPDATED).exists() && paths.managedGame.isDirectory }
+        val installed = if (record == SetupRecord.INSTALLED) Onboarding.installed(device, status, updatedInPlace) else null
         LaunchedEffect(record) {
             if (record == SetupRecord.NONE) repairOpen.value = false
             // An update in place that failed while the app showed Play: Install, as on a start.
@@ -343,7 +351,11 @@ class MainActivity : ComponentActivity() {
                 onBack = { keys.value = false },
             )
         } else if (aboutOpen.value) {
-            AboutScreen(onBack = { aboutOpen.value = false }, runtime = (status.userland as? SessionStatus.Userland.Ready)?.version)
+            AboutScreen(
+                onBack = { aboutOpen.value = false },
+                runtime = (status.userland as? SessionStatus.Userland.Ready)?.version,
+                update = appUpdate.about(status, sourceCopy is SourceCopy.Copying),
+            )
         } else if (editorOpen.value) {
             ControlsEditor(sample = true, onClose = { editorOpen.value = false })
         } else if (showGameView && !settingsOpen.value) {
@@ -360,7 +372,7 @@ class MainActivity : ComponentActivity() {
                 gpu = (device as? DeviceCheckState.Done)?.facts?.gpu,
                 system = SystemState(batteryRestricted.value, notificationsOff.value),
                 nav = settingsNav,
-                fromGame = showGameView,
+                back = Onboarding.settingsBack(showGameView, previewName == DebugPreview.REPAIR || repairOpen.value || installed == Installed.Repair),
                 onCommand = { SessionService.command(it) },
                 onAppChange = { AppSettingsStore.save(this, it) },
                 onBatterySettings = { openSystemSettings(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) },
@@ -368,6 +380,8 @@ class MainActivity : ComponentActivity() {
                 onEditOnScreen = { editorOpen.value = true },
                 onAbout = { aboutOpen.value = true },
                 onBack = { settingsOpen.value = false },
+                updates = appUpdate.available,
+                newVersion = appUpdate.newVersion(),
             )
         } else if (previewName == DebugPreview.SOURCE) {
             // Continue sends nothing here: the running Download preview shows what follows.
@@ -388,7 +402,8 @@ class MainActivity : ComponentActivity() {
                 window = framebuffer.takeIf { status.gameEnvironment },
             )
         } else if (previewName == DebugPreview.REPAIR) {
-            RepairScreen(status, onCheckAgain = {}, onStartOver = {}, onBack = leavePreview)
+            // As where the app holds Repair on screen: with Settings and the logs.
+            RepairScreen(status, onCheckAgain = {}, onStartOver = {}, onBack = leavePreview, onSettings = { openSettings(SettingsNav.GAME) })
         } else if (previewName == DebugPreview.PLAY || DebugPreview.notice(previewName) != null || DebugPreview.playUpdate(previewName, status) != null) Box(Modifier.fillMaxSize()) {
             val shown = DebugPreview.playUpdate(previewName, status) ?: status
             PlayScreen(
@@ -431,8 +446,9 @@ class MainActivity : ComponentActivity() {
                     SessionService.command(Command.StartOver)
                 },
                 // Back to Play; with the installation found broken (or Start over running) there
-                // is none: Back leaves the app.
+                // is none: Back leaves the app, and Settings and the logs are on Repair itself.
                 onBack = { if (installed == Installed.Repair) moveTaskToBack(true) else repairOpen.value = false },
+                onSettings = { openSettings(SettingsNav.GAME) }.takeIf { Onboarding.repairLinks(record) },
                 // After an update in place whose moved game the engine rejected: Import of it first.
                 onImport = {
                     repairOpen.value = false
@@ -464,9 +480,13 @@ class MainActivity : ComponentActivity() {
                     pressed()
                     SessionService.send(this@MainActivity, SessionService.ACTION_PLAY)
                 },
-                // In the engine alone: no game environment.
+                // In the engine alone: no game environment. Check files (Install Project Diablo 2) can
+                // fall back to the PD2 installer: it starts as Install's.
                 update = Play.update(status),
-                onCommand = { SessionService.command(it) },
+                onCommand = {
+                    if (Play.holdsButtons(it)) pressed()
+                    SessionService.command(it, withGameEnvironment = it is Command.InstallProjectDiablo)
+                },
                 onOfficialLauncher = {
                     // In the game environment, as the game: the Game view shows it once its session runs.
                     pressed()
@@ -482,7 +502,8 @@ class MainActivity : ComponentActivity() {
                 ),
             )
             // Once, after the first game session (never right after the install): the installer
-            // downloads and, after an import, the Diablo II folder the player copied onto the device can go.
+            // downloads can go and, after an import from Android's own storage, so can the Diablo II
+            // folder the player copied onto the device (after an import from Lite, Lite keeps its copy).
             val app by AppSettingsStore.current.collectAsState()
             val downloadBytes by rememberInstallerDownloadBytes(status.snapshot?.installation)
             val importedNow by rememberImported(status.snapshot?.installation, status.snapshot?.gameFolder?.path)
@@ -491,7 +512,10 @@ class MainActivity : ComponentActivity() {
             if (bytes != null && imported != null && InstallerDownloads.showNotice(status.snapshot, app.downloadsNoticeAnswered, app.gamePlayed, bytes, imported)) {
                 val answer = { AppSettingsStore.save(this@MainActivity, AppSettingsStore.load(this@MainActivity).copy(downloadsNoticeAnswered = true)) }
                 DownloadsNotice(
-                    InstallerDownloads.notice(bytes, imported, remember { SourceImport.pickedFolder(this@MainActivity) }),
+                    InstallerDownloads.notice(
+                        bytes, imported, remember { SourceImport.pickedFolder(this@MainActivity) },
+                        remember { SourceImport.pickedFrom(this@MainActivity) },
+                    ),
                     onRemove = {
                         answer()
                         SessionService.removeInstallerDownloads { Log.i(TAG, "installer downloads from the notice: $it") }
@@ -783,8 +807,16 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        // The notice of a new app version opens About, over whatever shows.
+        if (intent.getBooleanExtra(AppUpdater.EXTRA_ABOUT, false)) aboutOpen.value = true
         readScreenExtras(intent)
+        appUpdate.newIntent(intent)
         if (sessionStarted) startSession(intent)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putBoolean(STATE_ABOUT, aboutOpen.value)
     }
 
     override fun onStart() {
@@ -801,6 +833,7 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         notificationsOff.value = !getSystemService(NotificationManager::class.java).areNotificationsEnabled()
         batteryRestricted.value = !getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)
+        appUpdate.resumed()
         // Again on each return during setup (the player may have allowed the app's network meanwhile),
         // and for a debug preview, whatever the installation; Check runs the first one itself.
         val snapshot = SessionService.status.value.snapshot
@@ -899,6 +932,8 @@ class MainActivity : ComponentActivity() {
         const val TAG = "pd2-session"
         /** How long Share logs and Save logs wait for the engine's report before they go on without one. */
         const val REPORT_WAIT_MS = 20_000L
+        /** Whether About was open, kept when Android ends the app under it. */
+        const val STATE_ABOUT = "about_open"
     }
 }
 
