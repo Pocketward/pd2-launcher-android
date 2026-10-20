@@ -428,6 +428,8 @@ private class GameSurface(
 
     private val frame = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
+            // Choreographer may run a callback it took before the view left or hid its window: no new loop.
+            if (windowVisibility != VISIBLE) return
             if (lastFrameNanos != 0L) pad?.tick((frameTimeNanos - lastFrameNanos) / 1_000_000)
             lastFrameNanos = frameTimeNanos
             Choreographer.getInstance().postFrameCallback(this)
@@ -477,8 +479,18 @@ private class GameSurface(
         window.callback = wrapper
         callback = base
         if (sends.isShutdown) sends = Executors.newSingleThreadExecutor { Thread(it, "pd2-input") }
-        lastFrameNanos = 0L
-        Choreographer.getInstance().postFrameCallback(frame)
+    }
+
+    // The controller's clock ([frame]) runs only while the window shows: in the background it
+    // would wake the main thread on every display frame for nothing (the controller is let go
+    // when the window loses focus).
+    override fun onWindowVisibilityChanged(visibility: Int) {
+        super.onWindowVisibilityChanged(visibility)
+        Choreographer.getInstance().removeFrameCallback(frame)
+        if (visibility == VISIBLE) {
+            lastFrameNanos = 0L
+            Choreographer.getInstance().postFrameCallback(frame)
+        }
     }
 
     override fun onDetachedFromWindow() {
