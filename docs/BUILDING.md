@@ -4,7 +4,7 @@ Everything is built in pinned containers; only the container engine and a few fi
 
 | Part | Script | Output |
 | --- | --- | --- |
-| The PD2 Launcher engine (ARM64) | `engine/build.sh` | `pd2-launcher-<version>-aarch64` |
+| The PD2 Launcher engine (ARM64) | `engine/build.sh` | `pd2-launcher-<version>-<commit>-aarch64` |
 | The App userland | `userland/build.sh` | `app/src/main/assets/userland/` |
 | The runtime (Wine, Box64's WowBox64, the prefix template, .NET) | `runtime/build.sh` | `app/src/main/assets/runtime/` |
 | The app | `build.sh` | `build/outputs/app-debug.apk` or `app-release.apk` |
@@ -13,27 +13,27 @@ None of these outputs is in the repository. A release build is the app `com.pd2l
 
 ## What you need
 
-- An x86-64 Linux computer with Podman (or Docker), Git, curl, tar, zstd, `sha256sum`/`sha512sum`, `xxd`, `xz` and `readelf` (binutils).
-- A static `qemu-aarch64` binfmt_misc handler with the `F` flag (Debian/Ubuntu: `qemu-user-static`; Arch: `qemu-user-static` and `qemu-user-static-binfmt`). The userland build runs ARM64 tools under it, the runtime build makes the prefix template with the ARM64 Wine under it, and the engine build runs the built engine briefly to audit it.
+- An x86-64 Linux computer with Podman (or Docker), Git, curl, tar, zstd, `sha256sum`/`sha512sum`, `xxd`, `xz`, `readelf` (binutils) and `flock` (util-linux).
+- A static `qemu-aarch64` binfmt_misc handler with the `F` flag (Debian/Ubuntu: `qemu-user-static`; Arch: `qemu-user-static` and `qemu-user-static-binfmt`). The userland build runs ARM64 tools under it, the runtime build makes the prefix template with the ARM64 Wine under it, and the engine build runs the built engine once to check its identity.
 - About 30 GB of free disk space for the build images, caches and outputs, and a good connection for the first build.
 
 Every download is checked against a SHA-256 (or SHA-512) in the scripts, the lock files or the container definitions; a mismatch stops the build. The Android SDK packages `sdkmanager` installs in the app's build image (platforms, build-tools, CMake) are checked by `sdkmanager` against the SHA-1 in Google's repository index.
 
 ## 1. The engine
 
-The engine is the desktop PD2 Launcher's standalone ARM64 executable, from a release of [Pocketward/pd2-launcher](https://github.com/Pocketward/pd2-launcher). `engine.lock` pins the release by its URL, its tag and the commit the tag must name, and names its ARM64 executable (`asset`) with its SHA-256.
+The engine is the desktop PD2 Launcher ([Pocketward/pd2-launcher](https://github.com/Pocketward/pd2-launcher)) built for ARM64 without its window: `cargo build --release --no-default-features` leaves out its `gui` Cargo feature, so it links no GPUI and no X11 or Wayland library, and runs only as the app's engine. `engine.lock` pins the sources by the repository's URL, the release's tag, the commit the tag must name, and `source_sha256`: the SHA-256 of the lines that `sha256sum` prints for every file of the commit, sorted by path.
 
 ```sh
-engine/build.sh                        # download into ~/.cache/pd2-android/engine-out
+engine/build.sh                        # build into ~/.cache/pd2-android/engine-out
 PD2_RELEASE_BUILD=1 engine/build.sh    # for a release APK: into ~/.cache/pd2-android/engine-release-out
-engine/build.sh --build                # build the pinned release from its sources instead
 ```
 
-The download is refused unless the executable's SHA-256 is the pinned one and its build evidence names the pinned commit, ARM64 and a release build. `--build` fetches the pinned tag into `~/.cache/pd2-android/engine/source`, refuses it unless the tag names the pinned commit, and builds it with that release's own container build (Ubuntu 22.04, the release's Rust toolchain, cross-compiled for ARM64; its caches go to `~/.cache/pd2launcher-container-ubuntu-22.04`, `PD2_CONTAINER_CACHE`). `build.sh release` takes only the executable `engine.lock` names, checked again, and never reads `PD2_ENGINE_BINARY`, so an engine built with `--build` can go into a debug APK but not into a release.
+It fetches the pinned tag into `~/.cache/pd2-android/engine/source` and refuses the sources unless the tag names the pinned commit, their SHA-256 is `source_sha256` and they have the `gui` feature. It builds a copy of the commit's files in the image of `engine/Containerfile`: Debian 13 (the snapshot and base image of `userland/config.sh`) with its cross compiler for ARM64 and glibc 2.41, the userland's C library, and rustup, which installs the Rust toolchain that the sources name into `~/.cache/pd2-android/engine` (with Cargo's downloads and build folder). The engine may link only the libraries in `ENGINE_NEEDED` (`userland/config.sh`); it gets the standalone ARM64 identity, runs once under qemu-user to attest it, and gets its build evidence beside it (`<engine>.build-evidence.txt`: the commit, the sources' SHA-256, the features, the libraries it links, the glibc it needs, the toolchain and the image). `PD2_RELEASE_BUILD=1` adds the `release-build` feature (no dev CD keys, Wine's quiet logs). `build.sh release` takes only an engine whose build evidence names the pinned commit and `source_sha256` and says `release_build=1`, and never reads `PD2_ENGINE_BINARY`.
 
-- `engine/build.sh --pin v0.2.0` moves the pin to another release: it reads the commit the tag names, downloads the release's ARM64 executable, checks it against the release's `.sha256` file and writes tag, commit and SHA-256 into `engine.lock`.
+- `engine/build.sh --pin v0.2.0` moves the pin to another release: it reads the commit the tag names, fetches the sources and writes tag, commit and `source_sha256` into `engine.lock`. `--pin <commit>` pins a commit without a tag, and a URL after the tag or commit pins another repository.
 - `PD2_ENGINE_SOURCE=<folder> engine/build.sh` builds from a local checkout of the engine instead (its committed `HEAD`; uncommitted changes are refused). Set the same variable for step 3, which takes the engine's XInput bridge from its sources.
-- `engine/build.sh --source` prints the folder of the engine's sources the other steps use.
+- `engine/build.sh --source` prints the folder of the engine's sources the other steps use; `engine/build.sh --image` prints the name of the build image.
+- A pin of the earlier form, which names a release's ARM64 executable (`asset`) with its SHA-256, is refused: that executable has the window, whose libraries the userland does not have.
 
 ## 2. The App userland
 
@@ -89,8 +89,9 @@ build.sh check      # compile the debug APK without engine, userland or runtime
 
 `build.sh` builds the image `localhost/pd2-android-build:<hash>` from `containers/Containerfile` (Debian 13, Temurin JDK 21, the Android SDK command-line tools, platforms 28 and 36, build-tools 36.0.0, NDK r27c, CMake 3.22.1) and runs Gradle inside it with the repository mounted. Gradle is pinned by the wrapper (`gradle/wrapper/gradle-wrapper.properties`, with its SHA-256), the plugins in `build.gradle.kts` and the libraries in `app/build.gradle.kts`, and checks every plugin, library and POM it downloads against its SHA-256 in `gradle/verification-metadata.xml`. After changing a plugin or library, `build.sh verification-metadata` writes that file again; review its diff before committing it.
 
-- It copies the newest `pd2-launcher-*-aarch64` from `~/.cache/pd2-android/engine-out` into the APK as `lib/arm64-v8a/libpd2launcher.so`; `PD2_ENGINE_BINARY` names another one. A release copies the pinned executable from `engine-release-out` (step 1) and nothing else. Without an engine the APK cannot start a session.
+- It copies the newest `pd2-launcher-*-aarch64` from `~/.cache/pd2-android/engine-out` into the APK as `lib/arm64-v8a/libpd2launcher.so`; `PD2_ENGINE_BINARY` names another one. A release copies the newest release build of the pinned sources from `engine-release-out` (step 1) and nothing else. The engine may link only the libraries in `ENGINE_NEEDED` (`userland/config.sh`). Without an engine the APK cannot start a session.
 - The userland and runtime archives come from the assets folders that steps 2 and 3 filled.
+- The release build goes through R8, which removes the code that the app does not use: Android keeps the app's code in memory while the game runs. `app/proguard-rules.pro` keeps the code that native code finds by name, and the names of all classes and methods, so stack traces show real names. R8 can still move a method to another class, writes line numbers in its own form and names the source file `r8-map-id-<id>`; `app/build/outputs/mapping/release/mapping.txt` of the build whose `# pg_map_id` is that id gives the exact classes and lines back (`retrace`). Keep that file with each release: another build of the same commit can give another mapping. The release workflow puts it on the release beside the APK, as `pd2-launcher-android-<version>-mapping.txt`. `PD2_DEV_R8=1 build.sh` (the Gradle property `pd2.devR8=true`) also sends the debug build through R8, for device tests of the shrunk code. For a debug build, R8 only removes code and does not optimize it, so a release build must also be tested.
 - Caches live in `~/.cache/pd2-android/` (`PD2_ANDROID_CACHE`): Gradle's and Maven's, and `debug.keystore`, the debug signing key, so debug builds install over each other.
 
 Install a build with `adb install -r build/outputs/app-debug.apk`; the development build starts with `adb shell am start -n com.pd2launcher.app.dev3/com.pd2launcher.app.MainActivity` (`com.pd2launcher.app.dev` for a build with `PD2_DEV_AS_FEX_DEV=1`).
@@ -140,4 +141,4 @@ chmod 600 release.jks release-signing.properties
 ## Continuous integration
 
 - `.github/workflows/ci.yml`, on every push to `main` and every pull request: `build.sh check`.
-- `.github/workflows/release.yml`, on a push to `main` whose commit carries a tag `vX.Y.Z` or `vX.Y.Z-betaN` (or `workflow_dispatch` for a given tag): builds the userland, the runtime and the release APK with the engine download, signs it with the repository's release key and publishes the APK and its SHA-256 on the tag's release. Every job builds the one commit the tag names, which must be on `main`; the APK's `versionName` must be the tag's, and a release that already has files is not overwritten. The userland is cached under a key made from its inputs; its parts (the glibc, Xvfb, Mesa and PanVK builds, PanVK's host tools and the downloads) and the build images are cached apart, the runtime's parts in its cache (`PD2_RUNTIME_CACHE`). The release key comes from the secrets of the repository's GitHub Environment `release`, which only the job that builds the APK names: `ANDROID_KEYSTORE_BASE64` (the PKCS12 keystore, base64), `ANDROID_KEYSTORE_PASSWORD` (its password, also the key's) and `ANDROID_KEY_ALIAS`.
+- `.github/workflows/release.yml`, on a push to `main` whose commit carries a tag `vX.Y.Z` or `vX.Y.Z-betaN` (or `workflow_dispatch` for a given tag): builds the engine from its pinned sources (`PD2_RELEASE_BUILD=1 engine/build.sh`) beside the userland and the runtime, then the release APK, signs it with the repository's release key and publishes the APK, its SHA-256 and R8's `mapping.txt` of the same build on the tag's release. Every job builds the one commit the tag names, which must be on `main`; the APK's `versionName` must be the tag's, and a release that already has files is not overwritten. The engine and the userland are cached under keys made from their inputs; the userland's parts (the glibc, Xvfb, Mesa and PanVK builds, PanVK's host tools and the downloads) and the build images are cached apart, the runtime's parts in its cache (`PD2_RUNTIME_CACHE`). The release key comes from the secrets of the repository's GitHub Environment `release`, which only the job that builds the APK names: `ANDROID_KEYSTORE_BASE64` (the PKCS12 keystore, base64), `ANDROID_KEYSTORE_PASSWORD` (its password, also the key's) and `ANDROID_KEY_ALIAS`.

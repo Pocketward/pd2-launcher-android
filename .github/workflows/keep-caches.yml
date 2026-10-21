@@ -68,6 +68,8 @@ jobs:
           newest runtime_parts '^runtime-parts-runtime-[0-9a-f]{64}$'
           newest image '^android-image-[0-9a-f]{16}$'
           newest gradle '^gradle-release-[0-9a-f]{64}$'
+          newest engine '^engine-[0-9a-f]{64}$'
+          newest engine_image '^engine-image-[0-9a-f]{16}$'
 
       - name: Restore the userland
         if: steps.keys.outputs.userland != ''
@@ -135,4 +137,20 @@ jobs:
             ~/.cache/pd2-android/gradle/caches
             ~/.cache/pd2-android/gradle/wrapper
           key: ${{ steps.keys.outputs.gradle }}
+          fail-on-cache-miss: true
+
+      - name: Restore the engine
+        if: steps.keys.outputs.engine != ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pd2-android/engine-release-out
+          key: ${{ steps.keys.outputs.engine }}
+          fail-on-cache-miss: true
+
+      - name: Restore the engine's build image
+        if: steps.keys.outputs.engine_image != ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pd2-android/images/engine
+          key: ${{ steps.keys.outputs.engine_image }}
           fail-on-cache-miss: true

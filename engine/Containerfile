@@ -1,0 +1,42 @@
+# Build image of the PD2 Launcher engine (engine/build.sh, amd64): Debian 13's cross compiler for
+# aarch64 with its glibc 2.41, the C library of the App userland; a compiler for the build scripts
+# that Cargo runs on the build machine; rustup, which installs the Rust toolchain that the engine's
+# sources name. Everything is pinned: the base image by digest, the Debian packages by exact
+# version from a dated snapshot (both in userland/config.sh), rustup-init by SHA-256.
+ARG DEBIAN_IMAGE
+FROM ${DEBIAN_IMAGE}
+
+ARG DEBIAN_SNAPSHOT
+RUN rm -f /etc/apt/sources.list.d/debian.sources \
+    && printf '%s\n' \
+        'Types: deb' \
+        "URIs: http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}" \
+        'Suites: trixie trixie-updates' \
+        'Components: main' \
+        'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+        'Check-Valid-Until: no' \
+        '' \
+        'Types: deb' \
+        "URIs: http://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}" \
+        'Suites: trixie-security' \
+        'Components: main' \
+        'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+        'Check-Valid-Until: no' \
+        > /etc/apt/sources.list.d/snapshot.sources \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        gcc=4:14.2.0-1 \
+        libc6-dev=2.41-12+deb13u4 \
+        gcc-aarch64-linux-gnu=4:14.2.0-1 \
+        libc6-dev-arm64-cross=2.41-11cross1 \
+        binutils-aarch64-linux-gnu=2.44-3 \
+        curl=8.14.1-2+deb13u5 \
+        ca-certificates=20250419 \
+    && rm -rf /var/lib/apt/lists/*
+
+# rustup 1.29.1
+ARG RUSTUP_INIT_URL=https://static.rust-lang.org/rustup/archive/1.29.1/x86_64-unknown-linux-gnu/rustup-init
+ARG RUSTUP_INIT_SHA256=dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71
+RUN curl -fsSL --proto '=https' -o /usr/local/bin/rustup-init "$RUSTUP_INIT_URL" \
+    && echo "$RUSTUP_INIT_SHA256  /usr/local/bin/rustup-init" | sha256sum -c - \
+    && chmod 0755 /usr/local/bin/rustup-init

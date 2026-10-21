@@ -14,17 +14,29 @@ struct frame_layer;
 
 // A child layer of [window] showing [buffer_w]x[buffer_h] RGBX buffers stored turned by
 // [transform] (ANATIVEWINDOW_TRANSFORM_*), scaled to the window's size, asking the display for
-// [frame_rate] frames a second (0: no vote); NULL when there is none.
+// [frame_rate] frames a second (0: no vote); NULL when there is none. One buffer is allocated
+// now, the others when they are first locked.
 struct frame_layer *frame_layer_create(ANativeWindow *window, int buffer_w, int buffer_h, int transform, float frame_rate);
 
-// The next free buffer, locked for writing: its pixels and stride in pixels. False when the
-// compositor still holds every buffer (try again on the next display frame).
+// The next free buffer, locked for writing: its pixels and stride in pixels (1). 0 when the
+// compositor still holds it (try again on the next display frame); -1 when it is not allocated
+// and the allocator refuses it (frame_layer_rest then asks for a frame again; the allocator is
+// asked again 100 ms later at the soonest).
 int frame_layer_lock(struct frame_layer *layer, uint32_t **pixels, int *stride);
 
 // Unlocks the buffer frame_layer_lock gave and shows it.
 void frame_layer_post(struct frame_layer *layer);
 
-// Takes the layer off the screen and frees it once the compositor has answered every frame.
+// Call on every display frame ([frame_ns]): [resting] while the copy shows nothing, the game's
+// own buffers covering the whole view. After 5 s of rest without a break, the buffers that are not
+// on the screen go once the compositor no longer holds them (the one on the screen stays under the
+// game's); frame_layer_lock allocates them again. True from then (or from a refused allocation)
+// until the next frame_layer_post: the copy shows the X screen again at once, whatever changed.
+int frame_layer_rest(struct frame_layer *layer, int64_t frame_ns, int resting);
+
+// Takes the layer off the screen, lets it go, and frees the buffers and the rest once the
+// compositor has answered every frame; when it has not answered within 1 s, its last answer
+// frees them.
 void frame_layer_destroy(struct frame_layer *layer);
 
 #ifdef __cplusplus

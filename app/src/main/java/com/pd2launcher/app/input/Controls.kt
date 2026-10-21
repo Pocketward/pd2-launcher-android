@@ -212,13 +212,13 @@ data class Controls(
 }
 
 /**
- * An input device with [sources] ([InputDevice] source bits) is a controller: a gamepad or a
- * joystick, built in (some handhelds' built-in pads report as an external controller) or
- * attached; Android's [virtual] keyboard never.
+ * An input device with [sources] ([InputDevice] source bits) is a controller: a gamepad
+ * (SOURCE_GAMEPAD), built in (some handhelds' built-in pads report as an external controller) or
+ * attached; Android's [virtual] keyboard never. SOURCE_JOYSTICK alone does not count: keyboards and
+ * mice with consumer or system-control parts report it, and real pads have SOURCE_GAMEPAD.
  */
 fun isController(sources: Int, virtual: Boolean): Boolean =
-    !virtual && (sources and InputDevice.SOURCE_GAMEPAD == InputDevice.SOURCE_GAMEPAD ||
-        sources and InputDevice.SOURCE_JOYSTICK == InputDevice.SOURCE_JOYSTICK)
+    !virtual && sources and InputDevice.SOURCE_GAMEPAD == InputDevice.SOURCE_GAMEPAD
 
 /** [Controls] in the app's `controls` preferences, and as a flow the Game view applies live. */
 object ControlsStore {

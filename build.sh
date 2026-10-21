@@ -51,6 +51,11 @@ esac
 if [[ "${PD2_DEV_AS_FEX_DEV:-}" == 1 ]]; then
     tasks="-Ppd2.asFexDev=true $tasks"
 fi
+# PD2_DEV_R8=1: the development build also goes through R8 (code shrinking), as the release
+# build always does, for device tests of the shrunk code (app/build.gradle.kts, pd2.devR8).
+if [[ "${PD2_DEV_R8:-}" == 1 ]]; then
+    tasks="-Ppd2.devR8=true $tasks"
+fi
 
 # Without unit tests the test task would only compile the debug variant again.
 [[ -d "$here/app/src/test" ]] || tasks="${tasks/ :app:testDebugUnitTest/}"
@@ -95,21 +100,33 @@ fi
 
 mkdir -p "$cache/gradle" "$cache/m2" "$cache/home"
 
-# The Launcher engine (the standalone ARM64 Launcher that engine/build.sh builds from the
-# release engine.lock pins) goes into the APK as a native library. PD2_ENGINE_BINARY names
-# it; the default is the newest build in $cache/engine-out. A release takes only the executable
-# engine.lock pins, by its name (asset) in $cache/engine-release-out and its SHA-256, whatever
-# PD2_ENGINE_BINARY says, and it must be a release build (PD2_RELEASE_BUILD=1: no dev CD keys,
-# Wine's quiet logs) by its build evidence.
+# The Launcher engine (the standalone ARM64 Launcher without its window, which engine/build.sh
+# builds from the sources engine.lock pins) goes into the APK as a native library.
+# PD2_ENGINE_BINARY names it; the default is the newest build in $cache/engine-out. A release
+# takes only the newest engine of $cache/engine-release-out whose build evidence names the pinned
+# commit and sources (source_sha256) and its own SHA-256, whatever PD2_ENGINE_BINARY says, and it
+# must be a release build (PD2_RELEASE_BUILD=1: no dev CD keys, Wine's quiet logs) by its build
+# evidence.
 engine_dir=engine-out
 [[ "$target" == release ]] && engine_dir=engine-release-out
 if [[ "$target" == release ]]; then
-    pin() { sed -n "s/^$1=//p" "$here/engine.lock"; }
-    engine_binary="$cache/$engine_dir/$(pin asset)"
-    if [[ -z "$(pin asset)" || -z "$(pin sha256)" || ! -f "$engine_binary" ||
-        "$(sha256sum < "$engine_binary" | cut -d' ' -f1)" != "$(pin sha256)" ]]; then
-        echo "refusing: a release APK needs the engine engine.lock pins, $(pin asset) with SHA-256 $(pin sha256)," \
-            "in $cache/$engine_dir (PD2_RELEASE_BUILD=1 engine/build.sh); PD2_ENGINE_BINARY is not used for a release" >&2
+    pin() { sed -n "s/^$1=//p" "$here/engine.lock" | head -n 1; }
+    evidence() { sed -n "s/^$1=//p" "$2.build-evidence.txt" 2>/dev/null | head -n 1; }
+    engine_binary=""
+    if [[ -n "$(pin source_sha256)" ]]; then
+        while IFS= read -r candidate; do
+            if [[ "$(evidence git_commit "$candidate")" == "$(pin commit)" &&
+                "$(evidence source_sha256 "$candidate")" == "$(pin source_sha256)" &&
+                "$(evidence sha256 "$candidate")" == "$(sha256sum < "$candidate" | cut -d' ' -f1)" ]]; then
+                engine_binary="$candidate"
+                break
+            fi
+        done < <(ls -t "$cache/$engine_dir"/pd2-launcher-*-aarch64 2>/dev/null || true)
+    fi
+    if [[ -z "$engine_binary" ]]; then
+        echo "refusing: a release APK needs the engine built from the sources engine.lock pins (commit $(pin commit)," \
+            "source_sha256 $(pin source_sha256)) in $cache/$engine_dir (PD2_RELEASE_BUILD=1 engine/build.sh);" \
+            "PD2_ENGINE_BINARY is not used for a release" >&2
         exit 1
     fi
 else

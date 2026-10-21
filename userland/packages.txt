@@ -20,13 +20,10 @@ runtime libmd0=1.1.0-2+b1
 runtime pulseaudio=17.0+dfsg1-2+b1
 runtime pulseaudio-utils=17.0+dfsg1-2+b1
 
-# X11/xcb client libraries (the Launcher's window needs libxkbcommon-x11 and libxcb-xkb)
+# X11/xcb client libraries of Wine's X11 driver and Mesa (the Launcher engine has no window)
 runtime libx11-6=2:1.8.12-1
 runtime libx11-xcb1=2:1.8.12-1
 runtime libxcb1=1.17.0-2+b1
-runtime libxcb-xkb1=1.17.0-2+b1
-runtime libxkbcommon0=1.7.0-2
-runtime libxkbcommon-x11-0=1.7.0-2
 runtime libxcursor1=1:1.2.3-1
 runtime libxi6=2:1.8.2-1
 runtime libxrandr2=2:1.5.4-1+b3

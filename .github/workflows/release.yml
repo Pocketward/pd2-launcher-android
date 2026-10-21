@@ -6,6 +6,11 @@
 # Running on main keeps the build caches where every later release can use them
 # (a tag's own caches serve only that tag).
 #
+#   engine    engine/build.sh: the release build of the engine, without its
+#             window, from the sources that engine.lock pins (their SHA-256
+#             checked), unless the cache holds the build for these inputs; its
+#             build image is cached apart, as an archive the script loads
+#             (PD2_IMAGE_ARCHIVE) instead of building the image again
 #   userland  userland/build.sh with our glibc, unless the cache holds the
 #             archive for these inputs, then runtime/build.sh (its prefix template
 #             is made with the userland's tree), unless the cache holds the
@@ -16,11 +21,11 @@
 #             (Wine, wowbox64.dll, the prefix template, the downloads) and the
 #             build images, which the scripts load from their archives
 #             (PD2_IMAGE_ARCHIVE) instead of building them again
-#   apk       the release executable of the engine that engine.lock pins (its
-#             SHA-256 checked), build.sh release signed with the release key from
-#             the secrets of the environment "release", which only this job
-#             names, then the GitHub release with the APK; the build image is
-#             cached by its Containerfile
+#   apk       the engine job's build, build.sh release signed with the release
+#             key from the secrets of the environment "release", which only this
+#             job names, then the GitHub release with the APK, its .sha256 file and
+#             R8's mapping.txt of the same build; the build image is cached by its
+#             Containerfile
 #
 # Every job builds the one commit the tag named when the tag job looked, which
 # must be on main and which the tag must still name when the release is
@@ -34,17 +39,16 @@
 # needs its message to be the tag. Every job builds that commit, which must
 # still be on main; the tag must still not exist when the APK is published on a
 # draft release of the tag that targets that commit (a draft's files are
-# replaced, and a newer candidate moves its target). The engine that
-# engine.lock pins may be a draft release too: the userland job then fetches its
-# sources by the pinned commit (PD2_ENGINE_UNRELEASED), and the apk job takes
-# its executable and build evidence from this repository's draft release
-# engine-candidate. Publishing the draft after its test makes the tag on that
-# commit; that builds nothing, because the tag's release is published with its
-# files.
+# replaced, and a newer candidate moves its target). The engine's release that
+# engine.lock pins may be a draft too, without its tag: the engine and userland
+# jobs then fetch its sources by the pinned commit (PD2_ENGINE_UNRELEASED).
+# Publishing the draft after its test makes the tag on that commit; that builds
+# nothing, because the tag's release is published with its files.
 #
 # The release notes' lines that the build writes are a block between two
-# markers, which also records (hidden) the commit the APK was built from and its
-# SHA-256; a build writes that block again and keeps any text outside it.
+# markers, which also records (hidden) the commit the APK was built from, its
+# SHA-256 and the SHA-256 of its mapping.txt; a build writes that block again and
+# keeps any text outside it.
 # A candidate whose tree differs from the commit its draft's APK was built from
 # only in README.md and docs/ (an export of the documents alone), or that the
 # draft's APK was built from, builds nothing: the draft job moves the draft to
@@ -99,6 +103,7 @@ jobs:
       candidate: ${{ steps.tag.outputs.candidate }}
       userland: ${{ steps.keys.outputs.userland }}
       runtime: ${{ steps.keys.outputs.runtime }}
+      engine: ${{ steps.keys.outputs.engine }}
     steps:
       # The whole history: the release's commit must be on main.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -210,7 +215,9 @@ jobs:
       # covers every input of its version (userland/pack.sh) and more, leaving out only the
       # build's out/ folders and the READMEs. The runtime's covers its own folder and the
       # userland's (its prefix template is made with the userland), and the engine pin (whose
-      # XInput bridge the template carries).
+      # XInput bridge the template carries). The engine's covers its pin, engine/ (the build
+      # script and the build image's Containerfile) and userland/config.sh (the image's Debian
+      # pins).
       - name: Name the caches
         id: keys
         if: steps.tag.outputs.tag != ''
@@ -219,13 +226,16 @@ jobs:
             tee -a "$GITHUB_OUTPUT"
           echo "runtime=runtime-${{ hashFiles('runtime/**', 'userland/**', '!userland/**/out*/**', '!userland/README.md', '!userland/glibc/README.md', 'engine.lock') }}" |
             tee -a "$GITHUB_OUTPUT"
+          echo "engine=engine-${{ hashFiles('engine.lock', 'engine/**', 'userland/config.sh') }}" |
+            tee -a "$GITHUB_OUTPUT"
 
   # A candidate keeps its draft's APK, which was tested, when the APK was built from this commit
   # or from an earlier commit of main that differs from it only in README.md and docs/: the draft
   # then targets this commit (its files and notes stay) and the build jobs are skipped. The
-  # notes' block that the build wrote records that commit and the APK's SHA-256, and the APK and
-  # its .sha256 file must both match it: files that a build uploaded but did not record (it
-  # stopped before its notes) are never reused. Only main's head is a candidate here: a run of an
+  # notes' block that the build wrote records that commit, the APK's SHA-256 and its mapping's,
+  # and the APK, its .sha256 file and the mapping must all match it: files that a build uploaded
+  # but did not record (it stopped before its notes) are never reused, and a draft without the
+  # mapping of its APK is built again. Only main's head is a candidate here: a run of an
   # older export (a re-run) stops without changing anything, as it would move the draft back. Any
   # other release, a candidate that cannot reuse its draft, and workflow_dispatch with rebuild
   # set are built.
@@ -261,7 +271,7 @@ jobs:
           # Why the draft's APK cannot be reused for this commit, nothing when it can. An error fails
           # (on standard error, which the caller does not capture).
           why_not() {
-            local release body record build sum digest sums
+            local release body record build sum mapping_sum digest sums
             if ! release=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,body,assets 2>"$RUNNER_TEMP/view.err"); then
               [[ $(<"$RUNNER_TEMP/view.err") == "release not found" ]] ||
                 { echo "cannot read the release $TAG: $(<"$RUNNER_TEMP/view.err")" >&2; exit 1; }
@@ -270,16 +280,19 @@ jobs:
             fi
             [[ $(jq -r .isDraft <<<"$release") == true ]] || { echo "the release $TAG is not a draft"; return; }
             body=$(jq -r '.body // ""' <<<"$release") || { echo "cannot read the notes of the release $TAG" >&2; exit 1; }
-            # The build's record, <!-- ci-build commit=<commit> apk-sha256=<SHA-256> -->, read only
-            # between the first begin marker and the end marker after it, the block a build writes.
+            # The build's record, <!-- ci-build commit=<commit> apk-sha256=<SHA-256>
+            # mapping-sha256=<SHA-256> --> on one line, read only between the first begin marker and
+            # the end marker after it, the block a build writes. A record without the mapping is
+            # from a build before the mapping went on the release.
             record=$(tr -d '\r' <<<"$body" |
               awk -v begin="$NOTES_BEGIN" -v end="$NOTES_END" '
                 $0 == begin && !inside { inside = 1; next }
                 inside && $0 == end { printf "%s", block; exit }
                 inside { block = block $0 "\n" }' |
-              sed -n 's/^<!-- ci-build commit=\([0-9a-f]\{40\}\) apk-sha256=\([0-9a-f]\{64\}\) -->$/\1 \2/p' | head -n 1)
-            [[ -n $record ]] || { echo "the draft's notes record no build"; return; }
-            read -r build sum <<<"$record"
+              sed -n 's/^<!-- ci-build commit=\([0-9a-f]\{40\}\) apk-sha256=\([0-9a-f]\{64\}\) mapping-sha256=\([0-9a-f]\{64\}\) -->$/\1 \2 \3/p' |
+              head -n 1)
+            [[ -n $record ]] || { echo "the draft's notes record no build with its mapping"; return; }
+            read -r build sum mapping_sum <<<"$record"
             if [[ $build != "$COMMIT" ]]; then
               if ! git cat-file -e "$build^{commit}" 2>/dev/null || ! git merge-base --is-ancestor "$build" "$COMMIT"; then
                 echo "the draft's APK was built from $build, which is not an earlier commit of main"
@@ -294,8 +307,11 @@ jobs:
               { echo "the draft has no $APK.sha256"; return; }
             [[ $(cut -d' ' -f1 <<<"$sums") == "$sum" ]] ||
               { echo "the draft's $APK.sha256 is not the SHA-256 its notes record"; return; }
+            digest=$(jq -r --arg name "$MAPPING" '.assets[] | select(.name == $name) | .digest // empty' <<<"$release")
+            [[ $digest == "sha256:$mapping_sum" ]] || { echo "the draft's $MAPPING is not the mapping its notes record"; return; }
           }
           APK=pd2-launcher-android-${TAG#v}.apk
+          MAPPING=pd2-launcher-android-${TAG#v}-mapping.txt
           reuse=false
           if [[ $CANDIDATE == true ]]; then
             head=$(git ls-remote origin refs/heads/main | cut -f1)
@@ -322,6 +338,86 @@ jobs:
             fi
           fi
           echo "reuse=$reuse" >> "$GITHUB_OUTPUT"
+
+  # The engine, built from the sources that engine.lock pins, unless the cache holds the build for
+  # these inputs (the tag job names it). The build image is kept as an archive in a cache of its
+  # own, named by the image's tag, which hashes its Containerfile and the Debian pins.
+  engine:
+    needs: [tag, draft]
+    if: needs.tag.outputs.tag != '' && needs.draft.outputs.reuse != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    # A candidate's engine may be a draft release, without its tag yet: engine/build.sh then
+    # fetches the pinned commit by its SHA.
+    env:
+      PD2_ENGINE_UNRELEASED: ${{ needs.tag.outputs.candidate == 'true' && '1' || '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.tag.outputs.commit }}
+          persist-credentials: false
+
+      - name: Restore the engine
+        id: engine
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pd2-android/engine-release-out
+          key: ${{ needs.tag.outputs.engine }}
+
+      - name: Name the engine's build image
+        id: image
+        if: steps.engine.outputs.cache-hit != 'true'
+        run: |
+          image=$(engine/build.sh --image)
+          echo "key=engine-image-${image##*:}" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Restore the engine's build image
+        id: image-cache
+        if: steps.engine.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pd2-android/images/engine
+          key: ${{ steps.image.outputs.key }}
+
+      # The built engine attests its identity once, under qemu-user.
+      - name: Install a static qemu-aarch64 binfmt_misc handler
+        if: steps.engine.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --yes --no-install-recommends qemu-user-static
+          grep -q '^flags: .*F' /proc/sys/fs/binfmt_misc/qemu-aarch64
+
+      - name: Build the engine
+        if: steps.engine.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.ENGINE_REPO_TOKEN }}
+          GIT_CONFIG_COUNT: 1
+          GIT_CONFIG_KEY_0: credential.https://github.com.helper
+          GIT_CONFIG_VALUE_0: '!gh auth git-credential'
+          PD2_RELEASE_BUILD: 1
+        run: |
+          url=$(sed -n 's/^url=//p' engine.lock)
+          git ls-remote "$url" HEAD >/dev/null || {
+            echo "::error::cannot read $url; while it is private, the secret ENGINE_REPO_TOKEN must give read access to it"
+            exit 1
+          }
+          PD2_IMAGE_ARCHIVE=~/.cache/pd2-android/images/engine engine/build.sh
+
+      # Only an image this run built; also when a later step failed.
+      - name: Save the engine's build image
+        if: ${{ !cancelled() && steps.engine.outputs.cache-hit != 'true' && steps.image-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pd2-android/images/engine
+          key: ${{ steps.image.outputs.key }}
+
+      - name: Save the engine
+        if: steps.engine.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pd2-android/engine-release-out
+          key: ${{ needs.tag.outputs.engine }}
 
   userland:
     needs: [tag, draft]
@@ -522,7 +618,7 @@ jobs:
           key: ${{ needs.tag.outputs.userland }}
 
   apk:
-    needs: [tag, userland]
+    needs: [tag, engine, userland]
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     # The release key's secrets are the environment's, so no other job can read them.
@@ -593,45 +689,13 @@ jobs:
             gradle-release-
             gradle-
 
-      # A candidate's engine may be a draft release, which only the engine repository's writers
-      # can download: this repository's draft release engine-candidate then holds a copy of its
-      # executable and build evidence. engine/build.sh checks them against engine.lock and
-      # downloads nothing; without the copy it downloads the pinned release.
-      - name: Take the engine from the draft engine-candidate
-        if: needs.tag.outputs.candidate == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          asset=$(sed -n 's/^asset=//p' engine.lock)
-          if ! names=$(gh release view engine-candidate --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' 2>"$RUNNER_TEMP/view.err"); then
-            [[ $(<"$RUNNER_TEMP/view.err") == "release not found" ]] ||
-              { echo "::error::cannot read the release engine-candidate: $(<"$RUNNER_TEMP/view.err")"; exit 1; }
-            names=
-          fi
-          if ! grep -qxF "$asset" <<<"$names"; then
-            echo "the draft release engine-candidate holds no $asset: the engine comes from its release"
-            exit 0
-          fi
-          out="$HOME/.cache/pd2-android/engine-release-out"
-          mkdir -p "$out"
-          gh release download engine-candidate --repo "$GITHUB_REPOSITORY" --dir "$out" --clobber \
-            --pattern "$asset" --pattern "$asset.build-evidence.txt"
-          chmod 0755 "$out/$asset"
-
-      - name: Download the engine
-        env:
-          GH_TOKEN: ${{ secrets.ENGINE_REPO_TOKEN }}
-          GIT_CONFIG_COUNT: 1
-          GIT_CONFIG_KEY_0: credential.https://github.com.helper
-          GIT_CONFIG_VALUE_0: '!gh auth git-credential'
-          PD2_RELEASE_BUILD: 1
-        run: |
-          url=$(sed -n 's/^url=//p' engine.lock)
-          git ls-remote "$url" HEAD >/dev/null || {
-            echo "::error::cannot read $url; while it is private, the secret ENGINE_REPO_TOKEN must give read access to it"
-            exit 1
-          }
-          engine/build.sh
+      # The engine job's build; build.sh release checks it against engine.lock again.
+      - name: Restore the engine
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pd2-android/engine-release-out
+          key: ${{ needs.tag.outputs.engine }}
+          fail-on-cache-miss: true
 
       - name: Write the release key
         env:
@@ -694,6 +758,13 @@ jobs:
           mkdir -p release
           cp build/outputs/app-release.apk "release/$apk"
           (cd release && sha256sum "$apk" > "$apk.sha256")
+          # R8's mapping.txt of this build (app/proguard-rules.pro): only the mapping of the APK's own
+          # build gives the real classes and lines of its stack traces back (retrace), so it goes on
+          # the release beside the APK. The app's update check takes only the APK and its .sha256.
+          mapping=pd2-launcher-android-$version_name-mapping.txt
+          grep -q '^# pg_map_id: ' app/build/outputs/mapping/release/mapping.txt ||
+            { echo "::error::the build wrote no R8 mapping (app/build/outputs/mapping/release/mapping.txt)"; exit 1; }
+          cp app/build/outputs/mapping/release/mapping.txt "release/$mapping"
           engine_tag=$(sed -n 's/^tag=//p' engine.lock)
           engine_commit=$(sed -n 's/^commit=//p' engine.lock)
           {
@@ -702,9 +773,10 @@ jobs:
             echo
             echo "- \`$apk\`: package \`$package\`, versionName $version_name, versionCode $version_code; SHA-256 in \`$apk.sha256\`."
             echo "- Signed with the certificate whose SHA-256 is \`$certificate\`."
+            echo "- \`$mapping\`: R8's mapping of this build, which gives the real classes and lines of a stack trace back (retrace)."
             echo "- Engine: PD2 Launcher $engine_tag (\`$engine_commit\`)."
             echo
-            echo "<!-- ci-build commit=$COMMIT apk-sha256=$(cut -d' ' -f1 "release/$apk.sha256") -->"
+            echo "<!-- ci-build commit=$COMMIT apk-sha256=$(cut -d' ' -f1 "release/$apk.sha256") mapping-sha256=$(sha256sum < "release/$mapping" | cut -d' ' -f1) -->"
             echo "$NOTES_END"
           } > release/notes.md
           cat release/notes.md
@@ -788,7 +860,7 @@ jobs:
           }
           prerelease=()
           [[ $TAG == *-* ]] && prerelease=(--prerelease)
-          files=(release/*.apk release/*.apk.sha256)
+          files=(release/*.apk release/*.apk.sha256 release/*-mapping.txt)
           if [[ -n $CANDIDATE ]]; then
             head=$(git ls-remote origin refs/heads/main | cut -f1)
             [[ $head == "$COMMIT" ]] ||

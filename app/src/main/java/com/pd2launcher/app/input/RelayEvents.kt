@@ -32,6 +32,7 @@ sealed class RelayEvent(val type: Int, val a: Int, val b: Int) {
         const val KEY = 4
 
         const val LEFT = 1
+        const val MIDDLE = 2
         const val RIGHT = 3
         const val WHEEL_UP = 4
         const val WHEEL_DOWN = 5

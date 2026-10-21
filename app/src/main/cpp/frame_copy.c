@@ -16,7 +16,9 @@
 // display's frames, else the first one at or after each due time, so the game draws that many
 // frames a second on average. While no copy runs, background_pacer.c paces the game.
 // While the game's own buffers are on the screen (present_server.cpp, Mesa patch 0004) the copy
-// rests: its layer is under theirs and the X screen does not get the game's frames. A windowed
+// rests: its layer is under theirs and the X screen does not get the game's frames. After 5 s of
+// rest its layer's buffers that are not on the screen go (frame_layer_rest), and the first display
+// frame after the rest copies the X screen at once into a buffer allocated again. A windowed
 // game's buffers cover only its window, so the copy then still looks at the X screen every 100 ms
 // for what shows around it.
 #include <android/choreographer.h>
@@ -327,21 +329,26 @@ static void write_frame(const struct copy *c, uint32_t *dst, int dst_stride, int
     for (int y = 0; y < h; y++) swizzle_row(dst + (size_t)y * dst_stride, c->pixels + (size_t)y * c->stride, w);
 }
 
-// The X screen into the layer (or the window) when it [changed], or a frame that waited for a free
-// layer buffer; [begin] is when the copy began. 0 when the window's format cannot take it (the
-// copy stops).
-static int put(struct copy *c, int changed, int64_t begin) {
+// The X screen into the layer (or the window) when it [changed], when the layer asks for it again
+// ([redraw], frame_layer_rest), or a frame that waited for a free layer buffer; [begin] is when the
+// copy began. 0 when the window's format cannot take it (the copy stops).
+static int put(struct copy *c, int changed, int redraw, int64_t begin) {
     ANativeWindow_Buffer buffer;
     uint32_t *pixels;
     int stride;
     if (c->layer != NULL) {
-        // A frame no buffer was free for is copied on the next display frame.
-        if ((changed || c->pending) && frame_layer_lock(c->layer, &pixels, &stride)) {
+        int got = changed || redraw || c->pending ? frame_layer_lock(c->layer, &pixels, &stride) : 0;
+        if (got > 0) {
             write_frame(c, pixels, stride, c->transform ? c->height : c->width, c->transform ? c->width : c->height);
             frame_layer_post(c->layer);
             c->pending = 0;
             counted(c, begin);
+        } else if (got < 0) {
+            // No buffer can be allocated: the game is not held for one; the layer asks for the X
+            // screen again on a later display frame (frame_layer_rest).
+            c->pending = 0;
         } else if (changed) {
+            // A frame no buffer was free for is copied on the next display frame.
             c->pending = 1;
         }
     } else if (changed && ANativeWindow_lock(c->window, &buffer, NULL) == 0) {
@@ -369,6 +376,10 @@ static void on_frame(int64_t frame_time_nanos, void *data) {
     take_display(&c->takes, frame_time_nanos);
     present_server_vsync(frame_time_nanos);
     int direct = present_server_showing();
+    // Over the whole view the copy rests. Once buffers went in a rest (or the allocator refused
+    // one), the layer asks for the X screen again: the first display frame that shows the copy
+    // copies it, changed or not. The reduced frame rate's takes stay as they are.
+    int redraw = c->layer != NULL && frame_layer_rest(c->layer, frame_time_nanos, direct == 1);
     if (direct) {
         // Every present counted as shown (the compositor shows each of the game's buffers, back
         // pressure drops none).
@@ -381,7 +392,7 @@ static void on_frame(int64_t frame_time_nanos, void *data) {
         // Over the whole view nothing is read or copied. Over a windowed game's window only, the
         // X screen around it is checked as for a window drawn over the game, every 100 ms (the
         // game's own window there keeps its last frame on the X screen, hidden by the layer).
-        if (direct == 2 && (c->pending || checked - c->last_hash_ns >= SLOW_CHECK_NS)) {
+        if (direct == 2 && (c->pending || redraw || checked - c->last_hash_ns >= SLOW_CHECK_NS)) {
             uint64_t h = hash_frame(c);
             int changed = h != c->previous_hash;
             c->previous_hash = h;
@@ -390,7 +401,7 @@ static void on_frame(int64_t frame_time_nanos, void *data) {
             int64_t begin = now_ns();
             c->check_ns += begin - checked;
             if (changed) __atomic_fetch_add(&c->changed, 1, __ATOMIC_RELAXED);
-            if (!put(c, changed, begin)) return;
+            if (!put(c, changed, redraw, begin)) return;
         }
         if (checked - c->last_ns >= STATS_INTERVAL_NS) stats(c, checked);
         AChoreographer_postFrameCallback64(AChoreographer_getInstance(), on_frame, c);
@@ -412,7 +423,7 @@ static void on_frame(int64_t frame_time_nanos, void *data) {
     // Without a present since the last display frame the picture changed only if something drew
     // outside Mesa's presentation: while presents come that shows with the next one or the slow
     // check; once they stop, every display frame is hashed again.
-    int hash = c->presents == NULL || c->checks == 0 || since > 0 || c->pending ||
+    int hash = c->presents == NULL || c->checks == 0 || since > 0 || c->pending || redraw ||
                checked - c->last_present_ns > PRESENTS_QUIET_NS || checked - c->last_hash_ns >= SLOW_CHECK_NS;
     int changed = 0;
     if (hash) {
@@ -433,7 +444,7 @@ static void on_frame(int64_t frame_time_nanos, void *data) {
     c->check_ns += begin - checked;
     // Read by nativeChangedFrames on the main thread.
     if (changed) __atomic_fetch_add(&c->changed, 1, __ATOMIC_RELAXED);
-    if (!put(c, changed, begin)) return;
+    if (!put(c, changed, redraw, begin)) return;
     // A changed picture no buffer was free for holds the game until it is copied.
     if (!c->pending) taken(c, presents);
     int64_t now = now_ns();

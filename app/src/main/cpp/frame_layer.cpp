@@ -5,6 +5,7 @@
 #include <android/hardware_buffer.h>
 #include <android/log.h>
 #include <android/surface_control.h>
+#include <poll.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <time.h>
@@ -15,24 +16,46 @@
 
 // One shown, one queued, one being written.
 #define BUFFERS 3
-// A buffer the compositor has not given back for this long is taken back anyway.
+// A buffer the compositor has not given back this long after a frame replaced it is taken back
+// anyway.
 #define STUCK_NS 1000000000LL
+// The copy rests this long without a break before the buffers off the screen go
+// (frame_layer_rest): a short return to the copy keeps them.
+#define REST_RELEASE_NS 5000000000LL
+// A buffer the allocator refused is asked for again after this long at the soonest.
+#define ALLOCATE_AGAIN_NS 100000000LL
 
 struct frame_layer {
+    // Under lock once frame_layer_destroy runs: it lets the layer go before it waits (NULL).
     ASurfaceControl *control;
+    AHardwareBuffer_Desc desc;
+    // NULL: not allocated yet, or released while the copy rested. Each is allocated when it is
+    // first locked.
     AHardwareBuffer *buffers[BUFFERS];
-    int buffer_w, buffer_h, stride; // stride in pixels
+    int stride[BUFFERS]; // in pixels
+    int buffer_w, buffer_h;
     int dest_w, dest_h, transform;
     float frame_rate; // asked of the display with the first frame; 0: no vote
     int next, shown; // shown: the buffer the last transaction set, -1 before the first
     int locked; // the buffer frame_layer_lock gave, -1 none
+    int refusals; // allocations refused in a row (the first is logged)
+    int64_t refused_ns; // the last refusal
+    // frame_layer_rest: whether the copy rests and since when, and whether every buffer that can
+    // go has gone. [redraw]: a buffer went, or the allocator refused one, since the last frame
+    // shown: the copy shows the X screen again, changed or not.
+    int resting;
+    int64_t rest_since;
+    int rest_done;
+    int redraw;
     // Under lock: set by the transaction-complete callbacks on a binder thread.
     pthread_mutex_t lock;
     pthread_cond_t answered;
     int busy[BUFFERS];
-    int64_t busy_since[BUFFERS];
+    int64_t busy_since[BUFFERS]; // when a frame replaced it on the screen (or it was locked)
     int release_fence[BUFFERS];
     int inflight;
+    // frame_layer_destroy stopped waiting for the compositor: the last callback frees the layer.
+    int abandoned;
 };
 
 struct completion {
@@ -57,6 +80,22 @@ static void free_layer(frame_layer *l) {
     free(l);
 }
 
+// Buffer [i] allocated at [now]; false (the first of a run logged) when the allocator refuses it.
+static bool allocate(frame_layer *l, int i, int64_t now) {
+    if (AHardwareBuffer_allocate(&l->desc, &l->buffers[i]) != 0) {
+        l->buffers[i] = nullptr;
+        if (l->refusals++ == 0) LOG("cannot allocate a %dx%d buffer", l->buffer_w, l->buffer_h);
+        l->refused_ns = now;
+        return false;
+    }
+    if (l->refusals > 0) LOG("buffer %d allocated after %d refusals", i, l->refusals);
+    l->refusals = 0;
+    AHardwareBuffer_Desc got = {};
+    AHardwareBuffer_describe(l->buffers[i], &got);
+    l->stride[i] = (int)got.stride;
+    return true;
+}
+
 frame_layer *frame_layer_create(ANativeWindow *window, int buffer_w, int buffer_h, int transform, float frame_rate) {
     int dest_w = ANativeWindow_getWidth(window), dest_h = ANativeWindow_getHeight(window);
     if (dest_w <= 0 || dest_h <= 0) return nullptr;
@@ -73,25 +112,20 @@ frame_layer *frame_layer_create(ANativeWindow *window, int buffer_w, int buffer_
     l->frame_rate = frame_rate;
     l->shown = -1;
     l->locked = -1;
-    AHardwareBuffer_Desc desc = {};
-    desc.width = (uint32_t)buffer_w;
-    desc.height = (uint32_t)buffer_h;
-    desc.layers = 1;
-    desc.format = AHARDWAREBUFFER_FORMAT_R8G8B8X8_UNORM;
+    l->desc.width = (uint32_t)buffer_w;
+    l->desc.height = (uint32_t)buffer_h;
+    l->desc.layers = 1;
+    l->desc.format = AHARDWAREBUFFER_FORMAT_R8G8B8X8_UNORM;
     // Written rarely: some gralloc implementations then map them uncached, so a lock and an
     // unlock do not clean and invalidate the CPU caches over the whole buffer.
-    desc.usage = AHARDWAREBUFFER_USAGE_CPU_WRITE_RARELY | AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE |
-                 AHARDWAREBUFFER_USAGE_COMPOSER_OVERLAY;
-    for (int i = 0; i < BUFFERS; i++) {
-        if (AHardwareBuffer_allocate(&desc, &l->buffers[i]) != 0) {
-            LOG("cannot allocate a %dx%d buffer", buffer_w, buffer_h);
-            free_layer(l);
-            return nullptr;
-        }
+    l->desc.usage = AHARDWAREBUFFER_USAGE_CPU_WRITE_RARELY | AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE |
+                    AHARDWAREBUFFER_USAGE_COMPOSER_OVERLAY;
+    // The first buffer shows that the allocator gives them (else the copy goes through the
+    // window); the others come when the copy first needs them.
+    if (!allocate(l, 0, now_ns())) {
+        free_layer(l);
+        return nullptr;
     }
-    AHardwareBuffer_Desc got = {};
-    AHardwareBuffer_describe(l->buffers[0], &got);
-    l->stride = (int)got.stride;
     l->control = ASurfaceControl_createFromWindow(window, "pd2-game");
     if (l->control == nullptr) {
         free_layer(l);
@@ -119,17 +153,30 @@ int frame_layer_lock(frame_layer *l, uint32_t **pixels, int *stride) {
     pthread_mutex_unlock(&l->lock);
     if (busy) return 0;
     void *bits = nullptr;
+    // A buffer not allocated yet has no fence: it was never on the screen, or went once it was
+    // off the screen and its fence had signalled. One the allocator refuses is asked for again
+    // on a later display frame (redraw), not before ALLOCATE_AGAIN_NS.
+    bool missing = false;
+    if (l->buffers[i] == nullptr) {
+        missing = (l->refusals > 0 && now - l->refused_ns < ALLOCATE_AGAIN_NS) || !allocate(l, i, now);
+        if (missing) l->redraw = 1;
+        else LOG("buffer %d allocated", i);
+    }
     // The lock waits for the release fence (and takes it).
-    if (AHardwareBuffer_lock(l->buffers[i], AHARDWAREBUFFER_USAGE_CPU_WRITE_RARELY, fence, nullptr, &bits) != 0) {
-        LOG("cannot lock buffer %d", i);
+    if (missing || AHardwareBuffer_lock(l->buffers[i], AHARDWAREBUFFER_USAGE_CPU_WRITE_RARELY, fence, nullptr, &bits) != 0) {
+        if (missing) {
+            if (fence >= 0) close(fence);
+        } else {
+            LOG("cannot lock buffer %d", i);
+        }
         pthread_mutex_lock(&l->lock);
         l->busy[i] = 0;
         pthread_mutex_unlock(&l->lock);
-        return 0;
+        return missing ? -1 : 0;
     }
     l->locked = i;
     *pixels = (uint32_t *)bits;
-    *stride = l->stride;
+    *stride = l->stride[i];
     return 1;
 }
 
@@ -137,16 +184,20 @@ int frame_layer_lock(frame_layer *l, uint32_t **pixels, int *stride) {
 static void on_complete(void *context, ASurfaceTransactionStats *stats) {
     auto *done = (completion *)context;
     frame_layer *l = done->layer;
-    // Asked for a layer the stats do not list, the platform aborts the process: only when listed,
-    // as present_server.cpp asks.
-    ASurfaceControl **controls = nullptr;
-    size_t count = 0;
-    ASurfaceTransactionStats_getASurfaceControls(stats, &controls, &count);
-    bool listed = false;
-    for (size_t i = 0; i < count && !listed; i++) listed = controls[i] == l->control;
-    if (controls != nullptr) ASurfaceTransactionStats_releaseASurfaceControls(controls);
-    int fence = listed ? ASurfaceTransactionStats_getPreviousReleaseFenceFd(stats, l->control) : -1;
     pthread_mutex_lock(&l->lock);
+    int fence = -1;
+    // Asked for a layer the stats do not list, the platform aborts the process: only when listed,
+    // as present_server.cpp asks. Once frame_layer_destroy has let the layer go, its fences no
+    // longer count (the lock keeps it from going while it is asked for here).
+    if (l->control != nullptr) {
+        ASurfaceControl **controls = nullptr;
+        size_t count = 0;
+        ASurfaceTransactionStats_getASurfaceControls(stats, &controls, &count);
+        bool listed = false;
+        for (size_t i = 0; i < count && !listed; i++) listed = controls[i] == l->control;
+        if (controls != nullptr) ASurfaceTransactionStats_releaseASurfaceControls(controls);
+        if (listed) fence = ASurfaceTransactionStats_getPreviousReleaseFenceFd(stats, l->control);
+    }
     if (done->replaced >= 0) {
         if (l->release_fence[done->replaced] >= 0) close(l->release_fence[done->replaced]);
         l->release_fence[done->replaced] = fence;
@@ -155,9 +206,15 @@ static void on_complete(void *context, ASurfaceTransactionStats *stats) {
         close(fence);
     }
     l->inflight--;
+    // The last answer to a layer frame_layer_destroy left: no thread uses it any more.
+    bool orphan = l->abandoned && l->inflight == 0;
     pthread_cond_broadcast(&l->answered);
     pthread_mutex_unlock(&l->lock);
     free(done);
+    if (orphan) {
+        free_layer(l);
+        LOG("the compositor answered every frame late; the layer is freed");
+    }
 }
 
 void frame_layer_post(frame_layer *l) {
@@ -196,11 +253,63 @@ void frame_layer_post(frame_layer *l) {
     ASurfaceTransaction_setOnComplete(t, done, on_complete);
     pthread_mutex_lock(&l->lock);
     l->inflight++;
+    // The buffer it replaces is given back from now on: one that stayed on the screen through a
+    // rest is not stuck.
+    if (l->shown >= 0) l->busy_since[l->shown] = now_ns();
     pthread_mutex_unlock(&l->lock);
     ASurfaceTransaction_apply(t);
     ASurfaceTransaction_delete(t);
     l->shown = i;
     l->next = (i + 1) % BUFFERS;
+    l->redraw = 0;
+}
+
+// Whether the release fence [fd] has signalled (-1: there is none).
+static bool signalled(int fd) {
+    if (fd < 0) return true;
+    pollfd p = {fd, POLLIN, 0};
+    return poll(&p, 1, 0) > 0;
+}
+
+// The buffers that are neither on the screen, nor queued or read by the compositor (their
+// release fences signalled), go. True when none but the one on the screen is left.
+static bool release_unused(frame_layer *l) {
+    AHardwareBuffer *gone[BUFFERS];
+    int count = 0, kept = 0;
+    bool left = false;
+    pthread_mutex_lock(&l->lock);
+    for (int i = 0; i < BUFFERS; i++) {
+        if (l->buffers[i] == nullptr) continue;
+        if (i == l->shown || i == l->locked || l->busy[i] || !signalled(l->release_fence[i])) {
+            kept++;
+            left = left || i != l->shown;
+            continue;
+        }
+        if (l->release_fence[i] >= 0) close(l->release_fence[i]);
+        l->release_fence[i] = -1;
+        gone[count++] = l->buffers[i];
+        l->buffers[i] = nullptr;
+    }
+    pthread_mutex_unlock(&l->lock);
+    for (int i = 0; i < count; i++) AHardwareBuffer_release(gone[i]);
+    if (count > 0) {
+        l->redraw = 1;
+        LOG("the copy rests: %d buffers released, %d kept", count, kept);
+    }
+    return !left;
+}
+
+int frame_layer_rest(frame_layer *l, int64_t frame_ns, int resting) {
+    if (!resting) {
+        l->resting = 0;
+        l->rest_done = 0;
+    } else if (!l->resting) {
+        l->resting = 1;
+        l->rest_since = frame_ns;
+    } else if (!l->rest_done && frame_ns - l->rest_since >= REST_RELEASE_NS) {
+        l->rest_done = release_unused(l);
+    }
+    return l->redraw;
 }
 
 void frame_layer_destroy(frame_layer *l) {
@@ -215,6 +324,13 @@ void frame_layer_destroy(frame_layer *l) {
         ASurfaceTransaction_apply(t);
         ASurfaceTransaction_delete(t);
     }
+    // The layer goes before the wait, as present_server.cpp's: a frame still queued for it when it
+    // left the screen is answered only once it has gone.
+    pthread_mutex_lock(&l->lock);
+    ASurfaceControl *control = l->control;
+    l->control = nullptr;
+    pthread_mutex_unlock(&l->lock);
+    ASurfaceControl_release(control);
     timespec deadline;
     clock_gettime(CLOCK_REALTIME, &deadline);
     deadline.tv_sec += 1;
@@ -222,11 +338,13 @@ void frame_layer_destroy(frame_layer *l) {
     while (l->inflight > 0 && pthread_cond_timedwait(&l->answered, &l->lock, &deadline) == 0) {
     }
     int answered = l->inflight == 0;
+    // A late callback would write into it: the last one frees it (on_complete). Nothing here
+    // touches the layer after the unlock.
+    if (!answered) l->abandoned = 1;
     pthread_mutex_unlock(&l->lock);
-    // A late callback would write into it: then it stays allocated.
     if (answered) {
         free_layer(l);
     } else {
-        LOG("the compositor did not answer every frame; the layer's state stays allocated");
+        LOG("the compositor did not answer every frame; the last answer frees the layer");
     }
 }

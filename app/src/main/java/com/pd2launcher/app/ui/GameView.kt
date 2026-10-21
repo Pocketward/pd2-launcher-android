@@ -12,6 +12,7 @@ import android.view.Choreographer
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.PointerIcon
 import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
@@ -72,6 +73,7 @@ import com.pd2launcher.app.input.GamePicture
 import com.pd2launcher.app.input.PictureDebounce
 import com.pd2launcher.app.input.isController
 import com.pd2launcher.app.input.LayoutStore
+import com.pd2launcher.app.input.Mouse
 import com.pd2launcher.app.input.PadAxes
 import com.pd2launcher.app.input.PadInput
 import com.pd2launcher.app.input.RelayEvent
@@ -121,8 +123,8 @@ enum class GameLayer {
  * letterboxed to the X screen's shape, or the game's own buffers on a layer above it while it
  * presents them there ([PresentServer]), the display asked for its full rate or the player's
  * reduced frame rate, which also holds the game to it ([AppSettings.frameRate]), and the player's
- * input into the game: touch as the X screen's
- * mouse, keyboard keys and Android's keyboard as X keys, the controller as the game's XInput pad
+ * input into the game: touch and a mouse as the X screen's mouse (touch through gestures, a mouse 1:1),
+ * keyboard keys and Android's keyboard as X keys, the controller as the game's XInput pad
  * (the chord pressed briefly: mouse mode), and the on-screen controls as game keys. The menu rail
  * opens from the glyph, the chord held, or Back; the game keeps running and showing beside it, the on-screen controls stay shown and playable
  * where the rail does not cover them ([GameLayer.padShown]), the controller lets go of the game
@@ -273,7 +275,7 @@ fun GameView(
 }
 
 /**
- * A controller (a gamepad or joystick device, built in or attached) is there, followed live: a
+ * A controller (a gamepad device, built in or attached; [isController]) is there, followed live: a
  * pad that connects or wakes while the game shows counts at once. [onRemoved] runs when a
  * device goes, so what it held is let go.
  */
@@ -336,7 +338,7 @@ private const val PICTURE_MS = 250L
  * The X screen and the input into it. While attached it sees every key and controller motion of
  * the window first (it wraps the window's callback, so the activity's own mapping of A and B
  * never applies here), and it is the editor Android's keyboard types into. While [suspended]
- * (an overlay layer shows, [GameLayer.suspends]) it lets go of the controller and touch and
+ * (an overlay layer shows, [GameLayer.suspends]) it lets go of the controller, touch and the mouse and
  * passes keys on, so the controller drives the native screens; the on-screen controls still
  * reach the game ([virtual], [send]). [frameRate]: the player's reduced frame rate, which the
  * display is asked for and the game held to where the screen is faster; null: the screen's full
@@ -358,6 +360,9 @@ private class GameSurface(
     private var pad: PadInput? = null
     private var touch: TouchGestures? = null
     private var touchId = -1
+    private val mouse = Mouse()
+    /** A mouse is over the game, not over an overlay ([onResolvePointerIcon]). */
+    private var mouseOver = false
     /** The keyboard keys sent to X as pressed and not yet released (keysyms). */
     private val keysDown = HashSet<Int>()
     private var lastFrameNanos = 0L
@@ -401,6 +406,7 @@ private class GameSurface(
                 releaseKeys()
                 handler.removeCallbacks(longPress)
                 touch?.cancel()
+                send(mouse.release())
                 // Android's keyboard types into the game, so it closes too, and the overlay gets the
                 // whole height.
                 if (keyboard) showKeyboard(false)
@@ -425,6 +431,7 @@ private class GameSurface(
         if (!hasWindowFocus) {
             pad?.releaseAll()
             releaseKeys()
+            send(mouse.release())
         }
     }
 
@@ -509,6 +516,7 @@ private class GameSurface(
         callback = null
         handler.removeCallbacksAndMessages(null)
         touch?.cancel()
+        send(mouse.release())
         pad?.releaseAll()
         releaseKeys()
         // The on-screen custom buttons' keys go through [sends] too: released while it still takes them.
@@ -592,8 +600,11 @@ private class GameSurface(
         return true
     }
 
-    /** Touch, mapped from this view (the letterboxed X screen) to X screen pixels. */
+    /** Touch, mapped from this view (the letterboxed X screen) to X screen pixels; a mouse's events go to [onMouse]. */
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (event.isFromSource(InputDevice.SOURCE_MOUSE)) return onMouse(event)
+        // Compose's own cancel (another device's press, a device gone) has no source: the mouse lets go too.
+        if (event.actionMasked == MotionEvent.ACTION_CANCEL) send(mouse.release())
         if (suspended) return true
         // A finger may wander this far, in X screen pixels, and still tap.
         val slop = ViewConfiguration.get(context).scaledTouchSlop.toFloat() * screen.width / width.coerceAtLeast(1)
@@ -634,6 +645,42 @@ private class GameSurface(
         }
         return true
     }
+
+    /** A mouse's moves with no button held and its wheel. */
+    override fun onGenericMotionEvent(event: MotionEvent): Boolean = when (event.actionMasked) {
+        MotionEvent.ACTION_HOVER_ENTER, MotionEvent.ACTION_HOVER_MOVE, MotionEvent.ACTION_HOVER_EXIT, MotionEvent.ACTION_SCROLL ->
+            event.isFromSource(InputDevice.SOURCE_MOUSE) && onMouse(event)
+        else -> super.onGenericMotionEvent(event)
+    }
+
+    /**
+     * A mouse, 1:1 into X ([Mouse]) and never through the touch gestures: a click is a click at
+     * once. Its buttons come with the moves (Android's button state), so `ACTION_BUTTON_PRESS`,
+     * which Android sends here even under an overlay, is not used.
+     */
+    private fun onMouse(event: MotionEvent): Boolean {
+        mouseOver = event.actionMasked != MotionEvent.ACTION_HOVER_EXIT
+        if (suspended) return true
+        send(
+            when (event.actionMasked) {
+                MotionEvent.ACTION_CANCEL -> mouse.release()
+                MotionEvent.ACTION_HOVER_EXIT -> emptyList()
+                // The wheel only from a scroll: Compose copies a scroll's axes into a hover it makes up.
+                MotionEvent.ACTION_SCROLL ->
+                    mouse.events(screenX(event.x), screenY(event.y), event.buttonState, event.getAxisValue(MotionEvent.AXIS_VSCROLL))
+                else -> mouse.events(screenX(event.x), screenY(event.y), event.buttonState)
+            },
+        )
+        return true
+    }
+
+    // Over the game only the game's own cursor shows; Android's arrow shows over an overlay.
+    override fun onResolvePointerIcon(event: MotionEvent, pointerIndex: Int): PointerIcon? =
+        if (!suspended && mouseOver && event.isFromSource(InputDevice.SOURCE_MOUSE)) {
+            PointerIcon.getSystemIcon(context, PointerIcon.TYPE_NULL)
+        } else {
+            super.onResolvePointerIcon(event, pointerIndex)
+        }
 
     // Only while the player asked for Android's keyboard; a tap on the game never opens it.
     override fun onCheckIsTextEditor(): Boolean = keyboard

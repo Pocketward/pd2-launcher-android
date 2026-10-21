@@ -39,7 +39,7 @@ android {
         // targetSdk, which the plugin warns about but builds.
         minSdk = 33
         targetSdk = 28
-        versionName = "0.3.2"
+        versionName = "0.3.3"
         versionCode = versionCodeOf(versionName!!)
         // App updates (AppUpdater): the public releases the app looks at (the newest 10; it takes
         // the highest version that is not a pre-release), where their files must be, the name its
@@ -84,16 +84,29 @@ android {
     // display :1, to install over that build: an update in place from it (docs/BUILDING.md).
     val asFexDev = providers.gradleProperty("pd2.asFexDev").map { it.toBoolean() }.getOrElse(false)
     val devName = if (asFexDev) "PD2 Launcher Dev" else "PD2 Launcher Dev 0.3"
+    // R8 (code shrinking) for the release build: Android keeps the app's dex code in memory, and
+    // R8 removes the code that the app does not call. proguard-rules.pro keeps the names of
+    // classes and methods (readable stack traces in shared logs) and the code that native code
+    // finds by name. With the Gradle property pd2.devR8=true (build.sh: PD2_DEV_R8=1) the debug
+    // build also goes through R8, for device tests of the shrunk code; for a debuggable build R8
+    // only removes code and does not optimize it.
+    val devR8 = providers.gradleProperty("pd2.devR8").map { it.toBoolean() }.getOrElse(false)
     buildTypes {
         getByName("debug") {
             applicationIdSuffix = if (asFexDev) ".dev" else ".dev3"
             buildConfigField("String", "X_DISPLAY", if (asFexDev) "\":1\"" else "\":2\"")
             resValue("string", "app_name", devName)
             resValue("string", "files_root_title", devName)
+            if (devR8) {
+                isMinifyEnabled = true
+                proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            }
         }
         getByName("release") {
             buildConfigField("String", "X_DISPLAY", "\":0\"")
             signingConfig = signingConfigs.findByName("release")
+            isMinifyEnabled = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
 
@@ -144,33 +157,46 @@ tasks.matching { it.name == "preReleaseBuild" }.configureEach {
     }
 }
 
-// The Game view's rules for a reduced frame rate (src/main/cpp/frame_pacing.c), checked by a host
-// program before the JVM tests: the NDK's clang builds them with src/test/cpp/frame_pacing_test.c
-// as a static x86_64 program, which the build image (linux/amd64) runs. Skipped where the test, the
-// NDK's Linux x86_64 clang or a Linux x86_64 host to run the program is not.
-val nativeHostTestSource = file("src/test/cpp/frame_pacing_test.c")
-val nativeHostTestProgram = layout.buildDirectory.file("native-host-tests/frame_pacing_test").get().asFile
+// The Game view's native rules, checked by host programs before the JVM tests: its reduced frame
+// rate (src/main/cpp/frame_pacing.c, by src/test/cpp/frame_pacing_test.c), and its copy layer's
+// buffers (src/main/cpp/frame_layer.cpp and the copy that uses it, frame_copy.c, against stub
+// Android APIs, by src/test/cpp/frame_layer_test.cpp). The NDK's clang builds each as a static
+// x86_64 program, which the build image (linux/amd64) runs. Skipped where a test, the NDK's Linux
+// x86_64 clang or a Linux x86_64 host to run the program is not.
+val nativeHostTestPrograms = mapOf(
+    "frame_pacing_test" to listOf("src/test/cpp/frame_pacing_test.c", "src/main/cpp/frame_pacing.c"),
+    "frame_layer_test" to listOf(
+        "src/test/cpp/frame_layer_test.cpp", "src/test/cpp/frame_copy_harness.c", "src/main/cpp/frame_layer.cpp",
+        "src/main/cpp/frame_pacing.c",
+    ),
+)
 // Read only when a host-test task is configured: not on every Gradle run.
 val nativeHostClang by lazy { android.ndkDirectory.resolve("toolchains/llvm/prebuilt/linux-x86_64/bin/clang") }
 val nativeHostIsLinuxX64 = System.getProperty("os.name") == "Linux" && System.getProperty("os.arch") in setOf("amd64", "x86_64")
-val buildNativeHostTests by tasks.registering(Exec::class) {
-    onlyIf { nativeHostTestSource.isFile && nativeHostClang.canExecute() && nativeHostIsLinuxX64 }
-    val sources = listOf(nativeHostTestSource, file("src/main/cpp/frame_pacing.c"))
-    inputs.files(sources + file("src/main/cpp/frame_pacing.h"))
-    outputs.file(nativeHostTestProgram)
-    doFirst { nativeHostTestProgram.parentFile.mkdirs() }
-    commandLine(
-        listOf(
-            nativeHostClang.path,
-            "--target=x86_64-linux-android33", "-static", "-O2", "-Wall", "-Wextra", "-Werror",
-            "-I", file("src/main/cpp").path, "-o", nativeHostTestProgram.path,
-        ) + sources.map { it.path },
-    )
-}
-val nativeHostTests by tasks.registering(Exec::class) {
-    dependsOn(buildNativeHostTests)
-    onlyIf { nativeHostTestSource.isFile && nativeHostClang.canExecute() && nativeHostIsLinuxX64 }
-    commandLine(nativeHostTestProgram.path)
+val nativeHostTests by tasks.registering
+for ((name, paths) in nativeHostTestPrograms) {
+    val sources = paths.map { file(it) }
+    val program = layout.buildDirectory.file("native-host-tests/$name").get().asFile
+    val build = tasks.register<Exec>("build_$name") {
+        onlyIf { sources[0].isFile && nativeHostClang.canExecute() && nativeHostIsLinuxX64 }
+        // With every header and C file they read: frame_copy_harness.c includes frame_copy.c.
+        inputs.files(sources + fileTree("src/main/cpp"))
+        outputs.file(program)
+        doFirst { program.parentFile.mkdirs() }
+        commandLine(
+            listOf(
+                nativeHostClang.path,
+                "--target=x86_64-linux-android33", "-static", "-O2", "-Wall", "-Wextra", "-Werror",
+                "-fno-exceptions", "-fno-rtti", "-I", file("src/main/cpp").path, "-o", program.path,
+            ) + sources.map { it.path },
+        )
+    }
+    val run = tasks.register<Exec>("run_$name") {
+        dependsOn(build)
+        onlyIf { sources[0].isFile && nativeHostClang.canExecute() && nativeHostIsLinuxX64 }
+        commandLine(program.path)
+    }
+    nativeHostTests { dependsOn(run) }
 }
 tasks.matching { it.name == "testDebugUnitTest" }.configureEach { dependsOn(nativeHostTests) }
 

@@ -11,11 +11,11 @@ DATA_PLACEHOLDER="/pd2launcher-data-placeholder-$(printf '%0170d' 0)"
 # The prefix every program is built for: the userland's place in the data folder.
 USERLAND=$DATA_PLACEHOLDER/files/userland/current
 
-# The libraries the Launcher engine links (its DT_NEEDED). pack.sh puts them and every library they
-# need into the manifest's critical set, which the app checks again before each engine start; the
-# app's build.sh refuses an engine that needs a library not listed here.
-ENGINE_NEEDED=(ld-linux-aarch64.so.1 libc.so.6 libgcc_s.so.1 libm.so.6 libxcb.so.1 libxkbcommon.so.0
-    libxkbcommon-x11.so.0)
+# The libraries the Launcher engine may link (its DT_NEEDED): glibc's and libgcc_s, as it has no
+# window. pack.sh puts them and every library they need into the manifest's critical set, which the
+# app checks again before each engine start; the app's build.sh refuses an engine that needs a
+# library not listed here.
+ENGINE_NEEDED=(ld-linux-aarch64.so.1 libc.so.6 libgcc_s.so.1 libm.so.6)
 
 # debian:trixie-slim, multi-arch index digest (the same pin as ../containers/Containerfile).
 DEBIAN_IMAGE=docker.io/library/debian@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
