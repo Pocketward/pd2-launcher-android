@@ -10,14 +10,17 @@ The game runs in Wine 11.0 built for ARM64. Wine runs natively on your device's 
 
 https://github.com/user-attachments/assets/f294dbf7-d77c-46bf-a42d-584854420aa3
 
-| | |
-|:---:|:---:|
-| <img src="docs/media/setup.gif" width="420" alt="Check, then Download"> | <img src="docs/media/install.gif" width="420" alt="Install, then Play"> |
-| **Check** looks at your device. **Download** gets Blizzard's installers and Project Diablo 2, and checks each file. | **Install** runs Blizzard's installers with a live view of their windows and checks every file. Then **Play**. |
-| <img src="docs/media/town.gif" width="420" alt="The game in town with the on-screen controls"> | <img src="docs/media/controller.gif" width="420" alt="The game with the handheld's own controls"> |
-| Walk with the on-screen controls, a virtual controller. | Or with the handheld's own controls. |
-| <img src="docs/media/menu.gif" width="420" alt="The in-game menu"> | <img src="docs/media/editor.gif" width="420" alt="The editor of the on-screen controls"> |
-| The in-game menu does not pause the game. **Touch pad** shows the on-screen controls. | **Edit controls** moves, resizes and fades each control, and adds buttons for keys. |
+<p align="center">
+  <img src="docs/media/install-blizzard.gif" width="49%" alt="The install from Blizzard's installers, from the device check to the game">
+  <img src="docs/media/import-pc.gif" width="49%" alt="The import of a game folder that was copied from a PC">
+</p>
+<p align="center"><b>Left:</b> install from Blizzard's installers on the device, with no PC (sped up). <b>Right:</b> import a game folder that you copied from your PC.</p>
+
+<p align="center">
+  <img src="docs/media/walk.gif" width="49%" alt="Walking in town with the on-screen controls">
+  <img src="docs/media/edit-controls.gif" width="49%" alt="Changing the layout of the on-screen controls">
+</p>
+<p align="center"><b>Left:</b> walk with the on-screen controls, a virtual controller. <b>Right:</b> <b>Edit controls</b> moves, resizes and fades each control, and adds buttons for keys.</p>
 
 ## What your device needs
 
