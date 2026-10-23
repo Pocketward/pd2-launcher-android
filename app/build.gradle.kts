@@ -157,18 +157,23 @@ tasks.matching { it.name == "preReleaseBuild" }.configureEach {
     }
 }
 
-// The Game view's native rules, checked by host programs before the JVM tests: its reduced frame
-// rate (src/main/cpp/frame_pacing.c, by src/test/cpp/frame_pacing_test.c), and its copy layer's
-// buffers (src/main/cpp/frame_layer.cpp and the copy that uses it, frame_copy.c, against stub
-// Android APIs, by src/test/cpp/frame_layer_test.cpp). The NDK's clang builds each as a static
-// x86_64 program, which the build image (linux/amd64) runs. Skipped where a test, the NDK's Linux
-// x86_64 clang or a Linux x86_64 host to run the program is not.
+// The Game view's native rules, checked by host programs before the JVM tests: the app's clock and
+// the direct present's newest frame (src/main/cpp/frame_pacing.c, by
+// src/test/cpp/frame_pacing_test.c, with Mesa patch 0008's rule written out), and its copy layer's
+// buffers (src/main/cpp/frame_layer.cpp and the copy that uses it, frame_copy.c) and the direct
+// present's newest frame (src/main/cpp/present_server.cpp), against stub Android APIs, by
+// src/test/cpp/frame_layer_test.cpp; and the game's sound path: the ring between Wine's ALSA plugin
+// and the app (../runtime/pd2-audio/pd2_audio_ring.h) and the resampler
+// (src/main/cpp/game_audio_resampler.c, by src/test/cpp/game_audio_test.c). The NDK's clang builds
+// each as a static x86_64 program, which the build image (linux/amd64) runs. Skipped where a test,
+// the NDK's Linux x86_64 clang or a Linux x86_64 host to run the program is not.
 val nativeHostTestPrograms = mapOf(
     "frame_pacing_test" to listOf("src/test/cpp/frame_pacing_test.c", "src/main/cpp/frame_pacing.c"),
     "frame_layer_test" to listOf(
         "src/test/cpp/frame_layer_test.cpp", "src/test/cpp/frame_copy_harness.c", "src/main/cpp/frame_layer.cpp",
-        "src/main/cpp/frame_pacing.c",
+        "src/main/cpp/frame_pacing.c", "src/test/cpp/present_server_harness.cpp",
     ),
+    "game_audio_test" to listOf("src/test/cpp/game_audio_test.c", "src/main/cpp/game_audio_resampler.c"),
 )
 // Read only when a host-test task is configured: not on every Gradle run.
 val nativeHostClang by lazy { android.ndkDirectory.resolve("toolchains/llvm/prebuilt/linux-x86_64/bin/clang") }
@@ -180,15 +185,16 @@ for ((name, paths) in nativeHostTestPrograms) {
     val build = tasks.register<Exec>("build_$name") {
         onlyIf { sources[0].isFile && nativeHostClang.canExecute() && nativeHostIsLinuxX64 }
         // With every header and C file they read: frame_copy_harness.c includes frame_copy.c.
-        inputs.files(sources + fileTree("src/main/cpp"))
+        inputs.files(sources + fileTree("src/main/cpp") + fileTree("../runtime/pd2-audio"))
         outputs.file(program)
         doFirst { program.parentFile.mkdirs() }
         commandLine(
             listOf(
                 nativeHostClang.path,
                 "--target=x86_64-linux-android33", "-static", "-O2", "-Wall", "-Wextra", "-Werror",
-                "-fno-exceptions", "-fno-rtti", "-I", file("src/main/cpp").path, "-o", program.path,
-            ) + sources.map { it.path },
+                "-fno-exceptions", "-fno-rtti", "-I", file("src/main/cpp").path,
+                "-I", file("../runtime/pd2-audio").path, "-o", program.path,
+            ) + sources.map { it.path } + "-lm",
         )
     }
     val run = tasks.register<Exec>("run_$name") {

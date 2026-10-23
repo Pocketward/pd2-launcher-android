@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# Cross-builds Mesa 26.2.3 for aarch64 (Debian multiarch, in its own image containers/Containerfile.mesa)
+# Cross-builds Mesa (config.sh's MESA_COMMIT of main) for aarch64 (Debian multiarch, in its own image
+# containers/Containerfile.mesa)
 # and installs it into the staging tree: Zink (OpenGL on Vulkan) without LLVM, softpipe for Xvfb's
 # GLX extension (its swrast_dri.so lists the GLX visuals; the game draws through Zink), GLX (dri)
 # and EGL as glvnd vendors, and Turnip (Vulkan driver "freedreno", KGSL only). The ARM64 Wine's
-# OpenGL loads it in the game's own process. Options from Mesa's meson.options (mesa-26.2.3):
+# OpenGL loads it in the game's own process. Options from Mesa's meson.options (at MESA_COMMIT):
 #   gallium-drivers=zink,softpipe   Zink and softpipe in libgallium
 #   vulkan-drivers=freedreno        Turnip
 #   freedreno-kmds=kgsl             KGSL only (Android's Adreno kernel driver)
-#   allow-kcmp=disabled             kcmp is blocked by Android's seccomp policy (meson.build:1083)
+#   allow-kcmp=disabled             kcmp is blocked by Android's seccomp policy (meson.build:1147)
 #   platforms=x11, glx=dri, egl=enabled, glvnd=enabled
 #   prefix=$USERLAND/usr            the ICD JSON's library_path and the DRI search path are below the
 #                                   prefix, and the app relocates them with the rest
@@ -51,7 +52,7 @@ fi
 out=/cache/mesa-out
 identity() {
     echo "image=${PD2_IMAGE:-}"
-    echo "mesa=$MESA_VERSION $MESA_SHA256"
+    echo "mesa=$MESA_COMMIT $MESA_SHA256"
     echo "prefix=$USERLAND"
     for f in /src/build-mesa.sh /src/patches/mesa/*.patch; do
         echo "${f#/src/} $(sha256sum < "$f" | cut -d' ' -f1)"
@@ -68,7 +69,7 @@ if [[ "${1:-}" == --build ]]; then
     build=/cache/work/mesa-build
     rm -rf "$src" "$build" "$out"
     mkdir -p "$src" "$build" "$out"
-    tar -xJf "/cache/sources/$(basename "$MESA_URL")" -C "$src" --strip-components=1
+    tar -xzf "/cache/sources/$(basename "$MESA_URL")" -C "$src" --strip-components=1
     for p in /src/patches/mesa/*.patch; do
         patch -d "$src" -p1 --forward --fuzz=0 --quiet < "$p"
         echo "applied $(basename "$p")"
@@ -123,4 +124,4 @@ for f in usr/lib/aarch64-linux-gnu/libGLX_mesa.so.0 usr/lib/aarch64-linux-gnu/li
     usr/share/glvnd/egl_vendor.d/50_mesa.json; do
     [[ -e "$staging/$f" ]] || { echo "Mesa install incomplete: no $f" >&2; exit 1; }
 done
-echo "Mesa $MESA_VERSION installed (Zink, softpipe, GLX, EGL, Turnip); ICD -> $got"
+echo "Mesa $MESA_VERSION (${MESA_COMMIT:0:12}) installed (Zink, softpipe, GLX, EGL, Turnip); ICD -> $got"

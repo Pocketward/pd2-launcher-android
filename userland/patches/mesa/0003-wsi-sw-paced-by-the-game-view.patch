@@ -1,6 +1,6 @@
 --- a/src/vulkan/wsi/wsi_common_x11.c
 +++ b/src/vulkan/wsi/wsi_common_x11.c
-@@ -74,6 +74,8 @@
+@@ -78,6 +78,8 @@
  #ifdef __linux__
  #include <sys/mman.h>
  #include <sys/stat.h>
@@ -9,7 +9,7 @@
  #endif
  
  #ifndef XCB_PRESENT_OPTION_ASYNC_MAY_TEAR
-@@ -1855,6 +1857,26 @@
+@@ -1918,6 +1920,26 @@ x11_present_to_x11_dri3(struct x11_swapchain *chain, uint32_t image_index,
  static uint32_t *sw_present_counter;
  static once_flag sw_present_counter_once = ONCE_FLAG_INIT;
  
@@ -36,7 +36,7 @@
  static void
  sw_present_counter_open(void)
  {
-@@ -1866,9 +1888,12 @@
+@@ -1929,9 +1951,12 @@ sw_present_counter_open(void)
        return;
     struct stat st;
     if (fstat(fd, &st) == 0 && st.st_size >= (off_t)sizeof(uint32_t)) {
@@ -51,7 +51,7 @@
     }
     close(fd);
  }
-@@ -1881,11 +1906,60 @@
+@@ -1944,11 +1969,60 @@ sw_present_counted(void)
        return;
     __atomic_fetch_add(sw_present_counter, 1, __ATOMIC_RELEASE);
  }
@@ -112,7 +112,7 @@
  #endif
  
  /**
-@@ -2599,6 +2673,9 @@
+@@ -2665,6 +2739,9 @@ x11_manage_present_queue(void *state)
           }
        }
  

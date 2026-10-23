@@ -49,8 +49,8 @@ The programs are built for a 200-byte placeholder data folder (`DATA_PLACEHOLDER
 | --- | --- |
 | `fetch-debian.sh` | Downloads the Debian 13 ARM64 packages `packages.lock` pins from snapshot.debian.org and extracts them, without maintainer scripts, into the staging tree and the cross-build sysroot. |
 | `build-xvfb.sh` | Cross-builds Xvfb from xorg-server 21.1.25 with `patches/xserver/` and the device's compiled-in paths. |
-| `build-mesa.sh` | Cross-builds Mesa 26.2.3 (Zink, softpipe, GLX and EGL for glvnd, Turnip with the KGSL backend) with `patches/mesa/`, in its own image (`containers/Containerfile.mesa`). |
-| `build-panvk.sh` | Cross-builds Mesa's PanVK at its own pin with the WSI patches of `patches/mesa/`, `patches/mesa-panvk/` and our kbase backend (`mesa-kbase/`, with Arm's kbase uAPI headers at a pinned commit). |
+| `build-mesa.sh` | Cross-builds Mesa main at `config.sh`'s `MESA_COMMIT` (Zink, softpipe, GLX and EGL for glvnd, Turnip with the KGSL backend) with `patches/mesa/`, in its own image (`containers/Containerfile.mesa`). `mesa-update.sh` tries a newer commit of main and refreshes the patches. |
+| `build-panvk.sh` | Cross-builds Mesa's PanVK from the same Mesa commit (the archive `build-mesa.sh` fetches) with the WSI patches of `patches/mesa/`, `patches/mesa-panvk/` and our kbase backend (`mesa-kbase/`, with Arm's kbase uAPI headers at a pinned commit). |
 | `build-glibc.sh` | With `PD2_USERLAND_WITH_GLIBC=1`: our glibc (`glibc/build.sh`, see `userland/glibc/README.md`) replaces Debian's `libc6`. |
 | `build-relay.sh` | Cross-builds `x-input-relay` (`x-input-relay.c`). |
 | `relocate.sh` | Prunes documentation and translations, makes symlinks relative, points every ELF's interpreter and run paths at the prefix, and writes `etc/` (with `userland.env` from `userland.env.in`). |
@@ -60,6 +60,16 @@ The programs are built for a 200-byte placeholder data folder (`DATA_PLACEHOLDER
 - Pins: `userland/config.sh` (base image, Debian snapshot, the Mesa, PanVK, kbase uAPI and X server sources), `userland/packages.lock`, `userland/glibc/build.sh` and the container files.
 - `userland/build.sh --resolve` re-resolves `packages.txt` into `packages.lock` against the snapshot (only when changing the package list).
 - Caches: `~/.cache/pd2-android/userland/` (`PD2_USERLAND_CACHE`). Each build is reused while its recorded inputs match: glibc's from `userland/glibc/out`, Xvfb's and Mesa's from the cache's `xvfb-out/` and `mesa-out/`, and PanVK's from `~/.cache/pd2-android/kbase/out/` (`PD2_PANVK_CACHE`). With `PD2_IMAGE_ARCHIVE` set to a folder, a missing build image is loaded from its archive there and a newly built one is archived there.
+
+### Moving the Mesa pin
+
+Every build uses one fixed commit of Mesa's main branch (`MESA_COMMIT`, with the SHA-256 of GitLab's archive of it and the tree's `VERSION`); a release keeps the commit its tests ran on.
+
+1. `userland/mesa-update.sh` tries the newest commit of main (or `--commit <full commit id>`): it applies every patch to that commit with `--fuzz=0` and prints `exact`, `offsets` or `FAILS` per patch; it writes nothing. A patch that fails is rebased by hand (the scratch tree keeps the `.rej` files); then run the script again with the same `--commit`.
+2. `userland/mesa-update.sh --commit <full commit id> --write` writes the pin into `config.sh` and refreshes every patch, only when all of them apply.
+3. Read the upstream changes to the files the patches touch, compare Mesa's GPU tables with the app's (`freedreno_devices.py` with `KgslProbe.kt`, `pan_model.c` with `MaliProbe.kt`) and with the README's "Supported graphics chips" table, and check that the values Mesa gets still exist: those of `userland.env.in` (`TU_DEBUG` options and the other variables) and the app's own `TU_DEBUG` value (`noconform`, `SessionPaths.kt`). Also compare Zink's required Vulkan features (`zink_device_info.py`, `required=True`) with what Turnip offers on the Adreno 6xx: a new requirement can take the game's OpenGL away from a GPU.
+4. Gates before a release: the userland and the app build, with their JVM and host tests; on one device of each GPU family the app supports (Adreno 7xx, Adreno 6xx without hardware multiview, Adreno 650, Mali on PanVK), Play reaches PD2's menu with the game's sound, `files/logs/engine.log` has `MESA: direct present: <size>`, the presents per second in logcat (`pd2-present`) hold, and nothing crashes for a few minutes; in the game, a town and a fight show a correct picture; the GPU time per frame at the menu stays within about 5 % of the pin before (a debug build gives the `NAME=value` lines of its `files/kbase/hostenv`, for example `MESA_GPU_TRACES=print_csv` and `MESA_GPU_TRACEFILE=<file>`, to the game's processes); and the candidate installs over the release before it with the game, the settings and the characters kept.
+5. One commit moves the pin (`config.sh` and the patches), so one `git revert` takes it back.
 
 ## 3. The runtime
 
@@ -73,6 +83,7 @@ Needs the App userland of step 2 (its relocated tree in the userland cache). `ru
 | --- | --- |
 | `wine.sh` | Cross-builds Wine 11.0 for ARM64 in WoW64 mode (aarch64 and i386 PE sides, llvm-mingw) with `patches/wine/`. |
 | `wowbox64.sh` | Builds Box64's `wowbox64.dll`, Wine's x86 CPU DLL, at the pinned commit with `patches/box64/`. |
+| `pd2audio.sh` | Builds our ALSA plugin (`pd2-audio/pcm_pd2.c`, the game's sound into the app's ring) and takes Debian's `libasound.so.2`; both go beside `winealsa.so`. |
 | `prefix.sh` | Makes the prefix template with that Wine under qemu-user, links its copies of Wine's files into the runtime's Wine (`prefix-dedupe.py`), and puts in the engine's XInput bridge (from its sources), the link to .NET and the template's generation (`.pd2-prefix-generation`, `runtime/config.sh`'s `PREFIX_GENERATION`). |
 | `dotnet.sh` | Unpacks the .NET 6 runtime and Windows Desktop runtime, x86. |
 | `trim.py`, `stage-wineb.py`, `pack.py` | Reduce the Wine to `wine-keep.txt`, point its programs at the userland's loader, leave out what `runtime-cut.txt` names, and write `runtime.tar.zst` and `runtime.info` (the layout under the Launcher's managed root, and the files the app relocates) into the app's assets. |

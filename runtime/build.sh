@@ -8,7 +8,9 @@
 # not change is used again:
 #   wine.sh       Wine (config.sh pins it) for ARM64 in WoW64 mode, with patches/wine
 #   wowbox64.sh   Box64's wowbox64.dll (config.sh pins the commit), with patches/box64
-#   prefix.sh     the prefix template, made by that Wine (needs the App userland, userland/build.sh,
+#   pd2audio.sh   the game's sound output: our ALSA plugin and Debian's alsa-lib, which go beside
+#                 winealsa.so (its run path is $ORIGIN, so it finds that alsa-lib)
+#   prefix.sh    the prefix template, made by that Wine (needs the App userland, userland/build.sh,
 #                 and qemu-user for aarch64 in binfmt_misc)
 #   dotnet.sh     the .NET runtime and Windows Desktop runtime, x86
 #   then          trim.py with wine-keep.txt (the modules the game, the official launcher and the
@@ -28,7 +30,8 @@ identity() {
         "$here/runtime-cut.txt" "$here/dotnet.sh" "$here/containers/Containerfile.wine" \
         "$here/containers/Containerfile.tools" "debian=$DEBIAN_IMAGE $DEBIAN_SNAPSHOT" \
         "dotnet=$DOTNET_VERSION $DOTNET_RUNTIME_SHA512 $DOTNET_DESKTOP_SHA512" \
-        "wine $(part_hash wine)" "wowbox64 $(part_hash wowbox64)" "prefix $(part_hash prefix)"
+        "wine $(part_hash wine)" "wowbox64 $(part_hash wowbox64)" "pd2audio $(part_hash pd2audio)" \
+        "prefix $(part_hash prefix)"
 }
 
 case "${1:-}" in
@@ -37,6 +40,9 @@ case "${1:-}" in
         python3 /src/stage-wineb.py /cache/work/runtime/wine-min /cache/parts/wowbox64/wowbox64.dll \
             /cache/work/runtime/wine "$USERLAND/lib/ld-linux-aarch64.so.1"
         rm -rf /cache/work/runtime/wine-min
+        unix=/cache/work/runtime/wine/lib/wine/aarch64-unix
+        cp /cache/parts/pd2audio/libasound_module_pcm_pd2.so /cache/parts/pd2audio/libasound.so.2 "$unix/"
+        patchelf --set-rpath '$ORIGIN' "$unix/winealsa.so"
         exit 0
         ;;
     --pack) # in the tools image
@@ -53,6 +59,7 @@ esac
 
 "$here/wine.sh"
 "$here/wowbox64.sh"
+"$here/pd2audio.sh"
 "$here/prefix.sh"
 id="$(identity)"
 if part_ready runtime "$id"; then

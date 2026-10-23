@@ -24,7 +24,8 @@ class SessionPaths(val data: String) {
 
     /**
      * Xvfb's framebuffer folder (`-fbdir`, when no memfd can be made, [Framebuffer]),
-     * compiled keymaps and the runtime folder for PulseAudio.
+     * compiled keymaps and the session's runtime folder (`XDG_RUNTIME_DIR` of the engine and the
+     * game's Wine processes).
      */
     val framebufferDir = File(tmp, "xvfb")
     /** Screen 0's framebuffer file in [framebufferDir] (Xvfb names it), when no memfd can be made. */
@@ -51,13 +52,20 @@ class SessionPaths(val data: String) {
      * so a download that receives data but writes nothing yet does not count as stalled.
      */
     val receivedBytes = File(runtimeDir, "received-bytes")
-    /** PulseAudio's socket (userland.env's PULSE_RUNTIME_PATH), which the game's guests reach. */
-    val pulseSocket = File(runtimeDir, "pulse/native")
+    /**
+     * The game's sound ([GameAudio]): the ring the app plays, which the game's Wine writes through
+     * ALSA, and the ALSA configuration that names it, which Wine finds in `XDG_RUNTIME_DIR`
+     * (runtime patch 0003).
+     */
+    val soundRing = File(runtimeDir, "pd2-audio")
+    val alsaConfig = File(runtimeDir, "asound.conf")
     /** The Unix sockets the session binds below [data]: their paths must fit `sun_path`. */
-    val sockets: List<File> get() = listOf(pulseSocket, presentSocket)
+    val sockets: List<File> get() = listOf(presentSocket)
 
     /** The Launcher's managed root, `<launcher home>/game`. */
     val managedRoot = File(launcherHome, "game")
+    /** The runtime's ALSA plugin, which writes the game's sound into [soundRing] (runtime/pd2audio.sh). */
+    val alsaPlugin = File(managedRoot, "${AppRuntime.WINE}/lib/wine/aarch64-unix/libasound_module_pcm_pd2.so")
 
     /**
      * "Diablo II already installed": the picked folder, copied below here and used in place
@@ -84,6 +92,9 @@ class SessionPaths(val data: String) {
     /** Debug builds only: with this file it fails after the new prefix took its place ([LegacyPrefix.failLateForTest]). */
     val failUpdateLateForTest = File(files, "debug-fail-update-late")
 
+    /** Debug builds only: with this file the userland's `resolv.conf` takes Android's DNS servers as none ([Dns]). */
+    val emptyDnsForTest = File(files, "debug-empty-dns")
+
     /** The Managed prefix's Diablo II folder (the engine's `GAME_RELATIVE`). */
     val managedGame = File(managedRoot, "prefix/drive_c/Program Files (x86)/Diablo II")
 
@@ -103,6 +114,19 @@ class SessionPaths(val data: String) {
         for (dir in listOf(home, launcherHome, tmp, logs, framebufferDir, keymapDir, runtimeDir)) {
             Files.createDirectories(dir.toPath(), ownerOnly)
         }
+    }
+
+    /**
+     * What older releases left in [runtimeDir] and nothing uses since 0.3.3: PulseAudio's runtime
+     * folder (`pulse`), its script (`pulse.pa`) and its pipe sink (`pulse-sink`), and FEXServer's
+     * socket of the FEX runtime before 0.3.0 (`pd2launcher-<uid>-<hash>.FEXServer.Socket`, or its
+     * fallback `<uid>.FEXServer.Socket`). Only these names go; a link goes as a link, never what
+     * it leads to. The names removed.
+     */
+    fun removeOldRuntimeFiles(): List<String> {
+        val old = runtimeDir.list()?.filter { it in OLD_RUNTIME_FILES || FEX_SOCKET.matches(it) }?.sorted() ?: return emptyList()
+        for (name in old) UserlandInstaller.deleteTree(File(runtimeDir, name).toPath())
+        return old
     }
 
     /** `KEY=value` lines of `<userland>/etc/userland.env`, in order; empty when it is absent. */
@@ -198,7 +222,7 @@ class SessionPaths(val data: String) {
     /** The resolver configuration the userland's glibc reads ([Dns] writes it). */
     val resolvConf = File(userland, "etc/resolv.conf")
 
-    /** The contract's variables plus the userland.env values for Xvfb, PulseAudio and X clients. */
+    /** The contract's variables plus the userland.env values for Xvfb and X clients. */
     fun userlandProgramEnvironment(): List<String> {
         val extra = userlandEnvironment().filterNot { (key, _) -> key.startsWith(WINE) }
         val overridden = extra.map { it.first }.toSet()
@@ -226,6 +250,10 @@ class SessionPaths(val data: String) {
         private const val NOCONFORM = "noconform"
         private const val SSL_CERT_FILE = "SSL_CERT_FILE"
         private val ASSIGNMENT = Regex("""^([A-Za-z_][A-Za-z0-9_]*)=(.*)$""")
+        /** [removeOldRuntimeFiles]: PulseAudio's files of the releases before 0.3.3. */
+        private val OLD_RUNTIME_FILES = setOf("pulse", "pulse.pa", "pulse-sink")
+        /** [removeOldRuntimeFiles]: FEXServer's socket names of the releases before 0.3.0. */
+        private val FEX_SOCKET = Regex("""(pd2launcher-[0-9]+-[0-9a-f]+|[0-9]+)\.FEXServer\.Socket""")
 
         /** `KEY=value` lines; comments, blank lines and anything else are skipped. Values are literal. */
         fun parseEnvironment(text: String): List<Pair<String, String>> =

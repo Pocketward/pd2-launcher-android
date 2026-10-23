@@ -8,9 +8,9 @@ Android app (Kotlin, Jetpack Compose)          native screens, input, the game's
      ├─ PD2 Launcher engine (Rust, ARM64)      installs, verifies, updates, launches
      └─ game environment, for Install and Play only
          ├─ Xvfb                               the X screen
-         ├─ PulseAudio                         sound
          └─ Wine 11.0 (ARM64) ─ Diablo II + Project Diablo 2
                ├─ Box64's wowbox64.dll: the 32-bit x86 code
+               ├─ ALSA ─ our plugin ─ a ring the app plays (sound)
                └─ OpenGL ─ Zink ─ Turnip (Adreno) or PanVK (Mali)
 ```
 
@@ -45,10 +45,10 @@ The app and the engine talk over the **Control channel** (`control/`): a socket 
 
 The ARM64 Linux programs the app runs natively, packed as `userland.tar.zst` and unpacked once into the app's folder (staging folder, record written last, then renamed into place):
 
-- a pinned subset of Debian 13 ARM64 (`packages.txt`, `packages.lock`): PulseAudio, the X11/XCB, FreeType and GnuTLS libraries the Wine's Unix side loads, the Vulkan loader, glvnd, fonts, CA certificates;
+- a pinned subset of Debian 13 ARM64 (`packages.txt`, `packages.lock`): the X11/XCB, FreeType and GnuTLS libraries the Wine's Unix side loads, the Vulkan loader, glvnd, fonts, CA certificates;
 - **our glibc** (`glibc/`): Debian 13's glibc patched so it never makes the system calls Android's app seccomp policy kills a process for, and reads its `/etc` files from the prefix;
 - **Xvfb** from xorg-server 21.1.25 (`patches/xserver/`), with the app's compiled-in paths;
-- **Mesa 26.2.3** (`build-mesa.sh`, `patches/mesa/`): Zink, GLX and EGL, and Turnip (KGSL) for Adreno; and **Mesa PanVK** with our kbase backend (`mesa-kbase/`, `patches/mesa-panvk/`) for Mali. The unpack leaves out the other GPU family's Vulkan driver;
+- **Mesa main at one commit** (`config.sh` `MESA_COMMIT`; `build-mesa.sh`, `patches/mesa/`, `mesa-update.sh` to move it): Zink, GLX and EGL, and Turnip (KGSL) for Adreno; and **Mesa PanVK** from the same commit with our kbase backend (`mesa-kbase/`, `patches/mesa-panvk/`) for Mali. The unpack leaves out the other GPU family's Vulkan driver;
 - `x-input-relay` (`x-input-relay.c`), which turns the app's touch and keyboard events into X input through XTEST.
 
 `etc/userland.env` (from `userland.env.in`) lists the environment and command lines the service uses.
@@ -59,6 +59,7 @@ The Windows side ships in the APK too, laid out under the engine's managed root 
 
 - **Wine 11.0** built for ARM64 in WoW64 mode (`wine.sh`, `patches/wine/`), reduced to the modules the game, the official launcher and the install chain load (`wine-keep.txt`, `runtime-cut.txt`);
 - **Box64's `wowbox64.dll`** (`wowbox64.sh`, `patches/box64/`), which Wine loads as its x86 CPU DLL for the 32-bit programs;
+- the game's **sound output** (`pd2audio.sh`, `pd2-audio/`): our ALSA plugin, which writes the game's mix into a ring the app plays, and Debian's alsa-lib beside `winealsa.so`;
 - a **prefix template** that the same Wine makes at build time (`prefix.sh`, under qemu-user); a new prefix on the device is a copy of it, so no `wineboot` runs on the phone. Most of its files are links into the Wine;
 - the **x86 .NET 6 runtime** for Project Diablo 2's own launcher (`dotnet.sh`), which the prefix reaches through `C:\Program Files (x86)\dotnet`.
 
@@ -81,21 +82,22 @@ PD2 (32-bit OpenGL, D2GL) → Wine's OpenGL (ARM64) → Mesa: Zink (OpenGL on Vu
 
 - Turnip runs with `TU_DEBUG=sysmem` (passes straight to memory suit the game's many small quads); the Compatibility setting adds `noubwc,nolrz`.
 - PanVK is written for Linux's panthor driver; Android devices run Arm's kbase driver, so `mesa-kbase/` adds a kbase backend behind Mesa's `pan_kmod` interface and the PanVK patches use it.
-- The game resolution and D2GL's graphics profile default by GPU: fewer lines and the Performance profile on older and entry-level Adrenos and on Mali. DirectDraw (cnc-ddraw, GDI) is the fallback renderer.
+- D2GL's graphics profile defaults by GPU: the Performance profile on older and entry-level Adrenos and on Mali. The game resolution is PD2's own 1068×600 picture by default on every screen that holds it, or a Custom size the player types (`GameResolution.kt`). DirectDraw (cnc-ddraw, GDI) is the fallback renderer.
 
 ## The X screen and the game's picture
 
-- **Xvfb** runs at the device's landscape size or the chosen game resolution, with its framebuffer in a memfd the app passes as descriptor 3 (`-fbfd 3`): never on flash. Without DRI3, Mesa presents through its software X11 path (`MESA_VK_WSI_DEBUG=sw`); our Mesa patches read the frame from cached memory, count the game's presents and pace them by the Game view.
-- **The Game view** (`ui/GameView.kt`, `FrameCopy.kt`, `frame_copy.c`) maps that framebuffer and copies each new picture into an Android surface once per display frame, scaled to fill the screen.
-- **Direct present** (`PresentServer.kt`, `present_server.cpp`, Mesa patch 0004): while the game's full-screen window is alone on the X screen, Mesa renders into AHardwareBuffers the app allocates and the Game view shows them on a layer above the copy, with no Xvfb or CPU copy. `x-input-relay` tells the app when a window covers the game; then the game presents to Xvfb again.
-- **Frame rate:** both hold the game to the player's reduced frame rate (Settings, Game, Frame rate: 60 or 30; `frame_pacing.c`), and while the game is not on the screen a pacer (`BackgroundPacer.kt`, `background_pacer.c`) holds it to 25 frames a second (Lower frame rate in the background).
+- **Xvfb** runs at the game resolution (PD2's own 1068×600, or a Custom size) or, for the official PD2 launcher, at its own resolution (the display's landscape size by default); every X screen has an even width and lines in a multiple of 4, rounded down in one place (`GameResolution.xScreen`), as Turnip pads a buffer's rows to 4. Xvfb runs with its framebuffer in a memfd the app passes as descriptor 3 (`-fbfd 3`): never on flash. Without DRI3, Mesa presents through its software X11 path (`MESA_VK_WSI_DEBUG=sw`); our Mesa patches read the frame from cached memory, count the game's presents and pace them by the app's clock and the Game view.
+- **The Game view** (`ui/GameView.kt`, `FrameCopy.kt`, `frame_copy.c`) maps that framebuffer and copies each new picture into an Android surface once per display frame, placed as Display says (Settings and the in-game menu, at once): Fit to screen enlarges what the game shows (PD2's 4:3 menu or its 16:9 game picture, as the picture's shape tells) evenly to the screen's edges, the X screen's other parts past them; Center shows the X screen's own pixels in the middle. A new size keeps the copy's and the game's layers; only their geometry changes.
+- **Direct present** (`PresentServer.kt`, `present_server.cpp`, Mesa patch 0004): while the game's full-screen window is alone on the X screen, Mesa renders into AHardwareBuffers the app allocates (one more than the swapchain's images) and the Game view shows them on a layer above the copy, with no Xvfb or CPU copy; the newest frame wins, so the game never waits for the app. `x-input-relay` tells the app when a window covers the game; then the game presents to Xvfb again.
+- **Frame rate:** the app's clock (`FrameClock.kt`, `frame_clock.c`, Mesa patch 0008) is the game's vertical blank: it ticks at the player's frame rate (Settings, Game, Frame rate: a number the player types, from 25 to the screen's highest rate), and a game with vsync on waits for a tick before each frame; one with vsync off never waits for it. While the game is not on the screen, or an overlay (the in-game menu, the Controls screen, their inputs, the editor) shows over it, `x-input-relay` takes the X input focus from the game's window (Slower game in the background), so the game uses its own background frame rate.
 - The Install screen shows a small read-only view of the same framebuffer.
 
 ## Input and sound
 
-- **Controller:** the app writes the pad's state into a shared-memory file (`PD2_GAMEPAD_FILE`) that the engine's XInput bridge reads, so the game sees an Xbox controller. On-screen controls are a virtual controller merged into the same file (`input/`).
+- **Controller:** the app writes the pad's state into a shared-memory file (`PD2_GAMEPAD_FILE`) that the engine's XInput bridge reads, so the game sees an Xbox controller. On-screen controls are a virtual controller merged into the same file (`input/`). Each button, the d-pad's four directions one by one, is bound per mode (`Controls`, applied by `PadInput`): in pad mode to the game's pad, a key, a click or nothing; in mouse mode, where the sticks move the pointer (`PointerSpeed`), to a key, a click or nothing.
+- **The in-game menu** (`ui/GameOverlay.kt`) floats over the running game, which never pauses: one panel with a tab strip (Quick: four tiles and Frame rate; Settings: three settings that apply at once, and Stop game). Its gamepad icon opens the **Controls screen** (`ui/ControlsScreen.kt`), where each binding opens the same picker as Settings (`ui/BindingPicker.kt`) and a button switches the controller between pad and mouse mode, as the chord does (`PadInput.useMouseMode`). While an overlay shows, the controller drives it instead of the game (`GameLayer.suspends`).
 - **Touch and keyboard** go to `x-input-relay` over a socket as fixed-size events, replayed into the X screen through XTEST.
-- **Sound:** PulseAudio writes into a FIFO that the app plays with an Android audio track (`GameAudio.kt`) at the game's sample rate.
+- **Sound:** Wine's `winealsa.drv` writes the game's mix through our ALSA plugin (`runtime/pd2-audio/pcm_pd2.c`) into a ring file that the app plays on a low-latency AAudio stream at the device's own rate (`GameAudio.kt`, `game_audio.c`, which resamples from the game's 22.05 kHz). No sound server sits between them; a cushion that grows while the game loads and shrinks back in steady play covers the moments Wine's mixing stalls.
 
 ## Releases
 

@@ -3,8 +3,8 @@ package com.pd2launcher.app.ui
 import androidx.annotation.StringRes
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.Dp
 import com.pd2launcher.app.R
-import com.pd2launcher.app.input.Controls
 import com.pd2launcher.app.input.Keys
 import com.pd2launcher.app.input.PadAction
 import com.pd2launcher.app.input.PadButton
@@ -133,14 +133,25 @@ internal fun actionName(action: PadAction): String = when (action) {
         ?: stringResource(R.string.controls_action_key)
 }
 
-/** A binding as one line: "Alt · Show items", "Left click". */
+/** The arrow keys' own names in a line: one word says which (the picker groups them as "Arrow"). */
+private val ARROW_LINES = mapOf(
+    Keys.XK_UP to R.string.controls_key_arrow_up,
+    Keys.XK_DOWN to R.string.controls_key_arrow_down,
+    Keys.XK_LEFT to R.string.controls_key_arrow_left,
+    Keys.XK_RIGHT to R.string.controls_key_arrow_right,
+)
+
+/** A binding as one line: "Alt · Show items", "Left click", "Up arrow". */
 @Composable
-internal fun actionLine(action: PadAction): String = keyCap(action)?.let { "$it · ${actionName(action)}" } ?: actionName(action)
+internal fun actionLine(action: PadAction): String {
+    ARROW_LINES[(action as? PadAction.Key)?.keysym]?.let { return stringResource(it) }
+    return keyCap(action)?.let { "$it · ${actionName(action)}" } ?: actionName(action)
+}
 
 /**
- * Where a controller button sits, as the in-game Controls panel groups the bindings: the face
- * buttons, the shoulders and triggers (the first column where there are two), then the d-pad,
- * the stick buttons, and Start and Select.
+ * Where a controller button sits, as the in-game Controls screen groups the bindings: the face
+ * buttons, the shoulders and triggers (the first column where there are two), then the d-pad (its
+ * four directions, each a binding of its own), the stick buttons, and Start and Select.
  */
 internal enum class Cluster(@param:StringRes val label: Int, val buttons: List<PadButton>, val column: Int) {
     FACE(R.string.controls_group_face, listOf(PadButton.A, PadButton.B, PadButton.X, PadButton.Y), 0),
@@ -150,31 +161,23 @@ internal enum class Cluster(@param:StringRes val label: Int, val buttons: List<P
     MENU(R.string.controls_group_menu, listOf(PadButton.START, PadButton.SELECT), 1),
 }
 
-/**
- * One line of the panel: [buttons] that all do [action]; null for the d-pad typing its own arrow
- * keys (one line instead of four). [isDefault]: what they do by default in that mode.
- */
-internal data class BindingRow(val buttons: List<PadButton>, val action: PadAction?, val isDefault: Boolean)
-
-/** A group of the panel's lines; [cluster] null: the changed buttons of pad mode, unlabelled. */
-internal data class BindingGroup(val cluster: Cluster?, val rows: List<BindingRow>)
+/** The most columns of bindings the Controls screen uses. */
+internal const val MOST_BINDING_COLUMNS = 3
 
 /**
- * What the in-game Controls panel lists for [controls] in one mode, so it never says "Game pad"
- * sixteen times. Pad mode, where every button goes to the game unless changed: only the changed
- * buttons, as one unlabelled group (none: nothing to list). Mouse mode: every button, by
- * [Cluster]; buttons of a cluster that do the same share a line, and a d-pad on its default
- * arrow keys is one line.
+ * The binding groups in [columns] (1 to 3), in the same order: three hold the face buttons, the
+ * shoulders and triggers, and the rest; two the face buttons with the shoulders, then the rest;
+ * one all of them.
  */
-internal fun panelBindings(controls: Controls, mouse: Boolean): List<BindingGroup> {
-    fun rows(buttons: List<PadButton>): List<BindingRow> = buttons.groupBy { controls.action(it, mouse) }
-        .map { (action, same) -> BindingRow(same, action, same.all { controls.isDefault(it, mouse) }) }
-    if (!mouse) {
-        val changed = PadButton.entries.filterNot { controls.isDefault(it, mouse = false) }
-        return if (changed.isEmpty()) emptyList() else listOf(BindingGroup(null, rows(changed)))
-    }
-    return Cluster.entries.map { cluster ->
-        val arrows = cluster == Cluster.DPAD && cluster.buttons.all { controls.isDefault(it, mouse = true) }
-        BindingGroup(cluster, if (arrows) listOf(BindingRow(cluster.buttons, null, isDefault = true)) else rows(cluster.buttons))
-    }
+internal fun clusterColumns(columns: Int): List<List<Cluster>> = when {
+    columns >= MOST_BINDING_COLUMNS -> listOf(listOf(Cluster.FACE), listOf(Cluster.SHOULDERS), listOf(Cluster.DPAD, Cluster.STICKS, Cluster.MENU))
+    columns == 2 -> Cluster.entries.groupBy { it.column }.values.toList()
+    else -> listOf(Cluster.entries)
 }
+
+/**
+ * How many columns of bindings fit [width]: the most (up to [MOST_BINDING_COLUMNS]) that each get
+ * [column], the room a binding needs for its longest word, with [gap] between them; at least one.
+ */
+internal fun bindingColumns(width: Dp, column: Dp, gap: Dp): Int =
+    (MOST_BINDING_COLUMNS downTo 2).firstOrNull { column * it + gap * (it - 1) <= width } ?: 1

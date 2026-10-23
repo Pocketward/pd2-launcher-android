@@ -12,9 +12,9 @@ extern "C" {
 // (the copy keeps the X screen around it current).
 int present_server_showing(void);
 
-// A display frame at [frame_ns]: the Game view's copy calls it on each one. At a reduced frame rate
-// the display frames that take one (frame_pacing.h) show the oldest buffer the game sent.
-void present_server_vsync(int64_t frame_ns);
+// The app's clock ticked or stopped (frame_clock.c): while a frame with vsync off waits for a tick,
+// this wakes the server's thread, which shows it; nothing else on the clock's thread.
+void present_server_tick(void);
 
 #ifdef __cplusplus
 }

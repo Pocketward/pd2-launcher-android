@@ -122,7 +122,7 @@ private const val LABEL_MAX = 6
  *   Delete). A tap on nothing lets go of it.
  * - The glyph opens the one menu, which holds every on-screen option (Settings has none): when
  *   the controls show and their opacity ([Controls]), Add button, Show hidden pieces, Reset to
- *   default (asked in place), Cancel and Done (the layout kept for this screen size,
+ *   default (asked at the menu's foot), Cancel and Done (the layout kept for this screen size,
  *   [LayoutStore]).
  * - A controller: the d-pad walks the pieces, A selects, B lets go or closes (Back), Start
  *   opens the menu.
@@ -385,6 +385,9 @@ internal fun ControlsEditor(sample: Boolean, onClose: () -> Unit) {
     }
 }
 
+/** How far above the menu's foot its scrolled rows fade out. */
+private val MENU_FADE = 24.dp
+
 /** The menu glyph's corner (its 48 dp and 6 dp around it) that pieces never take a touch from. */
 private val GLYPH_ZONE = 60.dp
 
@@ -474,10 +477,10 @@ private val SHOW_CHOICES = listOf(
 )
 
 /**
- * The editor's one menu, from the glyph and in its corner like the game's rail: first the
+ * The editor's one menu ("On-screen layout"), from the glyph and in its corner like the game's menu: first the
  * controls as a whole (when they show, with what that means, and their opacity), then Add
- * button, the hidden pieces to show again, Reset to default (asked in place), then Cancel and
- * Done.
+ * button, the hidden pieces to show again, Reset to default, then Cancel and Done at the foot,
+ * which never scrolls away: the reset question with Keep and Reset takes their place.
  */
 @Composable
 private fun EditorMenu(
@@ -495,64 +498,81 @@ private fun EditorMenu(
     modifier: Modifier,
 ) {
     var confirm by remember { mutableStateOf(false) }
+    // Keep leaves the question: the focus goes back to Reset to default, where it was.
+    val resetRow = remember { FocusRequester() }
+    var kept by remember { mutableStateOf(0) }
+    LaunchedEffect(kept) { if (kept > 0) runCatching { resetRow.requestFocus() } }
     val first = remember { FocusRequester() }
     InitialFocus(first)
     val small = Type.Hint.copy(fontWeight = FontWeight.SemiBold)
     Panel(modifier, padding = 10.dp, alpha = 1f) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(stringResource(R.string.game_menu_edit_controls), style = Type.Body.copy(fontWeight = FontWeight.SemiBold), color = Palette.Text, modifier = Modifier.weight(1f).padding(start = 6.dp))
-            LauncherButton(stringResource(R.string.game_menu_close), onClose, Modifier.width(52.dp), Kind.QUIET, height = 48.dp, padding = 0.dp)
+            Text(stringResource(R.string.editor_title), style = Type.Body.copy(fontWeight = FontWeight.SemiBold), color = Palette.Text, modifier = Modifier.weight(1f).padding(start = 6.dp))
+            IconTarget(R.drawable.ic_close, stringResource(R.string.game_menu_close), onClose)
         }
-        Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
-            Column(Modifier.padding(horizontal = 6.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(stringResource(R.string.editor_show), style = Type.Hint, color = Palette.Muted, modifier = Modifier.padding(start = 2.dp))
-                Segmented(
-                    SHOW_CHOICES.map { stringResource(it.second.first) }, SHOW_CHOICES.indexOfFirst { it.first == shown },
-                    { onShown(SHOW_CHOICES[it].first) }, Modifier.fillMaxWidth(),
-                )
-                Text(
-                    stringResource(SHOW_CHOICES.first { it.first == shown }.second.second), style = Type.Hint, color = Palette.Muted,
-                    modifier = Modifier.padding(start = 2.dp),
-                )
-            }
-            Row(Modifier.padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(stringResource(R.string.editor_opacity, (opacity * 100).roundToInt()), style = Type.Body, color = Palette.Text, maxLines = 1, modifier = Modifier.width(112.dp))
-                Slider(
-                    opacity, { onOpacity(Controls.stepped(it, Controls.OPACITY_STEP, 0, Controls.OPACITIES)) }, Modifier.weight(1f),
-                    valueRange = Controls.OPACITIES, colors = sliderColors(),
-                )
-            }
-            Rule(Modifier.padding(vertical = 4.dp))
-            FocusRow(onAdd, focusRequester = first, minHeight = 48.dp) {
-                Text(stringResource(R.string.editor_add), style = Type.Body, color = Palette.Text, modifier = Modifier.weight(1f))
-                Text("+", style = Type.Title, color = Palette.Teal)
-            }
-            val hidden = layout.pieces.filter { it.hidden }
-            if (hidden.isNotEmpty()) {
-                Text(stringResource(R.string.editor_show_hidden), style = Type.Hint, color = Palette.Muted, modifier = Modifier.padding(horizontal = 14.dp))
-                Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    hidden.forEach { piece -> LauncherButton(pieceLabel(piece), { onShow(piece) }, height = 48.dp, padding = 14.dp, style = small) }
+        val menuScroll = rememberScrollState()
+        Box(Modifier.weight(1f, fill = false)) {
+            Column(Modifier.verticalScroll(menuScroll)) {
+                Column(Modifier.padding(horizontal = 6.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(stringResource(R.string.editor_show), style = Type.Hint, color = Palette.Muted, modifier = Modifier.padding(start = 2.dp))
+                    Segmented(
+                        SHOW_CHOICES.map { stringResource(it.second.first) }, SHOW_CHOICES.indexOfFirst { it.first == shown },
+                        { onShown(SHOW_CHOICES[it].first) }, Modifier.fillMaxWidth(),
+                    )
+                    Text(
+                        stringResource(SHOW_CHOICES.first { it.first == shown }.second.second), style = Type.Hint, color = Palette.Muted,
+                        modifier = Modifier.padding(start = 2.dp),
+                    )
                 }
-            }
-            Rule(Modifier.padding(vertical = 4.dp))
-            if (!confirm) {
-                FocusRow({ confirm = true }, minHeight = 48.dp) {
-                    Text(stringResource(R.string.editor_reset_default), style = Type.Body, color = Palette.Text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Row(Modifier.padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(stringResource(R.string.editor_opacity, (opacity * 100).roundToInt()), style = Type.Body, color = Palette.Text, maxLines = 1, modifier = Modifier.width(112.dp))
+                    Slider(
+                        opacity, { onOpacity(Controls.stepped(it, Controls.OPACITY_STEP, 0, Controls.OPACITIES)) }, Modifier.weight(1f),
+                        valueRange = Controls.OPACITIES, colors = sliderColors(),
+                    )
                 }
-            } else {
-                Column(Modifier.padding(horizontal = 8.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text(stringResource(R.string.editor_reset_confirm), style = Type.Hint, color = Palette.Text)
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        LauncherButton(stringResource(R.string.editor_keep), { confirm = false }, Modifier.weight(1f), height = 48.dp, padding = 8.dp, style = small)
-                        LauncherButton(stringResource(R.string.editor_reset), onReset, Modifier.weight(1f), Kind.DANGER, height = 48.dp, padding = 8.dp, style = small)
+                Rule(Modifier.padding(vertical = 4.dp))
+                FocusRow(onAdd, focusRequester = first, minHeight = 48.dp) {
+                    Text(stringResource(R.string.editor_add), style = Type.Body, color = Palette.Text, modifier = Modifier.weight(1f))
+                    Text("+", style = Type.Title, color = Palette.Teal)
+                }
+                val hidden = layout.pieces.filter { it.hidden }
+                if (hidden.isNotEmpty()) {
+                    Text(stringResource(R.string.editor_show_hidden), style = Type.Hint, color = Palette.Muted, modifier = Modifier.padding(horizontal = 14.dp))
+                    Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        hidden.forEach { piece -> LauncherButton(pieceLabel(piece), { onShow(piece) }, height = 48.dp, padding = 14.dp, style = small) }
                     }
                 }
+                Rule(Modifier.padding(vertical = 4.dp))
+                FocusRow({ confirm = true }, focusRequester = resetRow, minHeight = 48.dp) {
+                    Text(stringResource(R.string.editor_reset_default), style = Type.Body, color = if (confirm) Palette.Faint else Palette.Text)
+                }
+            }
+            // More below: the rows fade out above the foot rather than end cut through.
+            if (menuScroll.canScrollForward) {
+                Box(
+                    Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(MENU_FADE)
+                        .background(Brush.verticalGradient(listOf(Palette.Surface.copy(alpha = 0f), Palette.Surface))),
+                )
             }
         }
         Spacer(Modifier.heightIn(min = 6.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            LauncherButton(stringResource(R.string.editor_cancel), onCancel, Modifier.weight(1f), Kind.QUIET, height = 48.dp, padding = 8.dp, style = small)
-            LauncherButton(stringResource(R.string.editor_done), onDone, Modifier.weight(1f), Kind.PRIMARY, height = 48.dp, padding = 8.dp, style = small)
+        // The foot is never scrolled away: Cancel and Done, or the reset question with Keep (focused) and Reset in their place.
+        if (confirm) {
+            val keep = remember { FocusRequester() }
+            InitialFocus(keep)
+            Column(Modifier.padding(horizontal = 6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(stringResource(R.string.editor_reset_confirm), style = Type.Hint, color = Palette.Text, modifier = Modifier.padding(horizontal = 2.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    LauncherButton(stringResource(R.string.editor_keep), { confirm = false; kept++ }, Modifier.weight(1f), focusRequester = keep, height = 48.dp, padding = 8.dp, style = small)
+                    LauncherButton(stringResource(R.string.editor_reset), onReset, Modifier.weight(1f), Kind.DANGER, height = 48.dp, padding = 8.dp, style = small)
+                }
+            }
+        } else {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                LauncherButton(stringResource(R.string.editor_cancel), onCancel, Modifier.weight(1f), Kind.QUIET, height = 48.dp, padding = 8.dp, style = small)
+                LauncherButton(stringResource(R.string.editor_done), onDone, Modifier.weight(1f), Kind.PRIMARY, height = 48.dp, padding = 8.dp, style = small)
+            }
         }
     }
 }

@@ -2,7 +2,8 @@
 # Builds the App userland end to end, every step in a container (see docs/BUILDING.md):
 #   fetch-debian.sh   pinned Debian 13 arm64 packages -> staging tree and cross-build sysroot
 #   build-xvfb.sh     Xvfb from xorg-server 21.1.25 with the prefix's compiled-in paths
-#   build-mesa.sh     Mesa 26.2.3: Zink, softpipe, GLX and EGL for glvnd, Turnip (KGSL) and its ICD JSON
+#   build-mesa.sh     Mesa (main at config.sh's MESA_COMMIT): Zink, softpipe, GLX and EGL for glvnd,
+#                     Turnip (KGSL) and its ICD JSON
 #   build-panvk.sh    Mesa's PanVK with our kbase backend (Mali) and its ICD JSON (PD2_PANVK_STAGE=1)
 #   build-glibc.sh    only with PD2_USERLAND_WITH_GLIBC=1: our glibc (glibc/) replaces Debian's libc6
 #   build-relay.sh    x-input-relay, touch and keyboard into the X screen (x-input-relay.c, our code)

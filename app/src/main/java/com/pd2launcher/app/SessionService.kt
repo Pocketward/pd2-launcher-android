@@ -180,6 +180,11 @@ class SessionService : Service() {
         _status.value = SessionStatus.STARTING
         running = this
         log("service started (pid ${Os.getpid()}, uid ${Os.getuid()}, received ${ReceivedBytes.current() ?: "uncounted"} bytes so far)")
+        try {
+            paths.removeOldRuntimeFiles().takeIf { it.isNotEmpty() }?.let { log("removed what older releases left in ${paths.runtimeDir}: ${it.joinToString()}") }
+        } catch (error: Exception) {
+            log("older releases' files in ${paths.runtimeDir}: $error")
+        }
         // How the app's earlier processes ended: a kill for low memory shows in the logs.
         scope.launch(Dispatchers.IO) { logProcessExits() }
         // While the game runs: the device's memory at its start and stop, and when it moves (MemoryLog).
@@ -326,7 +331,7 @@ class SessionService : Service() {
             if (game.running) wineserverKill()
             game.stop()
             stopEngine()
-            dns?.stop()
+            dns?.stop(this)
             // A service started again meanwhile owns the status.
             if (running == null) _status.value = SessionStatus()
             serviceLog.line("service stopped")
@@ -370,7 +375,8 @@ class SessionService : Service() {
             if (known != null) {
                 known.rewrite()
             } else {
-                dns = Dns(this, listOf(paths.resolvConf), ::log).also { it.start() }
+                val emptyForTest = BuildConfig.DEBUG && paths.emptyDnsForTest.exists()
+                dns = Dns(listOf(paths.resolvConf), ::log, emptyForTest).also { it.start(this) }
             }
             startEngine()
         } catch (error: Exception) {
@@ -502,18 +508,30 @@ class SessionService : Service() {
             failUpdateLateForTest = BuildConfig.DEBUG && paths.failUpdateLateForTest.exists(),
         )
         // A failed update's Import that a stop left before the record changed: Install still.
-        if (File(paths.managedRoot, "${LegacyPrefix.OLD}/${LegacyPrefix.SET_ASIDE}").exists() &&
-            SetupRecordStore.load(this) == SetupRecord.INSTALLED
-        ) {
-            SetupRecordStore.setUpAgain(this)
+        val setAsideForInstall = {
+            if (File(paths.managedRoot, "${LegacyPrefix.OLD}/${LegacyPrefix.SET_ASIDE}").exists() &&
+                SetupRecordStore.load(this) == SetupRecord.INSTALLED
+            ) {
+                SetupRecordStore.setUpAgain(this)
+            }
         }
+        setAsideForInstall()
         // Repair's Import of the updated game that a stop left part way: finished before the engine starts.
         val legacy = legacyPrefix()
         if (legacy.takingOut()) {
             log("the Import of the updated game was stopped part way; it goes on")
             tookOutUpdatedGame(legacy, legacy.takeOut(paths.upgradeGame))
         }
-        if (runtime.isCurrent(version)) return
+        if (runtime.isCurrent(version)) {
+            // Before the engine starts: what a stop left part way, or a copy of an older template
+            // in place, moves now (AppRuntime.updatePrefixAtStart).
+            runtime.updatePrefixAtStart()?.let {
+                log("the update in place failed; Install imports the older game folder $it")
+                SetupRecordStore.setUpAgain(this)
+            }
+            setAsideForInstall()
+            return
+        }
         val ready = _status.value.userland
         val started = SystemClock.elapsedRealtime()
         var shownPercent = -1L
@@ -534,6 +552,7 @@ class SessionService : Service() {
             log("the update in place failed; Install imports the older game folder $it")
             SetupRecordStore.setUpAgain(this)
         }
+        setAsideForInstall()
         setUserland(ready)
     }
 
@@ -995,15 +1014,16 @@ class SessionService : Service() {
     }
 
     /**
-     * At the display's native landscape size unless [size] is given; [given]: the size came from
-     * `--es xscreen` (debug builds), so Play keeps it.
+     * At the game resolution's X screen size ([gameScreenSize]) unless [size] is given; [given]: the
+     * size came from `--es xscreen` (debug builds), so Play keeps it.
      */
     private fun startGameEnvironment(size: Pair<Int, Int>?, given: Boolean = size != null) {
         if (engine == null) {
             log("game environment not started: the engine is not running")
             return
         }
-        val (width, height) = size ?: landscapeSize()
+        // Every X screen: an even width, lines a multiple of 4 (a debug size too); stored and compared so.
+        val (width, height) = GameResolution.xScreen(size ?: gameScreenSize(), ::log)
         try {
             game.start(width, height)
             if (xScreen == null) {
@@ -1037,7 +1057,7 @@ class SessionService : Service() {
         launchRequested(SystemClock.elapsedRealtime())
         val settings = AppSettingsStore.load(this)
         if (game.running && !xScreenGiven) {
-            val wanted = landscapeSize()
+            val wanted = gameScreenSize()
             if (xScreen != wanted) {
                 log("the game resolution wants a ${wanted.first} x ${wanted.second} X screen; restarting the game environment")
                 stopGameEnvironment()
@@ -1081,7 +1101,7 @@ class SessionService : Service() {
         if (launchBusy("official launcher")) return
         launchRequested(SystemClock.elapsedRealtime())
         val (width, height) = GameResolution.display(this)
-        val wanted = GameResolution.forLauncher(width, height, AppSettingsStore.load(this).launcherResolution)
+        val wanted = GameResolution.forLauncher(width, height, AppSettingsStore.load(this).launcherResolution, ::log)
         if (game.running && xScreen != wanted) {
             log("the official launcher wants a ${wanted.first} x ${wanted.second} X screen; restarting the game environment")
             stopGameEnvironment()
@@ -1154,14 +1174,15 @@ class SessionService : Service() {
 
     /**
      * Install runs Wine with the game environment's X screen and sound: the game environment
-     * first, then [send]; nothing is sent without it. When the game environment was started for
+     * first (installs keep the game's own size, whatever the game resolution; a Play at another
+     * size starts it again), then [send]; nothing is sent without it. When the game environment was started for
      * an install ([installEnvironment]: this one, or the Diablo II install that Install Project
      * Diablo 2 continues), a command that could not be sent, or one the engine refuses, stops it
      * again: nothing would run in it.
      */
     private fun sendInstallStart(send: () -> Long?): Boolean {
         val started = !game.running
-        if (started) startGameEnvironment(null)
+        if (started) startGameEnvironment(GameResolution.display(this).let { (w, h) -> GameResolution.ownSize(w, h, ::log) }, given = false)
         if (!game.running) {
             log("install not sent: the game environment is not running")
             return false
@@ -1304,19 +1325,18 @@ class SessionService : Service() {
         }
     }
 
-    /**
-     * The X screen's size: the display's native size in landscape at the game resolution in the
-     * app's settings ([GameResolution.forPlay]).
-     */
-    private fun landscapeSize(): Pair<Int, Int> {
+    /** The game's X screen size: the game resolution in the app's settings ([GameResolution.forPlay]). */
+    private fun gameScreenSize(): Pair<Int, Int> {
         val (width, height) = GameResolution.display(this)
-        return GameResolution.forPlay(width, height, AppSettingsStore.load(this).gameResolution, gpu)
+        return GameResolution.forPlay(width, height, AppSettingsStore.load(this).customSize, ::log)
     }
 
-    /** The game environment's X display, PulseAudio socket and gamepad file, for the guests the engine starts. */
+    /**
+     * The game environment's X display and gamepad file, for the guests the engine starts (their
+     * sound needs nothing here: Wine finds its ALSA configuration in `XDG_RUNTIME_DIR`).
+     */
     private fun gameSessionEnvironment(): List<String> = listOf(
         "DISPLAY=${GameEnvironment.DISPLAY}",
-        "PULSE_SERVER=unix:${paths.pulseSocket.path}",
         "PD2_GAMEPAD_FILE=${GameEnvironment.gamepadFile(paths).path}",
     )
 

@@ -47,7 +47,8 @@ enum class ProjectDiabloFound {
 /**
  * A picked Diablo II folder judged by its file list alone, before anything is copied: the
  * files Diablo II and Lord of Destruction need must be there and not empty (the engine checks
- * the version once the copy is in), and its ProjectD2 tells whether the PD2 installer runs.
+ * the copy's files again once it is in, and uses a Diablo II of any version as it is), and its
+ * ProjectD2 tells whether the PD2 installer runs.
  */
 object ExistingFolder {
     /** As the engine's lists of the same names: what a complete Diablo II and Lord of Destruction need. */

@@ -24,6 +24,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -37,6 +38,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
@@ -51,6 +53,7 @@ import com.pd2launcher.app.input.Area
 import com.pd2launcher.app.input.ControlsLayout
 import com.pd2launcher.app.input.CustomButtons
 import com.pd2launcher.app.input.GamepadLayout
+import com.pd2launcher.app.input.PadButton
 import com.pd2launcher.app.input.PadGroups
 import com.pd2launcher.app.input.Piece
 import com.pd2launcher.app.input.PieceKind
@@ -66,11 +69,14 @@ import kotlin.math.sqrt
  * [com.pd2launcher.app.input.PadInput.onVirtual]); custom buttons send their key or click
  * through the relay ([CustomButtons]). A finger presses a piece anywhere in its hit area
  * ([Piece.hitArea]: at least [MIN_TARGET] however small it is drawn); elsewhere it reaches the
- * game. They stay beside the menu rail too ([GameLayer.padShown]), under it where it overlaps.
+ * game. They stay beside the in-game menu too ([GameLayer.padShown]), under it where it overlaps.
+ * [inert]: the game is in the background for the menu ([GameLayer.padInert]): the pieces show
+ * dimmed (the whole drawing at [INERT_DIM]) and a touch on one does nothing (it is taken, so it
+ * neither reaches the game nor closes the menu), until the menu closes.
  */
 @Composable
-internal fun OnScreenControls(layout: ControlsLayout, opacity: Float, pad: VirtualPad, buttons: CustomButtons) {
-    // Hidden (the Controls panel or the editor opened, or turned off): nothing stays held in the game.
+internal fun OnScreenControls(layout: ControlsLayout, opacity: Float, pad: VirtualPad, buttons: CustomButtons, inert: Boolean = false) {
+    // Hidden (the Controls screen or the editor opened, or turned off): nothing stays held in the game.
     DisposableEffect(buttons, pad) {
         onDispose {
             buttons.releaseAll()
@@ -83,8 +89,15 @@ internal fun OnScreenControls(layout: ControlsLayout, opacity: Float, pad: Virtu
         val minHit = with(LocalDensity.current) { MIN_TARGET.toPx() }
         layout.pieces.forEach { piece ->
             if (!piece.hidden) {
-                key(piece.id) {
-                    PlayPiece(piece, piece.area(width, height), piece.hitArea(width, height, minHit), pieceAlpha(opacity, piece), pad, buttons)
+                // A change to or from inert starts the piece again: what it held goes up (its gesture's end).
+                key(piece.id, inert) {
+                    val drawn = piece.area(width, height)
+                    val hit = piece.hitArea(width, height, minHit)
+                    if (inert) {
+                        InertPiece(piece, drawn, hit, pieceAlpha(opacity, piece))
+                    } else {
+                        PlayPiece(piece, drawn, hit, pieceAlpha(opacity, piece), pad, buttons)
+                    }
                 }
             }
         }
@@ -151,6 +164,38 @@ private fun PlayPiece(piece: Piece, drawn: Area, hit: Area, alpha: Float, pad: V
     }
 }
 
+/** The opacity of the whole drawing (outline, label and shadow alike) while the pieces are inert ([OnScreenControls]). */
+internal const val INERT_DIM = 0.5f
+
+/**
+ * One piece while the game is in the background for the menu: drawn as in play at [alpha], the
+ * whole drawing dimmed to [INERT_DIM]; it takes a touch ([takesTouches]) and does nothing.
+ */
+@Composable
+private fun InertPiece(piece: Piece, drawn: Area, hit: Area, alpha: Float) {
+    val description = pieceDescription(piece)
+    val density = LocalDensity.current
+    val kind = piece.kind
+    Box(
+        Modifier
+            .offset { IntOffset(hit.left.roundToInt(), hit.top.roundToInt()) }
+            .size(with(density) { hit.width.toDp() }, with(density) { hit.height.toDp() })
+            // Not merging: Android then reports the piece as not enabled.
+            .semantics {
+                contentDescription = description
+                if (kind != PieceKind.STICK && kind != PieceKind.DPAD && kind != PieceKind.FACE) role = Role.Button
+                disabled()
+            }
+            .takesTouches(),
+        contentAlignment = Alignment.Center,
+    ) {
+        PieceGraphic(
+            piece, with(density) { drawn.width.toDp() }, with(density) { drawn.height.toDp() },
+            modifier = Modifier.alpha(INERT_DIM), alpha = alpha,
+        )
+    }
+}
+
 private val DPAD_BITS = listOf(GamepadLayout.DPAD_UP, GamepadLayout.DPAD_DOWN, GamepadLayout.DPAD_LEFT, GamepadLayout.DPAD_RIGHT)
 
 /** The d-pad from [from] to [to] pressed (bits), each changed direction once. */
@@ -206,16 +251,30 @@ private fun Modifier.press(piece: Piece, onPress: () -> Unit, onRelease: () -> U
         }
     }
 
-/** What a piece shows: the controller's name for it, or a custom button's label or key cap. */
+/**
+ * What a piece shows: the controller's name for it, as the app names the buttons everywhere
+ * ([PadButton.label]: L1, L2, R1, R2, L3, R3, Select, Start), or a custom button's label or key cap.
+ */
 @Composable
 internal fun pieceLabel(piece: Piece): String = when (piece.kind) {
     PieceKind.STICK -> stringResource(R.string.piece_stick)
     PieceKind.DPAD -> stringResource(R.string.piece_dpad)
     PieceKind.FACE -> stringResource(R.string.piece_face)
-    PieceKind.SELECT -> stringResource(R.string.on_screen_back)
-    PieceKind.START -> stringResource(R.string.on_screen_start)
     null -> piece.label ?: piece.binding?.let(::defaultLabel).orEmpty()
-    else -> piece.kind!!.name
+    else -> piece.kind?.let(::pieceButton)?.label.orEmpty()
+}
+
+/** The controller button an on-screen piece stands for; null for the stick, the d-pad and A/B/X/Y (several buttons each). */
+internal fun pieceButton(kind: PieceKind): PadButton? = when (kind) {
+    PieceKind.LT -> PadButton.L2
+    PieceKind.LB -> PadButton.L1
+    PieceKind.RB -> PadButton.R1
+    PieceKind.RT -> PadButton.R2
+    PieceKind.SELECT -> PadButton.SELECT
+    PieceKind.START -> PadButton.START
+    PieceKind.L3 -> PadButton.L3
+    PieceKind.R3 -> PadButton.R3
+    PieceKind.STICK, PieceKind.DPAD, PieceKind.FACE -> null
 }
 
 @Composable

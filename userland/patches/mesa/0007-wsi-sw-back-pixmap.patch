@@ -1,8 +1,8 @@
 --- a/src/vulkan/wsi/wsi_common_x11.c
 +++ b/src/vulkan/wsi/wsi_common_x11.c
-@@ -1283,6 +1283,15 @@
- 
-    xcb_connection_t *                           conn;
+@@ -1322,6 +1322,15 @@ struct x11_swapchain {
+     * application's connection. Requests still go through conn. */
+    xcb_connection_t *                           event_conn;
     xcb_window_t                                 window;
 +   /* The software present's back pixmap (x11_sw_back_prepare), or XCB_NONE; whether the frame
 +    * in hand goes there; and the frame it holds for the window, with the damaged areas, until
@@ -16,7 +16,7 @@
     xcb_gc_t                                     gc;
     uint32_t                                     depth;
     VkExtent2D                                   extent;
-@@ -2662,6 +2671,82 @@
+@@ -2705,6 +2714,82 @@ sw_direct_chosen(struct x11_swapchain *chain, uint32_t image_index)
  }
  #endif
  
@@ -99,7 +99,7 @@
  /**
   * Send image to X server unaccelerated (software drivers).
   */
-@@ -2670,6 +2755,7 @@
+@@ -2713,6 +2798,7 @@ x11_present_to_x11_sw(struct x11_swapchain *chain, uint32_t image_index)
  {
     assert(!chain->base.image_info.explicit_sync);
     struct x11_image *image = &chain->images[image_index];
@@ -107,7 +107,7 @@
  
     /* Begin querying this before submitting the frame for improved async performance.
      * In this _sw() mode we're expecting network round-trip delay, not just UNIX socket delay. */
-@@ -2697,7 +2783,7 @@
+@@ -2740,7 +2826,7 @@ x11_present_to_x11_sw(struct x11_swapchain *chain, uint32_t image_index)
           const uint8_t *data = (const uint8_t*)myptr + (rect.y * stride_b) + (rect.x * 4);
           for (int j = 0; j < rect.height; j++) {
              cookie = xcb_put_image(chain->conn, XCB_IMAGE_FORMAT_Z_PIXMAP,
@@ -116,7 +116,7 @@
                                     rect.width,
                                     1,
                                     rect.x, rect.y + j,
-@@ -2710,7 +2796,7 @@
+@@ -2753,7 +2839,7 @@ x11_present_to_x11_sw(struct x11_swapchain *chain, uint32_t image_index)
        }
     } else if (size < max_req_len) {
        cookie = xcb_put_image(chain->conn, XCB_IMAGE_FORMAT_Z_PIXMAP,
@@ -125,7 +125,7 @@
                               chain->gc,
                               image->base.row_pitches[0] / 4,
                               chain->extent.height,
-@@ -2725,7 +2811,7 @@
+@@ -2768,7 +2854,7 @@ x11_present_to_x11_sw(struct x11_swapchain *chain, uint32_t image_index)
        while (y_todo) {
           int this_lines = MIN2(num_lines, y_todo);
           cookie = xcb_put_image(chain->conn, XCB_IMAGE_FORMAT_Z_PIXMAP,
@@ -134,7 +134,7 @@
                                  chain->gc,
                                  image->base.row_pitches[0] / 4,
                                  this_lines,
-@@ -2757,7 +2843,25 @@
+@@ -2800,7 +2886,25 @@ x11_present_to_x11_sw(struct x11_swapchain *chain, uint32_t image_index)
     free(err);
     free(geom);
  
@@ -161,7 +161,7 @@
     sw_present_counted();
  
     wsi_queue_push(&chain->acquire_queue, image_index);
-@@ -3380,9 +3484,15 @@
+@@ -3426,9 +3530,15 @@ x11_manage_present_queue(void *state)
           }
        }
  
@@ -180,7 +180,7 @@
  
        mtx_lock(&chain->thread_state_lock);
  
-@@ -3424,6 +3534,11 @@
+@@ -3470,6 +3580,11 @@ x11_manage_present_queue(void *state)
        }
  
        mtx_unlock(&chain->thread_state_lock);
@@ -192,7 +192,7 @@
     }
  
     mtx_lock(&chain->thread_state_lock);
-@@ -3867,6 +3982,10 @@
+@@ -4058,6 +4173,10 @@ x11_swapchain_destroy(struct wsi_swapchain *wsi_chain,
     mtx_destroy(&chain->thread_state_lock);
     u_cnd_monotonic_destroy(&chain->thread_state_cond);
  

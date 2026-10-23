@@ -3,6 +3,17 @@
      device's own localhost (res/xml/test_feed_network.xml). -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <application android:networkSecurityConfig="@xml/test_feed_network" />
+    <application android:networkSecurityConfig="@xml/test_feed_network">
+        <!-- The in-game overlay with fake state over a neutral background, for design reviews
+             (OverlayPreviewActivity.kt). In a process of its own, so it shares no state with the
+             app's screens or a running game. Landscape, as the Game view always is. -->
+        <activity
+            android:name="com.pd2launcher.app.OverlayPreviewActivity"
+            android:configChanges="keyboard|keyboardHidden|navigation"
+            android:exported="true"
+            android:process=":overlay_preview"
+            android:screenOrientation="sensorLandscape"
+            android:theme="@android:style/Theme.Material.NoActionBar" />
+    </application>
 
 </manifest>

@@ -1,34 +1,34 @@
 // The game's direct present, the app's side of Mesa patch 0004:
-// the game's Mesa asks over a Unix socket for one buffer per swapchain image, the app allocates
-// linear AHardwareBuffers and sends them, Mesa's GPU blit writes each frame into one, and the app
-// shows it on its own child layer of the Game view (above the X screen's copy) by a transaction
-// with back pressure, so the compositor takes the frames one after another and the panel (or a
-// reduced frame rate, below) paces the game. The layer sits where the game's window is on the X
-// screen (x-input-relay says where): the whole view for a full-screen game, a windowed game's
-// place otherwise, the copy showing the X screen around it. A buffer goes back to Mesa once the
-// compositor has replaced it, with its release fence. While the game's window is not alone on the
-// X screen (a window over or beside it), while the Game view has no layer (one could not be made),
-// or without a Game view while the background pacer does not run, the frames go to the X screen:
-// the word at byte 192 of the present counter's page tells Mesa where to send them, and a frame
-// already on its way here goes back at once. Without a Game view while the background pacer runs
-// (background_pacer.c), the frames still come here and wait unshown, and one goes back each beat
-// (the pacer's interval), the newest staying until a newer one comes: the game draws no more
-// frames than that, and none goes through the X screen; a Game view that comes back shows the
-// newest of them at once. A newer swapchain's client waits beside the active one until its first
-// frame, which makes it the active one; one whose setup fails or that never presents leaves the
-// active one in place. At a reduced frame rate (Settings, Game) a frame waits in the app for the
-// display frame that takes one (frame_pacing.h; the Game view's copy reports each display frame),
-// so the game, its buffers held that long, draws no more frames than that; while no display
-// frames come it shows at once. Logs under pd2-present every 5 s while frames come.
+// the game's Mesa asks over a Unix socket for one buffer per swapchain image and one more, the app
+// allocates linear AHardwareBuffers and sends them, Mesa's GPU blit writes each frame into one, and
+// the app shows it on its own child layer of the Game view (above the X screen's copy) by a
+// transaction with back pressure. The newest frame wins: one transaction goes to the compositor at
+// a time, a frame that comes meanwhile waits, and a newer one replaces it (the replaced one goes
+// back to Mesa at once), so the game has a free buffer always (the one more) and never waits here
+// for the display. How many frames it draws is the app's clock's business (frame_clock.c, Mesa
+// patch 0008: a game with vsync on waits for its tick). A game with vsync off (Mesa sends the
+// present mode with each PRESENT) is not held to the clock, but the screen shows at most one of
+// its frames a tick: a frame that comes before the next tick waits as the newest, and the tick
+// shows it (present_server_tick wakes this server's thread); at Full (no lower cap) they go as
+// they come. Frames with vsync on go as they come. The layer sits where the game's window is on
+// the X screen (x-input-relay says where): the whole view for a full-screen game, a windowed
+// game's place otherwise, the copy showing the X screen around it. A buffer goes back to Mesa once the compositor has replaced it, with its release
+// fence. While the game's window is not alone on the X screen (a window over or beside it), or
+// while the Game view has no layer (one could not be made), the frames go to the X screen: the
+// word at byte 192 of the present counter's page tells Mesa where to send them, and a frame
+// already on its way here goes back at once. Without a Game view the frames still come here and
+// wait unshown, the newest only (frame_pacing.h, keep_newest), and a Game view that comes back
+// shows it at once. A newer swapchain's client waits beside the active one until its first frame,
+// which makes it the active one; one whose setup fails or that never presents leaves the active
+// one in place. Logs under pd2-present every 5 s while frames come.
 //
 // The protocol (one struct Msg a message, AF_UNIX SOCK_SEQPACKET, a sync_file beside it):
 //   Mesa -> app   HELLO   {width, height, count}
 //   app -> Mesa   BUFFERS {width, height, count, format}, then count AHardwareBuffer messages
-//   Mesa -> app   PRESENT {index}
+//   Mesa -> app   PRESENT {index, count: the frame's VkPresentModeKHR + 1, 0 unknown}
 //   app -> Mesa   RELEASE {index} + release fence
 #include "present_server.h"
 
-#include "background_pacer.h"
 #include "frame_pacing.h"
 
 #include <android/hardware_buffer.h>
@@ -43,6 +43,7 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/eventfd.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
@@ -61,16 +62,15 @@ namespace {
 constexpr uint32_t MAGIC = 0x50443250u; // "P2DP" in memory
 constexpr uint32_t VERSION = 1;
 constexpr uint32_t HELLO = 1, BUFFERS = 2, PRESENT = 3, RELEASE = 4;
-constexpr int MAX_BUFFERS = 4;
+// One more than Mesa's most swapchain images (patch 0004's SW_DIRECT_MAX_IMAGES, 4; patch 0008).
+constexpr int MAX_BUFFERS = 5;
 constexpr size_t PAGE = 4096;
 constexpr size_t WANTED_WORD = 192 / 4;
 constexpr int64_t STATS_NS = 5000000000LL;
 constexpr int64_t ACCEPT_REST_NS = 200000000LL;
+// A transaction the compositor has not completed for this long no longer holds the next frame back.
+constexpr int64_t INFLIGHT_WAIT_NS = 100000000LL;
 constexpr int MAX_FENCES = 1024;
-// At a reduced frame rate: no display frame from the Game view's copy for this long, and a waiting
-// frame shows at once (looked at this often while frames wait).
-constexpr int64_t VSYNC_LOST_NS = 100000000LL;
-constexpr int VSYNC_LOOK_MS = 50;
 
 struct Msg {
     uint32_t magic, version, type, index, width, height, count, format;
@@ -155,7 +155,11 @@ struct Server {
     ARect configured_source{}, configured_destination{};
     bool visible = false;
     uint64_t generation = 0;
-    int inflight = 0;
+    // The transactions on their way to the compositor: all of them (a layer that goes waits for
+    // them), and those of the current layer, the last applied at [shown_ns]: while one of these is
+    // on its way, at most INFLIGHT_WAIT_NS, the newest frame waits for it.
+    int inflight = 0, inflight_current = 0;
+    int64_t shown_ns = 0, inflight_wait_ns = INFLIGHT_WAIT_NS;
     BufferSet *shown_set = nullptr;
     int shown = -1;
     AHardwareBuffer *locked = nullptr;
@@ -165,27 +169,51 @@ struct Server {
     int fences[MAX_FENCES] = {};
     int nfences = 0;
     int64_t last_present_time = 0, gap_max_ns = 0;
-    // A reduced frame rate: the display frames that show a waiting frame (frame_pacing.h; its
-    // interval 0: none), the frames Mesa sent that wait for one (oldest first, each with its
-    // acquire fence and a reference to its set), and the last display frame the copy reported.
-    take_schedule takes = {};
-    struct Waiting {
-        BufferSet *set;
-        int index;
-        int fence;
-    } waiting[MAX_BUFFERS] = {};
-    int nwaiting = 0;
-    int64_t last_vsync_ns = 0;
-    // The background pacer's interval while it runs (0: it does not; looked at in update_wanted),
-    // and when the next frame that waits without a Game view goes back (background_beat).
-    int64_t background_ns = 0;
-    int64_t beat_next = 0;
+    // The newest frame Mesa sent that is not shown yet (with its acquire fence and a reference to
+    // its set): while a transaction is on its way to the compositor, while no Game view shows, or
+    // until the app's clock ticks again.
+    newest_frame next = {};
+    // The clock's tick word when the last frame went to the screen ([tick_due]); the last tick seen
+    // and when (a clock still for STALL_NS counts as none, as in Mesa patch 0008); whether the frame
+    // that waits came with vsync on ([next] goes on its completion) or off (it waits for a tick,
+    // [waits_tick]: the clock thread then wakes this server through [tick_fd]).
+    uint32_t shown_tick = 0, seen_tick = 0;
+    bool shown_any = false;
+    int64_t seen_tick_ns = 0;
+    bool next_vsync = true;
+    // A Frame rate below the screen's (not Full): frames with vsync off wait for the clock's tick.
+    bool capped = true;
+    std::atomic<bool> waits_tick{false};
+    int tick_fd = -1;
 };
 
-// The running server, for the Game view copy's display frames (present_server_vsync); [current_lock]
-// keeps it from going while one of them uses it.
+// The server the clock's ticks reach (present_server_tick): the one running.
 pthread_mutex_t current_lock = PTHREAD_MUTEX_INITIALIZER;
 Server *current = nullptr;
+
+// A clock that has not ticked for this long counts as none (Mesa patch 0008 waits no longer).
+constexpr int64_t STALL_NS = 100000000LL;
+
+// Under lock: whether the app's clock lets a frame with vsync off go to the screen now: at most
+// one a tick; any frame while the clock does not run or is still.
+bool tick_allows(Server *s) {
+    if (!s->capped || s->page == nullptr || __atomic_load_n(&s->page[CLOCK_WORD], __ATOMIC_ACQUIRE) == 0) return true;
+    uint32_t tick = __atomic_load_n(&s->page[TICK_WORD], __ATOMIC_ACQUIRE);
+    int64_t now = now_ns();
+    if (tick != s->seen_tick || s->seen_tick_ns == 0) {
+        s->seen_tick = tick;
+        s->seen_tick_ns = now;
+    } else if (now - s->seen_tick_ns > STALL_NS) {
+        return true;
+    }
+    return tick_due(tick, s->shown_tick, s->shown_any, 1);
+}
+
+// Whether a PRESENT's mode ([Msg::count]: the VkPresentModeKHR + 1; 0 from a Mesa that does not
+// send it) is FIFO or FIFO_RELAXED: vsync on.
+bool vsync_mode(uint32_t mode) {
+    return mode == 0 || mode == 2 + 1 || mode == 3 + 1;
+}
 
 struct Completion {
     Server *s;
@@ -195,13 +223,11 @@ struct Completion {
     int replaced;
 };
 
-// Under lock: Mesa may send frames here (a client, a layer to show them or no Game view while the
-// background pacer runs, no window over the game), else to the X screen, which the copy shows and
-// the picture reader reads.
+// Under lock: Mesa may send frames here (a client, a layer to show them or no Game view, no window
+// over the game), else to the X screen, which the copy shows and the picture reader reads.
 void update_wanted(Server *s) {
     if (s->page == nullptr) return;
-    s->background_ns = pacing_background_interval();
-    bool taken = s->control != nullptr || (!s->view && s->background_ns > 0);
+    bool taken = s->control != nullptr || !s->view;
     uint32_t wanted = s->active != nullptr && taken && !s->covered && !s->unplaced ? 1u : 0u;
     __atomic_store_n(&s->page[WANTED_WORD], wanted, __ATOMIC_RELEASE);
 }
@@ -238,19 +264,24 @@ void give_back(BufferSet *set, int index, int fence) {
     if (fence >= 0) close(fence);
 }
 
-// Under lock: the frames that wait for their display frame go back to Mesa unshown, each with its
-// acquire fence, which Mesa waits for before it writes the buffer again.
-void give_back_waiting(Server *s) {
-    for (int i = 0; i < s->nwaiting; i++) {
-        give_back(s->waiting[i].set, s->waiting[i].index, s->waiting[i].fence);
-        unref(s->waiting[i].set);
-    }
-    s->nwaiting = 0;
+// Under lock: [frame] goes back to Mesa unshown with its acquire fence, which Mesa waits for before
+// it writes the buffer again.
+void give_back_frame(const sent_frame &frame) {
+    give_back((BufferSet *)frame.set, frame.index, frame.fence);
+    unref((BufferSet *)frame.set);
 }
 
-// Under lock: the layer off the screen (the X screen's copy shows again); frames that wait go back.
+// Under lock: the frame that waits to be shown goes back.
+void give_back_next(Server *s) {
+    s->waits_tick.store(false);
+    sent_frame frame;
+    if (take_newest(&s->next, &frame)) give_back_frame(frame);
+}
+
+// Under lock: the layer off the screen (the X screen's copy shows again); the frame that waits
+// goes back.
 void hide(Server *s) {
-    give_back_waiting(s);
+    give_back_next(s);
     if (!s->visible || s->control == nullptr) return;
     ASurfaceTransaction *t = ASurfaceTransaction_create();
     ASurfaceTransaction_setVisibility(t, s->control, ASURFACE_TRANSACTION_VISIBILITY_HIDE);
@@ -259,6 +290,9 @@ void hide(Server *s) {
     s->visible = false;
     showing.store(0);
 }
+
+void show(Server *s, BufferSet *set, int index, int fence, const ARect &source, const ARect &destination);
+void show_next(Server *s);
 
 // Under lock: the present fences that have signalled count as shown frames (their times give the
 // longest gap) and are closed; only those still pending stay open.
@@ -308,6 +342,10 @@ void on_complete(void *context, ASurfaceTransactionStats *stats) {
     unref(done->set);
     unref(done->replaced_set);
     s->inflight--;
+    if (done->generation == s->generation && s->inflight_current > 0) s->inflight_current--;
+    // The newest frame that came meanwhile goes now; one with vsync off only if the clock ticked
+    // since the last (else at its next tick, handle_tick).
+    if (s->inflight_current == 0 && s->view && (s->next_vsync || tick_allows(s))) show_next(s);
     pthread_cond_broadcast(&s->answered);
     pthread_mutex_unlock(&s->lock);
     free(done);
@@ -336,11 +374,6 @@ bool place(const Server *s, const BufferSet *set, ARect *source, ARect *destinat
     return destination->right > destination->left && destination->bottom > destination->top;
 }
 
-// Under lock: the copy has reported a display frame lately, so a frame that waits for one is shown.
-bool vsync_live(const Server *s) {
-    return s->last_vsync_ns != 0 && now_ns() - s->last_vsync_ns < VSYNC_LOST_NS;
-}
-
 // Under lock: where the frames show now ([source], [destination]: place()); false (the layer
 // hidden when the window has no part it can show: the X screen shows it) when nowhere.
 bool placed(Server *s, const BufferSet *set, ARect *source, ARect *destination) {
@@ -353,21 +386,30 @@ bool placed(Server *s, const BufferSet *set, ARect *source, ARect *destination) 
     return false;
 }
 
-void show(Server *s, BufferSet *set, int index, int fence, const ARect &source, const ARect &destination);
+// Under lock: the frame waits to be shown ([vsync]: it came with vsync on); a newer frame replaces
+// one that waited, which goes back.
+void keep(Server *s, BufferSet *set, int index, int fence, bool vsync = true) {
+    sent_frame replaced;
+    s->next_vsync = vsync;
+    s->waits_tick.store(!vsync && s->view && s->capped);
+    set->refs++;
+    if (keep_newest(&s->next, {set, index, fence}, &replaced)) {
+        s->back_at_once++;
+        give_back_frame(replaced);
+    }
+}
 
 // Under lock: Mesa presents buffer [index] of [set] (its acquire [fence], taken).
-void present(Server *s, BufferSet *set, int index, int fence) {
+void present(Server *s, BufferSet *set, int index, int fence, bool vsync) {
     if (index < 0 || index >= set->count || set->at_compositor[index]) {
         if (fence >= 0) close(fence);
         return;
     }
     set->at_compositor[index] = true;
     s->presents++;
-    // No Game view while the background pacer runs: the frame waits unshown for the beat that gives
-    // one back (background_beat), and the game, its buffers held, for a free one meanwhile.
-    if (!s->view && s->background_ns > 0 && !s->covered && !s->unplaced && s->nwaiting < MAX_BUFFERS) {
-        s->waiting[s->nwaiting++] = {set, index, fence};
-        set->refs++;
+    // No Game view: the newest frame waits unshown for its return.
+    if (!s->view && !s->covered && !s->unplaced) {
+        keep(s, set, index, fence, vsync);
         return;
     }
     ARect source, destination;
@@ -377,47 +419,39 @@ void present(Server *s, BufferSet *set, int index, int fence) {
         give_back(set, index, fence);
         return;
     }
-    // A reduced frame rate: the frame waits for the display frame that takes one
-    // (present_server_vsync), and the game for a free buffer meanwhile; at once while no display
-    // frames come.
-    if (s->takes.interval_ns > 0 && vsync_live(s) && s->nwaiting < MAX_BUFFERS) {
-        s->waiting[s->nwaiting++] = {set, index, fence};
-        set->refs++;
+    // A transaction on its way: the newest frame waits for its completion (on_complete), or
+    // INFLIGHT_WAIT_NS at most.
+    if (s->inflight_current > 0 && now_ns() - s->shown_ns < s->inflight_wait_ns) {
+        keep(s, set, index, fence, vsync);
         return;
     }
+    // Vsync off: one frame a tick of the app's clock on the screen; a newer one waits for the next
+    // tick (handle_tick) and replaces this one meanwhile. The wake is asked for before the tick is
+    // read, so a tick between the two still wakes the server.
+    if (!vsync) s->waits_tick.store(s->view && s->capped);
+    if (!vsync && !tick_allows(s)) {
+        keep(s, set, index, fence, vsync);
+        return;
+    }
+    give_back_next(s);
     show(s, set, index, fence, source, destination);
+    s->waits_tick.store(false);
 }
 
-// Under lock: the oldest frame that waits shows, where the frames show now (else it goes back).
-void show_oldest(Server *s) {
-    if (s->nwaiting == 0) return;
-    Server::Waiting w = s->waiting[0];
-    s->nwaiting--;
-    for (int i = 0; i < s->nwaiting; i++) s->waiting[i] = s->waiting[i + 1];
+// Under lock: the frame that waits shows, where the frames show now (else it goes back).
+void show_next(Server *s) {
+    sent_frame frame;
+    if (!take_newest(&s->next, &frame)) return;
+    s->waits_tick.store(false);
+    BufferSet *set = (BufferSet *)frame.set;
     ARect source, destination;
-    if (placed(s, w.set, &source, &destination)) {
-        show(s, w.set, w.index, w.fence, source, destination);
+    if (s->control != nullptr && set == s->active && placed(s, set, &source, &destination)) {
+        show(s, set, frame.index, frame.fence, source, destination);
     } else {
         s->back_at_once++;
-        give_back(w.set, w.index, w.fence);
+        give_back(set, frame.index, frame.fence);
     }
-    unref(w.set);
-}
-
-// Under lock, without a Game view: the oldest frame that waits goes back to Mesa unshown once a
-// beat (the background pacer's interval), so the game, its other buffers held, draws one frame a
-// beat; a game slower than that never waits. The newest stays until a newer one comes, so a Game
-// view that comes back has the game's last picture to show, even after a long pause.
-void background_beat(Server *s, int64_t now) {
-    if (s->nwaiting < 2 || now < s->beat_next) return;
-    Server::Waiting w = s->waiting[0];
-    s->nwaiting--;
-    for (int i = 0; i < s->nwaiting; i++) s->waiting[i] = s->waiting[i + 1];
-    give_back(w.set, w.index, w.fence);
-    unref(w.set);
-    s->beat_next += s->background_ns;
-    // Late (the device asleep, say): a fresh start, not a burst.
-    if (s->beat_next <= now) s->beat_next = now + s->background_ns;
+    unref(set);
 }
 
 // Under lock: buffer [index] of [set] (its acquire [fence], taken) on the layer, at [source] of the
@@ -439,8 +473,8 @@ void show(Server *s, BufferSet *set, int index, int fence, const ARect &source, 
         if (s->frame_rate > 0) {
             ASurfaceTransaction_setFrameRate(t, s->control, s->frame_rate, ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT);
         }
-        // The compositor takes this layer's buffers one after another, so the game is paced by
-        // the panel, or at a reduced frame rate by the display frames that show its frames.
+        // The compositor takes this layer's buffers one after another: with one transaction at a
+        // time (present, on_complete), the newest frame goes on each display frame.
         ASurfaceTransaction_setEnableBackPressure(t, s->control, true);
         s->configured = true;
     }
@@ -462,6 +496,10 @@ void show(Server *s, BufferSet *set, int index, int fence, const ARect &source, 
     s->shown = index;
     ASurfaceTransaction_setOnComplete(t, done, on_complete);
     s->inflight++;
+    s->inflight_current++;
+    s->shown_ns = now_ns();
+    if (s->page != nullptr) s->shown_tick = __atomic_load_n(&s->page[TICK_WORD], __ATOMIC_ACQUIRE);
+    s->shown_any = true;
     ASurfaceTransaction_apply(t);
     ASurfaceTransaction_delete(t);
 }
@@ -477,8 +515,7 @@ void stats(Server *s, int64_t now) {
             s->visible                 ? (showing.load() == 2 ? "showing in the game's window" : "showing")
             : s->control != nullptr    ? "the X screen"
             : s->view                  ? "no layer: the X screen"
-            : s->background_ns > 0     ? "no view: held to the background rate"
-                                       : "no view");
+                                       : "no view: the newest frame kept");
     }
     s->presents = s->back_at_once = s->completes = s->shown_frames = 0;
     s->gap_max_ns = 0;
@@ -628,10 +665,23 @@ void message(Server *s, BufferSet *set, ssize_t n, const Msg &m, int *fences, in
             close(fence);
             fence = -1;
         }
-        present(s, set, (int)m.index, fence);
+        present(s, set, (int)m.index, fence, vsync_mode(m.count));
     } else {
         for (int i = 0; i < nfences; i++) close(fences[i]);
     }
+}
+
+// On the server's thread, woken by the clock's tick (present_server_tick): a frame with vsync off
+// that waits for a tick goes now, if the clock lets it and no transaction holds it (at most
+// INFLIGHT_WAIT_NS).
+void handle_tick(Server *s) {
+    uint64_t ticks;
+    while (read(s->tick_fd, &ticks, sizeof(ticks)) == (ssize_t)sizeof(ticks)) {
+    }
+    pthread_mutex_lock(&s->lock);
+    bool free_now = s->inflight_current == 0 || now_ns() - s->shown_ns >= s->inflight_wait_ns;
+    if (s->view && s->next.kept && !s->next_vsync && free_now && tick_allows(s)) show_next(s);
+    pthread_mutex_unlock(&s->lock);
 }
 
 void serve(Server *s) {
@@ -644,39 +694,18 @@ void serve(Server *s) {
         pthread_mutex_lock(&s->lock);
         BufferSet *clients[2] = {s->active, s->pending};
         int fds_of[2] = {clients[0] != nullptr ? clients[0]->fd : -1, clients[1] != nullptr ? clients[1]->fd : -1};
-        // Frames that wait for a display frame: looked at now and then, in case display frames stop.
-        // Without a Game view, at the beat that gives one back, while one can go (the newest stays).
-        bool waiting = s->view && s->nwaiting > 0;
-        bool beat = !s->view && s->nwaiting > 1;
-        int64_t beat_next = s->beat_next;
         pthread_mutex_unlock(&s->lock);
         int64_t now = now_ns();
         bool resting = now < accept_after;
         int timeout = resting ? (int)((accept_after - now) / 1000000 + 1) : -1;
-        if (beat) {
-            int until = beat_next > now ? (int)((beat_next - now + 999999) / 1000000) : 0;
-            if (timeout < 0 || timeout > until) timeout = until;
-        } else if (waiting && (timeout < 0 || timeout > VSYNC_LOOK_MS)) {
-            timeout = VSYNC_LOOK_MS;
-        }
         // A negative descriptor is not polled.
-        pollfd fds[4] = {{s->wake[0], POLLIN, 0}, {resting ? -1 : s->listener, POLLIN, 0}, {fds_of[0], POLLIN, 0}, {fds_of[1], POLLIN, 0}};
-        if (poll(fds, 4, timeout) < 0) {
+        pollfd fds[5] = {{s->wake[0], POLLIN, 0}, {resting ? -1 : s->listener, POLLIN, 0}, {fds_of[0], POLLIN, 0},
+                         {fds_of[1], POLLIN, 0}, {s->tick_fd, POLLIN, 0}};
+        if (poll(fds, 5, timeout) < 0) {
             if (errno == EINTR) continue;
             break;
         }
         if (fds[0].revents) break;
-        if (waiting || beat) {
-            pthread_mutex_lock(&s->lock);
-            if (!s->view) {
-                background_beat(s, now_ns());
-            } else if (!vsync_live(s)) {
-                // No display frame for a while (the Game view's copy gone, say): the waiting frames
-                // show now, so the game never waits for a display frame that does not come.
-                while (s->nwaiting > 0) show_oldest(s);
-            }
-            pthread_mutex_unlock(&s->lock);
-        }
         if (fds[1].revents & POLLIN) {
             int fd = accept4(s->listener, nullptr, nullptr, SOCK_CLOEXEC);
             if (fd < 0 && errno != EINTR && errno != EAGAIN && errno != ECONNABORTED) {
@@ -723,6 +752,8 @@ void serve(Server *s) {
             if (now - s->last_ns >= STATS_NS) stats(s, now);
             pthread_mutex_unlock(&s->lock);
         }
+        // After the clients' messages: a PRESENT that came in the same wake is taken first.
+        if (fds[4].revents & POLLIN) handle_tick(s);
     }
 }
 
@@ -734,7 +765,7 @@ void *run(void *data) {
 // Under lock: the layer goes (the Game view's surface is going, or a new one comes); every buffer it
 // held goes back.
 void drop_layer(Server *s) {
-    give_back_waiting(s);
+    give_back_next(s);
     if (s->control == nullptr) {
         // A surface without a layer (one could not be made): only the surface goes.
         if (s->window != nullptr) ANativeWindow_release(s->window);
@@ -746,6 +777,7 @@ void drop_layer(Server *s) {
     ASurfaceTransaction_apply(t);
     ASurfaceTransaction_delete(t);
     s->generation++;
+    s->inflight_current = 0;
     // The layer goes before the wait: with back pressure a layer off the screen never takes a
     // buffer still queued for it, whose completion then comes only once the layer has gone.
     ASurfaceControl_release(s->control);
@@ -800,10 +832,15 @@ Server *start(JNIEnv *env, jstring socket_path, jstring counter_path) {
     sockaddr_un addr = {};
     addr.sun_family = AF_UNIX;
     snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", s->path);
+    s->tick_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
     if (s->listener < 0 || bind(s->listener, (sockaddr *)&addr, sizeof(addr)) != 0 || listen(s->listener, 4) != 0 ||
-        pipe2(s->wake, O_CLOEXEC) != 0) {
+        pipe2(s->wake, O_CLOEXEC) != 0 || s->tick_fd < 0) {
         LOG("cannot listen on %s: %s", s->path, strerror(errno));
         if (s->listener >= 0) close(s->listener);
+        if (s->tick_fd >= 0) close(s->tick_fd);
+        if (s->wake[0] >= 0) close(s->wake[0]);
+        if (s->wake[1] >= 0) close(s->wake[1]);
+        unlink(s->path);
         munmap(s->page, PAGE);
         delete s;
         return nullptr;
@@ -814,6 +851,7 @@ Server *start(JNIEnv *env, jstring socket_path, jstring counter_path) {
         close(s->listener);
         close(s->wake[0]);
         close(s->wake[1]);
+        close(s->tick_fd);
         unlink(s->path);
         munmap(s->page, PAGE);
         delete s;
@@ -828,22 +866,20 @@ Server *start(JNIEnv *env, jstring socket_path, jstring counter_path) {
 
 } // namespace
 
-extern "C" int present_server_showing(void) {
-    return showing.load(std::memory_order_relaxed);
-}
-
-extern "C" void present_server_vsync(int64_t frame_ns) {
+// On the clock's thread: only a wake of the server's thread (handle_tick) while a frame with
+// vsync off waits for a tick; no compositor work here.
+extern "C" void present_server_tick(void) {
     pthread_mutex_lock(&current_lock);
     Server *s = current;
-    if (s != nullptr) {
-        pthread_mutex_lock(&s->lock);
-        s->last_vsync_ns = frame_ns;
-        take_display(&s->takes, frame_ns);
-        // Only frames for a layer: without one they wait for the beat.
-        if (s->control != nullptr && s->nwaiting > 0 && take_due(&s->takes, frame_ns, 0)) show_oldest(s);
-        pthread_mutex_unlock(&s->lock);
+    if (s != nullptr && s->waits_tick.load()) {
+        uint64_t one = 1;
+        if (write(s->tick_fd, &one, sizeof(one)) != (ssize_t)sizeof(one) && errno != EAGAIN) LOG("cannot wake the server for a tick");
     }
     pthread_mutex_unlock(&current_lock);
+}
+
+extern "C" int present_server_showing(void) {
+    return showing.load(std::memory_order_relaxed);
 }
 
 extern "C" JNIEXPORT jlong JNICALL Java_com_pd2launcher_app_PresentServer_nativeStart(
@@ -853,14 +889,14 @@ extern "C" JNIEXPORT jlong JNICALL Java_com_pd2launcher_app_PresentServer_native
 
 namespace {
 
-void attach(Server *s, JNIEnv *env, jobject surface, jfloat frame_rate, jlong min_interval) {
+void attach(Server *s, JNIEnv *env, jobject surface, jfloat frame_rate, bool capped = true) {
     ANativeWindow *window = ANativeWindow_fromSurface(env, surface);
     if (window == nullptr) return;
     pthread_mutex_lock(&s->lock);
     // The newest frame the game drew while it was not on the screen shows at once on the new
     // layer: the X screen under the copy has the picture from before.
-    Server::Waiting newest = {nullptr, -1, -1};
-    if (!s->view && s->nwaiting > 0) newest = s->waiting[--s->nwaiting];
+    sent_frame newest = {nullptr, -1, -1};
+    if (!s->view) take_newest(&s->next, &newest);
     drop_layer(s);
     // The surface stays the Game view's until detach, also when no layer can be made on it.
     s->window = window;
@@ -868,25 +904,17 @@ void attach(Server *s, JNIEnv *env, jobject surface, jfloat frame_rate, jlong mi
     s->dest_w = ANativeWindow_getWidth(window);
     s->dest_h = ANativeWindow_getHeight(window);
     s->frame_rate = frame_rate;
-    s->takes = {};
-    s->takes.interval_ns = min_interval > 0 ? min_interval : 0;
-    s->last_vsync_ns = 0;
+    s->capped = capped;
     s->control = ASurfaceControl_createFromWindow(window, "pd2-game-direct");
     if (s->control == nullptr) LOG("no layer on the Game view: the game's frames go to the X screen");
     update_wanted(s);
     if (newest.set != nullptr) {
-        ARect source, destination;
-        if (s->control != nullptr && newest.set == s->active && placed(s, newest.set, &source, &destination)) {
-            show(s, newest.set, newest.index, newest.fence, source, destination);
-        } else {
-            s->back_at_once++;
-            give_back(newest.set, newest.index, newest.fence);
-        }
-        unref(newest.set);
+        keep(s, (BufferSet *)newest.set, newest.index, newest.fence);
+        unref((BufferSet *)newest.set);
+        show_next(s);
     }
     pthread_mutex_unlock(&s->lock);
-    LOG("the Game view: %dx%d, frame rate %.0f, frames shown every %.1f ms on average (0: as they come)", s->dest_w, s->dest_h,
-        frame_rate, (double)s->takes.interval_ns / 1e6);
+    LOG("the Game view: %dx%d, frame rate %.0f", s->dest_w, s->dest_h, frame_rate);
 }
 
 // The layer on [surface] goes, and with it the Game view; one a newer surface was given in the
@@ -895,15 +923,57 @@ void detach(Server *s, JNIEnv *env, jobject surface) {
     ANativeWindow *window = ANativeWindow_fromSurface(env, surface);
     pthread_mutex_lock(&s->lock);
     if (window == nullptr || window == s->window) {
-        // Without a Game view the frames that come wait for the beat (background_beat), or go to
-        // the X screen while the background pacer does not run.
+        // Without a Game view the newest frame that comes waits unshown for its return.
         s->view = false;
-        s->beat_next = now_ns() + s->background_ns;
         drop_layer(s);
         update_wanted(s);
     }
     pthread_mutex_unlock(&s->lock);
     if (window != nullptr) ANativeWindow_release(window);
+}
+
+// The Game view's [surface] has a new size, [width] x [height]: the layer stays, and the frame on the
+// screen moves to its new place at once (the next frames are placed at that size too).
+void resize(Server *s, JNIEnv *env, jobject surface, int32_t width, int32_t height) {
+    ANativeWindow *window = ANativeWindow_fromSurface(env, surface);
+    if (window == nullptr) return;
+    pthread_mutex_lock(&s->lock);
+    if (window != s->window) {
+        LOG("resize to %dx%d of a surface the game's layer is not on: ignored", width, height);
+    } else if (width > 0 && height > 0) {
+        s->dest_w = width;
+        s->dest_h = height;
+        ARect source, destination;
+        ASurfaceTransaction *t = nullptr;
+        if (s->control != nullptr && s->visible && s->shown_set != nullptr && place(s, s->shown_set, &source, &destination)) {
+            t = ASurfaceTransaction_create();
+        }
+        // Without a transaction now, the next frame shown is placed at the new size.
+        if (t != nullptr) {
+            ASurfaceTransaction_setGeometry(t, s->control, source, destination, 0);
+            ASurfaceTransaction_apply(t);
+            ASurfaceTransaction_delete(t);
+            s->configured_source = source;
+            s->configured_destination = destination;
+        }
+    }
+    pthread_mutex_unlock(&s->lock);
+    ANativeWindow_release(window);
+}
+
+// The game's layer asks the display for [frame_rate] from now on (the player changed the Frame
+// rate): at once where a layer is, else when one is made (attach).
+void set_frame_rate(Server *s, float frame_rate, bool capped) {
+    pthread_mutex_lock(&s->lock);
+    s->frame_rate = frame_rate;
+    s->capped = capped;
+    if (s->control != nullptr && frame_rate > 0) {
+        ASurfaceTransaction *t = ASurfaceTransaction_create();
+        ASurfaceTransaction_setFrameRate(t, s->control, frame_rate, ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT);
+        ASurfaceTransaction_apply(t);
+        ASurfaceTransaction_delete(t);
+    }
+    pthread_mutex_unlock(&s->lock);
 }
 
 void set_window(Server *s, bool covered, int32_t x, int32_t y, int32_t w, int32_t h, int32_t screen_w, int32_t screen_h) {
@@ -925,7 +995,7 @@ void set_window(Server *s, bool covered, int32_t x, int32_t y, int32_t w, int32_
 }
 
 void stop(Server *s) {
-    // The copy's display frames no longer reach it.
+    // The clock's ticks no longer reach it.
     pthread_mutex_lock(&current_lock);
     if (current == s) current = nullptr;
     pthread_mutex_unlock(&current_lock);
@@ -945,6 +1015,7 @@ void stop(Server *s) {
     close(s->listener);
     close(s->wake[0]);
     close(s->wake[1]);
+    close(s->tick_fd);
     unlink(s->path);
     munmap(s->page, PAGE);
     // A late callback would find it: then it stays allocated.
@@ -954,11 +1025,23 @@ void stop(Server *s) {
 
 } // namespace
 
-// The Game view's surface (a child layer goes on it), asking the display for [frame_rate], its
-// frames shown at least [min_interval] nanoseconds apart at a reduced frame rate (0: as they come).
+// The Game view's surface (a child layer goes on it), asking the display for [frame_rate];
+// [capped]: a Frame rate below the screen's, which frames with vsync off wait for.
 extern "C" JNIEXPORT void JNICALL Java_com_pd2launcher_app_PresentServer_nativeAttach(
-    JNIEnv *env, jclass, jlong handle, jobject surface, jfloat frame_rate, jlong min_interval) {
-    attach((Server *)(intptr_t)handle, env, surface, frame_rate, min_interval);
+    JNIEnv *env, jclass, jlong handle, jobject surface, jfloat frame_rate, jboolean capped) {
+    attach((Server *)(intptr_t)handle, env, surface, frame_rate, capped);
+}
+
+// The Game view's [surface] has a new size: the game's layer shows at it, with no new layer.
+extern "C" JNIEXPORT void JNICALL Java_com_pd2launcher_app_PresentServer_nativeResize(
+    JNIEnv *env, jclass, jlong handle, jobject surface, jint width, jint height) {
+    resize((Server *)(intptr_t)handle, env, surface, width, height);
+}
+
+// The player changed the Frame rate: the game's layer asks the display for [frame_rate].
+extern "C" JNIEXPORT void JNICALL Java_com_pd2launcher_app_PresentServer_nativeSetFrameRate(
+    JNIEnv *, jclass, jlong handle, jfloat frame_rate, jboolean capped) {
+    set_frame_rate((Server *)(intptr_t)handle, frame_rate, capped);
 }
 
 // The Game view's [surface] is going: its layer goes with it.

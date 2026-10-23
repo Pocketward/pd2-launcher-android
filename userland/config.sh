@@ -23,17 +23,23 @@ DEBIAN_IMAGE=docker.io/library/debian@sha256:a29215f6a35e51e22adffa17f89e9d2ef06
 # snapshot.debian.org timestamp for trixie, trixie-updates and trixie-security (Debian 13.7).
 DEBIAN_SNAPSHOT=20261006T000000Z
 
-# Mesa release (build-mesa.sh: Zink, GLX, EGL, Turnip); SHA-256 matches docs.mesa3d.org/relnotes/26.2.3.html
-MESA_VERSION=26.2.3
-MESA_SHA256=1628058a8d2c0615975de5a15ab7bbb9638c50000b5bed9456ff423ea034a81f
-MESA_URL="https://archive.mesa3d.org/mesa-$MESA_VERSION.tar.xz"
+# Mesa: one commit of Mesa's development branch (main) for everything we build from Mesa: Zink,
+# GLX, EGL and Turnip (build-mesa.sh) and PanVK (build-panvk.sh). Main drives more GPUs than the
+# releases (Adreno 710 and 720: 4db0b15c; Adreno 722: 803731f7) and has fixes before a release
+# has them. mesa-update.sh moves the pin to a newer commit and refreshes our patches; each app
+# release keeps the commit it was tested with (docs/BUILDING.md, "Moving the Mesa pin").
+# MESA_SHA256 is that of GitLab's archive of the commit, recorded on first download (the archive's
+# tar is byte-identical to `git archive --prefix=mesa-<commit>/ <commit>`); MESA_VERSION is the
+# tree's VERSION file.
+MESA_COMMIT=f89f259210ae7d08381a1736d77920f943fe0a2a
+MESA_SHA256=2b655c9deeb16724b31882fd0fe6209adef8911fbbc4106b8fa85f8560ff775f
+MESA_VERSION=27.0.0-devel
+MESA_URL="https://gitlab.freedesktop.org/mesa/mesa/-/archive/$MESA_COMMIT/mesa-$MESA_COMMIT.tar.gz"
 
-# Mesa for PanVK on Mali (build-panvk.sh), separate from Turnip's release above: main after the v11
-# models (MR !41803), until the 26.3 branch exists; then its releases.
-# SHA-256 of GitLab's archive of that commit, recorded on first download.
-PANVK_MESA_COMMIT=5bd05bf437123e11ae194df89494a3ab9da1e2ac
-PANVK_MESA_SHA256=607946081ba8d9b29b4d02f1fb1e6fae1193ca787f18a840747243f9b3e49755
-PANVK_MESA_URL="https://gitlab.freedesktop.org/mesa/mesa/-/archive/$PANVK_MESA_COMMIT/mesa-$PANVK_MESA_COMMIT.tar.gz"
+# PanVK on Mali (build-panvk.sh) builds from the same Mesa commit.
+PANVK_MESA_COMMIT=$MESA_COMMIT
+PANVK_MESA_SHA256=$MESA_SHA256
+PANVK_MESA_URL=$MESA_URL
 
 # Arm's kbase uAPI headers (CSF 1.38) for our PanVK backend: fetched
 # unchanged by build-panvk.sh from Sky1-Linux/cix-gpu-kmd at this commit (MALI_RELEASE_NAME
@@ -174,18 +180,24 @@ build_identity() { # pin-or-file...
     done
 }
 
-# Downloads a pinned source tarball into the cache once and checks its SHA-256.
+# Downloads a pinned source tarball into the cache once and checks its SHA-256. A cached file
+# that does not match (for example the bytes of an archive that GitLab later compressed anew,
+# after the pin's SHA-256 changed for the same file name) is downloaded once more.
 fetch_source() { # url sha256 -> prints the local path
     local url="$1" sha="$2" file
     file="$USERLAND_CACHE/sources/$(basename "$url")"
     mkdir -p "$USERLAND_CACHE/sources"
+    if [[ -f "$file" ]] && ! echo "$sha  $file" | sha256sum -c --quiet - >/dev/null 2>&1; then
+        echo "cached $(basename "$file") does not match its SHA-256: downloading it again" >&2
+        rm -f "$file"
+    fi
     if [[ ! -f "$file" ]]; then
         curl -fsSL --retry 3 -o "$file.part" "$url"
         # Checked before it takes the cached name: a bad download is removed, never kept as good.
         echo "$sha  $file.part" | sha256sum -c --quiet - >&2 || { rm -f "$file.part"; echo "SHA-256 mismatch: $url" >&2; return 1; }
         mv "$file.part" "$file"
     fi
-    echo "$sha  $file" | sha256sum -c --quiet - >&2 || { echo "SHA-256 mismatch: $file" >&2; return 1; }
+    # Both ways here checked the file: the cached one above, a download before its mv.
     echo "$file"
 }
 

@@ -8,13 +8,12 @@
 // outside Mesa's presentation). It does not copy on each present: a display frame shows one
 // present at most whichever way they are taken, and the game often presents the same picture
 // again, which the hash skips.
-// The copy also paces the game (Mesa patch 0003): in the same file it says the last present it
-// has taken off the X screen, and Mesa holds each present (vsync on or off) back until the one
-// before is taken, so the game draws one frame per display frame and the X server never writes a
-// frame over one the copy is reading. At a reduced frame rate (Settings, Game) only some display
-// frames take (frame_pacing.h): every so many, evenly, where the interval is a whole number of the
-// display's frames, else the first one at or after each due time, so the game draws that many
-// frames a second on average. While no copy runs, background_pacer.c paces the game.
+// The app's clock paces a game with vsync on (frame_clock.c, Mesa patch 0008). The copy's take
+// holds every present mode to one frame a display frame on this path: it says in the same file the
+// last present it has taken off the X screen (patch 0003), and Mesa copies the X screen's next
+// frame from its back pixmap into the window only then (patch 0007), so the X server never writes
+// a frame over one the copy is reading. The copy does not cap a game with vsync off at the Frame
+// rate (the direct present does, present_server.cpp).
 // While the game's own buffers are on the screen (present_server.cpp, Mesa patch 0004) the copy
 // rests: its layer is under theirs and the X screen does not get the game's frames. After 5 s of
 // rest its layer's buffers that are not on the screen go (frame_layer_rest), and the first display
@@ -45,7 +44,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "background_pacer.h"
+#include "frame_clock.h"
 #include "frame_layer.h"
 #include "frame_pacing.h"
 #include "present_server.h"
@@ -55,11 +54,6 @@
 #define STATS_INTERVAL_NS 5000000000LL
 // The largest X screen side taken (FrameCopy.kt's XwdHeader.MAX_SIDE).
 #define MAX_SIDE 16384
-// The present counter's page (Mesa patches 0002 and 0003): the presents at byte 0 (Mesa's), the
-// last one the copy has taken at byte 64 and, at byte 128, non-zero while the copy runs.
-#define PACING_PAGE 4096
-#define TAKEN_WORD (64 / 4)
-#define PACED_WORD (128 / 4)
 // No present for this long: the picture is drawn outside Mesa's presentation (a Wine or GDI window,
 // the official launcher), so every display frame is hashed again.
 #define PRESENTS_QUIET_NS 250000000LL
@@ -86,6 +80,9 @@ struct copy {
     int64_t start_ns, last_ns;
     uint64_t presented, copy_ns, copy_max_ns;
     _Alignas(8) uint64_t changed; // atomic: nativeChangedFrames reads it on the main thread
+    // The buffers that went to the compositor: the copy's posts, and the game's presents while its
+    // own layer shows (one buffer each). Atomic: nativePostedFrames reads it on the main thread.
+    _Alignas(8) uint64_t posts;
     uint64_t last_presented, last_changed, last_copy_ns;
     uint64_t previous_hash;
     uint64_t checks, check_ns, last_checks, last_check_ns;
@@ -102,12 +99,6 @@ struct copy {
     // before in the framebuffer), and checks that found a present but the same picture.
     _Alignas(8) uint64_t fresh; // atomic: nativeShownPresents reads it on the main thread
     uint64_t unseen, repeats, last_fresh, last_unseen, last_repeats;
-    // A reduced frame rate: the display frames that take (frame_pacing.h); for the stats, those
-    // that did not (they wait for the next due time), the last one that took and the longest gap
-    // between two that took.
-    struct take_schedule takes;
-    uint64_t waits, last_waits;
-    int64_t last_taken_ns, take_gap_max_ns;
 };
 
 static int64_t now_ns(void) {
@@ -263,9 +254,8 @@ static void taken(struct copy *c, uint32_t presents) {
     wake_presenter(&c->pacing[TAKEN_WORD]);
 }
 
-// Mesa waits for the copy only while it runs; on [on] off, the background pacer holds the game
-// (background_pacer.c), or a waiting present goes at once. Counted with or without the page, so
-// the pacer never paces beside a running copy.
+// Mesa waits for the copy's takes, before it writes the X screen's window, only while a copy runs
+// (frame_clock.c, pacing_copy_started).
 static void set_paced(struct copy *c, int on) {
     if (on) pacing_copy_started(c->pacing);
     else pacing_copy_stopped(c->pacing);
@@ -276,21 +266,18 @@ static void stats(struct copy *c, int64_t now) {
     uint64_t presented = c->presented - c->last_presented;
     double copy_ms = presented ? (double)(c->copy_ns - c->last_copy_ns) / presented / 1e6 : 0;
     uint64_t checks = c->checks - c->last_checks;
-    // Display frames that waited for the reduced frame rate's next due time (frame_pacing.h).
-    uint64_t waits = c->waits - c->last_waits;
     // Per hash: a display frame that skips the hash costs next to nothing.
     uint64_t hashes = c->hashes - c->last_hashes;
     double check_ms = hashes ? (double)(c->check_ns - c->last_check_ns) / hashes / 1e6 : 0;
     uint32_t presents = presents_now(c);
     if (c->presents != NULL) {
-        LOG("%dx%d: game %.1f presents/s; copy %.1f display frames/s, %.1f taken/s (longest gap %.1f ms), "
+        LOG("%dx%d: game %.1f presents/s; copy %.1f display frames/s, "
             "%.1f new/s, %.1f presented/s, presents shown %.1f/s, unseen %.1f/s, repeats %.1f/s, hashed %.1f/s, %s",
-            c->width, c->height, (uint32_t)(presents - c->last_presents) / window, (checks + waits) / window,
-            checks / window, (double)c->take_gap_max_ns / 1e6, (c->changed - c->last_changed) / window,
+            c->width, c->height, (uint32_t)(presents - c->last_presents) / window, checks / window,
+            (c->changed - c->last_changed) / window,
             presented / window, (c->fresh - c->last_fresh) / window, (c->unseen - c->last_unseen) / window,
-            (c->repeats - c->last_repeats) / window, hashes / window, c->pacing != NULL ? "pacing" : "not pacing");
+            (c->repeats - c->last_repeats) / window, hashes / window, c->pacing != NULL ? "taking" : "not taking");
     }
-    c->take_gap_max_ns = 0;
     LOG("%dx%d: %.1f presented/s, %.1f new/s, copy %.2f ms avg; totals: %llu presented, %llu new, "
         "copy %.2f ms avg, %.2f ms max, %.1f s; check %.2f ms avg",
         c->width, c->height, presented / window, (c->changed - c->last_changed) / window, copy_ms,
@@ -306,7 +293,6 @@ static void stats(struct copy *c, int64_t now) {
     c->last_changed = c->changed;
     c->last_copy_ns = c->copy_ns;
     c->last_checks = c->checks;
-    c->last_waits = c->waits;
     c->last_check_ns = c->check_ns;
     c->last_hashes = c->hashes;
 }
@@ -314,6 +300,7 @@ static void stats(struct copy *c, int64_t now) {
 static void counted(struct copy *c, int64_t begin) {
     int64_t took = now_ns() - begin;
     c->presented++;
+    __atomic_fetch_add(&c->posts, 1, __ATOMIC_RELAXED);
     c->copy_ns += took;
     if ((uint64_t)took > c->copy_max_ns) c->copy_max_ns = took;
 }
@@ -371,23 +358,20 @@ static void on_frame(int64_t frame_time_nanos, void *data) {
     uint32_t presents = presents_now(c);
     uint32_t since = presents - c->seen_presents;
     if (since > 0) c->last_present_ns = checked;
-    // Every display frame: the copy's display period, and the direct present's display frame (at a
-    // reduced frame rate it shows a waiting buffer on the display frames that take one).
-    take_display(&c->takes, frame_time_nanos);
-    present_server_vsync(frame_time_nanos);
     int direct = present_server_showing();
     // Over the whole view the copy rests. Once buffers went in a rest (or the allocator refused
     // one), the layer asks for the X screen again: the first display frame that shows the copy
-    // copies it, changed or not. The reduced frame rate's takes stay as they are.
+    // copies it, changed or not.
     int redraw = c->layer != NULL && frame_layer_rest(c->layer, frame_time_nanos, direct == 1);
     if (direct) {
         // Every present counted as shown (the compositor shows each of the game's buffers, back
         // pressure drops none).
-        if (c->checks > 0 && since > 0) __atomic_fetch_add(&c->fresh, since, __ATOMIC_RELAXED);
+        if (c->checks > 0 && since > 0) {
+            __atomic_fetch_add(&c->fresh, since, __ATOMIC_RELAXED);
+            __atomic_fetch_add(&c->posts, since, __ATOMIC_RELAXED);
+        }
         c->seen_presents = presents;
         c->checks++;
-        // The copy path's gaps start again when the game's frames come back to the X screen.
-        c->last_taken_ns = 0;
         taken(c, presents);
         // Over the whole view nothing is read or copied. Over a windowed game's window only, the
         // X screen around it is checked as for a window drawn over the game, every 100 ms (the
@@ -407,19 +391,6 @@ static void on_frame(int64_t frame_time_nanos, void *data) {
         AChoreographer_postFrameCallback64(AChoreographer_getInstance(), on_frame, c);
         return;
     }
-    // A reduced frame rate: a display frame before the next take is due neither reads nor takes,
-    // so Mesa holds the game's next present until the display frame that does. A changed picture
-    // that waits for a free buffer is copied (and taken) on the next display frame anyway.
-    if (!take_due(&c->takes, frame_time_nanos, c->pending)) {
-        c->waits++;
-        if (checked - c->last_ns >= STATS_INTERVAL_NS) stats(c, checked);
-        AChoreographer_postFrameCallback64(AChoreographer_getInstance(), on_frame, c);
-        return;
-    }
-    if (c->last_taken_ns != 0 && frame_time_nanos - c->last_taken_ns > c->take_gap_max_ns) {
-        c->take_gap_max_ns = frame_time_nanos - c->last_taken_ns;
-    }
-    c->last_taken_ns = frame_time_nanos;
     // Without a present since the last display frame the picture changed only if something drew
     // outside Mesa's presentation: while presents come that shows with the next one or the slow
     // check; once they stop, every display frame is hashed again.
@@ -445,7 +416,8 @@ static void on_frame(int64_t frame_time_nanos, void *data) {
     // Read by nativeChangedFrames on the main thread.
     if (changed) __atomic_fetch_add(&c->changed, 1, __ATOMIC_RELAXED);
     if (!put(c, changed, redraw, begin)) return;
-    // A changed picture no buffer was free for holds the game until it is copied.
+    // A changed picture no buffer was free for keeps the X screen's window as it is until it is
+    // copied.
     if (!c->pending) taken(c, presents);
     int64_t now = now_ns();
     if (now - c->last_ns >= STATS_INTERVAL_NS) stats(c, now);
@@ -505,12 +477,11 @@ static void map_presents(JNIEnv *env, jstring path, struct copy *c) {
 // Maps the framebuffer [fd] (taken: closed here) and starts copying its pixels ([offset] bytes in,
 // [width]x[height], [stride] bytes per line) into [surface]'s window, stored turned by [transform]
 // (ANATIVEWINDOW_TRANSFORM_ROTATE_90 or _270, else 0: as is); [presents] names the game's present
-// counter file, or is null; [frame_rate] is the rate the layer asks the display for (0: none);
-// [take_interval] the shortest time between two frames taken, in nanoseconds, at a reduced frame
-// rate (0: one a display frame). Returns a handle for nativeStop, or 0 (logged) on failure.
+// counter file, or is null; [frame_rate] is the rate the layer asks the display for (0: none).
+// Returns a handle for nativeStop, or 0 (logged) on failure.
 JNIEXPORT jlong JNICALL Java_com_pd2launcher_app_FrameCopy_nativeStart(
     JNIEnv *env, jclass cls, jobject surface, jint fd, jlong offset, jint width, jint height, jint stride,
-    jint transform, jstring presents, jfloat frame_rate, jlong take_interval) {
+    jint transform, jstring presents, jfloat frame_rate) {
     (void)cls;
     struct copy *c = calloc(1, sizeof(*c));
     if (c == NULL) {
@@ -522,7 +493,6 @@ JNIEXPORT jlong JNICALL Java_com_pd2launcher_app_FrameCopy_nativeStart(
     c->width = width;
     c->height = height;
     c->stride = stride / 4;
-    c->takes.interval_ns = take_interval > 0 ? take_interval : 0;
 
     // The header is Xvfb's, in memory a guest can write: every size is checked, and the stride
     // against the width in 64 bits (width * 4 in an int overflows).
@@ -590,10 +560,9 @@ JNIEXPORT jlong JNICALL Java_com_pd2launcher_app_FrameCopy_nativeStart(
     pthread_mutex_lock(&c->lock);
     while (!c->started) pthread_cond_wait(&c->ready, &c->lock);
     pthread_mutex_unlock(&c->lock);
-    LOG("copy started: %dx%d, %d bytes per line, pixels at %lld, buffer transform %d, %s, frame rate %.0f, %s, "
-        "frames taken every %.1f ms on average (0: each display frame)", width, height, stride, (long long)offset,
-        c->transform, c->layer != NULL ? "child layer" : "window", frame_rate,
-        c->pacing != NULL ? "pacing the game" : "not pacing", (double)c->takes.interval_ns / 1e6);
+    LOG("copy started: %dx%d, %d bytes per line, pixels at %lld, buffer transform %d, %s, frame rate %.0f, %s",
+        width, height, stride, (long long)offset, c->transform, c->layer != NULL ? "child layer" : "window", frame_rate,
+        c->pacing != NULL ? "taking the X screen's frames" : "no present counter page");
     return (jlong)(intptr_t)c;
 }
 
@@ -603,6 +572,14 @@ JNIEXPORT jlong JNICALL Java_com_pd2launcher_app_FrameCopy_nativeChangedFrames(J
     (void)cls;
     struct copy *c = (struct copy *)(intptr_t)handle;
     return (jlong)__atomic_load_n(&c->changed, __ATOMIC_RELAXED);
+}
+
+// The buffers that went to the compositor so far ([posts]): what keeps the display from its idle rate.
+JNIEXPORT jlong JNICALL Java_com_pd2launcher_app_FrameCopy_nativePostedFrames(JNIEnv *env, jclass cls, jlong handle) {
+    (void)env;
+    (void)cls;
+    struct copy *c = (struct copy *)(intptr_t)handle;
+    return (jlong)__atomic_load_n(&c->posts, __ATOMIC_RELAXED);
 }
 
 // The game's presents counted so far (a 32-bit count that wraps), or -1 without the counter.
@@ -619,6 +596,23 @@ JNIEXPORT jlong JNICALL Java_com_pd2launcher_app_FrameCopy_nativeShownPresents(J
     (void)cls;
     struct copy *c = (struct copy *)(intptr_t)handle;
     return (jlong)__atomic_load_n(&c->fresh, __ATOMIC_RELAXED);
+}
+
+// The copy's layer asks the display for [frame_rate] from now on (the player changed the Frame rate).
+JNIEXPORT void JNICALL Java_com_pd2launcher_app_FrameCopy_nativeSetFrameRate(JNIEnv *env, jclass cls, jlong handle, jfloat frame_rate) {
+    (void)env;
+    (void)cls;
+    struct copy *c = (struct copy *)(intptr_t)handle;
+    if (c != NULL && c->layer != NULL) frame_layer_set_rate(c->layer, frame_rate);
+}
+
+// The surface has a new size: the layer shows the X screen scaled to it, with no new copy. Without
+// a layer the compositor scales the window's buffers (the X screen's size) to the view itself.
+JNIEXPORT void JNICALL Java_com_pd2launcher_app_FrameCopy_nativeResize(JNIEnv *env, jclass cls, jlong handle, jint width, jint height) {
+    (void)env;
+    (void)cls;
+    struct copy *c = (struct copy *)(intptr_t)handle;
+    if (c != NULL && c->layer != NULL) frame_layer_resize(c->layer, width, height);
 }
 
 JNIEXPORT void JNICALL Java_com_pd2launcher_app_FrameCopy_nativeStop(JNIEnv *env, jclass cls, jlong handle) {

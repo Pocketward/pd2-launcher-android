@@ -24,12 +24,20 @@ sealed class RelayEvent(val type: Int, val a: Int, val b: Int) {
     /** The key carrying X [keysym] pressed or released. */
     data class Key(val keysym: Int, val down: Boolean) : RelayEvent(KEY, keysym, if (down) 1 else 0)
 
+    /**
+     * The game is on the app's screen again ([onScreen]) or no longer: x-input-relay gives the game's
+     * window the focus back or takes it away, as a desktop does, so the game uses its own background
+     * frame rate meanwhile.
+     */
+    data class Focus(val onScreen: Boolean) : RelayEvent(FOCUS, if (onScreen) 1 else 0, 0)
+
     companion object {
         const val SIZE = 12
         const val MOTION = 1
         const val RELATIVE = 2
         const val BUTTON = 3
         const val KEY = 4
+        const val FOCUS = 5
 
         const val LEFT = 1
         const val MIDDLE = 2

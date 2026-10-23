@@ -89,9 +89,6 @@ object Play {
      */
     fun officialLauncherShown(status: SessionStatus): Boolean = officialLauncherRunning(status) && !status.launcherGame
 
-    /** The overlay's status line: what runs. */
-    fun overlayStatus(launcher: Boolean): Int = if (launcher) R.string.launcher_running else R.string.game_running
-
     /** The overlay's Stop button label. */
     fun overlayStopLabel(launcher: Boolean): Int = if (launcher) R.string.launcher_view_stop else R.string.game_view_stop
 

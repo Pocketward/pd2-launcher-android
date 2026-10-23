@@ -18,9 +18,15 @@ https://github.com/user-attachments/assets/f294dbf7-d77c-46bf-a42d-584854420aa3
 
 <p align="center">
   <img src="docs/media/walk.gif" width="49%" alt="Walking in town with the on-screen controls">
-  <img src="docs/media/edit-controls.gif" width="49%" alt="Changing the layout of the on-screen controls">
+  <img src="docs/media/edit-controls.gif" width="49%" alt="Over the PD2 main menu: the in-game menu, the Controls screen with the buttons of each mode, then the on-screen layout editor, where the face buttons move and become smaller">
 </p>
-<p align="center"><b>Left:</b> walk with the on-screen controls, a virtual controller. <b>Right:</b> <b>Edit controls</b> moves, resizes and fades each control, and adds buttons for keys.</p>
+<p align="center"><b>Left:</b> walk with the on-screen controls, a virtual controller. <b>Right:</b> the in-game menu's <b>Controls</b> screen shows what each controller button does. <b>Edit on-screen layout</b> moves, resizes and fades each on-screen control, and adds buttons for keys.</p>
+
+<p align="center">
+  <img src="docs/media/settings.gif" width="49%" alt="The Settings: the game resolution (the game's own size or Custom), the display (Fit to screen or Center), the frame rate, then the App and Controller tabs">
+  <img src="docs/media/logs.gif" width="49%" alt="Share logs and Save logs in the App tab of the Settings">
+</p>
+<p align="center"><b>Left:</b> <b>Settings</b>: the game resolution, the display, the frame rate, the graphics profile, and the options for the app and the controller. <b>Right:</b> for a problem report, <b>Share logs</b> sends the app's logs as one file, and <b>Save logs</b> saves that file on your device.</p>
 
 ## What your device needs
 
@@ -32,11 +38,30 @@ https://github.com/user-attachments/assets/f294dbf7-d77c-46bf-a42d-584854420aa3
 
 The app checks all of this when it first starts and says what is missing. A GPU of a supported family that the bundled graphics driver does not know gets a warning instead: the game may still run. The check does not look at the kernel version.
 
+## Supported graphics chips
+
+### Built-in driver
+
+The app has its own graphics driver from Mesa: Turnip for Adreno GPUs and PanVK for Mali GPUs. This driver knows the GPUs below. For a different GPU of these families, the Check screen shows a warning, and the game may still run.
+
+| Family | GPUs |
+|---|---|
+| Adreno 6xx | 605, 608, 610, 612, 613, 615, 616, 618, 619, 620, 621, 623, 630, 640, 642L, 643, 644, 650, 660, 663, 680, 690 |
+| Adreno 7xx | 702, 704, 710, 720, 722, 725, 730, 735, 740, 750, 753, A32 |
+| Adreno 8xx | 810, 829, 830, 840 |
+| Mali (v10 to v13) | G310, G610, G615, G715, G720, G725, Immortalis-G715, Immortalis-G720, Immortalis-G925 |
+
+The Check screen shows some of these GPUs with a different name: the Adreno 642L and 643 as Adreno 635, the Adreno 644 as Adreno 662, and an Immortalis GPU as the Mali GPU of the same type (the Immortalis-G925 as Mali-G725).
+
+### Phone's own driver
+
+Not in this version. The game uses only the built-in driver.
+
 ## Install
 
 Download the APK from the [releases page](https://github.com/Pocketward/pd2-launcher-android/releases) and open it on your device. Android asks once to allow installs from the app you opened it with (your browser or file manager). The app is not on Google Play.
 
-You need your Diablo II and Lord of Destruction CD keys (two different keys) and an internet connection; the app downloads Blizzard's official installers and Project Diablo 2's files from their official sources. If you already have Diablo II and Lord of Destruction 1.14b or 1.14d installed on a PC, you can copy that folder to the device instead and need no CD keys.
+You need your Diablo II and Lord of Destruction CD keys (two different keys) and an internet connection; the app downloads Blizzard's official installers and Project Diablo 2's files from their official sources. If you already have Diablo II and Lord of Destruction installed on a PC, of any version, you can copy that folder to the device instead and need no CD keys: the app uses it as it is when the Diablo II and Lord of Destruction files are in it.
 
 ## Updates of this app
 
@@ -53,11 +78,11 @@ The app walks you through four steps:
 
 In the game:
 
-- **Touch:** tap to click, long press and drag as with a mouse. On-screen controls (a virtual controller) show while no controller is connected; switch them with **Touch pad** in the in-game menu and arrange them with **Edit controls**.
+- **Touch:** tap to click, long press and drag as with a mouse. On-screen controls (a virtual controller) show while no controller is connected; switch them with **On-screen controls** in the in-game menu and arrange them with **Edit on-screen layout** in its Controls screen.
 - **Mouse:** a USB or Bluetooth mouse moves the game's cursor directly; its left, right and middle buttons and the wheel work as on a PC.
-- **Controller:** works as an Xbox controller. Press **Select + Start** (or **L3 + R3**, set in Controls) to switch to mouse mode for menus and typing; hold it to open the in-game menu. Every button can be rebound.
-- **In-game menu:** the floating button, Android's Back gesture, or the controller chord opens a menu on the right edge, without pausing the game: Keyboard, Touch pad, Show fps, Controls, Edit controls, Settings and Stop game.
-- **Settings:** the renderer (Glide, recommended, or DirectDraw), the game resolution (fewer lines run smoother; Automatic picks one for your GPU), the graphics profile (Default or Performance), Skip to Battle.net, sound in the background, the controller, and storage.
+- **Controller:** works as an Xbox controller. Press **Select + Start** (or **L3 + R3**, set in Settings → Controller) to switch to mouse mode for menus and typing; hold it to open the in-game menu. Every button can be rebound, each direction of the d-pad too, also while you play.
+- **In-game menu:** the floating button, Android's Back gesture, or the controller chord opens a menu on the right edge, without pausing the game. **L1** and **R1** step through **Quick**, **Controls** and **Settings**. While the menu is open, the game runs at its background frame rate, and the on-screen controls show dimmed and do not work (with **Slower game in the background** on). **Quick:** On-screen controls, FPS counter, Display, Keyboard and Frame rate. **Settings:** Slower game in the background, Sound in background, Keep the screen on during play, and Stop game. The gamepad icon opens **Controls**, which keeps the menu's side bar: pad mode and mouse mode (**Use mouse mode** or **Use pad mode** switches the controller, as Select + Start does), what each button does (press a button's row to change it), the pointer speed and the on-screen layout.
+- **Settings:** the renderer (Glide, recommended, or DirectDraw), the game resolution (the game's own 1068 × 600 by default, or a custom size; on a smaller screen, its full size), the display (Fit to screen: the game's menus and the game as large as the screen allows; or Center: each game pixel as one screen pixel; also in the in-game menu), the graphics profile (Default or Performance), Skip to Battle.net, sound in the background, the controller, and storage.
 
 The game keeps running when you switch apps; a notification shows while it does.
 

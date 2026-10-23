@@ -8,26 +8,34 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
- * The Android app's own settings: kept in the app's preferences, not the Launcher's, and read
- * when the Game view opens, so a change takes effect on the next Play.
+ * The Android app's own settings: kept in the app's preferences, not the Launcher's. Most are read
+ * when the Game view opens or at Play, so a change takes effect on the next Play; the Game view
+ * follows some live (Display, the frame rate, Show fps), as each one's KDoc says.
  */
 data class AppSettings(
     /** The screen stays on while the Game view shows. */
     val keepScreenOn: Boolean = true,
     /** A small counter of the game's frames per second shows over the Game view. */
     val showFps: Boolean = false,
-    /** The game resolution the player picked, in lines or [GameResolution.GAME_SIZE]; null: Automatic ([GameResolution]). */
-    val gameResolution: Int? = null,
+    /**
+     * The game resolution's Custom size the player typed ([GameResolution.typedCustom]), from the
+     * next Play; null: the game's own size ([GameResolution.ownSize]).
+     */
+    val customSize: Pair<Int, Int>? = null,
+    /** How the Game view shows the game's picture ([GameDisplay]); the Game view reads it live, with no restart of the game. */
+    val gameDisplay: GameDisplay = GameDisplay.FIT,
     /** D2GL's graphics profile the player picked; null: Automatic ([GraphicsProfiles]). */
     val graphicsProfile: GraphicsProfile? = null,
     /**
-     * The game's frame rate on the screen, in frames a second: one of [FrameRateVote.CAPS] (60 only
-     * on a screen faster than 60 Hz); null: the screen's full rate ([FrameRateVote.cap]).
+     * The game's frame rate on the screen, in frames a second: a whole number from
+     * [FrameRateVote.MIN] that the player typed, or [FULL_FRAME_RATE]: the screen's full rate. 60
+     * by default. A screen not faster than the value shows its full rate ([FrameRateVote.cap]).
      */
-    val frameRate: Int? = null,
+    val frameRate: Int = 60,
     /**
      * While the game is not on the screen (the app in the background, the screen off, the app's own
-     * screens over the game), it draws at most [BackgroundPacer.FPS] frames a second.
+     * screens over the game), the game is told so (its window loses the focus), and it draws at its
+     * own background frame rate (D2GL's Max Background FPS, 25 by default).
      */
     val lowFrameRateInBackground: Boolean = true,
     /**
@@ -62,7 +70,14 @@ data class AppSettings(
         mapOf(
             KEEP_SCREEN_ON to keepScreenOn,
             SHOW_FPS to showFps,
-            GAME_RESOLUTION to gameResolution,
+            CUSTOM_SIZE to customSize?.let { (width, height) -> "${width}x$height" },
+            VIEW_DISPLAY to gameDisplay.takeIf { it != GameDisplay.FIT }?.name,
+            // The older game resolution and display keys: not read, so every earlier pick is the game's own
+            // size and Fit to screen once; removed at the first save.
+            GAME_RESOLUTION to null,
+            GAME_SCALE to null,
+            GAME_SIZE to null,
+            GAME_DISPLAY to null,
             GRAPHICS_PROFILE to graphicsProfile?.name,
             FRAME_RATE to frameRate,
             // The older "Limit to 60 fps" switch, now FRAME_RATE's 60: removed at the first save.
@@ -77,18 +92,32 @@ data class AppSettings(
     companion object {
         const val KEEP_SCREEN_ON = "keep_screen_on"
         const val SHOW_FPS = "show_fps"
+        /** [customSize] as "<width>x<height>"; none: the game's own size. */
+        const val CUSTOM_SIZE = "custom_size"
+        /** [gameDisplay]'s name; none: [GameDisplay.FIT]. */
+        const val VIEW_DISPLAY = "view_display"
+        /** Older game resolution and display keys (lines, a scale, a size's name, a display's name): not read, removed at the first save. */
         const val GAME_RESOLUTION = "game_resolution"
+        const val GAME_SCALE = "game_scale"
+        const val GAME_SIZE = "game_size"
+        const val GAME_DISPLAY = "game_display"
         const val GRAPHICS_PROFILE = "graphics_profile"
         const val FRAME_RATE = "frame_rate"
-        /** The older "Limit to 60 fps" switch (a Boolean), read while [FRAME_RATE] has no value. */
+        /** [frameRate]'s value for Full, the screen's full rate: stored, so a player's Full is not the default. */
+        const val FULL_FRAME_RATE = 0
+        /** The older "Limit to 60 fps" switch (a Boolean): on, it was 60, now the default. */
         const val LIMIT_FRAME_RATE = "limit_frame_rate"
-        /** The frame rate that switch, on, stands for. */
-        private const val LIMITED_FRAME_RATE = 60
         const val LOW_FRAME_RATE_IN_BACKGROUND = "low_frame_rate_in_background"
         const val LAUNCHER_RESOLUTION = "launcher_resolution"
         const val DOWNLOADS_NOTICE_ANSWERED = "downloads_notice_answered"
         const val GAME_PLAYED = "game_played"
         const val UPDATE_CHECKS = "update_checks"
+
+        /** "<width>x<height>" of positive whole numbers, else null. */
+        private fun parseSize(text: String): Pair<Int, Int>? {
+            val (width, height) = Regex("([0-9]{1,5})x([0-9]{1,5})").matchEntire(text)?.destructured ?: return null
+            return (width.toInt() to height.toInt()).takeIf { (w, h) -> w > 0 && h > 0 }
+        }
 
         /** A missing or mistyped value is the default, one by one. */
         fun fromPreferences(values: Map<String, *>): AppSettings {
@@ -96,10 +125,11 @@ data class AppSettings(
             return AppSettings(
                 keepScreenOn = values[KEEP_SCREEN_ON] as? Boolean ?: defaults.keepScreenOn,
                 showFps = values[SHOW_FPS] as? Boolean ?: defaults.showFps,
-                gameResolution = (values[GAME_RESOLUTION] as? Int)?.takeIf { it >= GameResolution.MIN_LINES || it == GameResolution.GAME_SIZE },
+                customSize = (values[CUSTOM_SIZE] as? String)?.let(::parseSize),
+                gameDisplay = GameDisplay.entries.firstOrNull { it.name == values[VIEW_DISPLAY] } ?: defaults.gameDisplay,
                 graphicsProfile = GraphicsProfile.entries.firstOrNull { it.name == values[GRAPHICS_PROFILE] },
-                frameRate = (values[FRAME_RATE] as? Int)?.takeIf { it in FrameRateVote.CAPS }
-                    ?: LIMITED_FRAME_RATE.takeIf { values[FRAME_RATE] == null && values[LIMIT_FRAME_RATE] == true },
+                frameRate = (values[FRAME_RATE] as? Int)?.takeIf { it == FULL_FRAME_RATE || it >= FrameRateVote.MIN }
+                    ?: defaults.frameRate,
                 lowFrameRateInBackground = values[LOW_FRAME_RATE_IN_BACKGROUND] as? Boolean ?: defaults.lowFrameRateInBackground,
                 launcherResolution = (values[LAUNCHER_RESOLUTION] as? Int)?.takeIf { it >= GameResolution.MIN_LINES },
                 downloadsNoticeAnswered = values[DOWNLOADS_NOTICE_ANSWERED] as? Boolean ?: defaults.downloadsNoticeAnswered,

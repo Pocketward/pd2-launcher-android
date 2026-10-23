@@ -1,33 +1,35 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The Game view's overlay menu and on-screen controls. -->
+<!-- The Game view's in-game menu and on-screen controls. -->
 <resources>
     <string name="game_view_menu">Menu</string>
-    <string name="game_running">Game running</string>
-    <string name="game_menu_close">✕</string>
+    <string name="game_menu_close">Close</string>
+    <!-- The menu's two tabs; L1 and R1 switch between them (the hints beside the tab icons). -->
+    <string name="game_menu_quick">Quick</string>
+    <string name="game_menu_settings">Settings</string>
+    <string name="game_menu_l1">L1</string>
+    <string name="game_menu_r1">R1</string>
+    <!-- The Quick tab's tiles: each shows its state word; Display switches between Fit to screen and Center (Settings, Game, Display). -->
+    <string name="on_screen_controls">On-screen controls</string>
+    <string name="game_menu_fps_counter">FPS counter</string>
+    <string name="game_menu_display">Display</string>
     <string name="game_view_keyboard">Keyboard</string>
-    <string name="game_menu_touch_pad">Touch pad</string>
-    <string name="game_menu_show_fps">Show fps</string>
+    <string name="game_menu_on">On</string>
+    <string name="game_menu_off">Off</string>
+    <string name="game_menu_display_fit">Fit</string>
+    <string name="game_menu_display_center">Center</string>
     <string name="game_fps">%1$d fps</string>
     <!-- The game draws more frames a second than the screen refreshes: how many it shows. -->
     <string name="game_fps_on_screen">%1$d fps · %2$d on screen</string>
     <string name="game_fps_unknown">– fps</string>
-    <string name="game_menu_controls">Controls</string>
-    <string name="game_menu_edit_controls">Edit controls</string>
-    <string name="game_menu_settings">Settings</string>
     <string name="game_view_stop">Stop game</string>
     <string name="game_menu_stop_body">Stop the game? Anything since your last save is lost.</string>
-    <string name="launcher_running">PD2 launcher</string>
     <string name="launcher_view_stop">Close launcher</string>
     <string name="launcher_menu_keep_open">Keep it open</string>
     <string name="launcher_menu_stop_body">Close the official PD2 launcher?</string>
     <string name="game_menu_keep_playing">Keep playing</string>
-    <string name="game_menu_stop">Stop</string>
-
-    <!-- On-screen controls: key caps and short names. -->
+    <!-- On-screen controls: short names. -->
     <string name="on_screen_stick_description">Virtual controller: left stick</string>
     <string name="on_screen_dpad_description">Virtual controller: d-pad</string>
     <string name="on_screen_face_description">Virtual controller: A, B, X and Y</string>
     <string name="on_screen_button_description">On-screen button: %1$s</string>
-    <string name="on_screen_back">Back</string>
-    <string name="on_screen_start">Start</string>
 </resources>

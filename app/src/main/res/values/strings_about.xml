@@ -8,7 +8,7 @@
     <string name="about_built_title">Built with</string>
     <string name="about_built_wine">Wine 11.0 (ARM64) + patches</string>
     <string name="about_built_box64">Box64 + patches</string>
-    <string name="about_built_mesa">Mesa 26.2.3 + patches</string>
+    <string name="about_built_mesa">Mesa 27.0 development version + patches</string>
     <string name="about_built_dotnet">.NET 6.0.36 (x86)</string>
     <!-- The App userland's version: Check calls it "Game support files". -->
     <string name="about_runtime">Runtime build %1$s</string>

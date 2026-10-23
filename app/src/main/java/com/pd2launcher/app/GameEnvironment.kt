@@ -20,10 +20,10 @@ class GameInput(val relay: RelaySender, val gamepad: GamepadFile)
  * The Android game environment's own programs:
  * Xvfb with its framebuffer in memory ([Framebuffer]: a memfd, `-fbfd`; a `-fbdir` file when no
  * memfd can be made) at the X screen's size,
- * PulseAudio writing into a FIFO that [GameAudio] plays, and x-input-relay, which takes the
- * Game view's touch and keys into the X screen, beside the gamepad file the game's XInput bridge
- * reads. FEX and Wine are started by the engine, not here. Called from the session's single
- * worker thread.
+ * the game's sound ([GameAudio]: the ring that the game's Wine writes through ALSA, played by the
+ * app), and x-input-relay, which takes the Game view's touch and keys into the X screen, beside
+ * the gamepad file the game's XInput bridge reads. Wine (with Box64's wowbox64.dll) is started by
+ * the engine, not here. Called from the session's single worker thread.
  */
 class GameEnvironment(
     private val paths: SessionPaths,
@@ -33,7 +33,6 @@ class GameEnvironment(
 ) {
     // Cleared by the reaper thread when the process ends.
     @Volatile private var xvfb: OwnedProcess? = null
-    @Volatile private var pulse: OwnedProcess? = null
     @Volatile private var relay: OwnedProcess? = null
     private var screen: Framebuffer? = null
     private var relaySocket: ParcelFileDescriptor? = null
@@ -53,17 +52,17 @@ class GameEnvironment(
         audio?.setBackground(inBackground, soundInBackground, gameRunning)
     }
 
-    /** Whether the X screen is up: Play and Install need it; a lone PulseAudio or relay does not count. */
+    /** Whether the X screen is up: Play and Install need it; a lone relay does not count. */
     val running: Boolean get() = xvfb != null
 
-    /** Starts Xvfb at [width]x[height], PulseAudio and the input relay; waits until they are ready. */
+    /** Starts Xvfb at [width]x[height], the game's sound and the input relay; waits until they are ready. */
     fun start(width: Int, height: Int) {
         if (running) {
             log("game environment already running")
             return
         }
-        // Xvfb ended but PulseAudio or the relay is left: those go before it starts whole again.
-        if (pulse != null || relay != null) stop()
+        // Xvfb ended but the relay or the sound is left: those go before it starts whole again.
+        if (relay != null || audio != null) stop()
         paths.createFolders()
         paths.framebuffer.delete()
         val memory = framebufferMemory()
@@ -76,16 +75,10 @@ class GameEnvironment(
         }
         // Before the game: its Mesa asks for the app's buffers when it makes its swapchain.
         if (PresentServer.start(paths.presentSocket, paths.presentCounter) == null) log("no direct present: the X screen only")
-        // Settings, Game: while the game is not on the screen, it draws no more than this.
-        if (AppSettingsStore.load(context).lowFrameRateInBackground) {
-            log(
-                if (BackgroundPacer.start(paths.presentCounter)) {
-                    "the game draws at most ${BackgroundPacer.FPS} frames a second while it is not on the screen"
-                } else {
-                    "no background frame rate: the game draws as fast as it can while it is not on the screen"
-                },
-            )
-        }
+        // The virtual display's vertical blank at the player's frame rate (Settings, Game) on the
+        // screen's full rate ([ScreenRate]); the Game view sets it again for its screen.
+        val clockRate = FrameRateVote.rate(ScreenRate.read(context), AppSettingsStore.load(context).frameRate)
+        if (!FrameClock.start(paths.presentCounter, clockRate)) log("no frame clock: a game with vsync on draws as fast as it can")
         val env = paths.userlandProgramEnvironment()
         val bin = File(paths.userland, "usr/bin")
         try {
@@ -109,40 +102,15 @@ class GameEnvironment(
             awaitFramebuffer(x, framebuffer)
             _framebuffer.value = framebuffer
 
-            val pulseRuntime = File(paths.runtimeDir, "pulse").apply { mkdirs() }
-            // A killed PulseAudio leaves its socket behind: the wait below would take it for the new one's.
-            File(pulseRuntime, "native").delete()
-            File(paths.home, ".config/pulse").mkdirs()
-            val script = File(paths.runtimeDir, "pulse.pa")
-            val fifo = File(paths.runtimeDir, "pulse-sink")
-            script.writeText(
-                """
-                load-module module-native-protocol-unix auth-anonymous=1
-                load-module module-pipe-sink ${GameAudioFormat.pulseSinkArgs(fifo)}
-                set-default-sink pipe
-                """.trimIndent() + "\n",
-            )
-            val modules = File(paths.userland, "usr/lib").listFiles().orEmpty()
-                .firstOrNull { it.name.startsWith("pulse-") && File(it, "modules").isDirectory }
-                ?.let { File(it, "modules") } ?: throw IOException("no PulseAudio module folder in the userland")
-            val p = starter.start(
-                "pulseaudio", File(bin, "pulseaudio").path,
-                listOf(
-                    "pulseaudio", "-n", "-F", script.path, "--daemonize=no", "--use-pid-file=no",
-                    "--exit-idle-time=-1", "--disable-shm=yes", "-p", modules.path,
-                ),
-                env,
-            ) { process, _ -> if (pulse == process) pulse = null }
-            pulse = p
-            awaitFile(p, File(pulseRuntime, "native"), "PulseAudio's socket")
-            audio = GameAudio(context, fifo, log).also {
+            // Before any Wine process of the game: Wine's ALSA output finds its configuration and the ring.
+            audio = GameAudio(context, paths.soundRing, paths.alsaConfig, paths.alsaPlugin, log).also {
                 it.setBackground(inBackground, soundInBackground, gameRunning)
                 it.start()
             }
             val r = startInput(bin, env)
             log(
                 "game environment started: Xvfb pid ${x.pid} at ${width}x$height (framebuffer ${if (memory != null) "in memory" else "in a file"}), " +
-                    "PulseAudio pid ${p.pid}, x-input-relay pid ${r.pid}",
+                    "x-input-relay pid ${r.pid}",
             )
         } catch (error: Throwable) {
             log("game environment failed to start: $error")
@@ -211,20 +179,19 @@ class GameEnvironment(
         null
     }
 
-    /** SIGTERM to the relay, PulseAudio and Xvfb, SIGKILL after [UidCleanup.GRACE_MS]; waits for their ends. */
+    /** SIGTERM to the relay and Xvfb, SIGKILL after [UidCleanup.GRACE_MS]; waits for their ends. */
     fun stop() {
         closeInput()
         stopAudio()
         PresentServer.stopCurrent()
-        BackgroundPacer.stop()
+        FrameClock.stop()
         closeScreen()
-        val owned = listOfNotNull(relay, pulse, xvfb)
+        val owned = listOfNotNull(relay, xvfb)
         if (owned.isEmpty()) return
         log("stopping game environment: ${owned.joinToString { "${it.pid} ${it.name}" }}")
         val running = { owned.filter { OwnedProcesses.isRunning(it.pid) }.map { UidProcess(it.pid, it.name) } }
         UidCleanup(running, ::sendSignal, log, now = SystemClock::elapsedRealtime).run()
         relay = null
-        pulse = null
         xvfb = null
     }
 
@@ -233,10 +200,9 @@ class GameEnvironment(
         closeInput()
         stopAudio()
         PresentServer.stopCurrent()
-        BackgroundPacer.stop()
+        FrameClock.stop()
         closeScreen()
         relay = null
-        pulse = null
         xvfb = null
     }
 
@@ -270,15 +236,6 @@ class GameEnvironment(
         while (framebuffer.header() == null) {
             if (!OwnedProcesses.isRunning(process.pid)) throw IOException("${process.name} ended before its framebuffer was written")
             if (System.nanoTime() > deadline) throw IOException("Xvfb's framebuffer was not written within $READY_TIMEOUT_MS ms")
-            Thread.sleep(50)
-        }
-    }
-
-    private fun awaitFile(process: OwnedProcess, file: File, what: String) {
-        val deadline = System.nanoTime() + READY_TIMEOUT_MS * 1_000_000
-        while (!file.exists()) {
-            if (!OwnedProcesses.isRunning(process.pid)) throw IOException("${process.name} ended before $what appeared")
-            if (System.nanoTime() > deadline) throw IOException("$what did not appear within $READY_TIMEOUT_MS ms")
             Thread.sleep(50)
         }
     }

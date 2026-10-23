@@ -16,10 +16,6 @@ runtime libxau6=1:1.0.11-1
 runtime libxdmcp6=1:1.1.5-1
 runtime libmd0=1.1.0-2+b1
 
-# Sound
-runtime pulseaudio=17.0+dfsg1-2+b1
-runtime pulseaudio-utils=17.0+dfsg1-2+b1
-
 # X11/xcb client libraries of Wine's X11 driver and Mesa (the Launcher engine has no window)
 runtime libx11-6=2:1.8.12-1
 runtime libx11-xcb1=2:1.8.12-1
@@ -35,6 +31,8 @@ runtime libxtst6=2:1.2.5-1
 runtime libvulkan1=1.4.309.0-1
 runtime libgl1=1.7.0-1+b2
 runtime libegl1=1.7.0-1+b2
+# libdrm, which our PanVK links (build-panvk.sh); before 0.3.3 PulseAudio's dependencies brought it
+runtime libdrm2=2.4.124-2
 
 # What the ARM64 Wine's Unix side and our Mesa load: X11 (Xrender, Xfixes, Xext, the xcb
 # extensions of GLX and Mesa's X11 WSI), FreeType, GnuTLS (schannel, bcrypt)
@@ -117,7 +115,8 @@ exclude x11-common
 exclude shared-mime-info
 exclude libcap2-bin
 exclude openssl
-# Excluded: ALSA plugins (and through them FFmpeg); the userland's sound path is PulseAudio only
+# Excluded: ALSA plugins (and through them FFmpeg); the game's sound goes through the runtime's own
+# alsa-lib and ALSA plugin (runtime/pd2audio.sh), not through the userland
 exclude libasound2-plugins
 # Excluded: language-name data for GStreamer's tag library, unused here
 exclude iso-codes

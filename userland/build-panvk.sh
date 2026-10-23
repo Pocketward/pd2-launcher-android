@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Builds Mesa's PanVK (Vulkan driver "panfrost") for aarch64 with our kernel backend for Arm's
-# mali_kbase (mesa-kbase/), separately from Turnip: its own Mesa pin
-# (PANVK_MESA_* in config.sh), image (containers/Containerfile.panvk) and cache (PANVK_CACHE).
+# mali_kbase (mesa-kbase/), separately from Turnip: the same Mesa commit (PANVK_MESA_* in config.sh,
+# which name MESA_*), but its own image (containers/Containerfile.panvk) and cache (PANVK_CACHE).
 #
-#   1. the Mesa tree: the pinned archive; patches/mesa/*-wsi-*.patch, the Vulkan WSI series Mesa's build
+#   1. the Mesa tree: the pinned archive (in the userland cache's sources/, shared with build-mesa.sh);
+#      patches/mesa/*-wsi-*.patch, the Vulkan WSI series Mesa's build
 #      applies too (the software present's cached reads, present counter, pacing by the Game view and
-#      direct present into the app's buffers, which falls back to the X screen while our backend
-#      imports no dma-buf); then patches/mesa-panvk/*.patch; then our files from mesa-kbase/ and
+#      direct present into the app's buffers, which our backend imports as dma-bufs, with the X
+#      screen as the fallback); then patches/mesa-panvk/*.patch; then our files from mesa-kbase/ and
 #      Arm's kbase uAPI headers, fetched at the commit config.sh pins (KBASE_UAPI_*, each file by
 #      SHA-256) into include/kbase-uapi/ (copied over the tree; a file is rewritten only when its
 #      content changed, so ninja rebuilds only what we touched). A new patch set re-extracts the
@@ -59,15 +60,8 @@ else
     rm -f "$out/BUILDINFO"
 
     # --- 1. the tree ---------------------------------------------------------------------------
-    tarball="$kb/sources/mesa-$PANVK_MESA_COMMIT.tar.gz"
-    if [[ ! -f "$tarball" ]]; then
-        curl -fsSL --retry 3 -o "$tarball.part" "$PANVK_MESA_URL"
-        # Checked before it takes the cached name: a bad download is removed, never kept as good.
-        echo "$PANVK_MESA_SHA256  $tarball.part" | sha256sum -c --quiet - ||
-            { rm -f "$tarball.part"; echo "SHA-256 mismatch: $PANVK_MESA_URL" >&2; exit 1; }
-        mv "$tarball.part" "$tarball"
-    fi
-    echo "$PANVK_MESA_SHA256  $tarball" | sha256sum -c --quiet - || { echo "SHA-256 mismatch: $tarball" >&2; exit 1; }
+    # The archive build-mesa.sh fetches too (the same commit): one copy in the userland cache.
+    tarball="$(fetch_source "$PANVK_MESA_URL" "$PANVK_MESA_SHA256")"
 
     # Arm's kbase uAPI headers, unchanged, each checked by SHA-256.
     uapi="$kb/sources/kbase-uapi-$KBASE_UAPI_COMMIT"

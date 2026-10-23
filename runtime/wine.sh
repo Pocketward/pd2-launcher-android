@@ -4,8 +4,8 @@
 # tools for amd64 (make __tooldeps__), then the cross build with llvm-mingw for the PE parts, with
 # our patches (patches/wine). Only the Linux libraries the game and the official launcher need
 # are on: X11 (Xrender, Xrandr, XInput2, Xcursor, Xfixes, Xcomposite, Xinerama), OpenGL (EGL and
-# GLX), Vulkan, FreeType and fontconfig, PulseAudio, GnuTLS; no device, network-auth, media,
-# printing or scanner libraries.
+# GLX), Vulkan, FreeType and fontconfig, ALSA (winealsa.drv: the game's sound to the app,
+# pd2audio.sh), GnuTLS; no sound server, device, network-auth, media, printing or scanner libraries.
 # Output: parts/wine/full (the whole install below WINE_PREFIX_DIR, stripped); trim.py makes the
 # reduced Wine of the APK from it.
 #
@@ -67,9 +67,9 @@ cd "$build"
 PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig \
 "$src/configure" --prefix="$WINE_PREFIX_DIR" --host=aarch64-linux-gnu --enable-archs=aarch64,i386 \
     --with-wine-tools="$tools" --disable-tests --disable-win16 \
-    --with-x --with-opengl --with-vulkan --with-freetype --with-fontconfig --with-pulse --with-gnutls \
+    --with-x --with-opengl --with-vulkan --with-freetype --with-fontconfig --with-alsa --with-gnutls \
     --with-xinput2 --with-xrandr --with-xrender --with-xcursor --with-xfixes --with-xcomposite --with-xinerama \
-    --without-alsa --without-capi --without-cups --without-dbus --without-ffmpeg --without-gettext \
+    --without-capi --without-cups --without-dbus --without-ffmpeg --without-gettext --without-pulse \
     --without-gphoto --without-gssapi --without-gstreamer --without-krb5 \
     --without-netapi --without-opencl --without-oss --without-pcap --without-pcsclite --without-sane \
     --without-sdl --without-udev --without-unwind --without-usb --without-v4l2 --without-wayland \

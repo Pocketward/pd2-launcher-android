@@ -25,7 +25,7 @@
 #     and etc/userland.env does not set LD_LIBRARY_PATH
 #   - last, the tree rewritten for a scratch data folder as the app rewrites it (padded binaries,
 #     exact text files) holds no placeholder, and with the host's qemu-aarch64 binfmt handler
-#     Xvfb prints its usage and xkbcomp and PulseAudio their versions from there:
+#     Xvfb prints its usage and xkbcomp its version from there:
 #     interpreter, run paths and the loader's own folders all at the padded path
 set -euo pipefail
 
@@ -321,7 +321,7 @@ EOF
 if [[ "${PD2_HOST_BINFMT_AARCH64:-0}" == 1 ]]; then
     bin="$data/files/userland/current/usr/bin"
     # Each: the command, then what its output must hold.
-    runs=("Xvfb -help|use: X" "xkbcomp -version|xkbcomp" "pulseaudio --version|pulseaudio [0-9]")
+    runs=("Xvfb -help|use: X" "xkbcomp -version|xkbcomp")
     for run in "${runs[@]}"; do
         command="${run%%|*}"
         # Interpreter and libraries only at the padded path: no library environment.

@@ -222,7 +222,7 @@ jobs:
         id: keys
         if: steps.tag.outputs.tag != ''
         run: |
-          echo "userland=userland-${{ hashFiles('userland/**', '!userland/**/out*/**', '!userland/README.md', '!userland/glibc/README.md') }}" |
+          echo "userland=userland-${{ hashFiles('userland/**', '!userland/**/out*/**', '!userland/README.md', '!userland/glibc/README.md', '!userland/mesa-update.sh') }}" |
             tee -a "$GITHUB_OUTPUT"
           echo "runtime=runtime-${{ hashFiles('runtime/**', 'userland/**', '!userland/**/out*/**', '!userland/README.md', '!userland/glibc/README.md', 'engine.lock') }}" |
             tee -a "$GITHUB_OUTPUT"
@@ -560,6 +560,13 @@ jobs:
           for d in "$PANVK_CACHE"/work/host-tools-*; do
             if [[ -d $d && $d != */host-tools-$PANVK_MESA_COMMIT ]]; then rm -rf "$d"; fi
           done
+          # Nor Mesa archives of another pin (mesa-update.sh moves it; each is about 130 MB), nor any
+          # in PanVK's cache: build-panvk.sh takes the userland cache's archive. Nor a download that
+          # stopped part way (*.part).
+          for f in "$USERLAND_CACHE"/sources/mesa-[0-9a-f]*.tar.gz "$USERLAND_CACHE"/sources/mesa-[0-9]*.tar.xz; do
+            if [[ -f $f && $(basename "$f") != "$(basename "$MESA_URL")" ]]; then rm -f "$f"; fi
+          done
+          rm -f "$PANVK_CACHE"/sources/mesa-* "$USERLAND_CACHE"/sources/*.part
           key=$({
             cat userland/glibc/out/BUILDINFO \
               "$USERLAND_CACHE"/mesa-out/BUILDINFO "$USERLAND_CACHE"/xvfb-out/BUILDINFO \

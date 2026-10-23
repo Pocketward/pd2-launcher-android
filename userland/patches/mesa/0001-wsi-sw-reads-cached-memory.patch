@@ -1,6 +1,6 @@
 --- a/src/vulkan/wsi/wsi_common.c
 +++ b/src/vulkan/wsi/wsi_common.c
-@@ -218,6 +218,7 @@
+@@ -218,6 +218,7 @@ wsi_device_init(struct wsi_device *wsi,
     WSI_GET_CB(GetImageDrmFormatModifierPropertiesEXT);
     WSI_GET_CB(GetImageMemoryRequirements);
     WSI_GET_CB(GetImageSubresourceLayout);
@@ -8,7 +8,7 @@
     if (!wsi->sw)
        WSI_GET_CB(GetMemoryFdKHR);
     WSI_GET_CB(GetPhysicalDeviceCalibrateableTimeDomainsKHR);
-@@ -3077,8 +3078,23 @@
+@@ -3090,8 +3091,23 @@ wsi_select_host_memory_type(const struct wsi_device *wsi,
  {
     VkMemoryPropertyFlags req_props = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
  
@@ -34,20 +34,20 @@
  
     return wsi_select_memory_type(wsi, req_props, 0 /* deny_props */, type_bits);
  }
-@@ -3139,6 +3155,10 @@
-       .memoryTypeIndex =
+@@ -3153,6 +3169,10 @@ wsi_create_buffer_blit_context(const struct wsi_swapchain *chain,
           info->select_blit_dst_memory_type(wsi, reqs.memoryTypeBits),
     };
-+
+ 
 +   image->blit.non_coherent =
 +      !(wsi->memory_props.memoryTypes[buf_mem_info.memoryTypeIndex].propertyFlags &
 +        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
- 
++
     void *sw_host_ptr = NULL;
     if (info->alloc_shm)
+       sw_host_ptr = info->alloc_shm(image, reqs.size);
 --- a/src/vulkan/wsi/wsi_common.h
 +++ b/src/vulkan/wsi/wsi_common.h
-@@ -232,6 +232,7 @@
+@@ -244,6 +244,7 @@ struct wsi_device {
     WSI_CB(GetImageDrmFormatModifierPropertiesEXT);
     WSI_CB(GetImageMemoryRequirements);
     WSI_CB(GetImageSubresourceLayout);
@@ -57,7 +57,7 @@
     WSI_CB(GetPhysicalDeviceProperties);
 --- a/src/vulkan/wsi/wsi_common_private.h
 +++ b/src/vulkan/wsi/wsi_common_private.h
-@@ -171,6 +171,10 @@
+@@ -171,6 +171,10 @@ struct wsi_image {
         * with the compositor instead of being mapped via vkMapMemory locally.
         */
        bool to_foreign_queue;
@@ -70,7 +70,7 @@
      * on the CPU side via acquire_next_image.
 --- a/src/vulkan/wsi/wsi_common_x11.c
 +++ b/src/vulkan/wsi/wsi_common_x11.c
-@@ -1854,6 +1854,15 @@
+@@ -1917,6 +1917,15 @@ x11_present_to_x11_sw(struct x11_swapchain *chain, uint32_t image_index)
     xcb_get_geometry_cookie_t geom_cookie = xcb_get_geometry(chain->conn, chain->window);
  
     xcb_void_cookie_t cookie;

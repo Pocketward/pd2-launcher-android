@@ -85,8 +85,8 @@ data class Controls(
     val padMode: Map<PadButton, PadAction> = DEFAULT_PAD,
     val mouseMode: Map<PadButton, PadAction> = DEFAULT_MOUSE,
     val chord: Chord = Chord.SELECT_START,
-    /** Mouse mode's pointer speed, a factor of the default (0.25..3). */
-    val pointerSpeed: Float = 1f,
+    /** Mouse mode's pointer speed, a factor of the sticks' base speeds ([PointerSpeed]). */
+    val pointerSpeed: Float = PointerSpeed.DEFAULT,
     /** On-screen controls shown; null: shown only while no controller is connected. */
     val onScreen: Boolean? = null,
     /** The on-screen controls' opacity; each piece's own is a factor of it ([Piece.opacity]). */
@@ -100,20 +100,19 @@ data class Controls(
      * [controller] is connected, on PD2's menu screens (the main menu, character select) as in
      * the world, so the [picture] does not change the answer. Never over the official PD2
      * [launcher], a mouse/touch window they would cover. The Game view applies this over the game
-     * and beside the in-game menu rail alike, so the rail's Touch pad switch shows at once, and
-     * hides them while it asks whether to stop and under its Controls panel and editor
+     * and beside the in-game menu alike, so the menu's On-screen controls tile shows at once, and
+     * hides them while it asks whether to stop and under its Controls screen and editor
      * (`GameLayer.padShown`).
      */
     fun onScreenShown(controller: Boolean, picture: GamePicture, launcher: Boolean = false): Boolean =
         !launcher && (onScreen ?: !controller)
 
     /**
-     * The in-game menu's Touch pad switched [on]: the player's choice, kept as it is (Always or
-     * Never) until they switch it again or pick Auto in Settings, whatever controller comes or
-     * goes; [controller] is not consulted.
+     * The in-game menu's On-screen controls tile switched [on]: the player's choice, kept as it is
+     * (Always or Never) until they switch it again or pick Auto in the on-screen controls' editor,
+     * whatever controller comes or goes.
      */
-    @Suppress("UNUSED_PARAMETER")
-    fun withTouchPad(on: Boolean, controller: Boolean): Controls = copy(onScreen = on)
+    fun withOnScreen(on: Boolean): Controls = copy(onScreen = on)
 
     fun action(button: PadButton, mouse: Boolean): PadAction =
         (if (mouse) mouseMode[button] ?: DEFAULT_MOUSE.getValue(button) else padMode[button] ?: PadAction.Pad)
@@ -135,7 +134,10 @@ data class Controls(
             put(MOUSE_PREFIX + it.name, action(it, mouse = true).encode())
         }
         put(CHORD, chord.name)
-        put(POINTER_SPEED, pointerSpeed)
+        // Only a speed the player picked: an unchanged one follows the default when it changes.
+        if (pointerSpeed != PointerSpeed.DEFAULT) put(POINTER_SPEED, pointerSpeed)
+        // The base speeds a stored speed is a factor of, so a later change of them keeps its real speed.
+        put(POINTER_SPEED_BASE, PointerSpeed.BASE)
         onScreen?.let { put(ON_SCREEN, it) }
         put(ON_SCREEN_OPACITY, onScreenOpacity)
     }
@@ -145,14 +147,14 @@ data class Controls(
         const val MOUSE_PREFIX = "mouse."
         const val CHORD = "chord"
         const val POINTER_SPEED = "pointer_speed"
+        /** The base speeds [POINTER_SPEED] is a factor of ([PointerSpeed.BASE]); none: the ones before 0.3.3. */
+        const val POINTER_SPEED_BASE = "pointer_speed_base"
         const val ON_SCREEN = "on_screen"
         const val ON_SCREEN_OPACITY = "on_screen_opacity"
 
-        val POINTER_SPEEDS = 0.25f..3f
         val OPACITIES = 0.1f..1f
 
-        /** One step of each value: pointer speed's − and +, the editor's opacity slider. */
-        const val POINTER_SPEED_STEP = 0.25f
+        /** One step of the editor's opacity slider. */
         const val OPACITY_STEP = 0.05f
 
         /**
@@ -191,6 +193,16 @@ data class Controls(
             PadButton.RIGHT to PadAction.Key(Keys.XK_RIGHT),
         )
 
+        /**
+         * Whether [values] hold a pointer speed stored at other base speeds than today's (before
+         * 0.3.3, none stored beside it): read, it is converted ([PointerSpeed.fromStored]), and
+         * [ControlsStore] stores it again once, converted.
+         */
+        fun pointerSpeedToConvert(values: Map<String, *>): Boolean =
+            values[POINTER_SPEED] is Number && storedBase(values) != PointerSpeed.BASE
+
+        private fun storedBase(values: Map<String, *>): Float? = (values[POINTER_SPEED_BASE] as? Number)?.toFloat()
+
         /** A missing or unreadable value is the default, one by one. */
         fun fromPreferences(values: Map<String, *>): Controls {
             val defaults = Controls()
@@ -203,7 +215,8 @@ data class Controls(
                 padMode = bindings(PAD_PREFIX, DEFAULT_PAD),
                 mouseMode = bindings(MOUSE_PREFIX, DEFAULT_MOUSE),
                 chord = Chord.entries.firstOrNull { it.name == values[CHORD] } ?: defaults.chord,
-                pointerSpeed = number(POINTER_SPEED, defaults.pointerSpeed, POINTER_SPEEDS),
+                pointerSpeed = (values[POINTER_SPEED] as? Number)?.toFloat()?.let { PointerSpeed.fromStored(it, storedBase(values)) }
+                    ?: defaults.pointerSpeed,
                 onScreen = values[ON_SCREEN] as? Boolean,
                 onScreenOpacity = number(ON_SCREEN_OPACITY, defaults.onScreenOpacity, OPACITIES),
             )
@@ -220,6 +233,53 @@ data class Controls(
 fun isController(sources: Int, virtual: Boolean): Boolean =
     !virtual && sources and InputDevice.SOURCE_GAMEPAD == InputDevice.SOURCE_GAMEPAD
 
+/**
+ * Mouse mode's pointer speed, its numbers in one place: the sticks' base speeds at 1.00×, the
+ * default, the range and the step a player picks in, and how a speed stored before 0.3.3 carries
+ * over. 0.3.3 halved the base speeds (at 1.00× the pointer went too far for small moves on an
+ * enlarged picture) and kept 1.00× as the default.
+ */
+object PointerSpeed {
+    /**
+     * The left stick fully out at 1.00×, in X screen pixels a second on the game's own 1068
+     * columns (`PadInput` scales it to the X screen's width). Half of the 1200 before 0.3.3.
+     */
+    const val FAST_PIXELS_PER_SECOND = 600f
+
+    /** The right stick fully out at 1.00×, for aiming at small targets: a quarter of the left. */
+    const val SLOW_PIXELS_PER_SECOND = 150f
+
+    /** The base a stored speed is a factor of, stored beside it: [FAST_PIXELS_PER_SECOND]. */
+    const val BASE = FAST_PIXELS_PER_SECOND
+
+    /** The base before 0.3.3, which a stored speed with no base beside it is a factor of. */
+    const val EARLIER_BASE = 1200f
+
+    const val DEFAULT = 1f
+    const val STEP = 0.05f
+    val RANGE = 0.2f..2.5f
+
+    /**
+     * A [stored] speed, a factor of [base] ([EARLIER_BASE] where none was stored), as a factor of
+     * today's [BASE]: the same real speed where [RANGE] holds it, on the step grid (twice the factor
+     * from before 0.3.3, which held 0.25 to 3.00: up to 1.25 the same speed, a faster one 2.50, the
+     * range's top). The default stored with no base, 1.00, which every save of the controls wrote
+     * before 0.3.3 whether or not the player picked it, is today's default.
+     */
+    fun fromStored(stored: Float, base: Float?): Float = when {
+        base == BASE -> stored.coerceIn(RANGE)
+        base == null && stored == DEFAULT -> DEFAULT
+        else -> Controls.stepped(stored * (base ?: EARLIER_BASE) / BASE, STEP, 0, RANGE)
+    }
+
+    /**
+     * What the player typed into the Pointer speed input ("1.5", "1,5"): a number inside
+     * [RANGE], on the step grid; null for anything else.
+     */
+    fun typed(text: String): Float? =
+        text.trim().replace(',', '.').toFloatOrNull()?.takeIf { it in RANGE }?.let { Controls.stepped(it, STEP, 0, RANGE) }
+}
+
 /** [Controls] in the app's `controls` preferences, and as a flow the Game view applies live. */
 object ControlsStore {
     private const val PREFERENCES = "controls"
@@ -228,11 +288,16 @@ object ControlsStore {
 
     val current: StateFlow<Controls> = _current.asStateFlow()
 
-    /** Reads the stored controls once per process; later calls return what is current. */
+    /**
+     * Reads the stored controls once per process; later calls return what is current. A pointer
+     * speed stored at other base speeds (before 0.3.3) is stored again once, converted ([PointerSpeed.fromStored]).
+     */
     fun load(context: Context): Controls {
         if (!loaded) {
             loaded = true
-            _current.value = Controls.fromPreferences(context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).all)
+            val stored = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).all
+            _current.value = Controls.fromPreferences(stored)
+            if (Controls.pointerSpeedToConvert(stored)) save(context, _current.value)
         }
         return _current.value
     }

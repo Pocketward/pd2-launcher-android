@@ -24,12 +24,22 @@ class PresentServer private constructor(private val handle: Long) {
     @Volatile private var stopped = false
 
     /**
-     * The Game view's [surface] carries the game's layer, asking the display for [frameRate], its
-     * frames shown at least [intervalNanos] apart at a reduced frame rate
-     * ([FrameRateVote.intervalNanos]; 0: as they come).
+     * The Game view's [surface] carries the game's layer, asking the display for [frameRate];
+     * [capped]: a Frame rate below the screen's ([FrameRateVote.cap]), which the screen shows a game
+     * with vsync off at.
      */
-    fun attach(surface: Surface, frameRate: Float, intervalNanos: Long) = synchronized(lock) {
-        if (!stopped) nativeAttach(handle, surface, frameRate, intervalNanos)
+    fun attach(surface: Surface, frameRate: Float, capped: Boolean) = synchronized(lock) {
+        if (!stopped) nativeAttach(handle, surface, frameRate, capped)
+    }
+
+    /** The Game view's [surface] has a new size ([width] x [height]): the game's layer stays and shows at it. */
+    fun resize(surface: Surface, width: Int, height: Int) = synchronized(lock) {
+        if (!stopped) nativeResize(handle, surface, width, height)
+    }
+
+    /** The game's layer asks the display for [frameRate] from now on ([FrameRateVote]); [capped] as for [attach]. */
+    fun setFrameRate(frameRate: Float, capped: Boolean) = synchronized(lock) {
+        if (!stopped) nativeSetFrameRate(handle, frameRate, capped)
     }
 
     /**
@@ -107,10 +117,16 @@ class PresentServer private constructor(private val handle: Long) {
         private external fun nativeStart(socket: String, counter: String?): Long
 
         @JvmStatic
-        private external fun nativeAttach(handle: Long, surface: Surface, frameRate: Float, minInterval: Long)
+        private external fun nativeAttach(handle: Long, surface: Surface, frameRate: Float, capped: Boolean)
 
         @JvmStatic
         private external fun nativeDetach(handle: Long, surface: Surface)
+
+        @JvmStatic
+        private external fun nativeResize(handle: Long, surface: Surface, width: Int, height: Int)
+
+        @JvmStatic
+        private external fun nativeSetFrameRate(handle: Long, frameRate: Float, capped: Boolean)
 
         @JvmStatic
         private external fun nativeSetWindow(

@@ -1,6 +1,6 @@
 --- a/src/vulkan/wsi/wsi_common_x11.c
 +++ b/src/vulkan/wsi/wsi_common_x11.c
-@@ -71,6 +71,11 @@
+@@ -75,6 +75,11 @@
  #include <sys/shm.h>
  #endif
  
@@ -12,7 +12,7 @@
  #ifndef XCB_PRESENT_OPTION_ASYNC_MAY_TEAR
  #define XCB_PRESENT_OPTION_ASYNC_MAY_TEAR 16
  #endif
-@@ -1840,6 +1845,49 @@
+@@ -1903,6 +1908,49 @@ x11_present_to_x11_dri3(struct x11_swapchain *chain, uint32_t image_index,
     return x11_swapchain_result(chain, VK_SUCCESS);
  }
  #endif
@@ -62,7 +62,7 @@
  /**
   * Send image to X server unaccelerated (software drivers).
   */
-@@ -1935,6 +1983,9 @@
+@@ -1998,6 +2046,9 @@ x11_present_to_x11_sw(struct x11_swapchain *chain, uint32_t image_index)
     free(err);
     free(geom);
  

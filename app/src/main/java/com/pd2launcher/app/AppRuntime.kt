@@ -139,19 +139,7 @@ class AppRuntime(
             if (!Files.isSymbolicLink(dir.toPath())) syncDirectory(dir.toPath())
         }
         syncDirectory(managedRoot.toPath())
-        val legacy = LegacyPrefix(
-            managedRoot, File(managedRoot, PREFIX_TEMPLATE), userSave, log,
-            failForTest = failUpdateForTest, failLateForTest = failUpdateLateForTest, syncDirectory = syncDirectory,
-        )
-        val kept = try {
-            legacy.migrate(keptGame())
-            null
-        } catch (error: Exception) {
-            log("update in place failed: $error")
-            // Nothing is lost when this fails too: the older prefix still holds the game, and the
-            // next start tries again.
-            legacy.setAside(keptGame())
-        }
+        val kept = updatePrefix()
         val temporary = File(managedRoot, "$MARKER.tmp")
         FileOutputStream(temporary).use {
             it.write(version.toByteArray())
@@ -161,6 +149,61 @@ class AppRuntime(
         syncDirectory(managedRoot.toPath())
         log("app runtime $version unpacked")
         return kept
+    }
+
+    private fun legacyPrefix() = LegacyPrefix(
+        managedRoot, File(managedRoot, PREFIX_TEMPLATE), userSave, log,
+        failForTest = failUpdateForTest, failLateForTest = failUpdateLateForTest, syncDirectory = syncDirectory,
+    )
+
+    /**
+     * At a start with this runtime unpacked, before the engine starts: [updatePrefix] when a
+     * set-aside ([LegacyPrefix.settingAside]) or a move ([LegacyPrefix.unfinished]) waits to be
+     * finished (a stop left it part way: an unpack's move runs again whole, a start's does not),
+     * or a copy of an older template is in place ([LegacyPrefix.stale]); else nothing. The game
+     * folder for Import, as [updatePrefix].
+     */
+    fun updatePrefixAtStart(): File? {
+        val legacy = legacyPrefix()
+        if (!legacy.settingAside() && !legacy.unfinished() && !legacy.stale()) return null
+        return updatePrefix()
+    }
+
+    /**
+     * The prefix moved over to this runtime's template ([LegacyPrefix.migrate]), at [install] and
+     * at a start ([updatePrefixAtStart]); a set-aside that a stop left part way is finished first.
+     * When the move fails after the older prefix was renamed out of the way, its game folder waits
+     * for Import ([LegacyPrefix.setAside]), and that folder is returned.
+     *
+     * A failure before that rename (no room to copy the template, for example) changes nothing for
+     * a copy of a template: the new prefix it began goes, the prefix stays with its game (playable
+     * on this runtime; from generation 1 to 2 it only lacks the sound), and every start tries
+     * again, with the same log line, until the move passes. A prefix of an older runtime (Wine-GE
+     * under FEX, no "disable" stamp) is set aside at once instead: the engine would run Wine's
+     * prefix update on it with this runtime's Wine. Null: the move passed, there was nothing to
+     * move, or it waits for the next start.
+     */
+    fun updatePrefix(): File? {
+        val legacy = legacyPrefix()
+        if (legacy.settingAside()) {
+            log("update in place: a set-aside that a stop left part way goes on")
+            return legacy.setAside(keptGame())
+        }
+        val olderRuntime = legacy.olderRuntimeInPlace()
+        return try {
+            legacy.migrate(keptGame())
+            null
+        } catch (error: Exception) {
+            if (!legacy.moved() && !olderRuntime) {
+                log("update in place stopped before it changed the prefix ($error); the next start tries again")
+                runCatching { legacy.discardNew() }.onFailure { log("update in place: the new prefix it began stays: $it") }
+                return null
+            }
+            log("update in place failed: $error")
+            // Nothing is lost when this fails too: the older prefix still holds the game, and the
+            // next start tries again.
+            legacy.setAside(keptGame())
+        }
     }
 
     private fun readAll(reader: TarReader, buffer: ByteArray): ByteArray {
@@ -222,10 +265,12 @@ class AppRuntime(
         private const val RELOCATE_LIST = "relocate.list"
         /** The prefix template (the engine's `APP_PREFIX_TEMPLATE`). */
         const val PREFIX_TEMPLATE = "runner/wine-11.0-arm64-prefix"
+        /** The runtime's Wine (the engine's `APP_RUNTIME_DIRECTORY`). */
+        const val WINE = "runner/wine-11.0-arm64"
         /** The trees an unpack replaces (runtime/pack.py's layout); the Launcher's own files stay. */
         val PROVIDED = listOf(
             "runner/dotnet-6.0.36-x86",
-            "runner/wine-11.0-arm64",
+            WINE,
             PREFIX_TEMPLATE,
         )
 

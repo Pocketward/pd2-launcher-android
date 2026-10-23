@@ -1,6 +1,6 @@
 --- a/src/vulkan/wsi/wsi_common.c
 +++ b/src/vulkan/wsi/wsi_common.c
-@@ -2889,7 +2889,7 @@
+@@ -2903,7 +2903,7 @@ wsi_common_queue_present(const struct wsi_device *wsi,
  #endif
        }
  
@@ -11,7 +11,7 @@
        }
 --- a/src/vulkan/wsi/wsi_common_private.h
 +++ b/src/vulkan/wsi/wsi_common_private.h
-@@ -242,6 +242,10 @@
+@@ -242,6 +242,10 @@ struct wsi_swapchain {
      */
     VkSemaphore present_id_timeline;
     bool present_wait_enabled;
@@ -24,7 +24,7 @@
     /**
 --- a/src/vulkan/wsi/wsi_common_x11.c
 +++ b/src/vulkan/wsi/wsi_common_x11.c
-@@ -3336,10 +3336,12 @@
+@@ -3402,10 +3402,12 @@ x11_manage_present_queue(void *state)
  
        VkPresentModeKHR present_mode = chain->images[image_index].present_mode;
  
@@ -40,7 +40,7 @@
  
        bool need_timing_fence_wait = x11_swapchain_present_timing_is_out_of_order_completion(
              chain, wsi_conn, &chain->images[image_index].timing_request);
-@@ -3350,7 +3352,10 @@
+@@ -3416,7 +3418,10 @@ x11_manage_present_queue(void *state)
                                                   &chain->base.fences[image_index],
                                                   true, UINT64_MAX);
           if (result != VK_SUCCESS) {
@@ -52,7 +52,7 @@
              break;
           }
        }
-@@ -3796,6 +3801,25 @@
+@@ -4006,6 +4011,25 @@ x11_swapchain_destroy(struct wsi_swapchain *wsi_chain,
     thrd_join(chain->queue_manager, NULL);
     thrd_join(chain->event_manager, NULL);
  
@@ -78,7 +78,7 @@
  #ifdef __linux__
     /* Before the acquire queue goes: the direct present's reader pushes to it. */
     if (chain->direct != NULL) {
-@@ -4076,6 +4100,11 @@
+@@ -4287,6 +4311,11 @@ x11_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
  
     chain->base.destroy = x11_swapchain_destroy;
     chain->base.get_wsi_image = x11_get_wsi_image;

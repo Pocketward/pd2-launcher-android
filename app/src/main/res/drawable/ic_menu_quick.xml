@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Material Symbols Outlined "grid_view" (Google, Apache License 2.0), weight 400, not filled. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="960"
+    android:viewportHeight="960">
+    <group android:translateY="960">
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M120 -520V-840H440V-520ZM120 -120V-440H440V-120ZM520 -520V-840H840V-520ZM520 -120V-440H840V-120ZM200 -600H360V-760H200ZM600 -600H760V-760H600ZM600 -200H760V-360H600ZM200 -200H360V-360H200ZM600 -600ZM600 -360ZM360 -360ZM360 -600Z" />
+    </group>
+</vector>

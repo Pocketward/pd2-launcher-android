@@ -11,10 +11,11 @@ with odds of 2^-46.
 
 --- a/src/panfrost/lib/pan_desc.h
 +++ b/src/panfrost/lib/pan_desc.h
-@@ -368,19 +368,36 @@
+@@ -367,20 +367,37 @@ pan_effective_tile_block_size(unsigned tile_size)
+ }
  
  #if PAN_ARCH >= 7
- static inline uint64_t
++static inline uint64_t
 +pan_crc_clear_color_mix64(uint64_t x)
 +{
 +   /* A 64-bit bijection that spreads every input bit over the result (the
@@ -24,7 +25,7 @@ with odds of 2^-46.
 +   return x ^ (x >> 31);
 +}
 +
-+static inline uint64_t
+ static inline uint64_t
  pan_crc_clear_color_hash_rt(unsigned rt, const uint32_t clear[4])
  {
 -   /* The prime number 16381 is carefully selected so that the 32 bits

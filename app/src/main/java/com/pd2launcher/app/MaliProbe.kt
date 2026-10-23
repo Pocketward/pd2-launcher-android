@@ -50,9 +50,11 @@ val MALI_ARCHES = 10..13
 const val MALI_MIN_UAPI_MINOR = 9
 
 /**
- * The CSF Malis (v10 to v13) the App userland's PanVK knows, by Mesa's product id, as Mesa
- * 5bd05bf4's src/panfrost/model/pan_model.c (pan_model_list) lists them; PanVK refuses any other
- * GPU (pan_get_model). The G310's five variants share one product id.
+ * The CSF Malis (v10 to v13) the App userland's PanVK knows, by Mesa's product id, as the App
+ * userland's Mesa (config.sh MESA_COMMIT) src/panfrost/model/pan_model.c (pan_model_list) lists
+ * them; PanVK refuses any other GPU (pan_get_model). The G310's five variants share one product
+ * id, and so do the Immortalis entries (G715, G720, G925) Mesa added in 7c648edb with their
+ * non-Immortalis models.
  */
 private val panvkModels = mapOf(
     0x0A0807 to "Mali-G610",

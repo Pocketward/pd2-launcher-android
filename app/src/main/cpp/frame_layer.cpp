@@ -34,9 +34,10 @@ struct frame_layer {
     AHardwareBuffer *buffers[BUFFERS];
     int stride[BUFFERS]; // in pixels
     int buffer_w, buffer_h;
-    int dest_w, dest_h, transform;
+    int dest_w, dest_h, transform; // dest_w, dest_h under lock (frame_layer_resize)
+    int geometry_due; // under lock: the next frame sets the geometry again (frame_layer_resize)
     float frame_rate; // asked of the display with the first frame; 0: no vote
-    int next, shown; // shown: the buffer the last transaction set, -1 before the first
+    int next, shown; // shown: the buffer the last transaction set, -1 before the first; written under lock
     int locked; // the buffer frame_layer_lock gave, -1 none
     int refusals; // allocations refused in a row (the first is logged)
     int64_t refused_ns; // the last refusal
@@ -47,6 +48,10 @@ struct frame_layer {
     int64_t rest_since;
     int rest_done;
     int redraw;
+    // Held from reading the geometry to applying its transaction, by frame_layer_post (the copy's
+    // thread) and frame_layer_resize (the main thread): their transactions apply in the order they
+    // read it, so the newest size is the last one set.
+    pthread_mutex_t geometry_lock;
     // Under lock: set by the transaction-complete callbacks on a binder thread.
     pthread_mutex_t lock;
     pthread_cond_t answered;
@@ -76,6 +81,7 @@ static void free_layer(frame_layer *l) {
     }
     if (l->control != nullptr) ASurfaceControl_release(l->control);
     pthread_mutex_destroy(&l->lock);
+    pthread_mutex_destroy(&l->geometry_lock);
     pthread_cond_destroy(&l->answered);
     free(l);
 }
@@ -96,12 +102,24 @@ static bool allocate(frame_layer *l, int i, int64_t now) {
     return true;
 }
 
+void frame_layer_set_rate(frame_layer *l, float frame_rate) {
+    pthread_mutex_lock(&l->lock);
+    l->frame_rate = frame_rate;
+    pthread_mutex_unlock(&l->lock);
+    if (frame_rate <= 0) return;
+    ASurfaceTransaction *t = ASurfaceTransaction_create();
+    ASurfaceTransaction_setFrameRate(t, l->control, frame_rate, ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT);
+    ASurfaceTransaction_apply(t);
+    ASurfaceTransaction_delete(t);
+}
+
 frame_layer *frame_layer_create(ANativeWindow *window, int buffer_w, int buffer_h, int transform, float frame_rate) {
     int dest_w = ANativeWindow_getWidth(window), dest_h = ANativeWindow_getHeight(window);
     if (dest_w <= 0 || dest_h <= 0) return nullptr;
     auto *l = (frame_layer *)calloc(1, sizeof(frame_layer));
     if (l == nullptr) return nullptr;
     pthread_mutex_init(&l->lock, nullptr);
+    pthread_mutex_init(&l->geometry_lock, nullptr);
     pthread_cond_init(&l->answered, nullptr);
     for (int i = 0; i < BUFFERS; i++) l->release_fence[i] = -1;
     l->buffer_w = buffer_w;
@@ -237,18 +255,26 @@ void frame_layer_post(frame_layer *l) {
     done->layer = l;
     done->replaced = l->shown;
     ASurfaceTransaction_setBuffer(t, l->control, l->buffers[i], ready);
-    if (l->shown < 0) {
+    pthread_mutex_lock(&l->geometry_lock);
+    pthread_mutex_lock(&l->lock);
+    bool geometry = l->shown < 0 || l->geometry_due;
+    l->geometry_due = 0;
+    ARect destination = {0, 0, l->dest_w, l->dest_h};
+    pthread_mutex_unlock(&l->lock);
+    if (geometry) {
         ARect source = {0, 0, l->buffer_w, l->buffer_h};
-        ARect destination = {0, 0, l->dest_w, l->dest_h};
         ASurfaceTransaction_setGeometry(t, l->control, source, destination, l->transform);
+    }
+    if (l->shown < 0) {
         ASurfaceTransaction_setBufferTransparency(t, l->control, ASURFACE_TRANSACTION_TRANSPARENCY_OPAQUE);
         ASurfaceTransaction_setVisibility(t, l->control, ASURFACE_TRANSACTION_VISIBILITY_SHOW);
         // A game's explicit vote (Default compatibility): the display runs at this rate if its
         // policy allows (no touch boost against it), not at the rate a heuristic guesses from
         // how often frames come, which never rises above the rate the display already runs at.
-        if (l->frame_rate > 0) {
-            ASurfaceTransaction_setFrameRate(t, l->control, l->frame_rate, ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT);
-        }
+        pthread_mutex_lock(&l->lock);
+        float rate = l->frame_rate;
+        pthread_mutex_unlock(&l->lock);
+        if (rate > 0) ASurfaceTransaction_setFrameRate(t, l->control, rate, ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT);
     }
     ASurfaceTransaction_setOnComplete(t, done, on_complete);
     pthread_mutex_lock(&l->lock);
@@ -256,12 +282,35 @@ void frame_layer_post(frame_layer *l) {
     // The buffer it replaces is given back from now on: one that stayed on the screen through a
     // rest is not stuck.
     if (l->shown >= 0) l->busy_since[l->shown] = now_ns();
+    l->shown = i;
     pthread_mutex_unlock(&l->lock);
     ASurfaceTransaction_apply(t);
+    pthread_mutex_unlock(&l->geometry_lock);
     ASurfaceTransaction_delete(t);
-    l->shown = i;
     l->next = (i + 1) % BUFFERS;
     l->redraw = 0;
+}
+
+void frame_layer_resize(frame_layer *l, int dest_w, int dest_h) {
+    if (dest_w <= 0 || dest_h <= 0) return;
+    // After a frame that read the older size: its transaction applies first (geometry_lock).
+    pthread_mutex_lock(&l->geometry_lock);
+    pthread_mutex_lock(&l->lock);
+    l->dest_w = dest_w;
+    l->dest_h = dest_h;
+    l->geometry_due = 1;
+    bool shown = l->shown >= 0;
+    pthread_mutex_unlock(&l->lock);
+    // Before the first frame, that frame sets it.
+    ASurfaceTransaction *t = shown ? ASurfaceTransaction_create() : nullptr;
+    if (t != nullptr) {
+        ARect source = {0, 0, l->buffer_w, l->buffer_h};
+        ARect destination = {0, 0, dest_w, dest_h};
+        ASurfaceTransaction_setGeometry(t, l->control, source, destination, l->transform);
+        ASurfaceTransaction_apply(t);
+        ASurfaceTransaction_delete(t);
+    }
+    pthread_mutex_unlock(&l->geometry_lock);
 }
 
 // Whether the release fence [fd] has signalled (-1: there is none).

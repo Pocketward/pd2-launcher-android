@@ -216,6 +216,7 @@ kbase_fill_props(struct kbase_kmod_dev *kdev, const struct kbase_props *raw)
          .single_gpu_mapping = true,
          .no_placed_cpu_mapping = true,
          .no_fd_sharing = true,
+         .dma_buf_import = true,
       },
    };
 
@@ -467,6 +468,8 @@ kbase_kmod_get_csif_props(const struct pan_kmod_dev *dev)
  * mali_kbase_mem_linux.c kbase_phy_alloc_mapping_get), and kbase forces that memory to SAME_VA.
  * So these BOs are allocated at once, their GPU VA is the CPU address of that first mapping
  * (pan_kmod_bo::fixed_va), the bind only checks it, and the BO's free unmaps (and so frees) it.
+ *
+ * Imported dma-bufs (kbase_kmod_bo_import) are SAME_VA too, and are placed the same way.
  */
 
 struct kbase_kmod_bo {
@@ -477,8 +480,11 @@ struct kbase_kmod_bo {
    struct kbase_kmod_vm *vm;
    /* The last CPU mapping handed out, for MEM_SYNC. */
    void *cpu;
-   /* GPU_SYNC BOs: the SAME_VA mapping that holds the event memory. */
-   void *event_cpu;
+   /* GPU_SYNC BOs and imported dma-bufs: the mapping of the SAME_VA region, whose address is
+    * the GPU VA (fixed_va); unmapping it frees the region. */
+   void *same_va_cpu;
+   /* Imported dma-bufs: held GPU-mapped by a sticky resource mapping. */
+   bool sticky;
 };
 
 struct kbase_kmod_vm {
@@ -500,12 +506,14 @@ to_kbase_vm(struct pan_kmod_vm *vm)
    return container_of(vm, struct kbase_kmod_vm, base);
 }
 
+/* BO handles are ours: kbase has none. 0 is never handed out. */
+static uint32_t next_handle;
+
 static struct pan_kmod_bo *
 kbase_kmod_bo_alloc(struct pan_kmod_dev *dev, struct pan_kmod_vm *exclusive_vm, uint64_t size,
                     uint32_t flags)
 {
    struct kbase_kmod_dev *kdev = kbase_kmod_dev(dev);
-   static uint32_t next_handle;
 
    if (flags & ~dev->props.supported_bo_flags) {
       mesa_loge("kbase: unsupported BO flags 0x%x", flags & ~dev->props.supported_bo_flags);
@@ -516,7 +524,6 @@ kbase_kmod_bo_alloc(struct pan_kmod_dev *dev, struct pan_kmod_vm *exclusive_vm, 
    if (!bo)
       return NULL;
 
-   /* Handles are ours: kbase has none. 0 is never handed out. */
    uint32_t handle = p_atomic_inc_return(&next_handle);
    size = align64(size, kdev->page_size);
    pan_kmod_bo_init(&bo->base, dev, exclusive_vm, size, flags, handle);
@@ -536,16 +543,16 @@ kbase_kmod_bo_alloc(struct pan_kmod_dev *dev, struct pan_kmod_vm *exclusive_vm, 
                    strerror(errno));
          goto err_free;
       }
-      bo->event_cpu = os_mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, dev->fd,
-                              req.out.gpu_va);
-      if (bo->event_cpu == MAP_FAILED) {
+      bo->same_va_cpu = os_mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, dev->fd,
+                                req.out.gpu_va);
+      if (bo->same_va_cpu == MAP_FAILED) {
          mesa_loge("kbase: mapping event memory failed: %s", strerror(errno));
          struct kbase_ioctl_mem_free free_req = { .gpu_addr = req.out.gpu_va };
          kbase_kmod_ioctl(dev->fd, KBASE_IOCTL_MEM_FREE, &free_req);
-         bo->event_cpu = NULL;
+         bo->same_va_cpu = NULL;
          goto err_free;
       }
-      bo->base.fixed_va = (uintptr_t)bo->event_cpu;
+      bo->base.fixed_va = (uintptr_t)bo->same_va_cpu;
    }
 
    return &bo->base;
@@ -608,7 +615,7 @@ kbase_bo_bind(struct kbase_kmod_vm *vm, struct kbase_kmod_bo *bo, uint64_t va)
       return -1;
    }
 
-   /* Event memory already has its VA. */
+   /* Event memory and imports already have their VA. */
    if (bo->base.fixed_va) {
       if (va != bo->base.fixed_va) {
          mesa_loge("kbase: BO %u lives at 0x%" PRIx64 ", not 0x%" PRIx64, bo->base.handle,
@@ -620,7 +627,7 @@ kbase_bo_bind(struct kbase_kmod_vm *vm, struct kbase_kmod_bo *bo, uint64_t va)
       bo->vm = vm;
       _mesa_hash_table_u64_insert(vm->bound, va, bo);
       if (kdev->debug_bo)
-         mesa_logi("kbase: bo %u bind 0x%" PRIx64 "-0x%" PRIx64 " flags 0x%x (event memory)",
+         mesa_logi("kbase: bo %u bind 0x%" PRIx64 "-0x%" PRIx64 " flags 0x%x (SAME_VA)",
                    bo->base.handle, va, va + bo->base.size, bo->base.flags);
       return 0;
    }
@@ -662,7 +669,7 @@ kbase_bo_unbind(struct kbase_kmod_bo *bo, bool forget)
       mesa_logi("kbase: bo %u unbind 0x%" PRIx64 "-0x%" PRIx64, bo->base.handle, bo->gpu_va,
                 bo->gpu_va + bo->base.size);
 
-   /* Event memory stays until the BO is freed. */
+   /* Event memory and imports stay until the BO is freed. */
    if (!bo->base.fixed_va && kbase_kmod_ioctl(kdev->base.fd, KBASE_IOCTL_MEM_FREE, &req)) {
       int err = errno;
       mesa_loge("kbase: MEM_FREE at 0x%" PRIx64 " failed: %s", bo->gpu_va, strerror(err));
@@ -690,19 +697,108 @@ kbase_kmod_bo_free(struct pan_kmod_bo *pbo)
       simple_mtx_unlock(&vm->lock);
    }
 
-   /* Unmapping the SAME_VA mapping frees the event memory. */
-   if (bo->event_cpu)
-      os_munmap(bo->event_cpu, pbo->size);
+   if (bo->sticky) {
+      uint64_t va = pbo->fixed_va;
+      struct kbase_ioctl_sticky_resource_unmap req = { .count = 1, .address = (uintptr_t)&va };
+      if (kbase_kmod_ioctl(pbo->dev->fd, KBASE_IOCTL_STICKY_RESOURCE_UNMAP, &req))
+         mesa_loge("kbase: STICKY_RESOURCE_UNMAP at 0x%" PRIx64 " failed: %s", va,
+                   strerror(errno));
+   }
+
+   /* Unmapping the SAME_VA mapping frees the event memory or the import. */
+   if (bo->same_va_cpu)
+      os_munmap(bo->same_va_cpu, pbo->size);
 
    pan_kmod_bo_cleanup(pbo);
    pan_kmod_dev_free(pbo->dev, bo);
 }
 
+/* Imports a dma-buf (the app's AHardwareBuffers that Mesa's WSI blits frames into). For a 64-bit
+ * client kbase imports into the SAME_VA zone (mali_kbase_mem_linux.c kbase_mem_from_umm) and
+ * answers with a cookie; the mmap() of the cookie gives the region its GPU VA, the mapping's CPU
+ * address (kbasep_reg_mmap), which PanVK binds as the BO's fixed_va, as for event memory. The
+ * mapping is PROT_NONE: it only holds the VA (CPU access to an import is not offered: NO_MMAP), and
+ * its munmap frees the region. A sticky resource mapping keeps the pages on the GPU on a kernel
+ * that maps dma-bufs only for the jobs that use them (CONFIG_MALI_DMA_BUF_MAP_ON_DEMAND: CSF jobs
+ * name none); elsewhere the import has mapped them and it only counts a reference
+ * (kbase_mem_umm_map). Imports are not deduplicated: kbase maps each one on its own. */
 static struct pan_kmod_bo *
 kbase_kmod_bo_import(struct pan_kmod_dev *dev, int fd)
 {
-   errno = ENOTSUP;
-   return NULL;
+   struct kbase_kmod_dev *kdev = kbase_kmod_dev(dev);
+   int dma_buf = fd;
+
+   union kbase_ioctl_mem_import req = {
+      .in = {
+         /* GPU pages inner shareable, as for our own allocations (kbase_bo_alloc_flags). */
+         .flags = BASE_MEM_PROT_GPU_RD | BASE_MEM_PROT_GPU_WR |
+                  (dev->props.is_io_coherent ? BASE_MEM_COHERENT_SYSTEM
+                                             : BASE_MEM_COHERENT_LOCAL),
+         .phandle = (uintptr_t)&dma_buf,
+         .type = BASE_MEM_IMPORT_TYPE_UMM,
+      },
+   };
+   if (kbase_kmod_ioctl(dev->fd, KBASE_IOCTL_MEM_IMPORT, &req)) {
+      mesa_loge("kbase: MEM_IMPORT of dma-buf %d failed: %s", fd, strerror(errno));
+      return NULL;
+   }
+
+   const uint64_t cookie = req.out.gpu_va;
+   const uint64_t size = req.out.va_pages * kdev->page_size;
+   struct kbase_ioctl_mem_free free_req = { .gpu_addr = cookie };
+   if (!(req.out.flags & BASE_MEM_NEED_MMAP)) {
+      /* Not SAME_VA: a 32-bit client. */
+      mesa_loge("kbase: MEM_IMPORT placed dma-buf %d outside SAME_VA", fd);
+      kbase_kmod_ioctl(dev->fd, KBASE_IOCTL_MEM_FREE, &free_req);
+      errno = ENOTSUP;
+      return NULL;
+   }
+
+   /* pan_kmod_bo_import() holds the handle table's lock; pan_kmod_bo_put() empties the slot. */
+   const uint32_t handle = p_atomic_inc_return(&next_handle);
+   struct kbase_kmod_bo *bo = pan_kmod_dev_alloc(dev, sizeof(*bo));
+   struct pan_kmod_bo **slot =
+      bo ? util_sparse_array_get(&dev->handle_to_bo.array, handle) : NULL;
+   if (!slot) {
+      /* A pending cookie is freed by MEM_FREE (kbase_mem_free). */
+      kbase_kmod_ioctl(dev->fd, KBASE_IOCTL_MEM_FREE, &free_req);
+      if (bo)
+         pan_kmod_dev_free(dev, bo);
+      errno = ENOMEM;
+      return NULL;
+   }
+
+   void *cpu = os_mmap(NULL, size, PROT_NONE, MAP_SHARED, dev->fd, cookie);
+   if (cpu == MAP_FAILED) {
+      mesa_loge("kbase: mapping the import of dma-buf %d failed: %s", fd, strerror(errno));
+      /* A mapping that fails after kbase took the cookie (kbase_cpu_mmap's allocation) leaves the
+       * region to the context's end: say so. */
+      if (kbase_kmod_ioctl(dev->fd, KBASE_IOCTL_MEM_FREE, &free_req))
+         mesa_loge("kbase: freeing the import's cookie failed: %s", strerror(errno));
+      pan_kmod_dev_free(dev, bo);
+      return NULL;
+   }
+
+   uint64_t va = (uintptr_t)cpu;
+   struct kbase_ioctl_sticky_resource_map map = { .count = 1, .address = (uintptr_t)&va };
+   if (kbase_kmod_ioctl(dev->fd, KBASE_IOCTL_STICKY_RESOURCE_MAP, &map)) {
+      mesa_loge("kbase: STICKY_RESOURCE_MAP of dma-buf %d at 0x%" PRIx64 " failed: %s", fd, va,
+                strerror(errno));
+      os_munmap(cpu, size);
+      pan_kmod_dev_free(dev, bo);
+      return NULL;
+   }
+
+   pan_kmod_bo_init(&bo->base, dev, NULL, size,
+                    PAN_KMOD_BO_FLAG_IMPORTED | PAN_KMOD_BO_FLAG_NO_MMAP, handle);
+   bo->base.fixed_va = va;
+   bo->same_va_cpu = cpu;
+   bo->sticky = true;
+   *slot = &bo->base;
+   if (kdev->debug_bo)
+      mesa_logi("kbase: bo %u import of dma-buf %d at 0x%" PRIx64 "-0x%" PRIx64, handle, fd, va,
+                va + size);
+   return &bo->base;
 }
 
 static int

@@ -2,6 +2,7 @@ package com.pd2launcher.app
 
 import android.content.Context
 import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.NetworkInfo
 import android.system.ErrnoException
 import java.io.IOException
@@ -43,11 +44,53 @@ object NetworkCheck {
     /** What the screens say. */
     enum class Result { OK, BLOCKED, NO_NETWORK, DNS, BLIZZARD_UNREACHABLE, PD2_UNREACHABLE, UNREACHABLE }
 
-    /** One check: its [result], the block test's [send], and how each server answered, for the log. */
-    data class Report(val result: Result, val send: Outcome, val blizzard: Outcome?, val pd2: Outcome?, val network: Boolean) {
+    /**
+     * What Android says of the default network, for the log only: its [transports] (`other` for
+     * none of the named ones, `unknown` when Android gave none), how many DNS servers it names, and
+     * the Private DNS mode ([privateDns]). Never a server's address or the Private DNS server's name.
+     */
+    data class Link(val transports: List<String>, val dnsServers: Int, val privateDns: String) {
+        override fun toString(): String =
+            "${transports.ifEmpty { listOf("other") }.joinToString("+")}, DNS servers $dnsServers, private DNS $privateDns"
+    }
+
+    /**
+     * One check: its [result], the block test's [send], how each server answered, and the default
+     * network's [link], for the log.
+     */
+    data class Report(
+        val result: Result,
+        val send: Outcome,
+        val blizzard: Outcome?,
+        val pd2: Outcome?,
+        val network: Boolean,
+        val link: Link? = null,
+    ) {
         fun describe(): String =
-            "network check: $result (network ${if (network) "yes" else "none"}, send $send" +
-                (blizzard?.let { ", $BLIZZARD $it" } ?: "") + (pd2?.let { ", $PD2 $it" } ?: "") + ")"
+            "network check: $result (network ${if (network) "yes" else "none"}" + (link?.let { ", $it" } ?: "") +
+                ", send $send" + (blizzard?.let { ", $BLIZZARD $it" } ?: "") + (pd2?.let { ", $PD2 $it" } ?: "") + ")"
+    }
+
+    /** The kinds of network the log names, in its order. */
+    private val TRANSPORTS = listOf(
+        NetworkCapabilities.TRANSPORT_WIFI to "wifi",
+        NetworkCapabilities.TRANSPORT_CELLULAR to "cellular",
+        NetworkCapabilities.TRANSPORT_VPN to "vpn",
+        NetworkCapabilities.TRANSPORT_ETHERNET to "ethernet",
+    )
+
+    /** The names of the kinds of network [has] says the default network is. */
+    fun transports(has: (Int) -> Boolean): List<String> = TRANSPORTS.filter { has(it.first) }.map { it.second }
+
+    /**
+     * The Private DNS mode: strict when the player named a server ([named]), auto when Android uses
+     * Private DNS without one ([active]), else off: Android does not use Private DNS on this network
+     * now (the setting is Off, or Automatic and no server answers it).
+     */
+    fun privateDns(active: Boolean, named: Boolean): String = when {
+        named -> "strict"
+        active -> "auto"
+        else -> "off"
     }
 
     // Linux's numbers, which Android's are.
@@ -98,13 +141,22 @@ object NetworkCheck {
         // Android marks the network BLOCKED for an app it keeps off it (data saver, a restricted app).
         @Suppress("DEPRECATION")
         val blocked = connectivity.activeNetworkInfo?.detailedState == NetworkInfo.DetailedState.BLOCKED
-        val dns = active?.let { connectivity.getLinkProperties(it)?.dnsServers?.firstOrNull() }
+        val properties = active?.let { connectivity.getLinkProperties(it) }
+        val capabilities = active?.let { connectivity.getNetworkCapabilities(it) }
+        val link = properties?.let {
+            Link(
+                capabilities?.let { known -> transports(known::hasTransport) } ?: listOf("unknown"),
+                it.dnsServers.size,
+                privateDns(it.isPrivateDnsActive, it.privateDnsServerName != null),
+            )
+        }
+        val dns = properties?.dnsServers?.firstOrNull()
         val send = send(dns ?: InetAddress.getByName(LITERAL))
         // Blocked: the servers would only time out, so they are not tried.
-        if (blocked || send == Outcome.BLOCKED) return Report(Result.BLOCKED, send, null, null, network)
+        if (blocked || send == Outcome.BLOCKED) return Report(Result.BLOCKED, send, null, null, network, link)
         val blizzard = probe(BLIZZARD)
         val pd2 = probe(PD2)
-        return Report(result(network, false, send, blizzard, pd2), send, blizzard, pd2, network)
+        return Report(result(network, false, send, blizzard, pd2), send, blizzard, pd2, network, link)
     }
 
     /** One empty datagram to [address]'s DNS port: refused at once (EPERM) when the app is blocked. */

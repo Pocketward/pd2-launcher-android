@@ -78,10 +78,10 @@ object DebugPreview {
     const val NOTICE_IMPORT_LITE = "notice-import-lite"
     /** About over the live session. */
     const val ABOUT = "about"
-    /** The Game view's overlay over an empty screen: the glyph, the menu rail, the Controls panel, the controls editor. */
+    /** The Game view's overlay over an empty screen: the glyph, the in-game menu, the Controls screen, the controls editor. */
     const val GAME = "game"
     const val GAME_MENU = "game-menu"
-    /** The menu rail as over the official PD2 launcher. */
+    /** The in-game menu as over the official PD2 launcher. */
     const val GAME_MENU_LAUNCHER = "game-menu-launcher"
     const val GAME_CONTROLS = "game-controls"
     const val GAME_EDIT = "game-edit"

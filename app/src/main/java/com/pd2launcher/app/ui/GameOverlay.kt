@@ -1,11 +1,9 @@
 package com.pd2launcher.app.ui
 
+import android.view.KeyEvent
+import androidx.annotation.DrawableRes
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -15,14 +13,16 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -30,6 +30,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -43,12 +45,14 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -61,22 +65,28 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.disabled
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.testTag
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.pd2launcher.app.FpsReading
+import com.pd2launcher.app.GameDisplay
 import com.pd2launcher.app.R
-import com.pd2launcher.app.input.Chord
-import com.pd2launcher.app.input.Controls
 import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
 
@@ -104,17 +114,6 @@ internal fun MenuGlyph(modifier: Modifier, onClick: () -> Unit) {
     }
 }
 
-/** A live dot and "Game running": the menu never pretends the game has stopped. */
-@Composable
-private fun Live(launcher: Boolean = false) {
-    val t = rememberInfiniteTransition(label = "live")
-    val a by t.animateFloat(0.4f, 1f, infiniteRepeatable(tween(900), RepeatMode.Reverse), label = "a")
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        Box(Modifier.size(8.dp).clip(CircleShape).background(Palette.Teal.copy(alpha = a)))
-        Text(stringResource(Play.overlayStatus(launcher)), style = Type.Hint, color = Palette.Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
-    }
-}
-
 /**
  * "42 fps": the game's own frame rate; "73 fps · 60 on screen" when the screen shows fewer of its
  * frames (its refresh rate is lower); "– fps" before the first second is measured.
@@ -126,19 +125,22 @@ private fun fpsText(fps: FpsReading?): String = when {
     else -> stringResource(R.string.game_fps, fps.fps.roundToInt())
 }
 
-/** The fps counter over the game: small and quiet in a corner; it takes no input. */
+/**
+ * The fps counter over the game: small and quiet in a corner; it takes no input. [fps] is read
+ * here only, so its four changes a second recompose the counter and nothing around it (the menu).
+ */
 @Composable
-internal fun FpsCounter(fps: FpsReading?, modifier: Modifier) {
+internal fun FpsCounter(fps: () -> FpsReading?, modifier: Modifier) {
     Text(
-        fpsText(fps), style = Type.Hint, color = Palette.Text, maxLines = 1,
+        fpsText(fps()), style = Type.Hint, color = Palette.Text, maxLines = 1,
         modifier = modifier.padding(6.dp).alpha(0.6f).clip(RowShape).background(Palette.Background.copy(alpha = 0.5f))
             .padding(horizontal = 6.dp, vertical = 2.dp),
     )
 }
 
 /**
- * Over the game beside the rail ([GameLayer.tapCloses]), under the on-screen controls and the
- * rail: a tap on what they leave of the screen closes the rail and never reaches the game.
+ * Over the game beside the menu ([GameLayer.tapCloses]), under the on-screen controls and the
+ * menu: a tap on what they leave of the screen closes the menu and never reaches the game.
  */
 @Composable
 internal fun TapToClose(onClose: () -> Unit) {
@@ -146,367 +148,526 @@ internal fun TapToClose(onClose: () -> Unit) {
     Box(Modifier.fillMaxSize().pointerInput(Unit) { detectTapGestures(onTap = { close() }) })
 }
 
-/** What the in-game rail offers: quick toggles, then the pages it opens. Stop follows, apart. */
-internal enum class RailItem { KEYBOARD, TOUCH_PAD, SHOW_FPS, CONTROLS, EDIT_CONTROLS, SETTINGS }
+/** The in-game menu's two tabs. The strip's gamepad between them opens the Controls screen ([MenuStop]). */
+internal enum class MenuTab { QUICK, SETTINGS }
 
 /**
- * The rail's two groups, in order. Over the game: Keyboard, Touch pad and Show fps, then
- * Controls, Edit controls and Settings. Over the official PD2 [launcher], a mouse/touch window
- * with no controller to set up and no game fps to show: Keyboard, then Settings. [settings]: the
- * app offers its settings here.
+ * The strip's three stops, in its order: Quick, Controls (the full Controls screen) and
+ * Settings. L1 and R1 step one stop at a time, with no wrap at the ends.
  */
-internal data class RailRows(val toggles: List<RailItem>, val links: List<RailItem>) {
+internal enum class MenuStop {
+    QUICK,
+    CONTROLS,
+    SETTINGS,
+    ;
+
     companion object {
-        fun of(launcher: Boolean, settings: Boolean): RailRows {
-            val tail = if (settings) listOf(RailItem.SETTINGS) else emptyList()
-            return if (launcher) {
-                RailRows(listOf(RailItem.KEYBOARD), tail)
-            } else {
-                RailRows(listOf(RailItem.KEYBOARD, RailItem.TOUCH_PAD, RailItem.SHOW_FPS), listOf(RailItem.CONTROLS, RailItem.EDIT_CONTROLS) + tail)
+        /** Whether [keyCode] is a shoulder button that steps along the strip (L1 back, R1 on). */
+        fun isStep(keyCode: Int): Boolean = keyCode == KeyEvent.KEYCODE_BUTTON_L1 || keyCode == KeyEvent.KEYCODE_BUTTON_R1
+
+        /**
+         * The stop the shoulder button [keyCode] goes to from [from]; null at an end or for another
+         * key. [controls]: the strip has the Controls stop (not over the official launcher); with
+         * none, a step passes it (also from it, should the launcher come while it shows).
+         */
+        fun step(from: MenuStop, keyCode: Int, controls: Boolean): MenuStop? {
+            val by = when (keyCode) {
+                KeyEvent.KEYCODE_BUTTON_L1 -> -1
+                KeyEvent.KEYCODE_BUTTON_R1 -> 1
+                else -> return null
             }
+            var at = from.ordinal + by
+            if (!controls && entries.getOrNull(at) == CONTROLS) at += by
+            return entries.getOrNull(at)
         }
+
+        /**
+         * The stop the shoulder button [keyCode] steps from over [layer]: the menu's [tab], or the
+         * Controls screen; null where L1 and R1 do not step: another key, another layer, or a
+         * [popup] over it (the Frame rate input, the action picker, the Pointer speed input).
+         */
+        fun from(keyCode: Int, layer: GameLayer, tab: MenuTab, popup: Boolean): MenuStop? = when {
+            !isStep(keyCode) || popup -> null
+            layer == GameLayer.MENU -> of(tab)
+            layer == GameLayer.CONTROLS -> CONTROLS
+            else -> null
+        }
+
+        /** The stop of the menu's [tab]. */
+        fun of(tab: MenuTab): MenuStop = if (tab == MenuTab.QUICK) QUICK else SETTINGS
     }
 }
 
+/** A quick tile: one state that a press changes at once, the menu open. */
+internal enum class QuickTile { ON_SCREEN, FPS, DISPLAY, KEYBOARD }
+
 /**
- * The rail's shape in the room it has: one column where that fits the height, else the toggles
- * and the pages side by side (a phone on its side, about 360 dp tall), scrolling only when even
- * that does not fit. Its width follows its labels, at most [maxWidth]: a share of the width (a
- * larger one for two columns), never under [MIN_WIDTH].
+ * What the menu offers over what runs. Over the game: the four tiles, Frame rate and the
+ * Controls screen. Over the official PD2 [launcher], a mouse and touch window with no on-screen
+ * controls, no game fps, a size of its own and no controller to set up: the Keyboard tile only.
+ * The Settings tab is the same for both; its Stop closes the launcher there.
  */
-internal data class RailSize(val columns: Int, val maxWidth: Dp, val scrolls: Boolean) {
+internal data class MenuItems(val tiles: List<QuickTile>, val frameRate: Boolean, val controls: Boolean) {
     companion object {
-        /** Every row and button: a 48 dp target. */
-        val ROW = 48.dp
-        /** From the screen's edge to the rail. */
-        val INSET = 8.dp
-        /** Inside the rail, around its rows. */
-        val PADDING = 8.dp
-        /** Between the header and the first group. */
-        val HEAD_GAP = 4.dp
-        /** Between the two groups: a hairline with 6 dp either side. */
-        val GROUP_GAP = 13.dp
-        /** The least air above Stop; the body keeps it and Stop below its end, inside the scroll. */
-        val STOP_GAP = 12.dp
-        val MIN_WIDTH = 168.dp
-        const val ONE_COLUMN_SHARE = 0.34f
-        const val TWO_COLUMN_SHARE = 0.44f
-
-        /** The height the rail needs for [rows] in [columns]: header, body and Stop. */
-        fun height(rows: RailRows, columns: Int): Dp {
-            val both = rows.toggles.isNotEmpty() && rows.links.isNotEmpty()
-            val body = if (columns == 1) {
-                ROW * (rows.toggles.size + rows.links.size) + if (both) GROUP_GAP else 0.dp
-            } else {
-                ROW * maxOf(rows.toggles.size, rows.links.size)
-            }
-            return INSET * 2 + PADDING * 2 + ROW + HEAD_GAP + body + STOP_GAP + ROW
-        }
-
-        /** The rail for [rows] in [width] x [height] dp, the safe area of the Game view. */
-        fun of(width: Dp, height: Dp, rows: RailRows): RailSize {
-            val columns = if (height(rows, 1) <= height) 1 else 2
-            val share = if (columns == 1) ONE_COLUMN_SHARE else TWO_COLUMN_SHARE
-            return RailSize(columns, maxOf(MIN_WIDTH, width * share), height(rows, columns) > height)
-        }
+        fun of(launcher: Boolean): MenuItems =
+            if (launcher) MenuItems(listOf(QuickTile.KEYBOARD), frameRate = false, controls = false) else MenuItems(QuickTile.entries, frameRate = true, controls = true)
     }
 }
+
+/** The in-game menu's sizes, in dp: one panel of one size on every tab and every device, as wide as its words need. */
+internal object MenuSize {
+    /** Every target: a 48 dp square at least. */
+    val ROW = 48.dp
+    /** From the screen's safe edge (camera cutouts, system bars) to the menu. */
+    val INSET = 8.dp
+    /** Inside the panel, around the tab's body. */
+    val PADDING = 8.dp
+    /** The panel's least width; a word that needs more widens it, so none is cut. */
+    val MIN_WIDTH = 264.dp
+    /** The tab's title line. */
+    val HEAD = 40.dp
+    val HEAD_GAP = 4.dp
+    /** Between the tiles. */
+    val TILE_GAP = 6.dp
+    /** A tile's least height: its icon and state over a label of two lines. */
+    val TILE_HEIGHT = 74.dp
+}
+
+/** What the in-game menu shows: each tile's and switch's state now. */
+internal data class MenuState(
+    val launcher: Boolean,
+    val onScreen: Boolean,
+    val showFps: Boolean,
+    val display: GameDisplay,
+    /** Android's keyboard is up. */
+    val keyboard: Boolean,
+    /** The game's frame rate as the player reads it: a number of frames a second. */
+    val frameRate: String,
+    val slowerInBackground: Boolean,
+    /** The Launcher's Sound in background; null while the Launcher's settings are not known (the switch waits). */
+    val soundInBackground: Boolean?,
+    val keepScreenOn: Boolean,
+)
+
+/** What the in-game menu's tiles, rows and switches do. */
+internal class MenuActions(
+    val onClose: () -> Unit,
+    val onOnScreen: (Boolean) -> Unit,
+    val onShowFps: (Boolean) -> Unit,
+    val onDisplay: () -> Unit,
+    val onKeyboard: (Boolean) -> Unit,
+    val onFrameRate: () -> Unit,
+    val onControls: () -> Unit,
+    val onSlowerInBackground: (Boolean) -> Unit,
+    val onSoundInBackground: (Boolean) -> Unit,
+    val onKeepScreenOn: (Boolean) -> Unit,
+    val onStop: () -> Unit,
+)
+
+/** The in-game panels' test tags: debug captures measure them (OverlayProbe). */
+internal const val MENU_TAG = "game-menu"
+internal const val CONTROLS_TAG = "controls-screen"
+internal const val NUMBER_INPUT_TAG = "number-input"
+
+/** What only takes its room (the hidden tab, the settings under the Stop question): debug captures leave it out. */
+internal const val UNSEEN_TAG = "unseen"
 
 /** Takes every touch inside it, so none falls through to the on-screen controls or [TapToClose] under it. */
-private fun Modifier.takesTouches(): Modifier = pointerInput(Unit) { awaitEachGesture { awaitFirstDown(requireUnconsumed = false) } }
+internal fun Modifier.takesTouches(): Modifier = pointerInput(Unit) { awaitEachGesture { awaitFirstDown(requireUnconsumed = false) } }
 
 /**
- * The in-game menu: a rail on the right edge, no scrim; the game stays live beside it and never
- * pauses, its on-screen controls too. The quick toggles (Keyboard, Touch pad, Show fps) act at
- * once and show over the game while the rail stays; the pages (Controls, Edit controls,
- * Settings) follow; Stop sits apart at the foot in red and asks in place first ([asking]; the
- * Game view hides the on-screen controls meanwhile). One column where the height allows, two
- * side by side on a phone on its side ([RailSize]); as wide as its labels. Back, ✕ or a tap on
- * the game closes it.
+ * The in-game menu: one panel at the right edge, no scrim; the game stays live beside it and
+ * never pauses, its on-screen controls too (with Slower game in the background on, the game is
+ * in the background meanwhile, [GameLayer.suspends], and the on-screen controls show dimmed and
+ * inert, [GameLayer.padInert]). A console tab strip on the screen's edge: ✕, then
+ * Quick, the gamepad (the Controls screen, which keeps the strip in the same place) and Settings;
+ * L1 and R1 step along it one at a time (the Game view, [MenuStop]; [focusTab] counts the steps
+ * into a tab, which takes the focus). Quick: four tiles (On-screen controls, FPS counter, Display, Keyboard)
+ * that change at once, then Frame rate, which opens its input. Settings: three of the app's
+ * settings that apply at once, then a quiet Stop game, which asks in place first ([asking]; the
+ * Game view hides the on-screen controls meanwhile). Both tabs share one size ([MenuSize]),
+ * so nothing moves when the tab changes. While Android's keyboard is up the menu keeps above it
+ * and scrolls if it must. Back, ✕ or a tap on the game closes it. It slides in and out at the
+ * screen's edge; [fades]: it only fades, to and from the Controls screen. [onPanelHeight]: its panel's height
+ * in px, for the Controls screen's strip ([ControlsScreen]).
  */
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
-internal fun BoxScope.GameRail(
+internal fun BoxScope.GameMenu(
     visible: Boolean,
+    tab: MenuTab,
+    onTab: (MenuTab) -> Unit,
     asking: Boolean,
     onAsking: (Boolean) -> Unit,
-    launcher: Boolean,
-    keyboard: Boolean,
-    touchPad: Boolean,
-    showFps: Boolean,
-    onClose: () -> Unit,
-    onKeyboard: (Boolean) -> Unit,
-    onTouchPad: (Boolean) -> Unit,
-    onShowFps: (Boolean) -> Unit,
-    onControls: () -> Unit,
-    onEditControls: () -> Unit,
-    onSettings: (() -> Unit)?,
-    onStop: () -> Unit,
+    state: MenuState,
+    actions: MenuActions,
+    focusTab: Int,
+    onPanelHeight: (Int) -> Unit,
+    fades: Boolean = false,
 ) {
     AnimatedVisibility(
         visible, Modifier.align(Alignment.CenterEnd),
-        enter = slideInHorizontally { it } + fadeIn(), exit = slideOutHorizontally { it } + fadeOut(),
+        enter = if (fades) fadeIn() else slideInHorizontally { it } + fadeIn(),
+        exit = if (fades) fadeOut() else slideOutHorizontally { it } + fadeOut(),
     ) {
-        // The rail's width before Stop asked: the question keeps it rather than widening it.
-        var settled by remember { mutableStateOf(0.dp) }
-        val first = remember { FocusRequester() }
-        InitialFocus(first)
-        val density = LocalDensity.current
-        val rows = RailRows.of(launcher, onSettings != null)
-        BoxWithConstraints(Modifier.windowInsetsPadding(WindowInsets.safeDrawing).fillMaxHeight()) {
-            val size = RailSize.of(maxWidth, maxHeight, rows)
-            // Opaque: the on-screen controls it overlaps stay under it, unseen.
+        val items = MenuItems.of(state.launcher)
+        val quick = remember { FocusRequester() }
+        val settings = remember { FocusRequester() }
+        InitialFocus(if (tab == MenuTab.QUICK) quick else settings)
+        // A shoulder button's step moves the focus into the tab it opens; a press on the strip keeps it there.
+        LaunchedEffect(focusTab) {
+            if (focusTab > 0) runCatching { (if (tab == MenuTab.QUICK) quick else settings).requestFocus() }
+        }
+        BoxWithConstraints(Modifier.windowInsetsPadding(WindowInsets.safeDrawing).fillMaxHeight(), contentAlignment = Alignment.CenterEnd) {
             Panel(
-                Modifier.padding(RailSize.INSET).fillMaxHeight()
-                    .widthIn(min = RailSize.MIN_WIDTH, max = size.maxWidth)
-                    .then(if (asking && settled > 0.dp) Modifier.width(settled) else Modifier.width(IntrinsicSize.Max))
-                    .onSizeChanged { if (!asking) settled = with(density) { it.width.toDp() } }
-                    .takesTouches(),
-                padding = RailSize.PADDING,
+                Modifier.padding(MenuSize.INSET).onSizeChanged { onPanelHeight(it.height) }
+                    .heightIn(max = (maxHeight - MenuSize.INSET * 2).coerceAtLeast(0.dp))
+                    .widthIn(min = MenuSize.MIN_WIDTH).width(IntrinsicSize.Min)
+                    .takesTouches().testTag(MENU_TAG),
+                padding = 0.dp,
             ) {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.weight(1f).padding(start = 14.dp, end = 8.dp)) { Live(launcher) }
-                    LauncherButton(stringResource(R.string.game_menu_close), onClose, Modifier.width(RailSize.ROW), Kind.QUIET, height = RailSize.ROW, padding = 0.dp)
-                }
-                Box(Modifier.weight(1f).fillMaxWidth()) {
-                    if (asking) {
-                        StopAsk(launcher, onStop, onKeep = { onAsking(false) })
-                    } else {
-                        val item: @Composable (RailItem) -> Unit = { item ->
-                            when (item) {
-                                RailItem.KEYBOARD -> RailToggle(stringResource(R.string.game_view_keyboard), keyboard, onKeyboard, first)
-                                RailItem.TOUCH_PAD -> RailToggle(stringResource(R.string.game_menu_touch_pad), touchPad, onTouchPad)
-                                RailItem.SHOW_FPS -> RailToggle(stringResource(R.string.game_menu_show_fps), showFps, onShowFps)
-                                RailItem.CONTROLS -> MenuRow(stringResource(R.string.game_menu_controls), onControls)
-                                RailItem.EDIT_CONTROLS -> MenuRow(stringResource(R.string.game_menu_edit_controls), onEditControls)
-                                RailItem.SETTINGS -> onSettings?.let { MenuRow(stringResource(R.string.game_menu_settings), it) }
-                            }
-                        }
-                        val scroll = rememberScrollState()
-                        val foot = RailSize.STOP_GAP + RailSize.ROW
-                        val spec = remember(density) { ClearOfPills(with(density) { foot.toPx() }) }
-                        CompositionLocalProvider(LocalBringIntoViewSpec provides spec) {
-                            Column(Modifier.fillMaxSize().verticalScroll(scroll).padding(top = RailSize.HEAD_GAP, bottom = foot)) {
-                                RailBody(rows, size.columns, item)
-                            }
-                        }
-                        // Only while the body scrolls under Stop (an unmeasured scroll reports Int.MAX_VALUE).
-                        val scrolling = scroll.maxValue in 1 until Int.MAX_VALUE
-                        if (scrolling) {
-                            val band = foot + FADE
-                            Box(
-                                Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(band).background(
-                                    Brush.verticalGradient(
-                                        0f to Palette.Surface.copy(alpha = 0f),
-                                        FADE / band to Palette.Surface.copy(alpha = 0.9f),
-                                        1f to Palette.Surface,
-                                    ),
-                                ),
+                // Scrolls only where the room is short (Android's keyboard up).
+                Row(Modifier.verticalScroll(rememberScrollState()).height(IntrinsicSize.Max)) {
+                    Column(Modifier.weight(1f).fillMaxHeight().padding(start = MenuSize.PADDING, top = MenuSize.PADDING, bottom = MenuSize.PADDING)) {
+                        Box(Modifier.heightIn(min = MenuSize.HEAD).padding(horizontal = 14.dp), contentAlignment = Alignment.CenterStart) {
+                            Text(
+                                stringResource(if (tab == MenuTab.QUICK) R.string.game_menu_quick else R.string.game_menu_settings),
+                                style = Type.Button, color = Palette.Text, modifier = Modifier.semantics { heading() },
                             )
                         }
-                        LauncherButton(
-                            stringResource(Play.overlayStopLabel(launcher)), { onAsking(true) },
-                            Modifier.align(Alignment.BottomCenter).fillMaxWidth(), Kind.DANGER, height = RailSize.ROW, floating = scrolling,
-                        )
+                        Spacer(Modifier.height(MenuSize.HEAD_GAP))
+                        // Both tabs are laid out, the hidden one unseen and untouchable, so the panel has the larger one's size on both.
+                        Box(Modifier.weight(1f).fillMaxWidth()) {
+                            Pane(tab == MenuTab.QUICK) { shown -> QuickPane(items, state, actions, shown, quick) }
+                            Pane(tab == MenuTab.SETTINGS) { shown ->
+                                SettingsPane(state, actions, asking, onAsking, shown, settings)
+                            }
+                        }
                     }
+                    Rule(Modifier.padding(start = 8.dp, end = 4.dp, top = MenuSize.PADDING, bottom = MenuSize.PADDING).fillMaxHeight(), vertical = true)
+                    TabStrip(
+                        MenuStop.of(tab), items.controls,
+                        onStop = { stop ->
+                            when (stop) {
+                                MenuStop.QUICK -> onTab(MenuTab.QUICK)
+                                MenuStop.SETTINGS -> onTab(MenuTab.SETTINGS)
+                                MenuStop.CONTROLS -> actions.onControls()
+                            }
+                        },
+                        onClose = actions.onClose,
+                    )
                 }
             }
         }
-    }
-}
-
-/** How far above Stop the scrolled rows fade out. */
-private val FADE = 20.dp
-
-/** The rail's groups: in one column with a hairline between, or side by side with a hairline down the middle. */
-@Composable
-private fun ColumnScope.RailBody(rows: RailRows, columns: Int, item: @Composable (RailItem) -> Unit) {
-    if (columns == 2) {
-        Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
-            Column(Modifier.width(IntrinsicSize.Max)) { rows.toggles.forEach { item(it) } }
-            if (rows.links.isNotEmpty()) {
-                Rule(Modifier.padding(horizontal = 6.dp).fillMaxHeight(), vertical = true)
-                Column(Modifier.weight(1f)) { rows.links.forEach { item(it) } }
-            }
-        }
-    } else {
-        rows.toggles.forEach { item(it) }
-        if (rows.toggles.isNotEmpty() && rows.links.isNotEmpty()) Rule(Modifier.padding(vertical = 6.dp))
-        rows.links.forEach { item(it) }
     }
 }
 
 /**
- * Stop asking in place at the rail's foot: the question, Stop, and Keep playing (focused) where
- * Stop game was, so a second tap there keeps the game.
+ * One tab's body: [shown] it is seen and takes input; hidden it still takes its room (the panel
+ * keeps one size), unseen, without semantics, and its rows take no focus or touch.
  */
 @Composable
-private fun BoxScope.StopAsk(launcher: Boolean, onStop: () -> Unit, onKeep: () -> Unit) {
-    val keep = remember { FocusRequester() }
-    InitialFocus(keep)
-    Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(stringResource(Play.overlayStopBody(launcher)), style = Type.Body, color = Palette.Text, modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp))
-        LauncherButton(stringResource(R.string.game_menu_stop), onStop, Modifier.fillMaxWidth(), Kind.DANGER, height = RailSize.ROW)
-        LauncherButton(stringResource(Play.overlayKeepLabel(launcher)), onKeep, Modifier.fillMaxWidth(), focusRequester = keep, height = RailSize.ROW)
+private fun BoxScope.Pane(shown: Boolean, content: @Composable ColumnScope.(shown: Boolean) -> Unit) {
+    // Both fill the tab's area, so the Settings tab's Stop sits at its foot.
+    Column(Modifier.fillMaxSize().then(if (shown) Modifier else Modifier.unseen()), content = { content(shown) })
+}
+
+/** Laid out for its room, but unseen and without semantics (its rows take no focus or touch themselves). */
+internal fun Modifier.unseen(): Modifier = alpha(0f).clearAndSetSemantics { testTag = UNSEEN_TAG }
+
+/** Quick: the tiles that apply, two by two, then Frame rate. */
+@Composable
+private fun ColumnScope.QuickPane(items: MenuItems, state: MenuState, actions: MenuActions, shown: Boolean, first: FocusRequester) {
+    items.tiles.chunked(2).forEachIndexed { index, row ->
+        if (index > 0) Spacer(Modifier.height(MenuSize.TILE_GAP))
+        Row(Modifier.fillMaxWidth().height(IntrinsicSize.Max), horizontalArrangement = Arrangement.spacedBy(MenuSize.TILE_GAP)) {
+            row.forEachIndexed { column, tile ->
+                QuickTileView(tile, state, actions, shown, if (index == 0 && column == 0) first else null)
+            }
+            if (row.size == 1) Spacer(Modifier.weight(1f))
+        }
+    }
+    if (items.frameRate) {
+        Spacer(Modifier.height(8.dp))
+        LinkRow(stringResource(R.string.settings_frame_rate), state.frameRate, actions.onFrameRate, shown, oneLine = true)
     }
 }
 
-/** A quick toggle: its label on one line and the launcher toggle, which shows the state. One press. */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun RailToggle(label: String, on: Boolean, onChange: (Boolean) -> Unit, focus: FocusRequester? = null) {
+private fun RowScope.QuickTileView(tile: QuickTile, state: MenuState, actions: MenuActions, shown: Boolean, focus: FocusRequester?) {
+    val on = stringResource(R.string.game_menu_on)
+    val off = stringResource(R.string.game_menu_off)
+    val fit = stringResource(R.string.game_menu_display_fit)
+    val center = stringResource(R.string.game_menu_display_center)
+    when (tile) {
+        QuickTile.ON_SCREEN -> Tile(R.drawable.ic_tile_on_screen, stringResource(R.string.on_screen_controls), state.onScreen, on, off, shown, focus) {
+            actions.onOnScreen(!state.onScreen)
+        }
+        QuickTile.FPS -> Tile(R.drawable.ic_tile_fps, stringResource(R.string.game_menu_fps_counter), state.showFps, on, off, shown, focus) {
+            actions.onShowFps(!state.showFps)
+        }
+        // A choice of two, not on or off: never tinted; its word is the one in use.
+        QuickTile.DISPLAY -> Tile(
+            R.drawable.ic_tile_display, stringResource(R.string.game_menu_display), null,
+            if (state.display == GameDisplay.FIT) fit else center, if (state.display == GameDisplay.FIT) center else fit, shown, focus,
+        ) { actions.onDisplay() }
+        QuickTile.KEYBOARD -> {
+            // With Android's keyboard up the menu may not fit above it: it scrolls to this tile, which hides it.
+            val inView = remember { BringIntoViewRequester() }
+            LaunchedEffect(state.keyboard, shown) { if (state.keyboard && shown) runCatching { inView.bringIntoView() } }
+            Tile(
+                R.drawable.ic_tile_keyboard, stringResource(R.string.game_view_keyboard), state.keyboard, on, off, shown, focus,
+                Modifier.bringIntoViewRequester(inView),
+            ) { actions.onKeyboard(!state.keyboard) }
+        }
+    }
+}
+
+/**
+ * A quick tile: its icon and state word on top, its label below. [on] null: a choice of two
+ * ([word] the one in use, [other] the one a press picks); else on or off, tinted while on. The
+ * word keeps the room of the longer of the two, so a press never changes the tile's size.
+ */
+@Composable
+private fun RowScope.Tile(
+    @DrawableRes icon: Int,
+    label: String,
+    on: Boolean?,
+    onWord: String,
+    offWord: String,
+    shown: Boolean,
+    focus: FocusRequester?,
+    modifier: Modifier = Modifier,
+    onPress: () -> Unit,
+) {
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+    val lit = on == true
+    val word = if (on == false) offWord else onWord
+    val other = if (on == false) onWord else offWord
+    val press = when {
+        !shown -> Modifier
+        on == null -> Modifier.clickable(interaction, LocalIndication.current, role = Role.Button, onClick = onPress).semantics { stateDescription = word }
+        else -> Modifier.toggleable(on, interaction, LocalIndication.current, role = Role.Switch) { onPress() }
+    }
+    Column(
+        modifier.weight(1f).fillMaxHeight().heightIn(min = MenuSize.TILE_HEIGHT).focusOn(focus)
+            .clip(RowShape)
+            .background(if (lit) Palette.Teal.copy(alpha = 0.16f) else if (focused) Palette.Raised else Color.Transparent)
+            .border(
+                if (focused) 2.dp else 1.dp,
+                when {
+                    focused -> Palette.Teal
+                    lit -> Palette.Teal.copy(alpha = 0.32f)
+                    else -> Palette.Rule
+                },
+                RowShape,
+            )
+            .then(press)
+            .padding(start = 12.dp, end = 10.dp, top = 10.dp, bottom = 10.dp),
+        verticalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Icon(painterResource(icon), null, Modifier.size(22.dp), tint = Palette.Text)
+            Spacer(Modifier.weight(1f).widthIn(min = 6.dp))
+            // The state is in the tile's own semantics (on or off, or its state description): the words are not read again.
+            Box(Modifier.clearAndSetSemantics {}, contentAlignment = Alignment.CenterEnd) {
+                val style = Type.Hint.copy(fontWeight = FontWeight.SemiBold)
+                Text(other, style = style, color = Color.Transparent, maxLines = 1, softWrap = false, modifier = Modifier.clearAndSetSemantics {})
+                Text(word, style = style, color = Palette.Text, maxLines = 1, softWrap = false, textAlign = TextAlign.End)
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(label, style = Type.Hint.copy(fontWeight = FontWeight.Medium), color = Palette.Text)
+    }
+}
+
+/** Settings: the app's settings the game follows at once, then Stop game apart at the foot, or the Stop question in its place. */
+@Composable
+private fun ColumnScope.SettingsPane(
+    state: MenuState,
+    actions: MenuActions,
+    asking: Boolean,
+    onAsking: (Boolean) -> Unit,
+    shown: Boolean,
+    first: FocusRequester,
+) {
+    // The question shows only in the shown tab: a change of tab forgets it (GameView).
+    val question = asking && shown
+    val rows = shown && !question
+    Box(Modifier.weight(1f).fillMaxWidth()) {
+        // The settings keep their room under the question, so the menu keeps its size.
+        Column(Modifier.fillMaxSize().then(if (question) Modifier.unseen() else Modifier)) {
+            MenuSwitch(stringResource(R.string.settings_background_frame_rate), state.slowerInBackground, rows, first, onChange = actions.onSlowerInBackground)
+            MenuSwitch(
+                stringResource(R.string.settings_sound_in_background), state.soundInBackground == true, rows, null,
+                waiting = state.soundInBackground == null, onChange = actions.onSoundInBackground,
+            )
+            MenuSwitch(stringResource(R.string.settings_keep_screen_on), state.keepScreenOn, rows, null, onChange = actions.onKeepScreenOn)
+            Spacer(Modifier.weight(1f).heightIn(min = 8.dp))
+            Rule(Modifier.padding(vertical = 6.dp))
+            StopRow(stringResource(Play.overlayStopLabel(state.launcher)), rows) { onAsking(true) }
+        }
+        if (question) {
+            Column(Modifier.matchParentSize()) { StopAsk(state.launcher, actions.onStop) { onAsking(false) } }
+        }
+    }
+}
+
+/**
+ * Stop asking in place, in the Settings tab: the question, Stop game, and Keep playing (focused) at
+ * the foot where Stop game was, so a second press there keeps the game. Always whole in view:
+ * the tab is taller than the question and its two buttons.
+ */
+@Composable
+private fun ColumnScope.StopAsk(launcher: Boolean, onStop: () -> Unit, onKeep: () -> Unit) {
+    val keep = remember { FocusRequester() }
+    InitialFocus(keep)
+    Spacer(Modifier.weight(1f))
+    Text(stringResource(Play.overlayStopBody(launcher)), style = Type.Body, color = Palette.Text, modifier = Modifier.padding(horizontal = 6.dp))
+    Spacer(Modifier.height(8.dp))
+    LauncherButton(stringResource(Play.overlayStopLabel(launcher)), onStop, Modifier.fillMaxWidth(), Kind.DANGER, height = MenuSize.ROW)
+    Spacer(Modifier.height(8.dp))
+    LauncherButton(stringResource(Play.overlayKeepLabel(launcher)), onKeep, Modifier.fillMaxWidth(), focusRequester = keep, height = MenuSize.ROW)
+}
+
+/**
+ * A switch row with the app's title for the setting only; the whole row switches. [waiting]: its
+ * value is not known yet (the Launcher's settings), so it shows off, faint, and takes no press.
+ */
+@Composable
+private fun MenuSwitch(label: String, on: Boolean, shown: Boolean, focus: FocusRequester?, waiting: Boolean = false, onChange: (Boolean) -> Unit) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
     Row(
-        Modifier.focusOn(focus).fillMaxWidth().heightIn(min = RailSize.ROW).focusMark(focused)
-            .toggleable(on, interaction, LocalIndication.current, role = Role.Switch, onValueChange = onChange)
+        Modifier.focusOn(focus).fillMaxWidth().heightIn(min = MenuSize.ROW).focusMark(focused)
+            .then(
+                when {
+                    !shown -> Modifier
+                    waiting -> Modifier.semantics { disabled() }
+                    else -> Modifier.toggleable(on, interaction, LocalIndication.current, role = Role.Switch, onValueChange = onChange)
+                },
+            )
             .padding(horizontal = 14.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text(label, style = Type.Body, color = Palette.Text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+        Text(label, style = Type.Body, color = if (waiting) Palette.Faint else Palette.Text, modifier = Modifier.weight(1f))
         Toggle(on)
     }
 }
 
+/** The quiet Stop row: red words, no pill; it asks first. */
 @Composable
-private fun MenuRow(label: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    FocusRow(onClick, modifier, minHeight = RailSize.ROW) {
-        Text(label, style = Type.Body, color = Palette.Text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-        Text("›", style = Type.Title, color = Palette.Teal)
-    }
-}
-
-/**
- * The in-game Controls panel's shape: [width] (three quarters of the screen's at most, never
- * over [MAX_WIDTH]) and its binding groups in [columns]: two where each gets [COLUMN].
- */
-internal data class PanelSize(val width: Dp, val columns: Int) {
-    companion object {
-        val MAX_WIDTH = 480.dp
-        /** A column of bindings: a cap and "Wheel down (next skill)" on one line. */
-        val COLUMN = 200.dp
-        /** The gap between the columns and the panel's padding either side. */
-        private val CHROME = 16.dp + 12.dp * 2
-        const val SHARE = 0.75f
-
-        /** The panel in [width] dp, the safe area's width. */
-        fun of(width: Dp): PanelSize {
-            val w = minOf(MAX_WIDTH, width * SHARE)
-            return PanelSize(w, if (w >= COLUMN * 2 + CHROME) 2 else 1)
-        }
-    }
-}
-
-/**
- * The in-game Controls panel, over the live game, about the physical controller: what each
- * button does now in pad and in mouse mode ([panelBindings]: grouped by where the buttons sit,
- * pad mode listing only the changed ones), the chord, and the pointer speed players change
- * mid-game. Buttons are changed in Settings; the on-screen controls in their editor
- * ([onEditOnScreen]).
- */
-@Composable
-internal fun BoxScope.ControlsPanel(
-    visible: Boolean,
-    controls: Controls,
-    save: (Controls) -> Unit,
-    onBack: () -> Unit,
-    onChangeButtons: (() -> Unit)?,
-    onEditOnScreen: () -> Unit,
-) {
-    AnimatedVisibility(visible, Modifier.align(Alignment.CenterEnd), enter = fadeIn() + slideInHorizontally { it / 3 }, exit = fadeOut()) {
-        var mouse by remember { mutableStateOf(false) }
-        val first = remember { FocusRequester() }
-        InitialFocus(first)
-        BoxWithConstraints(Modifier.windowInsetsPadding(WindowInsets.safeDrawing).fillMaxHeight()) {
-            val size = PanelSize.of(maxWidth - RailSize.INSET * 2)
-            Panel(Modifier.padding(RailSize.INSET).width(size.width).fillMaxHeight(), padding = 12.dp) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    LauncherButton(stringResource(R.string.back_to_menu), onBack, kind = Kind.QUIET, height = 48.dp, focusRequester = first, padding = 14.dp)
-                    ScreenTitle(stringResource(R.string.controls_title), Modifier.weight(1f).padding(start = 8.dp))
-                    Live()
-                }
-                val scroll = rememberScrollState()
-                Box(Modifier.weight(1f).fillMaxWidth()) {
-                    Column(Modifier.fillMaxSize().verticalScroll(scroll).padding(bottom = 12.dp)) {
-                        Segmented(
-                            listOf(stringResource(R.string.controls_pad_mode), stringResource(R.string.controls_mouse_mode)),
-                            if (mouse) 1 else 0, { mouse = it == 1 }, Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                        )
-                        val groups = panelBindings(controls, mouse)
-                        val lead = when {
-                            mouse -> R.string.controls_mouse_mode_body
-                            groups.isEmpty() -> R.string.controls_panel_pad_all
-                            else -> R.string.controls_panel_pad_changed
-                        }
-                        Text(stringResource(lead), style = Type.Hint, color = Palette.Muted, modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp))
-                        if (size.columns == 2 && groups.size > 1) {
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                                for (column in 0..1) {
-                                    Column(Modifier.weight(1f)) { groups.filter { it.cluster?.column == column }.forEach { BindingBlock(it) } }
-                                }
-                            }
-                        } else {
-                            groups.forEach { BindingBlock(it) }
-                        }
-                        Text(
-                            stringResource(
-                                R.string.controls_panel_chord,
-                                stringResource(if (controls.chord == Chord.SELECT_START) R.string.controls_chord_select_start else R.string.controls_chord_thumbs),
-                            ),
-                            style = Type.Hint, color = Palette.Muted, modifier = Modifier.padding(horizontal = 4.dp, vertical = 10.dp),
-                        )
-                        Rule(Modifier.padding(vertical = 4.dp))
-                        PointerSpeed(controls, save)
-                        onChangeButtons?.let { TextLink(stringResource(R.string.controls_change_in_settings), it) }
-                        TextLink(stringResource(R.string.controls_edit_on_screen), onEditOnScreen)
-                    }
-                    // More below: the rows fade out at the panel's foot rather than end cut through.
-                    if (scroll.canScrollForward) {
-                        Box(
-                            Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(PANEL_FADE)
-                                .background(Brush.verticalGradient(listOf(Palette.Surface.copy(alpha = 0f), Palette.Surface))),
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-/** How far above its foot the Controls panel's rows fade out while more lies below. */
-private val PANEL_FADE = 40.dp
-
-/** One group of bindings: its name (none for pad mode's changed buttons), then its lines. */
-@Composable
-private fun BindingBlock(group: BindingGroup) {
-    Column {
-        group.cluster?.let { GroupLabel(stringResource(it.label), Modifier.padding(horizontal = 4.dp)) }
-        group.rows.forEach { BindingLine(it) }
-    }
-}
-
-/**
- * One line: the caps of the buttons that share it (the d-pad on its arrow keys as one cap) and
- * what they do; a default muted, as in Settings, so a changed one stands out.
- */
-@Composable
-private fun BindingLine(row: BindingRow) {
+private fun StopRow(label: String, shown: Boolean, onClick: () -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
     Row(
-        Modifier.fillMaxWidth().heightIn(min = 36.dp).padding(vertical = 3.dp),
+        Modifier.fillMaxWidth().heightIn(min = MenuSize.ROW).focusMark(focused)
+            .then(if (shown) Modifier.clickable(interaction, LocalIndication.current, role = Role.Button, onClick = onClick) else Modifier)
+            .padding(horizontal = 14.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            if (row.action == null) {
-                KeyCap(row.buttons.joinToString(" ") { buttonCap(it) })
-            } else {
-                row.buttons.forEach { KeyCap(buttonCap(it), Modifier.widthIn(min = 44.dp)) }
-            }
-        }
-        Text(
-            row.action?.let { actionLine(it) } ?: stringResource(R.string.controls_dpad_arrows),
-            style = Type.Hint, color = if (row.isDefault) Palette.Muted else Palette.Text,
-            maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
-        )
+        Text(label, style = Type.Body, color = Palette.Red)
     }
 }
+
+/**
+ * A row that opens something: its label, its value in the text colour, a chevron. [oneLine]: the
+ * label never wraps, so the row asks for its whole width (the menu widens for it).
+ */
+@Composable
+internal fun LinkRow(label: String, value: String?, onClick: () -> Unit, enabled: Boolean = true, focus: FocusRequester? = null, oneLine: Boolean = false) {
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+    Row(
+        Modifier.focusOn(focus).fillMaxWidth().heightIn(min = MenuSize.ROW).focusMark(focused)
+            .then(if (enabled) Modifier.clickable(interaction, LocalIndication.current, role = Role.Button, onClick = onClick) else Modifier)
+            .padding(start = 14.dp, end = 9.dp, top = 4.dp, bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        // One line: the label asks for its whole width also where the menu measures its least width.
+        Text(
+            label, style = Type.Body, color = Palette.Text, softWrap = !oneLine,
+            modifier = Modifier.weight(1f).then(if (oneLine) Modifier.width(IntrinsicSize.Max) else Modifier),
+        )
+        // A text that never wraps still reports its longest word as its least width: the whole value counts.
+        if (value != null) Text(value, style = Type.Body, color = Palette.Text, maxLines = 1, softWrap = false, modifier = Modifier.width(IntrinsicSize.Max))
+        Icon(painterResource(R.drawable.ic_chevron_right), null, Modifier.size(20.dp), tint = Palette.Muted)
+    }
+}
+
+/**
+ * The strip on the screen's edge, in the menu and beside the Controls screen alike: ✕ ([onClose]:
+ * back to the game), then the L1 hint, Quick, the gamepad ([controls]: the Controls screen),
+ * Settings and the R1 hint; [stop] is the shown one, tinted.
+ */
+@Composable
+internal fun TabStrip(stop: MenuStop, controls: Boolean, onStop: (MenuStop) -> Unit, onClose: () -> Unit, modifier: Modifier = Modifier) {
+    Column(modifier.width(MenuSize.ROW), horizontalAlignment = Alignment.CenterHorizontally) {
+        IconTarget(R.drawable.ic_close, stringResource(R.string.game_menu_close), onClose, iconSize = 24.dp)
+        Spacer(Modifier.height(10.dp))
+        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            HintCap(stringResource(R.string.game_menu_l1))
+            StripTab(R.drawable.ic_menu_quick, stringResource(R.string.game_menu_quick), stop == MenuStop.QUICK) { onStop(MenuStop.QUICK) }
+            if (controls) {
+                StripTab(R.drawable.ic_menu_controls, stringResource(R.string.controls_title), stop == MenuStop.CONTROLS) { onStop(MenuStop.CONTROLS) }
+            }
+            StripTab(R.drawable.ic_menu_settings, stringResource(R.string.game_menu_settings), stop == MenuStop.SETTINGS) { onStop(MenuStop.SETTINGS) }
+            HintCap(stringResource(R.string.game_menu_r1))
+        }
+    }
+}
+
+/** One of the strip's icons: a 48 dp square, tinted while its tab shows. */
+@Composable
+private fun StripTab(@DrawableRes icon: Int, label: String, selected: Boolean, onClick: () -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+    Box(
+        Modifier.size(MenuSize.ROW).focusMark(focused, selected)
+            .selectable(selected, interaction, LocalIndication.current, role = Role.Tab, onClick = onClick)
+            .semantics { contentDescription = label },
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(painterResource(icon), null, Modifier.size(24.dp), tint = if (selected) Palette.Teal else Palette.Muted)
+    }
+}
+
+/** A controller button's name as a quiet hint, not a target: L1 and R1 beside the tabs. */
+@Composable
+private fun HintCap(text: String) {
+    Box(
+        Modifier.widthIn(min = 30.dp).height(20.dp).border(1.dp, Palette.Rule, RoundedCornerShape(6.dp)).padding(horizontal = 6.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(text, style = Type.Glyph.copy(fontSize = Type.Label.fontSize), color = Palette.Muted, maxLines = 1, softWrap = false)
+    }
+}
+
+/** An icon button: a 48 dp circle (or [shape]) with the focus ring; [description] for TalkBack. */
+@Composable
+internal fun IconTarget(
+    @DrawableRes icon: Int,
+    description: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    iconSize: Dp = 24.dp,
+    shape: RoundedCornerShape = CircleShapeRounded,
+    tint: Color = Palette.Text,
+) {
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+    Box(
+        modifier.size(MenuSize.ROW).focusMark(focused, shape = shape)
+            .clickable(interaction, LocalIndication.current, role = Role.Button, onClick = onClick)
+            .semantics { contentDescription = description },
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(painterResource(icon), null, Modifier.size(iconSize), tint = tint)
+    }
+}
+
+/** A round shape for [focusMark], which takes rounded corner shapes. */
+private val CircleShapeRounded = RoundedCornerShape(percent = 50)

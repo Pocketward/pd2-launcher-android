@@ -18,7 +18,7 @@ panfrost/kmod: the kbase backend, and backend hooks for command streams and limi
 
 --- a/src/panfrost/lib/kmod/meson.build
 +++ b/src/panfrost/lib/kmod/meson.build
-@@ -8,6 +8,9 @@
+@@ -8,6 +8,9 @@ libpankmod_lib_code = [
    'pan_kmod.c',
    'panfrost_kmod.c',
    'panthor_kmod.c',
@@ -38,7 +38,7 @@ panfrost/kmod: the kbase backend, and backend hooks for command streams and limi
  #ifdef HAVE_PANFROST_VDRM
  extern const struct pan_kmod_ops panfrost_virtio_gpu_ops;
  extern const struct pan_kmod_ops panfrost_vpipe_ops;
-@@ -31,6 +32,12 @@
+@@ -31,6 +32,12 @@ static const struct backend {
        "panthor",
        &panthor_kmod_ops,
     },
@@ -53,7 +53,7 @@ panfrost/kmod: the kbase backend, and backend hooks for command streams and limi
        "panfrost_virtio_gpu",
 --- a/src/panfrost/lib/kmod/pan_kmod.h
 +++ b/src/panfrost/lib/kmod/pan_kmod.h
-@@ -130,6 +130,13 @@
+@@ -130,6 +130,13 @@ enum pan_kmod_bo_flags {
      * the KMD to force non-coherent mappings on IO coherent setup.
      */
     PAN_KMOD_BO_FLAG_IO_COHERENT = BITFIELD_BIT(7),
@@ -67,7 +67,7 @@ panfrost/kmod: the kbase backend, and backend hooks for command streams and limi
  };
  
  /* Allowed group priority flags. */
-@@ -186,6 +193,11 @@
+@@ -186,6 +193,11 @@ struct pan_kmod_bo {
     /* The device this buffer object was created from. */
     struct pan_kmod_dev *dev;
  
@@ -79,7 +79,7 @@ panfrost/kmod: the kbase backend, and backend hooks for command streams and limi
     /* User private data. Use pan_kmod_bo_{set,get}_user_priv() to access it. */
     void *user_priv;
  };
-@@ -270,6 +282,20 @@
+@@ -273,6 +285,20 @@ struct pan_kmod_dev_props {
  
     /* Bitmask encoding the available GPU page sizes */
     uint64_t pgsize_bitmap;
@@ -100,7 +100,7 @@ panfrost/kmod: the kbase backend, and backend hooks for command streams and limi
  };
  
  /* Memory allocator for kmod internal allocations. */
-@@ -547,6 +573,28 @@
+@@ -550,6 +576,28 @@ struct pan_kmod_ops {
  
     /* Destroy a perf session. */
     void (*perf_destroy)(struct pan_kmod_perf_session *session);
@@ -129,7 +129,7 @@ panfrost/kmod: the kbase backend, and backend hooks for command streams and limi
  };
  
  static inline bool
-@@ -630,6 +678,43 @@
+@@ -633,6 +681,43 @@ struct pan_kmod_dev *
  pan_kmod_dev_create(int fd, uint32_t flags,
                      const struct pan_kmod_allocator *allocator);
  

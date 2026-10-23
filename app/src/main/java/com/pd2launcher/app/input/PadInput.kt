@@ -35,12 +35,18 @@ data class PadAxes(
  * the first button of a chord formed within that time never reaches the game; the game sees it
  * until the chord forms. Bound to a key or mouse button, they act once when released without
  * having been part of the chord.
+ *
+ * [pointerScale]: the X screen's width over the game's own 1068 columns, which the pointer's speed
+ * follows, so the pointer crosses the picture in the same time on every X screen. [onMode] hears
+ * each change of mode, from the chord or from [useMouseMode] (the in-game Controls screen).
  */
 class PadInput(
     private val pad: (PadState) -> Unit,
     private val relay: (List<RelayEvent>) -> Unit,
     private val onMenu: () -> Unit = {},
     controls: Controls = Controls(),
+    private val pointerScale: Float = 1f,
+    private val onMode: (mouse: Boolean) -> Unit = {},
 ) {
     /** The bindings in use; a change applies at once (what the old ones held is released). */
     var controls: Controls = controls
@@ -55,6 +61,21 @@ class PadInput(
 
     var mouseMode = false
         private set
+
+    /**
+     * Mouse mode on ([on]) or off, as the chord pressed briefly switches it (the in-game Controls
+     * screen's Use pad mode and Use mouse mode): what the old mode held is released at once, and a
+     * chord in progress is forgotten (its release would switch back).
+     */
+    fun useMouseMode(on: Boolean) {
+        if (on == mouseMode) return
+        resetChord()
+        toggle()
+        val out = ArrayList<RelayEvent>()
+        update(out)
+        flush(out)
+        onMode(mouseMode)
+    }
 
     private val held = HashSet<PadButton>() // digital buttons down
     private var axes = PadAxes()
@@ -80,6 +101,7 @@ class PadInput(
      */
     fun onKey(keyCode: Int, down: Boolean): Boolean {
         val button = PadButton.of(keyCode) ?: return false
+        val mode = mouseMode
         val out = ArrayList<RelayEvent>()
         val was = button in held
         if (down) held += button else held -= button
@@ -108,6 +130,8 @@ class PadInput(
         }
         update(out)
         flush(out)
+        // Heard once the switch is done: X and the game's pad already follow the new mode.
+        if (mouseMode != mode) onMode(mouseMode)
         return true
     }
 
@@ -150,9 +174,9 @@ class PadInput(
         }
         if (!mouseMode) return
         val seconds = elapsedMs / 1000f
-        val factor = controls.pointerSpeed
-        val (lx, ly) = speed(axes.lx, axes.ly, FAST_PIXELS_PER_SECOND * factor)
-        val (rx, ry) = speed(axes.rx, axes.ry, SLOW_PIXELS_PER_SECOND * factor)
+        val factor = controls.pointerSpeed * pointerScale
+        val (lx, ly) = speed(axes.lx, axes.ly, PointerSpeed.FAST_PIXELS_PER_SECOND * factor)
+        val (rx, ry) = speed(axes.rx, axes.ry, PointerSpeed.SLOW_PIXELS_PER_SECOND * factor)
         restX += (lx + rx) * seconds
         restY += (ly + ry) * seconds
         val dx = restX.toInt()
@@ -163,10 +187,19 @@ class PadInput(
     }
 
     /**
+     * Whether [tick] has work to do: a chord button held back or the tap of one showing, the chord
+     * held toward the menu, or in mouse mode a stick out of its dead zone. While it has none, the
+     * Game view runs no display-frame clock for it (each display frame woke the main thread).
+     */
+    val ticking: Boolean
+        get() = heldBack.isNotEmpty() || tapped.isNotEmpty() || (chordFormed && !chordMenu) ||
+            (mouseMode && (deflected(axes.lx, axes.ly) || deflected(axes.rx, axes.ry)))
+
+    /**
      * Lets go of the controller (an overlay layer opened): its buttons and sticks go neutral, X
      * keys and buttons are released, a chord in progress is forgotten. Buttons still held count
      * again once pressed anew. The on-screen controls' share ([onVirtual]) stays: they play on
-     * beside the menu rail, and let go themselves when they hide.
+     * beside the in-game menu, and let go themselves when they hide.
      */
     fun releaseAll() {
         held.clear()
@@ -301,8 +334,6 @@ class PadInput(
 
     companion object {
         const val DEAD_ZONE = 0.15f
-        const val FAST_PIXELS_PER_SECOND = 1200f
-        const val SLOW_PIXELS_PER_SECOND = 300f
         const val TRIGGER_PRESSED = 0.5f
         const val HAT_PRESSED = 0.5f
 
@@ -338,6 +369,9 @@ class PadInput(
 
         /** An Android trigger axis (0..1) as an XInput trigger value. */
         fun trigger(value: Float): Int = (value.coerceIn(0f, 1f) * 255).roundToInt()
+
+        /** Whether a stick is out of its dead zone, where [speed] moves the pointer. */
+        private fun deflected(x: Float, y: Float): Boolean = hypot(x, y).coerceAtMost(1f) > DEAD_ZONE
 
         /** Pointer speed for a stick: zero inside the dead zone, then growing with the square. */
         private fun speed(x: Float, y: Float, max: Float): Pair<Float, Float> {

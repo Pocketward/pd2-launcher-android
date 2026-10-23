@@ -24,8 +24,18 @@ struct frame_layer *frame_layer_create(ANativeWindow *window, int buffer_w, int 
 // asked again 100 ms later at the soonest).
 int frame_layer_lock(struct frame_layer *layer, uint32_t **pixels, int *stride);
 
+// The layer asks the display for [frame_rate] frames a second from now on (0: no vote): at once
+// by a transaction of its own, and with its first frame if none showed yet. Any thread.
+void frame_layer_set_rate(struct frame_layer *layer, float frame_rate);
+
 // Unlocks the buffer frame_layer_lock gave and shows it.
 void frame_layer_post(struct frame_layer *layer);
+
+// The window has a new size, [dest_w]x[dest_h]: the layer keeps its buffers and shows them scaled
+// to it, at once by a transaction of its own (the copy may rest), and again with the next frame.
+// A frame that read the older size applies its transaction first, so the new size is the last one
+// set. Any thread but the copy's.
+void frame_layer_resize(struct frame_layer *layer, int dest_w, int dest_h);
 
 // Call on every display frame ([frame_ns]): [resting] while the copy shows nothing, the game's
 // own buffers covering the whole view. After 5 s of rest without a break, the buffers that are not

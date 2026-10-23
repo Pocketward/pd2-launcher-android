@@ -1,0 +1,224 @@
+panvk: import dma-bufs on a backend that cannot export them (kbase)
+
+- pan_kmod_dev_props.limits.dma_buf_import: with no_fd_sharing, a backend may still import
+  dma-bufs as buffer objects (pan_kmod_bo_import()), never export them. False for the DRM
+  backends, which share fds both ways.
+- PanVK offers VK_KHR_external_memory_fd and VK_EXT_external_memory_dma_buf on such a backend,
+  and reports dma-bufs as importable only: not exportable, no opaque fds, images only with
+  DRM_FORMAT_MOD_LINEAR (an import lives at the GPU VA the backend gave it, not at the 64 KiB
+  alignment interleaved 64K images need) (vkGetPhysicalDeviceExternalBufferProperties, the
+  external image format properties). Fence and semaphore fds stay off.
+- vkAllocateMemory maps a buffer object the backend placed itself (pan_kmod_bo::fixed_va: an
+  imported dma-buf on kbase lives at the GPU VA kbase gave it) at that VA instead of one from the
+  VA heaps (an opaque capture address does not apply to an import), and vkFreeMemory gives no
+  such VA back to the heaps, as panvk_priv_bo does for GPU_SYNC memory.
+- vkBindImageMemory refuses an interleaved 64K image on such a BO at a VA that is not 64 KiB
+  aligned (the import is only page aligned; such imports are not offered).
+
+Mesa's WSI then imports the app's buffers (patches/mesa/0004: vkGetMemoryFdPropertiesKHR, a
+dedicated import into a linear image with an explicit row pitch) on kbase as on panthor.
+
+--- a/src/panfrost/lib/kmod/pan_kmod.h
++++ b/src/panfrost/lib/kmod/pan_kmod.h
+@@ -298,6 +298,11 @@ struct pan_kmod_dev_props {
+ 
+       /* Buffer objects and syncobjs cannot be shared as file descriptors. */
+       bool no_fd_sharing;
++
++      /* With no_fd_sharing: dma-bufs can still be imported as buffer objects
++       * (pan_kmod_bo_import()), never exported.
++       */
++      bool dma_buf_import;
+    } limits;
+ };
+ 
+--- a/src/panfrost/vulkan/panvk_device_memory.c
++++ b/src/panfrost/vulkan/panvk_device_memory.c
+@@ -138,7 +138,11 @@ panvk_AllocateMemory(VkDevice _device,
+       },
+    };
+ 
+-   if (!(device->kmod.vm->flags & PAN_KMOD_VM_FLAG_AUTO_VA)) {
++   if (mem->bo->fixed_va) {
++      /* The backend placed the BO itself (an imported dma-buf on kbase). An
++       * opaque capture address does not apply: it must be 0 for an import. */
++      op.va.start = mem->bo->fixed_va;
++   } else if (!(device->kmod.vm->flags & PAN_KMOD_VM_FLAG_AUTO_VA)) {
+       uint64_t alignment =
+          pan_choose_gpu_va_alignment(device->kmod.vm, op.va.size);
+       unsigned arch = pan_arch(device->kmod.dev->props.gpu_id);
+@@ -223,7 +227,8 @@ panvk_AllocateMemory(VkDevice _device,
+    return VK_SUCCESS;
+ 
+ err_return_va:
+-   if (!(device->kmod.vm->flags & PAN_KMOD_VM_FLAG_AUTO_VA)) {
++   if (!mem->bo->fixed_va &&
++       !(device->kmod.vm->flags & PAN_KMOD_VM_FLAG_AUTO_VA)) {
+       panvk_as_free(device, op.va.start, op.va.size);
+    }
+ 
+@@ -282,7 +287,8 @@ panvk_FreeMemory(VkDevice _device, VkDeviceMemory _mem,
+       pan_kmod_vm_bind(device->kmod.vm, PAN_KMOD_VM_OP_MODE_IMMEDIATE, &op, 1);
+    assert(!ret);
+ 
+-   if (!(device->kmod.vm->flags & PAN_KMOD_VM_FLAG_AUTO_VA))
++   if (!mem->bo->fixed_va &&
++       !(device->kmod.vm->flags & PAN_KMOD_VM_FLAG_AUTO_VA))
+       panvk_as_free(device, op.va.start, op.va.size);
+ 
+    panvk_memory_emit_report(device, mem, /* alloc_info */ NULL, VK_SUCCESS);
+--- a/src/panfrost/vulkan/panvk_image.c
++++ b/src/panfrost/vulkan/panvk_image.c
+@@ -1404,6 +1404,18 @@ panvk_image_bind(struct panvk_device *dev,
+    }
+ 
+    assert(mem);
++
++   /* A BO the backend placed itself (an imported dma-buf on kbase) is only
++    * page aligned, while an interleaved 64K image needs a 64 KiB aligned
++    * address (panvk_AllocateMemory aligns VAs from the heaps for it). Such
++    * imports are not offered (only linear ones), so refuse a bind that would
++    * misplace one. */
++   if (mem->bo->fixed_va &&
++       image->vk.drm_format_mod == DRM_FORMAT_MOD_ARM_INTERLEAVED_64K &&
++       ((mem->addr.dev + offset) & (64 * 1024 - 1)))
++      return panvk_errorf(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY,
++                          "interleaved 64K image at a VA not 64 KiB aligned");
++
+    if (is_disjoint(image)) {
+       const VkBindImagePlaneMemoryInfo *plane_info =
+          vk_find_struct_const(bind_info->pNext, BIND_IMAGE_PLANE_MEMORY_INFO);
+--- a/src/panfrost/vulkan/panvk_physical_device.c
++++ b/src/panfrost/vulkan/panvk_physical_device.c
+@@ -1540,6 +1540,25 @@ unsupported:
+    return VK_ERROR_FORMAT_NOT_SUPPORTED;
+ }
+ 
++/* The external memory handle types the kernel backend shares: opaque fds and
++ * dma-bufs both ways, or only dma-bufs in (kbase: pan_kmod_dev_props.limits).
++ */
++static VkExternalMemoryHandleTypeFlags
++panvk_external_memory_handle_types(
++   const struct panvk_physical_device *physical_device, bool *can_export)
++{
++   const struct pan_kmod_dev_props *props = &physical_device->kmod.dev->props;
++
++   *can_export = !props->limits.no_fd_sharing;
++   if (*can_export)
++      return VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT |
++             VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
++
++   return props->limits.dma_buf_import
++             ? VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
++             : 0;
++}
++
+ static VkResult
+ panvk_get_external_image_format_properties(
+    const struct panvk_physical_device *physical_device,
+@@ -1547,9 +1566,9 @@ panvk_get_external_image_format_properties(
+    VkExternalMemoryHandleTypeFlagBits handleType,
+    VkExternalMemoryProperties *external_properties)
+ {
++   bool can_export;
+    const VkExternalMemoryHandleTypeFlags supported_handle_types =
+-      VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT |
+-      VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
++      panvk_external_memory_handle_types(physical_device, &can_export);
+ 
+    if (!(handleType & supported_handle_types)) {
+       return panvk_errorf(physical_device, VK_ERROR_FORMAT_NOT_SUPPORTED,
+@@ -1580,6 +1599,19 @@ panvk_get_external_image_format_properties(
+    } else if (pImageFormatInfo->tiling == VK_IMAGE_TILING_LINEAR) {
+       features |= VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT;
+    }
++   if (!can_export) {
++      features &= ~VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT;
++
++      /* An import lives at the GPU VA the backend gave it (kbase: page aligned
++       * below 2 MiB), not at the alignment a tiled modifier may need (64 KiB
++       * for interleaved 64K): only linear images are importable. */
++      const VkPhysicalDeviceImageDrmFormatModifierInfoEXT *mod_info =
++         vk_find_struct_const(
++            pImageFormatInfo->pNext,
++            PHYSICAL_DEVICE_IMAGE_DRM_FORMAT_MODIFIER_INFO_EXT);
++      if (!mod_info || mod_info->drmFormatModifier != DRM_FORMAT_MOD_LINEAR)
++         features = 0;
++   }
+ 
+    if (!features) {
+       return panvk_errorf(
+@@ -1590,7 +1622,7 @@ panvk_get_external_image_format_properties(
+ 
+    *external_properties = (VkExternalMemoryProperties){
+       .externalMemoryFeatures = features,
+-      .exportFromImportedHandleTypes = supported_handle_types,
++      .exportFromImportedHandleTypes = can_export ? supported_handle_types : 0,
+       .compatibleHandleTypes = supported_handle_types,
+    };
+ 
+@@ -1894,9 +1926,10 @@ panvk_GetPhysicalDeviceExternalBufferProperties(
+       return;
+    }
+ 
++   VK_FROM_HANDLE(panvk_physical_device, physical_device, physicalDevice);
++   bool can_export;
+    const VkExternalMemoryHandleTypeFlags supported_handle_types =
+-      VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT |
+-      VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
++      panvk_external_memory_handle_types(physical_device, &can_export);
+ 
+    /* From the Vulkan 1.3.298 spec:
+     *
+@@ -1907,14 +1940,15 @@ panvk_GetPhysicalDeviceExternalBufferProperties(
+    VkExternalMemoryFeatureFlags features = 0;
+    if (pExternalBufferInfo->handleType & supported_handle_types) {
+       handle_types |= supported_handle_types;
+-      features |= VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT |
+-                  VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT;
++      features |= VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT;
++      if (can_export)
++         features |= VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT;
+    }
+ 
+    pExternalBufferProperties->externalMemoryProperties =
+       (VkExternalMemoryProperties){
+          .externalMemoryFeatures = features,
+-         .exportFromImportedHandleTypes = handle_types,
++         .exportFromImportedHandleTypes = can_export ? handle_types : 0,
+          .compatibleHandleTypes = handle_types,
+       };
+ }
+--- a/src/panfrost/vulkan/panvk_vX_physical_device.c
++++ b/src/panfrost/vulkan/panvk_vX_physical_device.c
+@@ -40,8 +40,11 @@ panvk_per_arch(get_physical_device_extensions)(
+    struct vk_device_extension_table *ext)
+ {
+    bool has_gralloc = vk_android_get_ugralloc() != NULL;
+-   /* Backend limits (kbase): no fd export/import, no placed CPU mappings. */
++   /* Backend limits (kbase): no fd export, dma-bufs imported only, no placed
++    * CPU mappings. */
+    const bool fd_sharing = !device->kmod.dev->props.limits.no_fd_sharing;
++   const bool dma_buf_import =
++      fd_sharing || device->kmod.dev->props.limits.dma_buf_import;
+    const bool placed_maps =
+       !device->kmod.dev->props.limits.no_placed_cpu_mapping;
+ 
+@@ -70,7 +73,7 @@ panvk_per_arch(get_physical_device_extensions)(
+       .KHR_external_fence = true,
+       .KHR_external_fence_fd = fd_sharing,
+       .KHR_external_memory = true,
+-      .KHR_external_memory_fd = fd_sharing,
++      .KHR_external_memory_fd = dma_buf_import,
+       .KHR_external_semaphore = true,
+       .KHR_external_semaphore_fd = fd_sharing,
+       .KHR_format_feature_flags2 = true,
+@@ -171,7 +174,7 @@ panvk_per_arch(get_physical_device_extensions)(
+       .EXT_extended_dynamic_state2 = true,
+       .EXT_extended_dynamic_state3 = true,
+       .EXT_external_memory_acquire_unmodified = true,
+-      .EXT_external_memory_dma_buf = fd_sharing,
++      .EXT_external_memory_dma_buf = dma_buf_import,
+       .EXT_global_priority = true,
+       .EXT_global_priority_query = true,
+       .EXT_graphics_pipeline_library = true,

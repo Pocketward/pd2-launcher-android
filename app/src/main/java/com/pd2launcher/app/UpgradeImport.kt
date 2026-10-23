@@ -90,11 +90,14 @@ object UpgradeImport {
     ): List<File> {
         val gone = ArrayList<File>()
         val old = File(paths.managedRoot, LegacyPrefix.OLD)
-        if (old.exists()) {
+        // Never while it still holds the game folder (LegacyPrefix.removeOld): the next start
+        // finishes that move first.
+        if (old.exists() &&
             LegacyPrefix(
                 paths.managedRoot, File(paths.managedRoot, AppRuntime.PREFIX_TEMPLATE), paths.userSave, log,
                 syncDirectory = syncDirectory,
             ).removeOld()
+        ) {
             gone += old
         }
         val updated = File(paths.managedRoot, LegacyPrefix.UPDATED)

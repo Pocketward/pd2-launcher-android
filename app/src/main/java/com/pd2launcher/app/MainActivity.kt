@@ -34,6 +34,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -68,6 +69,7 @@ import com.pd2launcher.app.ui.LocalLogShare
 import com.pd2launcher.app.ui.LocalNetworkCheck
 import com.pd2launcher.app.ui.NetworkCheckUi
 import com.pd2launcher.app.ui.NetworkState
+import com.pd2launcher.app.ui.navigationKey
 import com.pd2launcher.app.ui.LocalRefusal
 import com.pd2launcher.app.ui.NotSupportedScreen
 import com.pd2launcher.app.ui.Play
@@ -176,6 +178,8 @@ class MainActivity : ComponentActivity() {
         // About stays open when Android restarted the app under it (allowing app updates can);
         // a new start from the notice of a new app version opens it.
         aboutOpen.value = savedInstanceState?.getBoolean(STATE_ABOUT) ?: intent.getBooleanExtra(AppUpdater.EXTRA_ABOUT, false)
+        // A debug intent's settings and Play act once: not again when Android makes the activity again.
+        freshIntent = savedInstanceState == null
         readScreenExtras(intent)
         AppSettingsStore.load(this)
         appUpdate.create(intent, fresh = savedInstanceState == null)
@@ -250,16 +254,23 @@ class MainActivity : ComponentActivity() {
         // While the Game client runs the Game view stays; it ends when the game exits.
         val playing = play == Play.Mode.GAME
         BackHandler(enabled = playing) {}
+        // The running X screen's size, for the game resolution's note in Settings: read as Settings opens.
+        val runningScreen by produceState<Pair<Int, Int>?>(null, framebuffer, settingsOpen.value) {
+            value = framebuffer?.let { withContext(Dispatchers.IO) { it.header() } }?.let { it.width to it.height }
+        }
         val gamePreview = DebugPreview.gameLayer(previewName)
         val showGameView = (gameView.value && debuggable) || playing || gamePreview != null
         BackHandler(enabled = showGameView && !playing && gamePreview == null) { gameView.value = false }
         // The controls editor lays them out on the game's landscape screen, without system bars.
         val gameScreen = showGameView || editorOpen.value
-        DisposableEffect(showGameView, gameScreen) {
-            val bars = WindowCompat.getInsetsController(window, window.decorView)
-            // Settings → Keep the screen on during play, read as the Game view opens.
-            val keepOn = showGameView && AppSettingsStore.current.value.keepScreenOn
+        // Settings → Keep the screen on during play, followed live (the in-game menu switches it too).
+        val keepOn = showGameView && AppSettingsStore.current.collectAsState().value.keepScreenOn
+        DisposableEffect(keepOn) {
             if (keepOn) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            onDispose { if (keepOn) window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
+        }
+        DisposableEffect(gameScreen) {
+            val bars = WindowCompat.getInsetsController(window, window.decorView)
             if (gameScreen) {
                 bars.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
                 bars.hide(WindowInsetsCompat.Type.systemBars())
@@ -267,7 +278,6 @@ class MainActivity : ComponentActivity() {
                 requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
             }
             onDispose {
-                if (keepOn) window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                 if (gameScreen) {
                     bars.show(WindowInsetsCompat.Type.systemBars())
                     requestedOrientation = formFactor.launcherOrientation
@@ -365,15 +375,15 @@ class MainActivity : ComponentActivity() {
         } else if (editorOpen.value) {
             ControlsEditor(sample = true, onClose = { editorOpen.value = false })
         } else if (showGameView && !settingsOpen.value) {
-            // The menu's Settings shows them over the running game; back returns to it.
-            GameView(framebuffer, status.gameEnvironment, presentCounter = paths.presentCounter, onSettings = openSettings, preview = gamePreview, previewLauncher = DebugPreview.gameLauncher(previewName))
+            // Settings, when open (the in-game menu has no way there now), show over the running game; back returns to it.
+            GameView(framebuffer, status.gameEnvironment, presentCounter = paths.presentCounter, preview = gamePreview, previewLauncher = DebugPreview.gameLauncher(previewName))
         } else if (settingsOpen.value) {
             val app by AppSettingsStore.current.collectAsState()
             SettingsScreen(
                 launcher = LauncherSettings.view(status.snapshot?.settings, status.engine == SessionStatus.Engine.CONNECTED),
                 app = app,
                 display = remember { GameResolution.display(this) },
-                highestFrameRate = remember { FrameRateVote.highest(this) },
+                fullFrameRate = remember { ScreenRate.load(this) },
                 // The device check's probe, not another on the main thread (its ioctls) each time.
                 gpu = (device as? DeviceCheckState.Done)?.facts?.gpu,
                 system = SystemState(batteryRestricted.value, notificationsOff.value),
@@ -388,6 +398,8 @@ class MainActivity : ComponentActivity() {
                 onBack = { settingsOpen.value = false },
                 updates = appUpdate.available,
                 newVersion = appUpdate.newVersion(),
+                // The app's own Play only: a game the official launcher starts takes the launcher's size.
+                running = runningScreen.takeIf { playing && !Play.officialLauncherRunning(status) },
             )
         } else if (previewName == DebugPreview.SOURCE) {
             // Continue sends nothing here: the running Download preview shows what follows.
@@ -829,6 +841,7 @@ class MainActivity : ComponentActivity() {
         setIntent(intent)
         // The notice of a new app version opens About, over whatever shows.
         if (intent.getBooleanExtra(AppUpdater.EXTRA_ABOUT, false)) aboutOpen.value = true
+        freshIntent = true
         readScreenExtras(intent)
         appUpdate.newIntent(intent)
         if (sessionStarted) startSession(intent)
@@ -898,26 +911,17 @@ class MainActivity : ComponentActivity() {
      * Controllers: A selects and B goes back on every native screen. Android does not treat
      * the gamepad's A as a confirm key, so it is handed on as the d-pad's center, and B as Back.
      */
-    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        val mapped = when (event.keyCode) {
-            KeyEvent.KEYCODE_BUTTON_A -> KeyEvent.KEYCODE_DPAD_CENTER
-            KeyEvent.KEYCODE_BUTTON_B -> KeyEvent.KEYCODE_BACK
-            else -> return super.dispatchKeyEvent(event)
-        }
-        return super.dispatchKeyEvent(
-            KeyEvent(
-                event.downTime, event.eventTime, event.action, mapped, event.repeatCount,
-                event.metaState, event.deviceId, event.scanCode, event.flags, event.source,
-            ),
-        )
-    }
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean = super.dispatchKeyEvent(navigationKey(event))
 
     /**
      * Debug builds only: `--es preview <name>` (`--ei tab <n>` and `--es picker <button>` with
-     * `settings`, `--ez mouse true` for mouse mode), `--ez gameview true` and `--ez keys true`.
+     * `settings`, `--ez mouse true` for mouse mode), `--ez gameview true` and `--ez keys true`;
+     * Settings → Game without taps ([debugGameSettings]): `--es display fit|center` and
+     * `--es resolution own|<width>x<height>`.
      */
     private fun readScreenExtras(intent: Intent) {
         if (!debuggable) return
+        if (freshIntent) debugGameSettings(intent)
         preview.value = intent.getStringExtra("preview")
         if (preview.value == DebugPreview.SETTINGS) {
             preview.value = null
@@ -932,6 +936,32 @@ class MainActivity : ComponentActivity() {
         if (intent.getBooleanExtra("keys", false)) keys.value = true
     }
 
+    /**
+     * Debug builds: `--es display fit|center` sets Display (at once, also over a running game) and
+     * `--es resolution own|<width>x<height>` the game resolution (the game's own size or a Custom
+     * size the display allows; from the next Play), as Settings would. Each logs one line.
+     */
+    private fun debugGameSettings(intent: Intent) {
+        intent.getStringExtra("display")?.let { name ->
+            val display = GameDisplay.entries.firstOrNull { it.name.equals(name, ignoreCase = true) }
+            if (display != null) AppSettingsStore.save(this, AppSettingsStore.load(this).copy(gameDisplay = display))
+            Log.i(TAG, "debug display $name: ${display ?: "unknown, not changed"}")
+        }
+        intent.getStringExtra("resolution")?.let { value ->
+            val (width, height) = GameResolution.display(this)
+            val size = if (value == "own") GameResolution.ownSize(width, height) else SessionService.parseSize(value)
+            if (size != null && (value == "own" || GameResolution.customAllowed(size, width, height))) {
+                AppSettingsStore.save(this, AppSettingsStore.load(this).copy(customSize = GameResolution.customPick(size, width, height)))
+                Log.i(TAG, "debug resolution $value: ${size.first}x${size.second} from the next Play")
+            } else {
+                Log.i(TAG, "debug resolution $value: not allowed on ${width}x$height, not changed")
+            }
+        }
+    }
+
+    /** The intent is new (not the one of an activity Android made again): its debug settings and Play act. */
+    private var freshIntent = true
+
     private fun startSessionOnce() {
         if (sessionStarted) return
         sessionStarted = true
@@ -940,7 +970,8 @@ class MainActivity : ComponentActivity() {
 
     /**
      * Starts the session service. Debug builds also take
-     * `--es session game-start|game-stop` to start or stop the Android game environment, and
+     * `--es session game-start|game-stop` to start or stop the Android game environment,
+     * `--es session play` for Play as its button sends it, and
      * `--es xscreen <width>x<height>` with game-start for an X screen of another size than the
      * display's (a phone-sized proxy), and `--es session install-pd2` for Install Project
      * Diablo 2 as Install sends it (the engine refuses it unless the client is what is missing),
@@ -951,6 +982,7 @@ class MainActivity : ComponentActivity() {
         val action = when (if (debuggable) intent.getStringExtra("session") else null) {
             "game-start" -> SessionService.ACTION_GAME_START
             "game-stop" -> SessionService.ACTION_GAME_STOP
+            "play" -> if (freshIntent) SessionService.ACTION_PLAY else SessionService.ACTION_START
             "install-pd2" -> SessionService.ACTION_INSTALL_PD2
             "download" -> SessionService.ACTION_DOWNLOAD
             else -> SessionService.ACTION_START

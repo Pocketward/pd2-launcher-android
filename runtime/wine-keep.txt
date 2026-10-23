@@ -53,7 +53,7 @@ msvcp140.dll
 opengl32.dll
 vcruntime140.dll
 version.dll
-winepulse.drv
+winealsa.drv
 winmm.dll
 wsock32.dll
 xinput1_4.dll

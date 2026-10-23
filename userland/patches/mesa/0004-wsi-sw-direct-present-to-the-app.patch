@@ -1,6 +1,6 @@
 --- a/src/vulkan/wsi/wsi_common.c
 +++ b/src/vulkan/wsi/wsi_common.c
-@@ -195,6 +195,7 @@
+@@ -195,6 +195,7 @@ wsi_device_init(struct wsi_device *wsi,
     WSI_GET_CB(CmdPipelineBarrier);
     WSI_GET_CB(CmdCopyImage);
     WSI_GET_CB(CmdCopyImageToBuffer);
@@ -8,7 +8,7 @@
     WSI_GET_CB(CmdResetQueryPool);
     WSI_GET_CB(ResetQueryPoolEXT);
     WSI_GET_CB(CmdWriteTimestamp);
-@@ -221,6 +222,7 @@
+@@ -221,6 +222,7 @@ wsi_device_init(struct wsi_device *wsi,
     WSI_GET_CB(InvalidateMappedMemoryRanges);
     if (!wsi->sw)
        WSI_GET_CB(GetMemoryFdKHR);
@@ -16,7 +16,7 @@
     WSI_GET_CB(GetPhysicalDeviceCalibrateableTimeDomainsKHR);
     WSI_GET_CB(GetPhysicalDeviceProperties);
     WSI_GET_CB(GetPhysicalDeviceFormatProperties);
-@@ -2745,10 +2747,17 @@
+@@ -2759,10 +2761,17 @@ wsi_common_queue_present(const struct wsi_device *wsi,
           }
  
           if (swapchain->blit.type != WSI_SWAPCHAIN_NO_BLIT) {
@@ -38,7 +38,7 @@
  
 --- a/src/vulkan/wsi/wsi_common.h
 +++ b/src/vulkan/wsi/wsi_common.h
-@@ -208,6 +208,7 @@
+@@ -220,6 +220,7 @@ struct wsi_device {
     WSI_CB(CmdPipelineBarrier);
     WSI_CB(CmdCopyImage);
     WSI_CB(CmdCopyImageToBuffer);
@@ -46,7 +46,7 @@
     WSI_CB(CmdResetQueryPool);
     WSI_CB(ResetQueryPoolEXT);
     WSI_CB(CmdWriteTimestamp);
-@@ -234,6 +235,7 @@
+@@ -246,6 +247,7 @@ struct wsi_device {
     WSI_CB(GetImageSubresourceLayout);
     WSI_CB(InvalidateMappedMemoryRanges);
     WSI_CB(GetMemoryFdKHR);
@@ -56,7 +56,7 @@
     WSI_CB(GetPhysicalDeviceFormatProperties);
 --- a/src/vulkan/wsi/wsi_common_private.h
 +++ b/src/vulkan/wsi/wsi_common_private.h
-@@ -324,6 +324,14 @@
+@@ -324,6 +324,14 @@ struct wsi_swapchain {
     VkResult (*release_images)(struct wsi_swapchain *swap_chain,
                                uint32_t count,
                                const uint32_t *indices);
@@ -73,7 +73,7 @@
     void (*set_hdr_metadata)(struct wsi_swapchain *swap_chain,
 --- a/src/vulkan/wsi/wsi_common_x11.c
 +++ b/src/vulkan/wsi/wsi_common_x11.c
-@@ -72,8 +72,11 @@
+@@ -76,8 +76,11 @@
  #endif
  
  #ifdef __linux__
@@ -85,7 +85,7 @@
  #include <time.h>
  #include "util/futex.h"
  #endif
-@@ -1245,9 +1248,14 @@
+@@ -1300,9 +1303,14 @@ struct x11_present_timing_entry {
  };
  #define X11_SWAPCHAIN_REFRESH_RATE_WINDOW_SIZE 16
  
@@ -100,7 +100,7 @@
     bool                                         has_dri3_modifiers;
     bool                                         has_mit_shm;
     bool                                         has_async_may_tear;
-@@ -1962,6 +1970,678 @@
+@@ -2025,6 +2033,678 @@ sw_present_paced(void)
  }
  #endif
  
@@ -115,9 +115,9 @@
 + * and the image goes back to the acquire queue at once. The app gives a
 + * buffer back once the compositor has replaced it on the screen, with its
 + * release fence; the buffer is free again once that fence has signalled.
-+ * A present waits, at most 100 ms, for a free buffer: with
-+ * the compositor showing one and holding the next, the game draws at the
-+ * panel's rate, its own images free to render ahead. Once set up, the
++ * A present waits, at most 100 ms, for a free buffer (with patch 0008 the
++ * app has one buffer more than the images and keeps only the newest
++ * frame, so one is free at once; 0008's clock paces). Once set up, the
 + * swapchain names its window in the root window's _PD2_PRESENT_WINDOW
 + * property, from which x-input-relay tells the app where that window is on
 + * the X screen and whether anything else shows there (a full-screen window,
@@ -158,7 +158,7 @@
 +enum sw_direct_type {
 +   SW_DIRECT_HELLO = 1,   /* to the app: width, height, count */
 +   SW_DIRECT_BUFFERS = 2, /* from the app: width, height, count, format; then the buffers */
-+   SW_DIRECT_PRESENT = 3, /* to the app: index (the buffer is ready) */
++   SW_DIRECT_PRESENT = 3, /* to the app: index (the buffer is ready), count: present mode + 1 */
 +   SW_DIRECT_RELEASE = 4, /* from the app: index, + release fence */
 +};
 +
@@ -738,7 +738,7 @@
 +   d->chosen[image_index] = -1;
 +   d->state[b] = SW_DIRECT_HELD;
 +   mtx_unlock(&d->lock);
-+   if (!sw_direct_send(d->sock, SW_DIRECT_PRESENT, (uint32_t)b, chain->extent.width, chain->extent.height, 0)) {
++   if (!sw_direct_send(d->sock, SW_DIRECT_PRESENT, (uint32_t)b, chain->extent.width, chain->extent.height, (uint32_t)chain->images[image_index].present_mode + 1)) {
 +      /* The app has gone, or cannot be told: the next presents use PutImage.
 +       * The shutdown ends the reader and tells an app still there to stop
 +       * showing its buffers. */
@@ -779,7 +779,7 @@
  /**
   * Send image to X server unaccelerated (software drivers).
   */
-@@ -2208,7 +2888,9 @@
+@@ -2271,7 +2951,9 @@ x11_present_to_x11(struct x11_swapchain *chain, uint32_t image_index,
     x11_capture_trace(chain);
  
     VkResult result;
@@ -790,7 +790,7 @@
        result = x11_present_to_x11_sw(chain, image_index);
     else
  #ifdef HAVE_X11_DRM
-@@ -2673,7 +3355,8 @@
+@@ -2739,7 +3421,8 @@ x11_manage_present_queue(void *state)
           }
        }
  
@@ -800,7 +800,7 @@
           sw_present_paced();
  
        mtx_lock(&chain->thread_state_lock);
-@@ -3113,6 +3796,14 @@
+@@ -3323,6 +4006,14 @@ x11_swapchain_destroy(struct wsi_swapchain *wsi_chain,
     thrd_join(chain->queue_manager, NULL);
     thrd_join(chain->event_manager, NULL);
  
@@ -815,7 +815,7 @@
     if (!chain->base.image_info.explicit_sync)
        wsi_queue_destroy(&chain->acquire_queue);
     wsi_queue_destroy(&chain->present_queue);
-@@ -3385,6 +4076,9 @@
+@@ -3596,6 +4287,9 @@ x11_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
  
     chain->base.destroy = x11_swapchain_destroy;
     chain->base.get_wsi_image = x11_get_wsi_image;
@@ -825,7 +825,7 @@
     chain->base.acquire_next_image = x11_acquire_next_image;
     chain->base.queue_present = x11_queue_present;
     chain->base.wait_for_present = x11_wait_for_present;
-@@ -3521,6 +4215,9 @@
+@@ -3757,6 +4451,9 @@ x11_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
  
     chain->screen_resources = wsi_x11_connection_find_screen_resources(wsi_device, conn, window);
  

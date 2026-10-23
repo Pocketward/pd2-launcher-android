@@ -1,6 +1,6 @@
 --- a/src/mesa/main/teximage.c
 +++ b/src/mesa/main/teximage.c
-@@ -1207,7 +1207,9 @@
+@@ -1217,7 +1217,9 @@ error_check_subtexture_dimensions(struct gl_context *ctx, GLuint dims,
        return GL_TRUE;
     }
  
@@ -11,7 +11,7 @@
        _mesa_error(ctx, GL_INVALID_VALUE, "%s(xoffset %d + width %d > %u)", func,
                    xoffset, subWidth, destImage->Width);
        return GL_TRUE;
-@@ -1220,7 +1222,7 @@
+@@ -1230,7 +1232,7 @@ error_check_subtexture_dimensions(struct gl_context *ctx, GLuint dims,
           _mesa_error(ctx, GL_INVALID_VALUE, "%s(yoffset)", func);
           return GL_TRUE;
        }
@@ -20,7 +20,7 @@
           _mesa_error(ctx, GL_INVALID_VALUE, "%s(yoffset %d + height %d > %u)",
                       func, yoffset, subHeight, destImage->Height);
           return GL_TRUE;
-@@ -1242,7 +1244,7 @@
+@@ -1252,7 +1254,7 @@ error_check_subtexture_dimensions(struct gl_context *ctx, GLuint dims,
        depth = (GLint) destImage->Depth;
        if (target == GL_TEXTURE_CUBE_MAP)
           depth = 6;

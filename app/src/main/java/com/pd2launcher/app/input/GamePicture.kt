@@ -8,8 +8,9 @@ import kotlin.math.min
  * What PD2 shows on the X screen, told from the shape of its picture: D2GL draws the menus
  * (login, character select, the main menu) 4:3 (800 x 600) and the game world 16:9 (1068 x
  * 600), each as large as fits the X screen, and fills the rest with one flat colour. On a 20:9
- * screen the world reaches into side strips a menu leaves flat; on a 4:3 screen a menu fills the
- * top and bottom strips the world leaves flat.
+ * screen, and on the game's own 1068 x 600 ([com.pd2launcher.app.GameResolution.OWN_SIZE]), the
+ * world reaches into side strips a menu leaves flat; on a 4:3 screen a menu fills the top and
+ * bottom strips the world leaves flat.
  */
 enum class GamePicture {
     MENU,
@@ -94,10 +95,11 @@ enum class GamePicture {
 
 /**
  * [GamePicture] samples into a steady answer: the first known picture at once, a change only
- * after [needed] samples in a row agree, [GamePicture.UNKNOWN] never (it keeps what was).
+ * after [needed] samples in a row agree, [GamePicture.UNKNOWN] never (it keeps what was). It can
+ * start from a picture steadied before ([initial]), which then changes as any other.
  */
-class PictureDebounce(private val needed: Int = 3) {
-    var current: GamePicture = GamePicture.UNKNOWN
+class PictureDebounce(initial: GamePicture = GamePicture.UNKNOWN, private val needed: Int = 3) {
+    var current: GamePicture = initial
         private set
     private var candidate: GamePicture = GamePicture.UNKNOWN
     private var count = 0

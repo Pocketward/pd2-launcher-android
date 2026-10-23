@@ -1,0 +1,32 @@
+diff -ru a/dlls/winealsa.drv/alsa.c b/dlls/winealsa.drv/alsa.c
+--- a/dlls/winealsa.drv/alsa.c
++++ b/dlls/winealsa.drv/alsa.c
+@@ -25,6 +25,9 @@
+ 
+ #include <stdarg.h>
+ #include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
+ #include <pthread.h>
+ 
+ #include <alsa/asoundlib.h>
+@@ -480,6 +483,18 @@
+ 
+ static NTSTATUS alsa_process_attach(void *args)
+ {
++    const char *runtime_dir = getenv("XDG_RUNTIME_DIR");
++    static const char name[] = "/asound.conf";
++    char config[4096];
++
++    /* The Android app writes the ALSA configuration of the game's sound into the session's
++     * runtime folder; the Launcher passes no ALSA variable on to Wine. */
++    if (!getenv("ALSA_CONFIG_PATH") && runtime_dir && strlen(runtime_dir) + sizeof(name) <= sizeof(config))
++    {
++        strcpy(config, runtime_dir);
++        strcat(config, name);
++        if (!access(config, R_OK)) setenv("ALSA_CONFIG_PATH", config, 0);
++    }
+ #ifdef _WIN64
+     if (NtCurrentTeb()->WowTebOffset)
+     {

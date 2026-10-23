@@ -33,40 +33,50 @@ object KgslProbe {
     }
 }
 
-// KGSL chip ids whose marketing name is not the core/major/minor digits, from Mesa 26.2.3's
-// src/freedreno/common/freedreno_devices.py.
+// KGSL chip ids whose marketing name is not the core/major/minor digits, from the App userland's
+// Mesa (config.sh MESA_COMMIT) src/freedreno/common/freedreno_devices.py. 0x07002000 is the
+// Adreno 702's id as Mesa listed it before 3e15a53a ("Fix a702 chip-id": 0x07000200, which reads
+// 702 by its digits); kept so that the name and the tier stay for a device that reports it.
 private val namedChips = mapOf(
     0x07002000L to "Adreno 702",
     0x07030002L to "Adreno 725",
+    0x43020000L to "Adreno 720",
+    0x43020100L to "Adreno 722",
     0x43030B00L to "Adreno 735",
     0x43030C00L to "Adreno X1-45",
+    0x43030E01L to "Adreno 735",
     0x43050A00L to "Adreno A32",
     0x43050A01L to "Adreno 740",
     0x43050B00L to "Adreno 740v3",
     0x43050C01L to "Adreno X1-85",
     0x43051401L to "Adreno 750",
+    0x43051701L to "Adreno 753",
     0x44010000L to "Adreno 810",
     0x44030A20L to "Adreno 829",
     0x44050000L to "Adreno 830",
     0x44050001L to "Adreno 830",
+    0x44050A21L to "Adreno 840",
     0x44050A31L to "Adreno 840",
+    0x44060030L to "Adreno X2-85",
     0x44070031L to "Adreno X2-85",
     0x44070041L to "Adreno X2-90",
 )
 
 /**
- * The A6xx and later GPUs Mesa 26.2.3's Turnip (the App userland's) knows on KGSL, as its
- * src/freedreno/common/freedreno_devices.py lists them: Turnip matches a KGSL GPU by its
- * "gpu id" (core * 100 + major * 10 + minor, src/freedreno/vulkan/tu_knl_kgsl.cc) against the
- * entries given as a number, else by chip id (freedreno_dev_info.c, dev_id_compare; the
+ * The A6xx and later GPUs the App userland's Turnip (Mesa main at config.sh's MESA_COMMIT) knows
+ * on KGSL, as its src/freedreno/common/freedreno_devices.py lists them: Turnip matches a KGSL GPU
+ * by its "gpu id" (core * 100 + major * 10 + minor, src/freedreno/vulkan/tu_knl_kgsl.cc) against
+ * the entries given as a number, else by chip id (freedreno_dev_info.c, dev_id_compare; the
  * entries' fuse id is a wildcard, KGSL reports none).
  */
-private val turnipGpuIds = setOf(605, 608, 610, 612, 613, 615, 616, 618, 619, 620, 630, 640, 650, 660, 680, 690, 702)
+private val turnipGpuIds = setOf(605, 608, 610, 612, 613, 615, 616, 618, 619, 620, 630, 640, 650, 660, 680, 690, 702, 740)
 private val turnipChipIds = setOf(
     0x06020100L, 0x06020300L, 0x06030500L, 0x06060201L, 0x06060300L, 0x06090000L,
-    0x07000400L, 0x07002000L, 0x07030001L, 0x07030002L,
-    0x43030B00L, 0x43030C00L, 0x43050A00L, 0x43050A01L, 0x43050B00L, 0x43050C01L, 0x43051401L,
-    0x44010000L, 0x44030A20L, 0x44050000L, 0x44050001L, 0x44050A31L, 0x44070031L, 0x44070041L,
+    0x07000200L, 0x07000400L, 0x07010000L, 0x07030001L, 0x07030002L,
+    0x43020000L, 0x43020100L, 0x43030B00L, 0x43030C00L, 0x43030E01L, 0x43050A00L, 0x43050A01L,
+    0x43050B00L, 0x43050C01L, 0x43051401L, 0x43051701L,
+    0x44010000L, 0x44030A20L, 0x44050000L, 0x44050001L, 0x44050A21L, 0x44050A31L, 0x44060030L,
+    0x44070031L, 0x44070041L,
 )
 
 /** Whether the App userland's Turnip drives this KGSL GPU ([turnipGpuIds], [turnipChipIds]). */
@@ -89,7 +99,7 @@ const val ADRENO_DEFAULT_GENERATION = 8
 
 /**
  * Whether Automatic gives the Adreno [model] (610, 740) the lighter choices: the Performance
- * graphics profile ([GraphicsProfiles.automatic]) and 480 lines ([GameResolution.automaticLines]).
+ * graphics profile ([GraphicsProfiles.automatic]).
  * The model's first digit is its generation, its last two the tier within it. The generations
  * before the 6xx get them (the bundled Turnip drives none of them, so the device check refuses
  * them before any Play); in the 6xx the tiers below [ADRENO_6XX_DEFAULT_TIER], the entry and
@@ -149,13 +159,16 @@ fun adrenoModel(chipId: Long): Int? {
 
 /**
  * The Adrenos that Turnip drives without hardware multiview (Mesa's freedreno_devices.py: the 6xx
- * "gen1 low" parts and the 702). Turnip reports Vulkan 1.0 for them, and Zink (the game's OpenGL)
- * refuses a 1.0 device, so OpenGL fell back to software on the Adreno 610 (a black picture);
- * TU_DEBUG's `noconform` makes Turnip report its Vulkan 1.3 there too.
+ * "gen1 low" parts and the 702). Mesa 26.2's Turnip reported Vulkan 1.0 for them, and Zink (the
+ * game's OpenGL) refuses a 1.0 device, so OpenGL fell back to software on the Adreno 610 (a black
+ * picture); TU_DEBUG's `noconform` made Turnip report its Vulkan 1.3 there too. Mesa main (the
+ * userland's pin, config.sh MESA_COMMIT) has software multiview on these GPUs and reports Vulkan 1.3
+ * on every Adreno 6xx; it no longer has the `noconform` option and ignores it. So with main this
+ * work-around does nothing; it stays until the pin is known not to go back to a 26.2 release.
  */
 private val adrenosWithoutMultiview = setOf(605, 608, 610, 612, 613, 702)
 
-/** Whether the game's Turnip needs `noconform` on this KGSL GPU ([adrenosWithoutMultiview]). */
+/** Whether the game's Turnip gets `noconform` on this KGSL GPU ([adrenosWithoutMultiview]; needed by Mesa 26.2, main ignores it). */
 fun adrenoWithoutMultiview(chipId: Long?): Boolean = chipId?.let(::adrenoModel) in adrenosWithoutMultiview
 
 /** A readable GPU name for a KGSL chip id ([adrenoModel]). */

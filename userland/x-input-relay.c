@@ -29,9 +29,20 @@
  *   RELAY_RELATIVE a, b = dx, dy      relative pointer motion
  *   RELAY_BUTTON   a = X button (1 left, 2 middle, 3 right, 4/5 wheel up/down), b = 1 down, 0 up
  *   RELAY_KEY      a = X keysym, b = 1 down, 0 up
+ *   RELAY_FOCUS    a = 1 the game is on the app's screen again, 0 it is not (b unused)
  *
  * A keysym on no key of the current keymap (text from Android's keyboard, such as an accented
  * letter) is put on a spare keycode first; a keysym on a key's shifted level is sent with Shift.
+ *
+ * RELAY_FOCUS tells the game whether it is on the screen, as a desktop does with a window that
+ * loses and gets back the focus, so the game uses its own background frame rate meanwhile (D2GL's
+ * "Max Background FPS", which the player sets in the game). Off the screen the game's window gets
+ * a deactivation Wine 11 takes without a window manager: WM_STATE set as one would set it, the X
+ * focus to the window and then to no window (Wine's focus_out then makes the desktop the
+ * foreground window: WM_ACTIVATE(WA_INACTIVE), WM_ACTIVATEAPP(FALSE)). Back on the screen the X
+ * focus returns to PointerRoot, as the X screen starts, and the window gets WM_TAKE_FOCUS, as a
+ * window manager sends it, so Wine activates the game again (handle_wm_protocols, set_focus; see
+ * focus()). Nothing in the game or its files changes.
  *
  * Exit codes: 0 the app closed the socket; 1 bad usage, a broken event stream, or the X screen
  * went away (Xlib's I/O error handler); 2 no X screen; 3 the X screen has no XTEST.
@@ -48,6 +59,7 @@
 #include <X11/XKBlib.h>
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
+#include <X11/Xutil.h>
 #include <X11/extensions/XTest.h>
 #include <X11/keysym.h>
 
@@ -63,11 +75,14 @@ enum {
     RELAY_RELATIVE = 2,
     RELAY_BUTTON = 3,
     RELAY_KEY = 4,
+    RELAY_FOCUS = 5,
 };
 
 static Display *display;
 static KeyCode spare; /* a keycode with no keysyms, for keysyms on no key; 0 if none */
 static Atom present_window; /* _PD2_PRESENT_WINDOW */
+static Atom wm_protocols, wm_take_focus, wm_state; /* WM_PROTOCOLS, WM_TAKE_FOCUS, WM_STATE */
+static int away; /* RELAY_FOCUS: the game is off the screen */
 /* What was last told: 'C', or 'F' and where; told[0] 0 before the first word. */
 static int32_t told[7];
 
@@ -307,6 +322,98 @@ static void tell_cover(void) {
     }
 }
 
+/* The game's top-level window, mapped and viewable: the one Mesa's named window is in, else the
+ * topmost window that shows on the X screen and that a window manager would manage (not
+ * override-redirect, more than 1x1: Wine's helpers are 1x1); None when there is none. An unmapped
+ * window is never one: WM_STATE on it would make Wine skip its next XMapWindow, and the X focus
+ * on it is an error. */
+static Window game_window(void) {
+    Window root = DefaultRootWindow(display), root_return, parent, *children = NULL;
+    unsigned int count = 0;
+    for (Window w = named_window(); w != None && w != root; w = parent) {
+        if (!XQueryTree(display, w, &root_return, &parent, &children, &count)) break;
+        if (children != NULL) XFree(children);
+        children = NULL;
+        XWindowAttributes a;
+        if (parent == root) {
+            if (XGetWindowAttributes(display, w, &a) && a.map_state == IsViewable) return w;
+            break;
+        }
+    }
+    if (!XQueryTree(display, root, &root_return, &parent, &children, &count)) return None;
+    int width = DisplayWidth(display, DefaultScreen(display)), height = DisplayHeight(display, DefaultScreen(display));
+    Window found = None;
+    for (unsigned int i = count; i > 0 && found == None; i--) {
+        XWindowAttributes a;
+        if (XGetWindowAttributes(display, children[i - 1], &a) && !a.override_redirect &&
+            !empty(shows(children[i - 1], width, height))) {
+            found = children[i - 1];
+        }
+    }
+    if (children != NULL) XFree(children);
+    return found;
+}
+
+/* WM_STATE NormalState on the viewable [window], as a window manager sets it: Wine 11 takes a
+ * FocusOut or WM_TAKE_FOCUS of a managed window only once a window manager has confirmed its
+ * WM_STATE (X11DRV_FocusOut, handle_wm_protocols: window_has_pending_wm_state). Set each time:
+ * Wine asks again when it maps the window again, or when it minimizes it (XIconifyWindow; the
+ * window stays mapped without a window manager, and Wine then restores it). */
+static void confirm_normal(Window window) {
+    long state[2] = {NormalState, None};
+    XChangeProperty(display, window, wm_state, wm_state, 32, PropModeReplace, (unsigned char *)state, 2);
+}
+
+/* RELAY_FOCUS: the game leaves the screen ([on] 0) or comes back to it (1). */
+static void focus(int on) {
+    if (!on) {
+        if (away) return;
+        Window game = game_window();
+        if (game == None) {
+            fprintf(stderr, "x-input-relay: the game left the screen, but no game window shows: not told\n");
+            return;
+        }
+        away = 1;
+        confirm_normal(game);
+        /* From PointerRoot Wine sees only a NotifyPointer FocusOut, which it ignores: the window
+         * gets the focus first, then loses it to no window. Wine (focus_out) then makes the
+         * desktop the foreground window: the game gets WM_ACTIVATEAPP(FALSE). */
+        XSetInputFocus(display, game, RevertToPointerRoot, CurrentTime);
+        XSetInputFocus(display, None, RevertToPointerRoot, CurrentTime);
+        fprintf(stderr, "x-input-relay: the game left the screen: window 0x%lx deactivated\n", (unsigned long)game);
+        return;
+    }
+    if (!away) return;
+    away = 0;
+    /* Keys go to the window under the pointer again, as before the game left the screen. */
+    XSetInputFocus(display, PointerRoot, RevertToPointerRoot, CurrentTime);
+    Window game = game_window();
+    if (game == None) {
+        fprintf(stderr, "x-input-relay: the game is back on the screen, but no game window shows: input only\n");
+        return;
+    }
+    confirm_normal(game);
+    /* WM_TAKE_FOCUS, as a window manager sends it: Wine (handle_wm_protocols, set_focus) makes the
+     * game the foreground window again. Its timestamp is older than the focus change above, so the
+     * X server ignores Wine's own XSetInputFocus to the game's window, and the focus stays at
+     * PointerRoot: with a Wine window focused and no XInput2 (Xvfb), Wine's full-screen cursor
+     * clip (clip_fullscreen_window, grab_clipping_window) and its refusal undo each other in an
+     * endless loop, and the game draws no more frames. Wine also drops this WM_TAKE_FOCUS when the
+     * foreground window is another of its windows with a confirmed WM_STATE, whose focus time is
+     * later (window_should_take_focus); after the deactivation above the foreground is the
+     * desktop, which has none. */
+    XEvent e;
+    memset(&e, 0, sizeof e);
+    e.xclient.type = ClientMessage;
+    e.xclient.window = game;
+    e.xclient.message_type = wm_protocols;
+    e.xclient.format = 32;
+    e.xclient.data.l[0] = (long)wm_take_focus;
+    e.xclient.data.l[1] = 1;
+    XSendEvent(display, game, False, NoEventMask, &e);
+    fprintf(stderr, "x-input-relay: the game is back on the screen: WM_TAKE_FOCUS to window 0x%lx\n", (unsigned long)game);
+}
+
 static void inject(const struct relay_event *event) {
     switch (event->type) {
     case RELAY_MOTION:
@@ -322,6 +429,9 @@ static void inject(const struct relay_event *event) {
         break;
     case RELAY_KEY:
         key((KeySym)(uint32_t)event->a, event->b);
+        break;
+    case RELAY_FOCUS:
+        focus(event->a != 0);
         break;
     default:
         fprintf(stderr, "x-input-relay: unknown event type %u\n", event->type);
@@ -353,6 +463,9 @@ int main(int argc, char **argv) {
     fprintf(stderr, "x-input-relay: XTEST %d.%d, spare keycode %d\n", major, minor, spare);
     XSetErrorHandler(x_error);
     present_window = XInternAtom(display, "_PD2_PRESENT_WINDOW", False);
+    wm_protocols = XInternAtom(display, "WM_PROTOCOLS", False);
+    wm_take_focus = XInternAtom(display, "WM_TAKE_FOCUS", False);
+    wm_state = XInternAtom(display, "WM_STATE", False);
     /* The top-level windows coming, going, moving and restacking, and Mesa naming the game's. */
     XSelectInput(display, DefaultRootWindow(display), SubstructureNotifyMask | PropertyChangeMask);
     tell_cover();

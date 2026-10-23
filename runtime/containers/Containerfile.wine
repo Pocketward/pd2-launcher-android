@@ -1,6 +1,7 @@
-# Build image for Wine and wowbox64.dll (build/wine.sh, build/wowbox64.sh): Wine's build tools for
-# amd64, then Wine for ARM64 in WoW64 mode (only the game's 32-bit x86 code is emulated, by Box64's
-# wowbox64.dll), cross-built on amd64 through Debian multiarch. The PE parts use llvm-mingw, which
+# Build image for Wine, wowbox64.dll and the ALSA plugin (build/wine.sh, build/wowbox64.sh,
+# build/pd2audio.sh): Wine's build tools for amd64, then Wine for ARM64 in WoW64 mode (only the
+# game's 32-bit x86 code is emulated, by Box64's wowbox64.dll), cross-built on amd64 through Debian
+# multiarch. The PE parts use llvm-mingw, which
 # ../config.sh pins and the scripts unpack into the cache. The Debian image and snapshot are
 # ../config.sh's pins, so every package version is fixed.
 ARG DEBIAN_IMAGE
@@ -27,10 +28,10 @@ RUN rm -f /etc/apt/sources.list.d/debian.sources \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates xz-utils file make cmake python3 pkgconf flex bison gettext patch patchelf \
-        libfreetype-dev \
+        libfreetype-dev libasound2-dev \
         gcc g++ gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross \
         libx11-dev:arm64 libxext-dev:arm64 libxrender-dev:arm64 libxrandr-dev:arm64 libxi-dev:arm64 \
         libxcursor-dev:arm64 libxfixes-dev:arm64 libxcomposite-dev:arm64 libxinerama-dev:arm64 \
         libgl-dev:arm64 libegl-dev:arm64 libvulkan-dev:arm64 libfreetype-dev:arm64 \
-        libfontconfig-dev:arm64 libpulse-dev:arm64 libgnutls28-dev:arm64 \
+        libfontconfig-dev:arm64 libgnutls28-dev:arm64 libasound2-dev:arm64 \
     && rm -rf /var/lib/apt/lists/*

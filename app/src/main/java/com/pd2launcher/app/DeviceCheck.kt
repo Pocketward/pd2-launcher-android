@@ -85,7 +85,7 @@ object DeviceCheck {
             // An Adreno of a supported line that the bundled Turnip has no entry for: it refuses it.
             findings += Finding(
                 Finding.Kind.GPU_UNKNOWN_TO_DRIVER,
-                "${gpu.name} is not known to the bundled graphics driver (Mesa 26.2.3 Turnip): the game may not start",
+                "${gpu.name} is not known to the bundled graphics driver (Mesa's Turnip): the game may not start",
                 subject = gpu.name,
             )
         }
