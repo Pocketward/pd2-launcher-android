@@ -100,7 +100,7 @@ Common problems:
 
 - **The download or install stops part way, for example at about 80%.** Tap **Try again**. The app keeps what is already downloaded and continues from there; a second try often finishes.
 - **A download stops while the app is in the background, or the app asks you to check a connection that works.** Some phones cut off an app's network access, or stop it, while it is in the background, to save battery or data. In the phone's settings for PD2 Launcher, allow it to use the network in the background and set its battery use to no restrictions; the names of these settings are different on each phone. The Check screen's Connection row tells you when the phone blocks the app's network, and opens the app's settings.
-- **The official PD2 launcher shows a black screen after you open it.** The launcher is slow to start, and the screen stays black until its window shows. Wait for it. Times from the tap to the launcher's window that we measured: about 12 to 17 seconds on a Snapdragon 8 Gen 2, a Snapdragon 865 and a Google Tensor G4, and about 1 to 2 minutes on a slower phone (Adreno 610 graphics chip, 3.5 GB of memory).
+- **The official PD2 launcher shows a black screen after you open it.** The launcher is slow to start, and the screen stays black until its window shows. Wait for it. Times from the tap to the launcher's window that we measured: about 12 to 17 seconds on a Snapdragon 8 Gen 2, a Snapdragon 865 and a Google Tensor G4, and about 40 seconds on a slower phone (Adreno 610 graphics chip, 3.5 GB of memory).
 
 ## Building from source
 
