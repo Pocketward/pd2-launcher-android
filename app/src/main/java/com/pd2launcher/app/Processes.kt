@@ -281,14 +281,26 @@ class LineSplitter(private val limit: Int, private val onLine: (String) -> Unit)
     }
 
     fun feed(bytes: ByteArray, length: Int = bytes.size) {
+        // Whole runs between newlines at a time: this runs for every byte the engine writes.
+        var start = 0
         for (i in 0 until length) {
-            val byte = bytes[i]
-            if (byte == '\n'.code.toByte()) {
+            if (bytes[i] == '\n'.code.toByte()) {
+                take(bytes, start, i)
                 emit()
-            } else {
-                pending.write(byte.toInt())
-                if (pending.size() >= limit) emit()
+                start = i + 1
             }
+        }
+        take(bytes, start, length)
+    }
+
+    /** Bytes [from] until [to] of [bytes] into the pending line, a piece handed on each time it reaches [limit]. */
+    private fun take(bytes: ByteArray, from: Int, to: Int) {
+        var at = from
+        while (at < to) {
+            val count = minOf(to - at, limit - pending.size())
+            pending.write(bytes, at, count)
+            at += count
+            if (pending.size() >= limit) emit()
         }
     }
 

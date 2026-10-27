@@ -44,6 +44,18 @@
  * window manager sends it, so Wine activates the game again (handle_wm_protocols, set_focus; see
  * focus()). Nothing in the game or its files changes.
  *
+ * It also keeps the official PD2 launcher's window in the middle of the X screen, as D2GL puts
+ * PD2's 4:3 menu there, so the app shows it as it shows that menu: PD2Launcher.exe's 800 x 600
+ * main window (its WM_CLASS, which Wine sets from the program's name, and that size) goes to the
+ * middle each time it maps (a new one also after the launcher updated itself) and each time it is
+ * somewhere else, whatever place the launcher kept from an earlier session (on another X screen,
+ * or on a PC in an imported folder). While a mouse button is down (a drag by the launcher's
+ * background, a click) the window stays where it is; after the release it goes back. The window
+ * gets WM_STATE as from a window manager first, so Wine takes the move as one from a window
+ * manager and the launcher's own idea of its place follows (centre_launcher(), place_launcher()).
+ * Should something move the window back each time, the relay stops after LAUNCHER_MOVES moves
+ * until the next release. The launcher's files do not change: it keeps the middle as its place.
+ *
  * Exit codes: 0 the app closed the socket; 1 bad usage, a broken event stream, or the X screen
  * went away (Xlib's I/O error handler); 2 no X screen; 3 the X screen has no XTEST.
  */
@@ -54,6 +66,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <unistd.h>
 
 #include <X11/XKBlib.h>
@@ -85,6 +98,21 @@ static Atom wm_protocols, wm_take_focus, wm_state; /* WM_PROTOCOLS, WM_TAKE_FOCU
 static int away; /* RELAY_FOCUS: the game is off the screen */
 /* What was last told: 'C', or 'F' and where; told[0] 0 before the first word. */
 static int32_t told[7];
+
+/* The official PD2 launcher's main window: its program's name and its fixed size (the app's
+ * GameResolution.LAUNCHER_WINDOW, app/src/main/java/com/pd2launcher/app/GameResolution.kt, is the
+ * same size: change both together). */
+#define LAUNCHER_PROGRAM "pd2launcher.exe"
+#define LAUNCHER_WIDTH 800
+#define LAUNCHER_HEIGHT 600
+/* Moves of one launcher window since the last release of a mouse button: past this many,
+ * something moves it back each time (no window manager would), and the relay stops moving it
+ * until the next release. */
+#define LAUNCHER_MOVES 16
+static int launcher_moves;
+static Window launcher_moved; /* the window launcher_moves counts for */
+static Window launcher_seen; /* the launcher window the last look found, or None */
+static int launcher_size_told; /* a PD2Launcher.exe window of another size was logged */
 
 /* Reads one whole event; 0 at end of stream, -1 on error or a partial event. */
 static int read_event(struct relay_event *event) {
@@ -364,6 +392,94 @@ static void confirm_normal(Window window) {
     XChangeProperty(display, window, wm_state, wm_state, 32, PropModeReplace, (unsigned char *)state, 2);
 }
 
+/* Whether [name] is the official launcher's program, as Wine writes it into WM_CLASS (any letter
+ * case: Windows file names ignore it; with or without ".exe"). */
+static int launcher_name(const char *name) {
+    size_t base = strlen(LAUNCHER_PROGRAM) - strlen(".exe");
+    return name != NULL && (strcasecmp(name, LAUNCHER_PROGRAM) == 0 ||
+                            (strlen(name) == base && strncasecmp(name, LAUNCHER_PROGRAM, base) == 0));
+}
+
+/* Whether the top-level [window] is the official launcher's main window: PD2Launcher.exe's
+ * (WM_CLASS) and [a] its attributes: viewable, not override-redirect (its menus and pop-ups are),
+ * 800 x 600. The first PD2Launcher.exe window of another size is logged once (one of its
+ * messages, or a main window of a new size, which the relay then leaves where it is). */
+static int launcher_window(Window window, const XWindowAttributes *a) {
+    if (a->map_state != IsViewable || a->override_redirect || a->width <= 1 || a->height <= 1) return 0;
+    XClassHint hint = {NULL, NULL};
+    if (!XGetClassHint(display, window, &hint)) return 0;
+    int found = launcher_name(hint.res_name) || launcher_name(hint.res_class);
+    if (hint.res_name != NULL) XFree(hint.res_name);
+    if (hint.res_class != NULL) XFree(hint.res_class);
+    if (found && (a->width != LAUNCHER_WIDTH || a->height != LAUNCHER_HEIGHT)) {
+        if (!launcher_size_told) {
+            launcher_size_told = 1;
+            fprintf(stderr, "x-input-relay: a PD2Launcher.exe window of %dx%d, not its %dx%d main window: left where it is\n",
+                    a->width, a->height, LAUNCHER_WIDTH, LAUNCHER_HEIGHT);
+        }
+        return 0;
+    }
+    return found;
+}
+
+/* The launcher's main [window], not in the middle, to [x], [y]: not while a mouse button is down
+ * (a drag, a click; the release looks again), and at most LAUNCHER_MOVES times between two
+ * releases. Under a server grab, so that Wine cannot unmap it between the look and the move: on
+ * a window that is not mapped, WM_STATE would make Wine skip its next map. */
+static void place_launcher(Window window, int x, int y) {
+    Window root_return, child;
+    int root_x, root_y, pointer_x, pointer_y;
+    unsigned int buttons = 0;
+    if (!XQueryPointer(display, DefaultRootWindow(display), &root_return, &child, &root_x, &root_y, &pointer_x, &pointer_y,
+                       &buttons) ||
+        (buttons & (Button1Mask | Button2Mask | Button3Mask))) {
+        return;
+    }
+    if (window != launcher_moved) {
+        launcher_moved = window;
+        launcher_moves = 0;
+    }
+    if (launcher_moves >= LAUNCHER_MOVES) {
+        if (launcher_moves == LAUNCHER_MOVES) {
+            launcher_moves++;
+            fprintf(stderr, "x-input-relay: the official launcher's window 0x%lx does not stay in the middle: left there\n",
+                    (unsigned long)window);
+        }
+        return;
+    }
+    XGrabServer(display);
+    XWindowAttributes a;
+    if (XGetWindowAttributes(display, window, &a) && a.map_state == IsViewable && (a.x != x || a.y != y)) {
+        launcher_moves++;
+        confirm_normal(window);
+        XMoveWindow(display, window, x, y);
+        fprintf(stderr, "x-input-relay: the official launcher's window 0x%lx moved from %d,%d to the middle, %d,%d\n",
+                (unsigned long)window, a.x, a.y, x, y);
+    }
+    XUngrabServer(display);
+    XFlush(display);
+}
+
+/* The official launcher's main window to the middle of the X screen wherever it is somewhere else
+ * (see the top of this file, and place_launcher()). */
+static void centre_launcher(void) {
+    Window root = DefaultRootWindow(display), root_return, parent, *children = NULL;
+    unsigned int count = 0;
+    if (!XQueryTree(display, root, &root_return, &parent, &children, &count)) return;
+    int width = DisplayWidth(display, DefaultScreen(display)), height = DisplayHeight(display, DefaultScreen(display));
+    Window seen = None;
+    for (unsigned int i = 0; i < count; i++) {
+        XWindowAttributes a;
+        if (!XGetWindowAttributes(display, children[i], &a) || !launcher_window(children[i], &a)) continue;
+        seen = children[i];
+        /* The X screen's width and lines are even, so the middle is exact; parts lie off a smaller one. */
+        int x = (width - a.width - 2 * a.border_width) / 2, y = (height - a.height - 2 * a.border_width) / 2;
+        if (a.x != x || a.y != y) place_launcher(children[i], x, y);
+    }
+    launcher_seen = seen;
+    if (children != NULL) XFree(children);
+}
+
 /* RELAY_FOCUS: the game leaves the screen ([on] 0) or comes back to it (1). */
 static void focus(int on) {
     if (!on) {
@@ -425,6 +541,12 @@ static void inject(const struct relay_event *event) {
     case RELAY_BUTTON:
         if (event->a >= 1 && event->a <= 9) {
             XTestFakeButtonEvent(display, (unsigned)event->a, event->b ? True : False, CurrentTime);
+            /* A release of a button ends a click or a drag: the launcher's window (where the last look
+             * found one; a look costs the game's clicks nothing otherwise) goes back to the middle. */
+            if (!event->b && event->a <= 3) {
+                launcher_moves = 0;
+                if (launcher_seen != None) centre_launcher();
+            }
         }
         break;
     case RELAY_KEY:
@@ -479,6 +601,8 @@ int main(int argc, char **argv) {
                 XEvent x;
                 XNextEvent(display, &x);
             }
+            /* A window mapped or moved: the launcher's goes to the middle, then the game's word. */
+            centre_launcher();
             tell_cover();
         }
         XFlush(display);

@@ -21,6 +21,7 @@ object Failures {
         "installer-payload-store-failed" -> R.string.failure_blizzard_store
         "downloads-required" -> R.string.failure_downloads_required
         "download-failed", "client-download-failed" -> R.string.failure_download
+        "client-not-kept" -> R.string.failure_client_not_kept
         "base-game-key-rejected" -> R.string.failure_d2_key
         "expansion-key-rejected" -> R.string.failure_lod_key
         "base-game-installer-error", "expansion-installer-error",

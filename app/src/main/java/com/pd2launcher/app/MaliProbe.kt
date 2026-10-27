@@ -46,17 +46,22 @@ object MaliProbe {
 /** The CSF Malis the device check takes: v10 to v13, the architectures our kbase backend is for. */
 val MALI_ARCHES = 10..13
 
-/** The oldest kbase CSF interface our backend runs on (1.9: MEM_ALLOC_EX; kbase_kmod.c). */
+/**
+ * The oldest kbase CSF interface our backend runs on: 1.9, the oldest uAPI its calls are written
+ * for (kbase_kmod.c). A kernel without one of the newer calls (MEM_ALLOC_EX, the newer group and
+ * tiler heap layouts) is handled by the backend's fallbacks, not by this check.
+ */
 const val MALI_MIN_UAPI_MINOR = 9
 
 /**
  * The CSF Malis (v10 to v13) the App userland's PanVK knows, by Mesa's product id, as the App
  * userland's Mesa (config.sh MESA_COMMIT) src/panfrost/model/pan_model.c (pan_model_list) lists
- * them; PanVK refuses any other GPU (pan_get_model). The G310's five variants share one product
- * id, and so do the Immortalis entries (G715, G720, G925) Mesa added in 7c648edb with their
- * non-Immortalis models.
+ * them, with the Mali-G710 that our patch mesa-panvk/0006 adds; PanVK refuses any other GPU
+ * (pan_get_model). The G310's five variants share one product id, and so do the Immortalis
+ * entries (G715, G720, G925) Mesa added in 7c648edb with their non-Immortalis models.
  */
 private val panvkModels = mapOf(
+    0x0A0802 to "Mali-G710",
     0x0A0807 to "Mali-G610",
     0x0A0C04 to "Mali-G310",
     0x0B0802 to "Mali-G715",

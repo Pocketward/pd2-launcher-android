@@ -13,6 +13,7 @@
     <!-- Something the install needs (such as a fresh copy of Blizzard's downloader) must be downloaded again. -->
     <string name="failure_downloads_required">Something the install needs has to be downloaded again. Check your connection and Try again.</string>
     <string name="failure_blizzard_ended">Blizzard\'s downloader stopped unexpectedly. Try again, or use Import an existing installation. If it happens again, send the logs.</string>
+    <string name="failure_client_not_kept">The Project Diablo 2 in the game folder cannot be kept as it is. Check your connection and Try again: the app needs Project Diablo 2\'s file list to record your files. If it happens again, Game.exe, ProjectDiablo.dll or another of its files is missing: import a complete folder.</string>
     <string name="failure_download">A download didn\'t finish. Check your connection and Try again. What is already downloaded is kept.</string>
     <string name="failure_d2_key">Diablo II\'s installer didn\'t accept the Diablo II key. Check the key and Try again.</string>
     <string name="failure_lod_key">Lord of Destruction\'s installer didn\'t accept the Lord of Destruction key. Check the key and Try again.</string>

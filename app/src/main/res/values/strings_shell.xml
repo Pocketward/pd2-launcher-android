@@ -77,6 +77,7 @@
     <string name="play_about">About</string>
     <string name="play_official_launcher">Official PD2 launcher</string>
     <string name="play_official_launcher_failed">The official PD2 launcher didn\'t open. Try again, or check the game in Repair.</string>
+    <string name="play_official_launcher_missing">The official PD2 launcher is not in your game folder (ProjectD2\\PD2Launcher.exe is missing). If you imported the folder, check that your PC copy is complete, then import it again. If the app installed the game, use Repair → Start over.</string>
     <string name="update_up_to_date">Up to date</string>
     <string name="update_available">Update available</string>
     <string name="update_checking">Checking for updates</string>
@@ -97,12 +98,33 @@
     <!-- After a finished update, while the engine checks again: where "Ready to play" goes. -->
     <string name="play_update_rechecking">Checking for updates…</string>
     <string name="play_without_updating">Play without updating</string>
+    <!-- Play looks for a new Project Diablo 2 version first (PlayCheck): where "Ready to play" goes. -->
+    <string name="play_check_running">Checking for updates…</string>
+    <string name="play_check_no_network">No network connection. The game starts without an update check.</string>
+    <string name="play_check_failed">The update check failed. The game starts.</string>
+    <string name="play_check_no_answer">No answer from the update check. The game starts.</string>
+    <!-- Under the running update that the question started. -->
+    <string name="play_update_then_play">The game starts when the update is complete.</string>
+    <!-- The question when Play finds a new version. -->
+    <string name="new_version_title">New version found</string>
+    <string name="new_version_body">Project Diablo 2 has a new version. Update installs it, then the game starts.</string>
+    <string name="new_version_later">If you cancel, you can update later, or play without updating.</string>
+    <string name="action_cancel">Cancel</string>
+    <!-- Settings → Game's update checks are off: the facts line under Play and Repair's row. -->
+    <string name="update_checks_off">Update checks off</string>
     <!-- The running update's caption while the engine reports no amount. -->
     <string name="update_step_looking">Checking which files changed…</string>
     <string name="update_step_checking">Checking the game files…</string>
     <string name="update_step_installing">Installing the new files…</string>
+    <!-- A figure's caption from the engine: its bytes, speed, time left and counts, as it wrote them. -->
+    <string name="progress_summary">%1$s</string>
+    <!-- The same in Update, Check files and Install's Project Diablo 2, where the bytes are those of
+         the one file that downloads now, not of the whole update: "This file: 26.0 of 373.6 MB · 5.0 MB/s". -->
+    <string name="progress_this_file">This file: %1$s</string>
     <string name="update_failed">The update didn\'t finish. Try again, or play without updating.</string>
     <string name="update_client_failed">The check didn\'t finish. Check the connection, then try again.</string>
+    <!-- Check files with Check for game updates off, when the files cannot be kept as they are. -->
+    <string name="update_client_not_kept">The game files cannot be kept as they are: a file is missing. Turn on Check for game updates (Settings → Game) to install the current version.</string>
     <string name="update_client_refused">The check can\'t start now. Wait until nothing else runs, then try again.</string>
     <string name="update_refused">The update can\'t start now. Wait until nothing else runs, then try again.</string>
 

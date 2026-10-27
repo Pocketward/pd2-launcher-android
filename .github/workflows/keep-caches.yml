@@ -1,10 +1,11 @@
 # Reads the release build's caches every two days, so that GitHub does not remove them between
 # releases: it removes a cache that no run read for 7 days, and only a release run that builds
-# reads these (one that finds the userland in its cache skips the images and the parts; one that
-# reuses a draft, or has nothing to build, reads none). Every two days leaves room for a run that
-# is skipped (below) or fails. It restores the newest cache of each kind on main, the one the next
-# release starts from, by the name the cache list gives (so the names cannot differ from
-# release.yml's), and builds, saves and publishes nothing. The paths must be release.yml's, as a
+# reads these (one that finds the userland and the runtime in their caches skips their build
+# images and parts; one that reuses a draft, or has nothing to build, reads none). Every two days
+# leaves room for a run that is skipped (below) or fails. It restores the newest cache of each
+# kind on main (each build image is a kind of its own), the one the next release starts from, by
+# the name the cache list gives (so the names cannot differ from release.yml's), and builds,
+# saves and publishes nothing. The paths must be release.yml's, as a
 # cache is found only with the paths it was saved with: a restore that finds nothing fails this
 # workflow. A fork has none of these caches and skips it.
 #
@@ -54,22 +55,29 @@ jobs:
           fi
           gh api --paginate "repos/$GITHUB_REPOSITORY/actions/caches?ref=refs/heads/main&per_page=100" \
             --jq '.actions_caches[]' > "$RUNNER_TEMP/caches.json"
-          newest() { # output pattern
+          # The newest key that matches the pattern, without the prefix given (the output of a build
+          # image is the name of its archive, which its key holds after image-).
+          newest() { # output pattern [prefix]
             local key
             key=$(jq -rs --arg p "$2" 'map(select(.key | test($p))) | sort_by(.created_at) | last | .key // empty' \
               "$RUNNER_TEMP/caches.json")
             echo "$1: ${key:-none}"
-            [[ -z $key ]] || echo "$1=$key" >> "$GITHUB_OUTPUT"
+            [[ -z $key ]] || echo "$1=${key#"${3:-}"}" >> "$GITHUB_OUTPUT"
           }
           newest userland '^userland-[0-9a-f]{64}$'
-          newest images '^userland-images-[0-9a-f]{16}$'
           newest parts '^userland-parts-[0-9a-f]{16}$'
           newest runtime '^runtime-[0-9a-f]{64}$'
-          newest runtime_parts '^runtime-parts-runtime-[0-9a-f]{64}$'
+          newest wine '^runtime-parts-[0-9a-f]{64}$'
           newest image '^android-image-[0-9a-f]{16}$'
           newest gradle '^gradle-release-[0-9a-f]{64}$'
           newest engine '^engine-[0-9a-f]{64}$'
           newest engine_image '^engine-image-[0-9a-f]{16}$'
+          newest image_tools '^image-localhost_pd2-userland-tools_[0-9a-f]{16}$' image-
+          newest image_mesa '^image-localhost_pd2-userland-mesa_[0-9a-f]{16}$' image-
+          newest image_panvk '^image-localhost_pd2-userland-panvk_[0-9a-f]{16}$' image-
+          newest image_glibc '^image-localhost_pd2-glibc-build_[0-9a-f]{16}$' image-
+          newest image_wine '^image-localhost_pd2-runtime-wine_[0-9a-f]{16}$' image-
+          newest image_runtime_tools '^image-localhost_pd2-runtime-tools_[0-9a-f]{16}$' image-
 
       - name: Restore the userland
         if: steps.keys.outputs.userland != ''
@@ -79,12 +87,52 @@ jobs:
           key: ${{ steps.keys.outputs.userland }}
           fail-on-cache-miss: true
 
-      - name: Restore the userland's build images
-        if: steps.keys.outputs.images != ''
+      - name: Restore the tools image
+        if: steps.keys.outputs.image_tools != ''
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/.cache/pd2-android/images/userland
-          key: ${{ steps.keys.outputs.images }}
+          path: ~/.cache/pd2-android/images/userland/${{ steps.keys.outputs.image_tools }}.tar.zst
+          key: image-${{ steps.keys.outputs.image_tools }}
+          fail-on-cache-miss: true
+
+      - name: Restore the Mesa image
+        if: steps.keys.outputs.image_mesa != ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pd2-android/images/userland/${{ steps.keys.outputs.image_mesa }}.tar.zst
+          key: image-${{ steps.keys.outputs.image_mesa }}
+          fail-on-cache-miss: true
+
+      - name: Restore the PanVK image
+        if: steps.keys.outputs.image_panvk != ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pd2-android/images/userland/${{ steps.keys.outputs.image_panvk }}.tar.zst
+          key: image-${{ steps.keys.outputs.image_panvk }}
+          fail-on-cache-miss: true
+
+      - name: Restore glibc's image
+        if: steps.keys.outputs.image_glibc != ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pd2-android/images/userland/${{ steps.keys.outputs.image_glibc }}.tar.zst
+          key: image-${{ steps.keys.outputs.image_glibc }}
+          fail-on-cache-miss: true
+
+      - name: Restore the Wine image
+        if: steps.keys.outputs.image_wine != ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pd2-android/images/userland/${{ steps.keys.outputs.image_wine }}.tar.zst
+          key: image-${{ steps.keys.outputs.image_wine }}
+          fail-on-cache-miss: true
+
+      - name: Restore the runtime's tools image
+        if: steps.keys.outputs.image_runtime_tools != ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pd2-android/images/userland/${{ steps.keys.outputs.image_runtime_tools }}.tar.zst
+          key: image-${{ steps.keys.outputs.image_runtime_tools }}
           fail-on-cache-miss: true
 
       - name: Restore the userland's parts
@@ -111,14 +159,14 @@ jobs:
           key: ${{ steps.keys.outputs.runtime }}
           fail-on-cache-miss: true
 
-      - name: Restore the runtime's parts
-        if: steps.keys.outputs.runtime_parts != ''
+      - name: Restore the wine job's parts
+        if: steps.keys.outputs.wine != ''
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cache/pd2-android/runtime/parts
             ~/.cache/pd2-android/runtime/dl
-          key: ${{ steps.keys.outputs.runtime_parts }}
+          key: ${{ steps.keys.outputs.wine }}
           fail-on-cache-miss: true
 
       - name: Restore the APK's build image

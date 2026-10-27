@@ -1,0 +1,19 @@
+panfrost: a model for the Mali-G710
+
+The Mali-G710 (product id 10.8.2) has no entry in pan_model_list, so pan_get_model() finds no
+model for it and PanVK refuses the GPU
+(vkEnumeratePhysicalDevices: VK_ERROR_INITIALIZATION_FAILED). The G710 is the larger part of the
+same Valhall v10 design as the G610 (10.8.7), whose entry already names the G710's counter set;
+the entry gives the G710 the G610's tile-buffer sizes, anisotropy revision and rates.
+
+--- a/src/panfrost/model/pan_model.c
++++ b/src/panfrost/model/pan_model.c
+@@ -92,6 +92,8 @@
+                                               MODEL_RATES_X(2, 4, 8,  32,  32, 8)),
+    VALHALL_MODEL(PAN_PROD_ID(9, 2, 4), 0, "G68",    "G78", MODEL_ANISO(ALL),  MODEL_TB_SIZES(16384,  8192),
+                                               MODEL_RATES_X(2, 4, 8,  32,  32, 8)),
++   VALHALL_MODEL(PAN_PROD_ID(10, 8, 2), 0, "G710",   "G710", MODEL_ANISO(ALL),  MODEL_TB_SIZES(32768, 16384),
++                                              MODEL_RATES_X(4, 8, 16,  64,  64, 16)),
+    VALHALL_MODEL(PAN_PROD_ID(10, 8, 7), 0, "G610",   "G710", MODEL_ANISO(ALL),  MODEL_TB_SIZES(32768, 16384),
+                                               MODEL_RATES_X(4, 8, 16,  64,  64, 16)),
+    /* var/cvt/sfu rates might not be correct (we haven't found any detailed documentation) */

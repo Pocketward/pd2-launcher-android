@@ -19,7 +19,7 @@ import kotlinx.serialization.json.JsonClassDiscriminator
 // null when absent), as serde writes it. Integers: u32 and u64 are Long, u8 Int.
 
 /** The protocol version this app speaks (the engine's `PROTOCOL`). */
-const val PROTOCOL: Int = 4
+const val PROTOCOL: Int = 5
 
 /** The JSON settings both directions use: internally tagged by `type`, strict. */
 val ControlJson: Json = Json { classDiscriminator = "type" }
@@ -162,18 +162,29 @@ sealed class Command {
 
     /**
      * Play, with the X screen's size in pixels when known (the game resolution), the graphics
-     * driver and the D2GL graphics profile (Automatic resolved; null: the game's graphics stay).
+     * driver, the D2GL graphics profile (Automatic resolved; null: the game's graphics stay),
+     * whether the game gets Box64's strict x86 memory order (the app always sends false: the game
+     * runs with Box64's defaults) and Detailed logging ([com.pd2launcher.app.AppSettings.detailedLogging]).
      */
     @Serializable @SerialName("launch_game")
     data class LaunchGame(
         val display: DisplaySize?,
         @SerialName("graphics_driver") val graphicsDriver: GraphicsDriver,
         @SerialName("graphics_profile") val graphicsProfile: GraphicsProfile?,
+        @SerialName("strict_memory_order") val strictMemoryOrder: Boolean,
+        @SerialName("detailed_logging") val detailedLogging: Boolean,
     ) : Command()
 
-    /** The official PD2 launcher, in the game environment; the press of its button is the confirmation. */
+    /**
+     * The official PD2 launcher, in the game environment; the press of its button is the
+     * confirmation. Whether a game that it starts gets Box64's strict x86 memory order is as for
+     * [LaunchGame] (false), and Detailed logging ([com.pd2launcher.app.AppSettings.detailedLogging]).
+     */
     @Serializable @SerialName("open_official_launcher")
-    data object OpenOfficialLauncher : Command()
+    data class OpenOfficialLauncher(
+        @SerialName("strict_memory_order") val strictMemoryOrder: Boolean,
+        @SerialName("detailed_logging") val detailedLogging: Boolean,
+    ) : Command()
 
     @Serializable @SerialName("start_over")
     data object StartOver : Command()
@@ -275,6 +286,13 @@ sealed class SettingChange {
 
     @Serializable @SerialName("sound_in_background")
     data class SoundInBackground(val enabled: Boolean) : SettingChange()
+
+    /**
+     * Project Diablo 2's update checks (protocol 5): off, none runs and the client plays as
+     * installed. Sent only to an engine whose snapshot names the setting ([Settings.updateChecks]).
+     */
+    @Serializable @SerialName("update_checks")
+    data class UpdateChecks(val enabled: Boolean) : SettingChange()
 }
 
 @Serializable
@@ -589,6 +607,13 @@ data class Settings(
     @SerialName("direct_draw_renderer") val directDrawRenderer: DirectDrawRenderer,
     @SerialName("skip_to_bnet") val skipToBnet: Boolean,
     @SerialName("sound_in_background") val soundInBackground: Boolean,
+    /**
+     * Project Diablo 2's update checks run (protocol 5): off, the engine runs none, its update
+     * stays unknown and it plays the client as installed. Null from an engine before protocol 5,
+     * which has no such setting and always checks: the one field with a default, so the app
+     * decodes both.
+     */
+    @SerialName("update_checks") val updateChecks: Boolean? = null,
     val persistence: SettingsPersistence,
 )
 

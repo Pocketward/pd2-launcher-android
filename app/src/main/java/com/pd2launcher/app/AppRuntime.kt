@@ -267,9 +267,11 @@ class AppRuntime(
         const val PREFIX_TEMPLATE = "runner/wine-11.0-arm64-prefix"
         /** The runtime's Wine (the engine's `APP_RUNTIME_DIRECTORY`). */
         const val WINE = "runner/wine-11.0-arm64"
+        /** The official launcher's x86 .NET runtime, which the prefix's `C:\Program Files (x86)\dotnet` links to (runtime/prefix.sh). */
+        const val DOTNET = "runner/dotnet-6.0.36-x86"
         /** The trees an unpack replaces (runtime/pack.py's layout); the Launcher's own files stay. */
         val PROVIDED = listOf(
-            "runner/dotnet-6.0.36-x86",
+            DOTNET,
             WINE,
             PREFIX_TEMPLATE,
         )

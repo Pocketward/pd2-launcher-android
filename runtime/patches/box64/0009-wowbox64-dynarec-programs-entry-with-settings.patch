@@ -1,0 +1,125 @@
+Subject: [PATCH] wowbox64: a BOX64_DYNAREC_PROGRAMS entry can name the settings that its program gets
+
+With BOX64_DYNAREC_PROGRAMS (patch 0006), every program that the list names gets all the
+BOX64_DYNAREC_* settings of the environment. A program that another one starts inherits that
+environment, so it can get only the same settings as its parent, or none. The official PD2
+launcher needs STRONGMEM=1 and WAIT=0; the game that it starts can need STRONGMEM=1 but not
+WAIT=0.
+
+An entry can now be name:SETTING:SETTING (the BOX64_DYNAREC_ names without that prefix, in any
+case). That program gets only the settings that the entry names; the others go back to Box64's
+defaults (ResetEnvVariables with a keep list). A plain name still gets all of them. Example:
+"PD2Launcher.exe;UpdateUtility.exe;Game.exe:STRONGMEM;". A wowbox64 without this patch does not
+match "Game.exe:STRONGMEM" at all, so that program gets Box64's defaults.
+---
+--- a/src/include/env.h
++++ b/src/include/env.h
+@@ -248,7 +248,7 @@
+ const char* GetLastApplyEntryName();
+ void InitializeEnv();
+ void LoadEnvVariables();
+-void ResetEnvVariables(const char* prefix);
++void ResetEnvVariables(const char* prefix, const char* keep, size_t keep_len);
+ void PrintEnvVariables(box64env_t* env, int level);
+ void RecordEnvMappings(uintptr_t addr, size_t length, int fd);
+ void WillRemoveMapping(uintptr_t addr, size_t length);
+--- a/src/tools/env.c
++++ b/src/tools/env.c
+@@ -757,9 +757,30 @@
+     applyCustomRules();
+ }
+ 
++// Whether keep (names, ':' between them, keep_len characters) has name, in any case (ASCII).
++static int nameKept(const char* name, const char* keep, size_t keep_len)
++{
++#define LOWER(c) ((c) >= 'A' && (c) <= 'Z' ? (c) - 'A' + 'a' : (c))
++    size_t n = strlen(name);
++    const char* end = keep + keep_len;
++    while (keep < end) {
++        const char* stop = keep;
++        while (stop < end && *stop != ':') ++stop;
++        if ((size_t)(stop - keep) == n) {
++            size_t i = 0;
++            while (i < n && LOWER(keep[i]) == LOWER(name[i])) ++i;
++            if (i == n) return 1;
++        }
++        keep = stop < end ? stop + 1 : stop;
++    }
++    return 0;
++#undef LOWER
++}
++
+ // The settings that the environment set and whose names start with prefix go back to their
+-// defaults, as if the environment did not have them (WowBox64: BOX64_DYNAREC_PROGRAMS).
+-void ResetEnvVariables(const char* prefix)
++// defaults, as if the environment did not have them (WowBox64: BOX64_DYNAREC_PROGRAMS). With keep,
++// the settings it names (without the prefix, ':' between them, keep_len characters) stay.
++void ResetEnvVariables(const char* prefix, const char* keep, size_t keep_len)
+ {
+     size_t n = strlen(prefix);
+ #ifdef _WIN32
+@@ -768,7 +789,8 @@
+ #define DEFAULT(wine, default) (default)
+ #endif
+ #define RESET(NAME, name, value)                                              \
+-    if (box64env.is_##name##_overridden && !strncmp(#NAME, prefix, n)) {     \
++    if (box64env.is_##name##_overridden && !strncmp(#NAME, prefix, n)         \
++        && !(keep && nameKept(#NAME + n, keep, keep_len))) {                  \
+         box64env.name = value;                                                \
+         box64env.is_##name##_overridden = 0;                                  \
+     }
+--- a/wine/wow64/wowbox64.c
++++ b/wine/wow64/wowbox64.c
+@@ -432,18 +432,26 @@
+     invalidate_mapped_section(addr);
+ }
+ 
+-/* Whether the list (file names, ';' or ',' between them) has name, in any case (ASCII). */
+-static int program_listed(const char* list, const char* name)
++/* Whether the list (entries name or name:SETTING:SETTING..., ';' or ',' between them) has name, in
++ * any case (ASCII). For an entry with settings, *settings and *settings_len give them (the
++ * BOX64_DYNAREC_ names without that prefix); else *settings is NULL. */
++static int program_listed(const char* list, const char* name, const char** settings, size_t* settings_len)
+ {
+ #define LOWER(c) ((c) >= 'A' && (c) <= 'Z' ? (c) - 'A' + 'a' : (c))
+     size_t n = strlen(name);
+     while (*list) {
+         const char* end = list;
+         while (*end && *end != ';' && *end != ',') ++end;
+-        if ((size_t)(end - list) == n) {
++        const char* colon = list;
++        while (colon < end && *colon != ':') ++colon;
++        if ((size_t)(colon - list) == n) {
+             size_t i = 0;
+             while (i < n && LOWER(list[i]) == LOWER(name[i])) ++i;
+-            if (i == n) return 1;
++            if (i == n) {
++                *settings = colon < end ? colon + 1 : NULL;
++                *settings_len = colon < end ? (size_t)(end - colon - 1) : 0;
++                return 1;
++            }
+         }
+         list = *end ? end + 1 : end;
+     }
+@@ -453,11 +461,19 @@
+ 
+ /* BOX64_DYNAREC_PROGRAMS: the BOX64_DYNAREC_* settings of the environment are for the programs it
+  * names only; any other program (a child that inherits the environment) starts with Box64's
+- * defaults for them. Unset, every program gets them. */
++ * defaults for them. An entry name:SETTING:SETTING gives that program only the settings it names
++ * (a program that another one starts can then get fewer settings than it). Unset, every program
++ * gets them. */
+ static void dynarec_settings_for(const char* program)
+ {
+     char* list = GetEnv("BOX64_DYNAREC_PROGRAMS");
+-    if (list && !program_listed(list, program)) ResetEnvVariables("BOX64_DYNAREC_");
++    const char* settings = NULL;
++    size_t settings_len = 0;
++    if (!list) return;
++    if (!program_listed(list, program, &settings, &settings_len))
++        ResetEnvVariables("BOX64_DYNAREC_", NULL, 0);
++    else if (settings)
++        ResetEnvVariables("BOX64_DYNAREC_", settings, settings_len);
+ }
+ 
+ NTSTATUS WINAPI BTCpuProcessInit(void)

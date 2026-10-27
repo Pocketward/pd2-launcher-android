@@ -7,7 +7,8 @@
 # (com.pd2launcher.app; the release key and engine below).
 # `build.sh check` compiles the debug APK without the App userland, the CI check; it copies no APK
 # to build/outputs, as one without the userland cannot run. The JVM tests, where the repository
-# has them (app/src/test), run on the debug variant.
+# has them (app/src/test), run on the debug variant. It also runs the release build's lint check
+# (lintVitalRelease), which `build.sh release` leaves out: the CI runs both on the same commit.
 # `build.sh mockup` and `build.sh spike` build development apps that are not part of the
 # public source.
 # `build.sh verification-metadata` writes gradle/verification-metadata.xml again (after a
@@ -33,10 +34,12 @@ fi
 case "$target" in
     app) tasks=":app:assembleDebug :app:testDebugUnitTest" ;;
     release)
-        tasks=":app:assembleRelease :app:testDebugUnitTest"
+        tasks=":app:assembleRelease :app:testDebugUnitTest -x :app:lintVitalRelease"
         after=" && apksigner verify --verbose --print-certs $release_apk && zipalign -c 4 $release_apk"
         ;;
-    check) tasks=":app:assembleDebug :app:testDebugUnitTest" ;;
+    # The release variant's lint check needs no release key: its signing guard (preReleaseBuild)
+    # is skipped.
+    check) tasks=":app:assembleDebug :app:testDebugUnitTest :app:lintVitalRelease -x :app:preReleaseBuild" ;;
     mockup) tasks=":mockup:assembleDebug" ;;
     spike) tasks=":spike:assembleDebug" ;;
     verification-metadata)
@@ -228,9 +231,9 @@ if [[ "$target" == mockup || "$target" == spike ]]; then
 fi
 if [[ "$target" == check ]]; then
     if [[ -d "$here/app/src/test" ]]; then
-        echo "check passed: the debug APK compiles and the JVM tests pass"
+        echo "check passed: the debug APK compiles, the JVM tests pass and the release lint check passes"
     else
-        echo "check passed: the debug APK compiles (this repository has no JVM tests)"
+        echo "check passed: the debug APK compiles and the release lint check passes (this repository has no JVM tests)"
     fi
     exit 0
 fi

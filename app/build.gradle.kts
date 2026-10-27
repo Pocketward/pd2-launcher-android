@@ -25,6 +25,19 @@ fun versionCodeOf(name: String): Int {
 // in PD2_RELEASE_SIGNING.
 val releaseSigning: File? = System.getenv("PD2_RELEASE_SIGNING")?.let(::File)?.takeIf { it.isFile }
 
+// The runtime parts the build packs, as their pins name them (runtime/config.sh, userland/config.sh,
+// the Box64 patches), for device.txt: "unknown" where a pin is missing.
+fun pinned(file: String, name: String): String =
+    rootProject.file(file).takeIf { it.isFile }?.readLines()
+        ?.firstNotNullOfOrNull { line -> line.trim().takeIf { it.startsWith("$name=") }?.substringAfter('=')?.trim('"') }
+        ?: "unknown"
+val box64Patches: String = rootProject.file("runtime/patches/box64").list()
+    ?.filter { it.endsWith(".patch") }?.map { it.take(4) }?.sorted()?.joinToString(" ")
+    ?: "none"
+val runtimeParts = "Wine ${pinned("runtime/config.sh", "WINE_VERSION")}, " +
+    "Box64 ${pinned("runtime/config.sh", "BOX64_COMMIT").take(8)} with patches $box64Patches, " +
+    "Mesa ${pinned("userland/config.sh", "MESA_VERSION")} ${pinned("userland/config.sh", "MESA_COMMIT").take(8)}"
+
 android {
     namespace = "com.pd2launcher.app"
     // compileSdk may be higher than targetSdk; targetSdk is 28 because Android lets an app run
@@ -39,7 +52,11 @@ android {
         // targetSdk, which the plugin warns about but builds.
         minSdk = 33
         targetSdk = 28
-        versionName = "0.3.3"
+        // arm64 only: the App runs the ARM64 engine, so a 32-bit-only phone gets Android's own
+        // "not compatible" refusal at install. abiFilters limits our own CMake libraries and the
+        // libraries inside dependencies (zstd-jni, androidx.graphics.path) alike.
+        ndk { abiFilters += "arm64-v8a" }
+        versionName = "0.3.4"
         versionCode = versionCodeOf(versionName!!)
         // App updates (AppUpdater): the public releases the app looks at (the newest 10; it takes
         // the highest version that is not a pre-release), where their files must be, the name its
@@ -50,6 +67,7 @@ android {
         buildConfigField("String", "UPDATE_RELEASES", "\"https://github.com/Pocketward/pd2-launcher-android/releases/\"")
         buildConfigField("String", "UPDATE_APK_PREFIX", "\"pd2-launcher-android-\"")
         buildConfigField("String", "UPDATE_CERTIFICATE", "\"90b7d9adf3f0c2c1bac5351f8cc972c9f984704c181f03f8cc206d2711a2972d\"")
+        buildConfigField("String", "RUNTIME_PARTS", "\"$runtimeParts\"")
     }
 
     compileOptions {

@@ -34,8 +34,8 @@ import org.json.JSONObject
  * `files/userdata/Save` ([SaveKeeper]). [DocumentPaths] maps the IDs and refuses any path out of
  * it. Nothing changes while the game runs (it writes its folder, and the characters when it
  * closes), from a launch request until the game shows or the launch fails (the engine prepares
- * the game's files meanwhile), or while the Launcher works on the folder, and no program or
- * library (a DLL, an executable) is written, created, renamed or moved through it.
+ * the game's files meanwhile), or while the Launcher works on the folder; otherwise any file can
+ * change, programs and libraries too ([DocumentPaths.refusal]).
  */
 class GameFilesProvider : DocumentsProvider() {
     private lateinit var authority: String
@@ -49,29 +49,22 @@ class GameFilesProvider : DocumentsProvider() {
 
     private fun documents(): DocumentPaths = documents(context!!)
 
-    /**
-     * Throws, with why for the player, when [documentId] cannot take [change] now
-     * ([DocumentPaths.refusal]), or when [newName] (a name it is to be given) is refused.
-     */
+    /** Throws, with why for the player, when [documentId] cannot take [change] now ([DocumentPaths.refusal]). */
     private fun checkWritable(
         documents: DocumentPaths,
         documentId: String,
         change: DocumentPaths.Change = DocumentPaths.Change.WRITE,
-        newName: String? = null,
     ) {
-        val refusal = refusal(documents, documentId, change)
-            ?: newName?.let(documents::nameRefusal)
-            ?: return
+        val refusal = refusal(documents, documentId, change) ?: return
         val message = context!!.getString(
             when (refusal) {
                 DocumentPaths.Refusal.FIXED -> R.string.files_refused_fixed
                 DocumentPaths.Refusal.GAME_RUNNING -> R.string.files_refused_game_running
                 DocumentPaths.Refusal.GAME_STARTING -> R.string.files_refused_game_starting
                 DocumentPaths.Refusal.LAUNCHER_BUSY -> R.string.files_refused_busy
-                DocumentPaths.Refusal.EXECUTABLE -> R.string.files_refused_executable
             },
         )
-        Log.i(TAG, "refused for $documentId${newName?.let { " as $it" } ?: ""}: $refusal")
+        Log.i(TAG, "refused for $documentId: $refusal")
         throw IllegalStateException(message)
     }
 
@@ -144,7 +137,7 @@ class GameFilesProvider : DocumentsProvider() {
         }
         // Opened without waiting (a FIFO would hold the open), neither created nor truncated, and
         // checked; only then opened again through that descriptor, the same file, for use.
-        verified(documents, documentId, descriptor(file.path, flags or OsConstants.O_NONBLOCK), folder = false, write = write).use { probe ->
+        verified(documents, documentId, descriptor(file.path, flags or OsConstants.O_NONBLOCK), folder = false).use { probe ->
             val same = File("/proc/self/fd/${probe.fd}")
             if (!write) return ParcelFileDescriptor.open(same, access)
             val parent = documents.parent(documentId)
@@ -175,7 +168,6 @@ class GameFilesProvider : DocumentsProvider() {
         documentId: String,
         descriptor: ParcelFileDescriptor,
         folder: Boolean,
-        write: Boolean,
     ): ParcelFileDescriptor {
         val allowed = try {
             val stat = Os.fstat(descriptor.fileDescriptor)
@@ -183,7 +175,7 @@ class GameFilesProvider : DocumentsProvider() {
             val ok = if (folder) {
                 OsConstants.S_ISDIR(stat.st_mode) && documents.openedFolder(reported)
             } else {
-                documents.openedFile(reported, OsConstants.S_ISREG(stat.st_mode), stat.st_nlink, write)
+                documents.openedFile(reported, OsConstants.S_ISREG(stat.st_mode), stat.st_nlink)
             }
             ok.also { if (!it) Log.w(TAG, "$documentId opened $reported (mode ${Integer.toOctalString(stat.st_mode)}, ${stat.st_nlink} names); refused") }
         } catch (error: ErrnoException) {
@@ -219,12 +211,12 @@ class GameFilesProvider : DocumentsProvider() {
      * permission but no read permission takes changes as before, and nothing blocks on the open.
      */
     private fun <T> inFolder(documents: DocumentPaths, folderId: String, use: (String) -> T): T =
-        verified(documents, folderId, descriptor(documents.file(folderId).path, O_PATH), folder = true, write = false)
+        verified(documents, folderId, descriptor(documents.file(folderId).path, O_PATH), folder = true)
             .use { use("/proc/self/fd/${it.fd}") }
 
     override fun createDocument(parentDocumentId: String, mimeType: String, displayName: String): String {
         val documents = documents()
-        checkWritable(documents, parentDocumentId, newName = displayName)
+        checkWritable(documents, parentDocumentId)
         if (!documents.file(parentDocumentId).isDirectory) throw FileNotFoundException("$parentDocumentId is not a folder")
         val id = freeName(documents, parentDocumentId, displayName)
         inFolder(documents, parentDocumentId) { folder ->
@@ -261,7 +253,7 @@ class GameFilesProvider : DocumentsProvider() {
 
     override fun renameDocument(documentId: String, displayName: String): String {
         val documents = documents()
-        checkWritable(documents, documentId, DocumentPaths.Change.MOVE, newName = displayName)
+        checkWritable(documents, documentId, DocumentPaths.Change.MOVE)
         val parent = documents.parent(documentId)!!
         val target = documents.child(parent, displayName, renaming = documents.file(documentId).name)
         move(documents, documentId, target)

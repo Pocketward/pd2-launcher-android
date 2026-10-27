@@ -82,7 +82,6 @@ class SettingsNav {
     var resolutions by mutableStateOf(false)
     var customSize by mutableStateOf(false)
     var displays by mutableStateOf(false)
-    var launcherResolutions by mutableStateOf(false)
     var profiles by mutableStateOf(false)
     var frameRates by mutableStateOf(false)
     val scroll = List(3) { ScrollState(0) }
@@ -93,7 +92,6 @@ class SettingsNav {
         resolutions = false
         customSize = false
         displays = false
-        launcherResolutions = false
         profiles = false
         frameRates = false
     }
@@ -107,16 +105,16 @@ class SettingsNav {
 
 /**
  * Settings, in three text tabs: Game (the Launcher's settings that apply on Android, [launcher],
- * changed with [onCommand]; the game resolution, whose choices follow the landscape [display]; how
- * the Game view shows the game (Display, at once, also over a running game, with no restart); the
- * official launcher's resolution, whose choices follow the landscape [display]; D2GL's
+ * changed with [onCommand]; the game resolution, also the official launcher's, whose choices
+ * follow the landscape [display]; how the Game view shows the game and the official launcher's
+ * window (Display, at once, also over a running game, with no restart); D2GL's
  * graphics profile, whose Automatic follows the [gpu]; the frame rate, whose choices follow the
  * screen's full rate ([fullFrameRate], [com.pd2launcher.app.ScreenRate]); and the lower frame rate in the background; next Play), App (the app's
  * own, [app], and the system settings it depends on; at once) and Controller (the physical
  * controller, [ControlsStore]; at once, in the game too). Each tab opens with when its settings
- * apply; while the game of the app's own Play runs on another X screen than the game resolution
- * makes ([running]: its size), the game resolution also says that the new size applies at the
- * next Play. Controller leads with On-screen controls, the way to the on-screen controls
+ * apply; while the game or the official launcher runs on another X screen than the game
+ * resolution makes ([running]: its size), the game resolution also says that the new size applies
+ * at the next start. Controller leads with On-screen controls, the way to the on-screen controls
  * ([onEditOnScreen]: their editor holds all their options); a binding opens the picker as a
  * sheet over the column, as the game resolution opens its choices. [back]: the back label, to where
  * Settings returns ([com.pd2launcher.app.Onboarding.settingsBack]). [updates]: this build gets app
@@ -152,8 +150,8 @@ fun SettingsScreen(
     val tabFocus = remember { FocusRequester() }
     InitialFocus(tabFocus, nav.tab)
     BackHandler(
-        enabled = nav.picker == null && !nav.resolutions && !nav.customSize && !nav.displays && !nav.launcherResolutions &&
-            !nav.profiles && !nav.frameRates,
+        enabled = nav.picker == null && !nav.resolutions && !nav.customSize && !nav.displays && !nav.profiles &&
+            !nav.frameRates,
         onBack = onBack,
     )
     Box(Modifier.fillMaxSize().background(Palette.Background)) {
@@ -189,7 +187,6 @@ fun SettingsScreen(
         if (nav.resolutions) ResolutionSheet(app, display, phone, onAppChange, { nav.customSize = true }) { nav.resolutions = false }
         if (nav.customSize) CustomSizeInput(app.customSize, display, { onAppChange(app.copy(customSize = it)) }) { nav.customSize = false }
         if (nav.displays) DisplaySheet(app, phone, onAppChange) { nav.displays = false }
-        if (nav.launcherResolutions) LauncherResolutionSheet(app, display, phone, onAppChange) { nav.launcherResolutions = false }
         if (nav.profiles) GraphicsProfileSheet(app, gpu, phone, onAppChange) { nav.profiles = false }
         if (nav.frameRates) FrameRateInput(app.frameRate, fullFrameRate, { onAppChange(app.copy(frameRate = it)) }) { nav.frameRates = false }
     }
@@ -277,7 +274,6 @@ private fun GameTab(
     }
     ResolutionSection(app, display, running) { nav.resolutions = true }
     DisplaySection(app) { nav.displays = true }
-    LauncherResolutionSection(app, display) { nav.launcherResolutions = true }
     // The settings that control the game itself: D2GL's graphics, its frame rate, how it starts, its sound.
     Section(stringResource(R.string.settings_section_start)) {
         GraphicsProfileRow(app, gpu) { nav.profiles = true }
@@ -299,6 +295,16 @@ private fun GameTab(
             stringResource(R.string.settings_sound_in_background), stringResource(R.string.settings_sound_in_background_body),
             launcher?.soundInBackground ?: false, { onCommand(LauncherSettings.soundInBackground(it)) }, enabled,
         )
+    }
+    // The Launcher's checks for Project Diablo 2's updates (the app's own updates are under App);
+    // only from an engine that has the setting.
+    launcher?.gameUpdateChecks?.let { checks ->
+        Section(stringResource(R.string.settings_section_game_updates)) {
+            ToggleRow(
+                stringResource(R.string.settings_game_update_checks), stringResource(R.string.settings_game_update_checks_body),
+                checks, { onCommand(LauncherSettings.gameUpdateChecks(it)) }, enabled,
+            )
+        }
     }
 }
 
@@ -367,27 +373,26 @@ private fun FrameRateRow(app: AppSettings, full: Float, onOpen: () -> Unit) {
     }
 }
 
-/** A size as the player reads it, "1600 × 720", with "(full)" for the display's own (as every X screen rounds it, [GameResolution.xScreen]). */
-@Composable
-private fun resolutionLabel(size: Pair<Int, Int>, display: Pair<Int, Int>): String = stringResource(
-    if (size == GameResolution.xScreen(display)) R.string.settings_resolution_full else R.string.settings_resolution_size,
-    size.first, size.second,
-)
-
 /**
- * The app's own setting: the size the next Play uses on the landscape [display], its choices in a
- * sheet; while a game of another size runs ([running]: its X screen), that the new size applies at
- * the next Play.
+ * The app's own setting: the size the next Play and the next official launcher use on the
+ * landscape [display], its choices in a sheet; that the official launcher's window is cut off at
+ * a size with fewer columns or lines than it ([GameResolution.LAUNCHER_WINDOW],
+ * [GameResolution.cutsLauncher]); while a game or the launcher runs at another size ([running]: its
+ * X screen), that the new size applies at the next start.
  */
 @Composable
 private fun ResolutionSection(app: AppSettings, display: Pair<Int, Int>, running: Pair<Int, Int>?, onOpen: () -> Unit) {
     val (width, height) = display
+    val next = GameResolution.forPlay(width, height, app.customSize)
     Section(stringResource(R.string.settings_section_resolution)) {
         FocusRow(onOpen) {
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(text(GameResolution.label(width, height, app.customSize)), style = Type.Body, color = Palette.Text)
                 Text(stringResource(R.string.settings_resolution_body), style = Type.Hint, color = Palette.Muted)
-                if (running != null && running != GameResolution.forPlay(width, height, app.customSize)) {
+                if (GameResolution.cutsLauncher(next)) {
+                    Text(stringResource(R.string.settings_resolution_launcher_cut), style = Type.Hint, color = Palette.Amber)
+                }
+                if (running != null && running != next) {
                     Text(stringResource(R.string.settings_resolution_running), style = Type.Hint, color = Palette.Amber)
                 }
             }
@@ -397,9 +402,9 @@ private fun ResolutionSection(app: AppSettings, display: Pair<Int, Int>, running
 }
 
 /**
- * The app's own setting: how the Game view shows the game ([GameDisplay]), its choices in a sheet;
- * a change applies at once, also to a running game (it shows when the game shows again), with no
- * restart. The in-game menu offers it too.
+ * The app's own setting: how the Game view shows the game and the official launcher's window
+ * ([GameDisplay]), its choices in a sheet; a change applies at once, also to a running game (it
+ * shows when the game shows again), with no restart. The in-game menu offers it too.
  */
 @Composable
 private fun DisplaySection(app: AppSettings, onOpen: () -> Unit) {
@@ -429,50 +434,6 @@ private fun BoxScope.DisplaySheet(
                 stringResource(choice.title), stringResource(choice.body), app.gameDisplay == choice,
                 {
                     onAppChange(app.copy(gameDisplay = choice))
-                    onClose()
-                },
-                focusRequester = first.takeIf { index == 0 },
-            )
-        }
-    }
-}
-
-/** The app's own setting: the size the official PD2 launcher opens at, its choices in a sheet. */
-@Composable
-private fun LauncherResolutionSection(app: AppSettings, display: Pair<Int, Int>, onOpen: () -> Unit) {
-    Section(stringResource(R.string.settings_section_launcher_resolution)) {
-        FocusRow(onOpen) {
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(
-                    resolutionLabel(GameResolution.forLauncher(display.first, display.second, app.launcherResolution), display),
-                    style = Type.Body, color = Palette.Text,
-                )
-                Text(stringResource(R.string.settings_launcher_resolution_body), style = Type.Hint, color = Palette.Muted)
-            }
-            Text("›", style = Type.Title, color = Palette.Teal)
-        }
-    }
-}
-
-/** The official PD2 launcher's sizes, in the game resolution's sheet: the display's full size (the default) down to 480 lines. */
-@Composable
-private fun BoxScope.LauncherResolutionSheet(
-    app: AppSettings,
-    display: Pair<Int, Int>,
-    phone: Boolean,
-    onAppChange: (AppSettings) -> Unit,
-    onClose: () -> Unit,
-) {
-    val (width, height) = display
-    val current = GameResolution.forLauncher(width, height, app.launcherResolution)
-    ChoiceSheet(stringResource(R.string.settings_section_launcher_resolution), phone, onClose) { first ->
-        GameResolution.launcherChoices(width, height).forEachIndexed { index, size ->
-            if (index > 0) RowRule()
-            OptionRow(
-                resolutionLabel(size, display), null, current == size,
-                {
-                    // The full size is the default: kept as none, so it follows the display.
-                    onAppChange(app.copy(launcherResolution = size.second.takeIf { index > 0 }))
                     onClose()
                 },
                 focusRequester = first.takeIf { index == 0 },
@@ -591,6 +552,11 @@ private fun AppTab(
         ShareLogsRow(LogShareUi.Action.SHARE)
         RowRule()
         ShareLogsRow(LogShareUi.Action.SAVE)
+        RowRule()
+        ToggleRow(
+            stringResource(R.string.settings_detailed_logging), stringResource(R.string.settings_detailed_logging_body),
+            app.detailedLogging, { onAppChange(app.copy(detailedLogging = it)) },
+        )
     }
     // The app's own updates: the daily check, and a new version's way to About, which installs it.
     if (updates) Section(stringResource(R.string.app_update_title)) {

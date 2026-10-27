@@ -37,6 +37,17 @@ struct kbase_kmod_dev {
    /* The kernel's page size: kbase handles and cookies are in kernel pages. */
    uint32_t page_size;
 
+   /* The kernel has no MEM_ALLOC_EX (the 1.9 memory interface), whatever uAPI minor it reports
+    * (MediaTek's r32p1 kbase reports 1.18 without it): the kernel places every BO at its
+    * allocation, and PanVK binds it there (pan_kmod_bo::fixed_va). */
+   bool kernel_places_bos;
+
+   /* The kernel takes only these older layouts (found when the negotiated version's layout gets
+    * ENOTTY): CS_QUEUE_GROUP_CREATE_1_6, which has no CSI exception handlers, and
+    * CS_TILER_HEAP_INIT_1_13. */
+   bool group_create_1_6;
+   bool tiler_heap_init_1_13;
+
    /* The mapping of BASE_MEM_MAP_TRACKING_HANDLE (required before 1.18). */
    void *tracking_page;
 

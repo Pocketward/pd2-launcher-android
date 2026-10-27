@@ -1,7 +1,8 @@
 # Checks of every push to main and every pull request: `build.sh check` compiles
-# the debug APK in the pinned build container. It needs no engine, userland or
-# runtime; release.yml builds the full APK. The build image is cached by its
-# Containerfile, as in release.yml.
+# the debug APK in the pinned build container and runs the release build's lint
+# check (lintVitalRelease), which release.yml's build leaves out. It needs no
+# engine, userland or runtime; release.yml builds the full APK. The build image is
+# cached by its Containerfile, as in release.yml.
 name: Checks
 
 on:
@@ -51,20 +52,21 @@ jobs:
         if: steps.image-cache.outputs.cache-hit == 'true'
         run: zstd -dc ~/.cache/pd2-android/images/android.tar.zst | podman load
 
-      # Named as release.yml names its own (by the files that decide what Gradle downloads), apart
-      # from it: this debug build would fill a shared cache first, without the release's artifacts.
+      # Named as release.yml names its own (by the files that decide what Gradle downloads, and
+      # build.sh, whose Gradle tasks for this check decide it too), apart from it: this debug build
+      # would fill a shared cache first, without the release's artifacts.
       - name: Restore the Gradle cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cache/pd2-android/gradle/caches
             ~/.cache/pd2-android/gradle/wrapper
-          key: gradle-checks-${{ hashFiles('gradle/verification-metadata.xml', 'gradle/wrapper/gradle-wrapper.properties', 'gradle.properties', 'build.gradle.kts', 'settings.gradle.kts') }}
+          key: gradle-checks-${{ hashFiles('gradle/verification-metadata.xml', 'gradle/wrapper/gradle-wrapper.properties', 'gradle.properties', 'build.gradle.kts', 'settings.gradle.kts', 'build.sh') }}
           restore-keys: |
             gradle-checks-
             gradle-
 
-      - name: Compile the debug APK
+      - name: Compile the debug APK and run the lint check
         run: ./build.sh check
 
       - name: Keep the build image

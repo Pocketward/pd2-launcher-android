@@ -26,6 +26,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.DialogWindowProvider
+import androidx.core.widget.doAfterTextChanged
 import com.pd2launcher.app.GameResolution
 import com.pd2launcher.app.R
 
@@ -36,7 +37,10 @@ import com.pd2launcher.app.R
  * size from [GameResolution.CUSTOM_MIN] to the display's own, the width even and the height a
  * multiple of 4 ([GameResolution.typedCustom]), and gives [onSet] the size to keep (none for the
  * game's own size, [GameResolution.customPick]); any other size shows one line and the dialog
- * stays. At the top of the screen, so the keyboard does not cover it.
+ * stays. While the typed size has fewer columns or lines than the official launcher's window
+ * ([GameResolution.LAUNCHER_WINDOW], [GameResolution.cutsLauncher]), a line left of Cancel and OK
+ * says that the window is cut off there. At the top of the screen, so the keyboard does not cover
+ * it.
  */
 @Composable
 internal fun CustomSizeInput(current: Pair<Int, Int>?, display: Pair<Int, Int>, onSet: (Pair<Int, Int>?) -> Unit, onClose: () -> Unit) {
@@ -47,6 +51,11 @@ internal fun CustomSizeInput(current: Pair<Int, Int>?, display: Pair<Int, Int>, 
     var wrong by remember { mutableStateOf(false) }
     var widthField by remember { mutableStateOf<EditText?>(null) }
     var heightField by remember { mutableStateOf<EditText?>(null) }
+    // The size typed so far, for the official launcher's line; null while a field is not a whole number.
+    var typed by remember { mutableStateOf<Pair<Int, Int>?>(shownWidth to shownHeight) }
+    val retyped = {
+        typed = GameResolution.typedSize(widthField?.text?.toString().orEmpty(), heightField?.text?.toString().orEmpty())
+    }
     val accept = {
         val size = GameResolution.typedCustom(
             widthField?.text?.toString().orEmpty(), heightField?.text?.toString().orEmpty(), displayWidth, displayHeight,
@@ -84,7 +93,10 @@ internal fun CustomSizeInput(current: Pair<Int, Int>?, display: Pair<Int, Int>, 
                             context, shownWidth.toString(), 4, "$minWidth–$maxWidth",
                             onNext = { heightField?.let { it.requestFocus(); it.selectAll() } },
                             onDone = { latestAccept() },
-                        ).also { widthField = it }
+                        ).also { field ->
+                            widthField = field
+                            field.doAfterTextChanged { retyped() }
+                        }
                     },
                     modifier = Modifier.weight(1f).height(48.dp),
                 )
@@ -92,16 +104,28 @@ internal fun CustomSizeInput(current: Pair<Int, Int>?, display: Pair<Int, Int>, 
                 Text(stringResource(R.string.settings_resolution_custom_height), style = Type.Hint, color = Palette.Muted)
                 AndroidView(
                     factory = { context ->
-                        numberField(context, shownHeight.toString(), 4, "$minHeight–$maxHeight", opens = false, onDone = { latestAccept() }).also { heightField = it }
+                        numberField(context, shownHeight.toString(), 4, "$minHeight–$maxHeight", opens = false, onDone = { latestAccept() })
+                            .also { field ->
+                                heightField = field
+                                field.doAfterTextChanged { retyped() }
+                            }
                     },
                     modifier = Modifier.weight(1f).height(48.dp),
                 )
             }
             Row(
                 Modifier.fillMaxWidth().padding(top = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                // At the top: Cancel and OK stay where they are as the line comes and goes while the player types.
+                verticalAlignment = Alignment.Top,
                 horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
             ) {
+                // Left of Cancel and OK, so Android's keyboard does not cover it on a short screen.
+                if (typed?.let(GameResolution::cutsLauncher) == true) {
+                    Text(
+                        stringResource(R.string.settings_resolution_launcher_cut), style = Type.Hint, color = Palette.Amber,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
                 LauncherButton(stringResource(R.string.settings_frame_rate_cancel), onClose, kind = Kind.QUIET, height = 48.dp, padding = 14.dp)
                 LauncherButton(stringResource(R.string.settings_frame_rate_ok), accept, kind = Kind.PRIMARY, height = 48.dp, padding = 18.dp)
             }

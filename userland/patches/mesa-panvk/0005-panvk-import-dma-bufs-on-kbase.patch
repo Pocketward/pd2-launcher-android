@@ -10,8 +10,9 @@ panvk: import dma-bufs on a backend that cannot export them (kbase)
   external image format properties). Fence and semaphore fds stay off.
 - vkAllocateMemory maps a buffer object the backend placed itself (pan_kmod_bo::fixed_va: an
   imported dma-buf on kbase lives at the GPU VA kbase gave it) at that VA instead of one from the
-  VA heaps (an opaque capture address does not apply to an import), and vkFreeMemory gives no
-  such VA back to the heaps, as panvk_priv_bo does for GPU_SYNC memory.
+  VA heaps, and vkFreeMemory gives no such VA back to the heaps, as panvk_priv_bo does for
+  GPU_SYNC memory. Such a BO lives at that VA, so a non-zero opaque capture address for another
+  VA is refused (VK_ERROR_INVALID_OPAQUE_CAPTURE_ADDRESS).
 - vkBindImageMemory refuses an interleaved 64K image on such a BO at a VA that is not 64 KiB
   aligned (the import is only page aligned; such imports are not offered).
 
@@ -34,20 +35,29 @@ dedicated import into a linear image with an explicit row pitch) on kbase as on 
  
 --- a/src/panfrost/vulkan/panvk_device_memory.c
 +++ b/src/panfrost/vulkan/panvk_device_memory.c
-@@ -138,7 +138,11 @@ panvk_AllocateMemory(VkDevice _device,
+@@ -138,7 +138,20 @@ panvk_AllocateMemory(VkDevice _device,
        },
     };
  
 -   if (!(device->kmod.vm->flags & PAN_KMOD_VM_FLAG_AUTO_VA)) {
 +   if (mem->bo->fixed_va) {
-+      /* The backend placed the BO itself (an imported dma-buf on kbase). An
-+       * opaque capture address does not apply: it must be 0 for an import. */
++      /* The backend placed the BO itself (an imported dma-buf on kbase, or
++       * every BO on a kbase that places them), so it lives at that VA: an
++       * opaque capture address for another VA cannot be honoured. */
++      const VkMemoryOpaqueCaptureAddressAllocateInfo *capture_alloc_info =
++         vk_find_struct_const(pAllocateInfo->pNext,
++                              MEMORY_OPAQUE_CAPTURE_ADDRESS_ALLOCATE_INFO);
++      if (capture_alloc_info && capture_alloc_info->opaqueCaptureAddress &&
++          capture_alloc_info->opaqueCaptureAddress != mem->bo->fixed_va) {
++         result = panvk_error(device, VK_ERROR_INVALID_OPAQUE_CAPTURE_ADDRESS);
++         goto err_put_bo;
++      }
 +      op.va.start = mem->bo->fixed_va;
 +   } else if (!(device->kmod.vm->flags & PAN_KMOD_VM_FLAG_AUTO_VA)) {
        uint64_t alignment =
           pan_choose_gpu_va_alignment(device->kmod.vm, op.va.size);
        unsigned arch = pan_arch(device->kmod.dev->props.gpu_id);
-@@ -223,7 +227,8 @@ panvk_AllocateMemory(VkDevice _device,
+@@ -223,7 +236,8 @@ panvk_AllocateMemory(VkDevice _device,
     return VK_SUCCESS;
  
  err_return_va:
@@ -57,7 +67,7 @@ dedicated import into a linear image with an explicit row pitch) on kbase as on 
        panvk_as_free(device, op.va.start, op.va.size);
     }
  
-@@ -282,7 +287,8 @@ panvk_FreeMemory(VkDevice _device, VkDeviceMemory _mem,
+@@ -282,7 +296,8 @@ panvk_FreeMemory(VkDevice _device, VkDeviceMemory _mem,
        pan_kmod_vm_bind(device->kmod.vm, PAN_KMOD_VM_OP_MODE_IMMEDIATE, &op, 1);
     assert(!ret);
  
@@ -69,7 +79,7 @@ dedicated import into a linear image with an explicit row pitch) on kbase as on 
     panvk_memory_emit_report(device, mem, /* alloc_info */ NULL, VK_SUCCESS);
 --- a/src/panfrost/vulkan/panvk_image.c
 +++ b/src/panfrost/vulkan/panvk_image.c
-@@ -1404,6 +1404,18 @@ panvk_image_bind(struct panvk_device *dev,
+@@ -1425,6 +1425,18 @@ panvk_image_bind(struct panvk_device *dev,
     }
  
     assert(mem);
@@ -90,7 +100,7 @@ dedicated import into a linear image with an explicit row pitch) on kbase as on 
           vk_find_struct_const(bind_info->pNext, BIND_IMAGE_PLANE_MEMORY_INFO);
 --- a/src/panfrost/vulkan/panvk_physical_device.c
 +++ b/src/panfrost/vulkan/panvk_physical_device.c
-@@ -1540,6 +1540,25 @@ unsupported:
+@@ -1543,6 +1543,25 @@ unsupported:
     return VK_ERROR_FORMAT_NOT_SUPPORTED;
  }
  
@@ -116,7 +126,7 @@ dedicated import into a linear image with an explicit row pitch) on kbase as on 
  static VkResult
  panvk_get_external_image_format_properties(
     const struct panvk_physical_device *physical_device,
-@@ -1547,9 +1566,9 @@ panvk_get_external_image_format_properties(
+@@ -1550,9 +1569,9 @@ panvk_get_external_image_format_properties(
     VkExternalMemoryHandleTypeFlagBits handleType,
     VkExternalMemoryProperties *external_properties)
  {
@@ -128,7 +138,7 @@ dedicated import into a linear image with an explicit row pitch) on kbase as on 
  
     if (!(handleType & supported_handle_types)) {
        return panvk_errorf(physical_device, VK_ERROR_FORMAT_NOT_SUPPORTED,
-@@ -1580,6 +1599,19 @@ panvk_get_external_image_format_properties(
+@@ -1583,6 +1602,19 @@ panvk_get_external_image_format_properties(
     } else if (pImageFormatInfo->tiling == VK_IMAGE_TILING_LINEAR) {
        features |= VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT;
     }
@@ -148,7 +158,7 @@ dedicated import into a linear image with an explicit row pitch) on kbase as on 
  
     if (!features) {
        return panvk_errorf(
-@@ -1590,7 +1622,7 @@ panvk_get_external_image_format_properties(
+@@ -1593,7 +1625,7 @@ panvk_get_external_image_format_properties(
  
     *external_properties = (VkExternalMemoryProperties){
        .externalMemoryFeatures = features,
@@ -157,7 +167,7 @@ dedicated import into a linear image with an explicit row pitch) on kbase as on 
        .compatibleHandleTypes = supported_handle_types,
     };
  
-@@ -1894,9 +1926,10 @@ panvk_GetPhysicalDeviceExternalBufferProperties(
+@@ -1906,9 +1938,10 @@ panvk_GetPhysicalDeviceExternalBufferProperties(
        return;
     }
  
@@ -170,7 +180,7 @@ dedicated import into a linear image with an explicit row pitch) on kbase as on 
  
     /* From the Vulkan 1.3.298 spec:
      *
-@@ -1907,14 +1940,15 @@ panvk_GetPhysicalDeviceExternalBufferProperties(
+@@ -1919,14 +1952,15 @@ panvk_GetPhysicalDeviceExternalBufferProperties(
     VkExternalMemoryFeatureFlags features = 0;
     if (pExternalBufferInfo->handleType & supported_handle_types) {
        handle_types |= supported_handle_types;
@@ -204,7 +214,7 @@ dedicated import into a linear image with an explicit row pitch) on kbase as on 
     const bool placed_maps =
        !device->kmod.dev->props.limits.no_placed_cpu_mapping;
  
-@@ -70,7 +73,7 @@ panvk_per_arch(get_physical_device_extensions)(
+@@ -71,7 +74,7 @@ panvk_per_arch(get_physical_device_extensions)(
        .KHR_external_fence = true,
        .KHR_external_fence_fd = fd_sharing,
        .KHR_external_memory = true,
@@ -213,7 +223,7 @@ dedicated import into a linear image with an explicit row pitch) on kbase as on 
        .KHR_external_semaphore = true,
        .KHR_external_semaphore_fd = fd_sharing,
        .KHR_format_feature_flags2 = true,
-@@ -171,7 +174,7 @@ panvk_per_arch(get_physical_device_extensions)(
+@@ -172,7 +175,7 @@ panvk_per_arch(get_physical_device_extensions)(
        .EXT_extended_dynamic_state2 = true,
        .EXT_extended_dynamic_state3 = true,
        .EXT_external_memory_acquire_unmodified = true,

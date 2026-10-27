@@ -3,6 +3,8 @@
     <!-- Share logs and Save logs: Settings → App → Help, and beside a failure on Check, Download and Install (LogShare.kt). -->
     <string name="settings_section_help">Help</string>
     <string name="share_logs">Share logs</string>
+    <string name="settings_detailed_logging">Detailed logging</string>
+    <string name="settings_detailed_logging_body">The logs record more for a problem report: the game\'s network connections and the server addresses, crashes, and the official launcher\'s full output. Applies at the next Play or official launcher. The logs then fill up faster, so turn it off after you send them.</string>
     <string name="share_logs_body">Sends the app\'s logs as one file, for example with a problem report. They hold no CD keys, but they can show your character names and network addresses.</string>
     <string name="share_logs_working">Preparing the logs…</string>
     <string name="share_logs_failed">The logs couldn\'t be prepared. Try again.</string>

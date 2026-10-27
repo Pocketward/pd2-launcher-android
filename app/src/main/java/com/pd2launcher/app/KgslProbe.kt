@@ -38,6 +38,7 @@ object KgslProbe {
 // Adreno 702's id as Mesa listed it before 3e15a53a ("Fix a702 chip-id": 0x07000200, which reads
 // 702 by its digits); kept so that the name and the tier stay for a device that reports it.
 private val namedChips = mapOf(
+    0x06060201L to "Adreno 644",
     0x07002000L to "Adreno 702",
     0x07030002L to "Adreno 725",
     0x43020000L to "Adreno 720",
@@ -88,8 +89,11 @@ fun turnipKnows(chipId: Long): Boolean {
 // Automatic's rule ([lowTierModel]): the first tier (the model number's last two digits) of the
 // 6xx and the 7xx that gets Default, and the first generation that gets it throughout.
 
-/** The 6xx from the 630 (the Snapdragon 845's, the generation's first high-end part) up get Default. */
-const val ADRENO_6XX_DEFAULT_TIER = 30
+/**
+ * The 6xx from the 660 (the Snapdragon 888's) up get Default; up to the 650 (the Snapdragon 865's)
+ * Performance.
+ */
+const val ADRENO_6XX_DEFAULT_TIER = 60
 
 /** The 7xx from the 710 up get Default; the 702 and 704 are the generation's entry level. */
 const val ADRENO_7XX_DEFAULT_TIER = 10
@@ -102,9 +106,9 @@ const val ADRENO_DEFAULT_GENERATION = 8
  * graphics profile ([GraphicsProfiles.automatic]).
  * The model's first digit is its generation, its last two the tier within it. The generations
  * before the 6xx get them (the bundled Turnip drives none of them, so the device check refuses
- * them before any Play); in the 6xx the tiers below [ADRENO_6XX_DEFAULT_TIER], the entry and
- * mid range, and in the 7xx those below [ADRENO_7XX_DEFAULT_TIER], the entry level;
- * [ADRENO_DEFAULT_GENERATION] and later never.
+ * them before any Play); in the 6xx the tiers below [ADRENO_6XX_DEFAULT_TIER], the entry, mid
+ * and high range up to the 650, and in the 7xx those below [ADRENO_7XX_DEFAULT_TIER], the entry
+ * level; [ADRENO_DEFAULT_GENERATION] and later never.
  *
  * | Model | Generation | Tier | Automatic |
  * |-------|------------|------|-----------|
@@ -114,9 +118,11 @@ const val ADRENO_DEFAULT_GENERATION = 8
  * | 618   | 6          | 18   | Performance |
  * | 619   | 6          | 19   | Performance |
  * | 620   | 6          | 20   | Performance |
- * | 630   | 6          | 30   | Default |
- * | 642L  | 6          | 35   | Default (KGSL chip id 0x06030500, whose digits read 635) |
- * | 650   | 6          | 50   | Default |
+ * | 630   | 6          | 30   | Performance |
+ * | 640   | 6          | 40   | Performance |
+ * | 642L  | 6          | 35   | Performance (KGSL chip id 0x06030500, whose digits read 635) |
+ * | 644   | 6          | 44   | Performance (KGSL chip id 0x06060201, whose digits read 662) |
+ * | 650   | 6          | 50   | Performance |
  * | 660   | 6          | 60   | Default |
  * | 702   | 7          | 02   | Performance |
  * | 710   | 7          | 10   | Default |

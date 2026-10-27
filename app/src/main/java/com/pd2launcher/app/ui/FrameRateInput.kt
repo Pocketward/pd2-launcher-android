@@ -64,6 +64,7 @@ import com.pd2launcher.app.AppSettings
 import com.pd2launcher.app.FrameRateVote
 import com.pd2launcher.app.R
 import com.pd2launcher.app.input.Controls
+import com.pd2launcher.app.input.PadLayouts
 import com.pd2launcher.app.input.PointerSpeed
 import java.util.Locale
 
@@ -279,10 +280,12 @@ internal fun withNavigationKeys(window: Window): Window.Callback {
 }
 
 /**
- * A controller's A as the d-pad's centre (select) and B as Back: Android does not treat the
- * gamepad's A as a confirm key. Every other key as it is.
+ * A controller's keys as its layout reads them ([PadLayouts]), then its A as the d-pad's centre
+ * (select) and B as Back: Android does not treat the gamepad's A as a confirm key. Every other key
+ * as it is.
  */
-internal fun navigationKey(event: KeyEvent): KeyEvent {
+internal fun navigationKey(raw: KeyEvent): KeyEvent {
+    val event = PadLayouts.keyEvent(raw)
     val mapped = when (event.keyCode) {
         KeyEvent.KEYCODE_BUTTON_A -> KeyEvent.KEYCODE_DPAD_CENTER
         KeyEvent.KEYCODE_BUTTON_B -> KeyEvent.KEYCODE_BACK

@@ -66,9 +66,31 @@ data class FlowNav(val stack: List<FlowPage> = listOf(FlowPage.CHECK)) {
          */
         fun opening(record: SetupRecord): FlowNav =
             if (record == SetupRecord.STARTED) FlowNav(listOf(FlowPage.CHECK, FlowPage.SOURCE, FlowPage.INSTALL)) else FlowNav()
+
+        /**
+         * Where the activity opens on each onCreate: while the first run goes on, the pages [saved]
+         * before Android made the activity again ([restored]); else [opening]. An installed game
+         * opens on Play ([Onboarding.installed]) and keeps no saved pages. [record] is the one
+         * [SetupRecordStore.load] read on this start: a new process has none before that load.
+         */
+        fun start(saved: List<String>?, record: SetupRecord): FlowNav =
+            restored(saved)?.takeIf { record != SetupRecord.INSTALLED } ?: opening(record)
+
+        /**
+         * The pages [saved] when Android made the activity again (for example, the process ended
+         * under the folder picker, or "Don't keep activities" is on); null for none, or for a
+         * stack that is not one: no Check at its root, or a page this version does not know.
+         */
+        fun restored(names: List<String>?): FlowNav? {
+            val pages = names?.map { name -> FlowPage.entries.firstOrNull { it.name == name } ?: return null }
+            return pages?.takeIf { it.firstOrNull() == FlowPage.CHECK }?.let(::FlowNav)
+        }
     }
 
     val page: FlowPage get() = stack.last()
+
+    /** The pages as names, for the activity's saved state ([restored]). */
+    fun saved(): ArrayList<String> = stack.mapTo(ArrayList()) { it.name }
 
     fun open(next: FlowPage): FlowNav = if (next == page) this else copy(stack = stack + next)
 

@@ -21,8 +21,8 @@
     <string name="settings_renderer_direct_draw">DirectDraw</string>
     <string name="settings_renderer_direct_draw_body">The game\'s own renderer through Wine. For when Glide does not start.</string>
     <string name="settings_section_resolution">Game resolution</string>
-    <string name="settings_resolution_body">The size the game draws at. The game\'s own size shows the game as PD2 made it. Its graphics options are in the game: Options, Video Options, D2GL.</string>
-    <string name="settings_resolution_running">The game that runs now has another size. The new size applies at the next Play, after the game closes.</string>
+    <string name="settings_resolution_body">The size the game draws at, also for the official PD2 launcher and a game it starts. The game\'s own size shows the game as PD2 made it. Its graphics options are in the game: Options, Video Options, D2GL.</string>
+    <string name="settings_resolution_running">The game or the official launcher that runs now has another size. The new size applies when you start it again.</string>
     <string name="settings_resolution_game_size">Game\'s own size (%1$d × %2$d)</string>
     <string name="settings_resolution_game_size_body">The size PD2 was made for. Recommended.</string>
     <string name="settings_resolution_full_body">The full size of this screen, which is smaller than the size PD2 was made for.</string>
@@ -32,17 +32,16 @@
     <string name="settings_resolution_custom_width">Width</string>
     <string name="settings_resolution_custom_height">Height</string>
     <string name="settings_resolution_custom_range">Width from %1$d to %3$d, an even number. Height from %2$d to %4$d, a multiple of 4.</string>
+    <!-- Under Game resolution and in Custom, only for a size with fewer than 800 columns or 600 lines. -->
+    <string name="settings_resolution_launcher_cut">The official PD2 launcher does not get smaller than 800 × 600. At a smaller size, part of its window is cut off.</string>
     <string name="settings_resolution_custom_wrong">This size is not possible. Width from %1$d to %3$d, an even number. Height from %2$d to %4$d, a multiple of 4.</string>
     <string name="settings_section_display">Display</string>
-    <string name="settings_display_body">How the game shows on the screen. A change applies at once, also to a game that runs. It is also in the in-game menu.</string>
+    <string name="settings_display_body">How the game and the official PD2 launcher show on the screen. A change applies at once, also while they run. It is also in the in-game menu.</string>
     <string name="settings_display_fit">Fit to screen</string>
-    <string name="settings_display_fit_body">What the game shows, its menus too, is as large as the screen allows. Its shape stays the same.</string>
+    <string name="settings_display_fit_body">What the game shows, its menus and the official launcher too, is as large as the screen allows. Its shape stays the same.</string>
     <string name="settings_display_center">Center</string>
     <string name="settings_display_center_body">Each game pixel is one screen pixel, in the middle of the screen, with black around it. Sharp, but smaller. If the game resolution is larger than the screen, Fit to screen applies.</string>
-    <string name="settings_section_launcher_resolution">Official launcher resolution</string>
-    <string name="settings_launcher_resolution_body">The screen the official PD2 launcher opens on. Its window needs room: the full size shows all of it.</string>
     <string name="settings_resolution_full">%1$d × %2$d (full)</string>
-    <string name="settings_resolution_size">%1$d × %2$d</string>
     <string name="settings_graphics_profile">Graphics profile</string>
     <string name="settings_graphics_profile_body">D2GL\'s settings for the game\'s look, written at the next Play. What you change in the game (Options, Video Options, D2GL) stays until you pick another profile.</string>
     <string name="settings_graphics_automatic_default">Automatic: Default</string>
@@ -66,6 +65,10 @@
     <string name="settings_skip_to_bnet_body">The game opens on the online screen.</string>
     <string name="settings_sound_in_background">Sound in background</string>
     <string name="settings_sound_in_background_body">The game keeps its sound when another app is in front.</string>
+    <!-- Settings → Game → Game updates: the Launcher's update checks for Project Diablo 2 (not the app's own updates). -->
+    <string name="settings_section_game_updates">Game updates</string>
+    <string name="settings_game_update_checks">Check for game updates</string>
+    <string name="settings_game_update_checks_body">Before the game starts, Play checks for a new version of Project Diablo 2. When this setting is off, Play starts the game with no update, for example with a mod or an older version. An import keeps its Project Diablo 2 as it is.</string>
 
     <string name="settings_section_screen">Screen</string>
     <string name="settings_keep_screen_on">Keep the screen on during play</string>
@@ -103,8 +106,11 @@
     <string name="source_blizzard_ready">Continue starts the download.</string>
     <string name="source_existing_pick">Continue opens Android\'s folder picker: choose the Diablo II folder you copied from your PC.</string>
     <string name="source_existing_in_place">Diablo II found and copied into the app.</string>
-    <string name="source_existing_with_pd2">Diablo II and Project Diablo 2 found. Install sets them up with no installer.</string>
-    <string name="source_existing_update_pd2">Diablo II and Project Diablo 2 found. Install brings Project Diablo 2 up to date.</string>
+    <string name="source_existing_keep_pd2">Diablo II and Project Diablo 2 found. Install keeps Project Diablo 2 as it is, with no update.</string>
+    <!-- A picked folder that lacks files of the import's list (the owner's rule of 2026-10-26); %1$s: the missing files, comma-separated. -->
+    <string name="existing_missing_game">Diablo II files were not found in this folder. Are you sure you copied everything? These files are missing: %1$s</string>
+    <string name="existing_missing_pd2">Project Diablo 2 files were not found in this folder. Are you sure you copied everything? These files are missing: %1$s</string>
+    <string name="existing_missing_both">Diablo II and Project Diablo 2 files were not found in this folder. Are you sure you copied everything? These files are missing: %1$s</string>
     <string name="source_existing_copy">Diablo II found. Install copies it (%1$d MB).</string>
     <string name="source_copying">Copying into the app: %1$d of %2$d MB</string>
     <string name="source_no_space">Not enough space: this needs %1$d MB, %2$d MB are free.</string>

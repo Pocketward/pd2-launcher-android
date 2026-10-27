@@ -586,9 +586,9 @@ panvk: run on Arm's mali_kbase through the kbase pan_kmod backend
  
     *ext = (struct vk_device_extension_table){
        .KHR_8bit_storage = true,
-@@ -64,11 +68,11 @@ panvk_per_arch(get_physical_device_extensions)(
-       .KHR_dynamic_rendering = true,
+@@ -65,11 +69,11 @@ panvk_per_arch(get_physical_device_extensions)(
        .KHR_dynamic_rendering_local_read = true,
+       .KHR_extended_flags = true,
        .KHR_external_fence = true,
 -      .KHR_external_fence_fd = true,
 +      .KHR_external_fence_fd = fd_sharing,
@@ -601,7 +601,7 @@ panvk: run on Arm's mali_kbase through the kbase pan_kmod backend
        .KHR_format_feature_flags2 = true,
        .KHR_get_memory_requirements2 = true,
        .KHR_global_priority = true,
-@@ -167,7 +171,7 @@ panvk_per_arch(get_physical_device_extensions)(
+@@ -168,7 +172,7 @@ panvk_per_arch(get_physical_device_extensions)(
        .EXT_extended_dynamic_state2 = true,
        .EXT_extended_dynamic_state3 = true,
        .EXT_external_memory_acquire_unmodified = true,
@@ -610,7 +610,7 @@ panvk: run on Arm's mali_kbase through the kbase pan_kmod backend
        .EXT_global_priority = true,
        .EXT_global_priority_query = true,
        .EXT_graphics_pipeline_library = true,
-@@ -185,13 +189,13 @@ panvk_per_arch(get_physical_device_extensions)(
+@@ -186,13 +190,13 @@ panvk_per_arch(get_physical_device_extensions)(
        .EXT_legacy_dithering = true,
        .EXT_line_rasterization = true,
        .EXT_load_store_op_none = true,
@@ -626,7 +626,7 @@ panvk: run on Arm's mali_kbase through the kbase pan_kmod backend
        .EXT_pipeline_creation_cache_control = true,
        .EXT_pipeline_creation_feedback = true,
        .EXT_pipeline_robustness = true,
-@@ -303,7 +307,9 @@ panvk_per_arch(get_physical_device_features)(
+@@ -304,7 +308,9 @@ panvk_per_arch(get_physical_device_features)(
     const struct panvk_physical_device *device, struct vk_features *features)
  {
     const bool has_gralloc = vk_android_get_ugralloc() != NULL;
@@ -637,7 +637,7 @@ panvk: run on Arm's mali_kbase through the kbase pan_kmod backend
  
     *features = (struct vk_features){
        /* Vulkan 1.0 */
-@@ -723,7 +729,8 @@ panvk_per_arch(get_physical_device_features)(
+@@ -724,7 +730,8 @@ panvk_per_arch(get_physical_device_features)(
        .nestedCommandBufferSimultaneousUse = PAN_ARCH >= 10,
  
        /* VK_EXT_map_memory_placed */

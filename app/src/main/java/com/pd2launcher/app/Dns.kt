@@ -108,9 +108,36 @@ class Dns(private val targets: List<File>, private val log: (String) -> Unit, pr
             for (server in servers.ifEmpty { FALLBACK }.take(MAX_SERVERS)) append("nameserver ").append(address(server)).append('\n')
         }
 
-        /** The log's words for [servers]: Android's, or the public ones when Android gave none. */
+        /**
+         * The log's words for [servers]: Android's by their kind only ([kind]), since a router's or a
+         * hotspot's address says where the player went online; or the public ones, by address, when
+         * Android gave none.
+         */
         fun describe(servers: List<InetAddress>): String =
-            if (servers.isEmpty()) "none from Android, public ${addresses(FALLBACK)}" else addresses(servers)
+            if (servers.isEmpty()) {
+                "none from Android, public ${addresses(FALLBACK)}"
+            } else {
+                servers.take(MAX_SERVERS).let { used -> "${used.size} from Android: ${used.joinToString(", ") { kind(it) }}" }
+            }
+
+        /**
+         * What kind of DNS server [server] is: on the phone itself (a VPN or DNS app), on the
+         * local network (link-local, a private range such as a router's, or a carrier's shared
+         * range), or public.
+         */
+        fun kind(server: InetAddress): String {
+            val version = if (server is Inet6Address) "IPv6" else "IPv4"
+            val bytes = server.address
+            val private = server.isSiteLocalAddress ||
+                (server is Inet6Address && (bytes[0].toInt() and 0xfe) == 0xfc) ||
+                (server !is Inet6Address && bytes[0].toInt() and 0xff == 100 && bytes[1].toInt() and 0xc0 == 64)
+            return when {
+                server.isLoopbackAddress -> "on the phone ($version loopback)"
+                server.isLinkLocalAddress -> "$version link-local"
+                private -> "private $version"
+                else -> "public $version"
+            }
+        }
 
         private fun addresses(servers: List<InetAddress>) = servers.take(MAX_SERVERS).joinToString(" ") { address(it) }
 

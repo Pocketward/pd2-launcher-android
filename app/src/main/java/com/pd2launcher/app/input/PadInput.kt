@@ -4,9 +4,10 @@ import kotlin.math.hypot
 import kotlin.math.roundToInt
 
 /**
- * The controller's axes as Android reports them (`MotionEvent.getAxisValue`): sticks -1..1 with
- * down positive, triggers 0..1 (the larger of `AXIS_LTRIGGER`/`AXIS_BRAKE` and of
- * `AXIS_RTRIGGER`/`AXIS_GAS`), the hat -1..1 (`AXIS_HAT_X`/`AXIS_HAT_Y`).
+ * The controller's axes as its layout reads them from a motion event ([AxisTable]): sticks -1..1
+ * with down positive, triggers 0..1, the hat -1..1 (`AXIS_HAT_X`/`AXIS_HAT_Y`). Which Android
+ * axes give the right stick and the triggers depends on the table (Z/RZ and
+ * LTRIGGER|BRAKE/RTRIGGER|GAS, or RX/RY and Z/RZ).
  */
 data class PadAxes(
     val lx: Float = 0f,
@@ -87,6 +88,9 @@ class PadInput(
     private val tapped = HashMap<PadButton, Long>() // ones let go while held back, shown as a press: ms so far
     private var sent: PadState? = null
     private var virtual = PadState.NEUTRAL
+    // The scripted controller's buttons and axes (debug builds' pad injector; [onScripted]).
+    private var scriptedButtons = emptySet<PadButton>()
+    private var scriptedAxes = PadAxes()
 
     // What is pressed in X, so a change of mode or binding releases it.
     private var active = emptySet<PadButton>()
@@ -144,6 +148,23 @@ class PadInput(
         flush(emptyList())
     }
 
+    /**
+     * The scripted controller's state (debug builds: the pad injector, [ScriptedPad]): a second
+     * real controller beside this one, in both modes. Its [buttons] act as held, in pad mode on
+     * the game's pad and in mouse mode as [Controls.mouseMode] binds them, with none of the
+     * chord's timing (Select and Start act as plain buttons; the injector switches the mode
+     * with [useMouseMode]). Its sticks count while the real ones rest, in mouse mode on the
+     * pointer ([tick]); its triggers count as the larger of the two. [releaseAll] keeps it: it
+     * lets go when it is sent with nothing held.
+     */
+    fun onScripted(buttons: Set<PadButton>, axes: PadAxes) {
+        scriptedButtons = buttons
+        scriptedAxes = axes
+        val out = ArrayList<RelayEvent>()
+        update(out)
+        flush(out)
+    }
+
     /** New axis values from a joystick motion event. */
     fun onAxes(next: PadAxes) {
         axes = next
@@ -173,6 +194,7 @@ class PadInput(
             }
         }
         if (!mouseMode) return
+        val axes = axesNow()
         val seconds = elapsedMs / 1000f
         val factor = controls.pointerSpeed * pointerScale
         val (lx, ly) = speed(axes.lx, axes.ly, PointerSpeed.FAST_PIXELS_PER_SECOND * factor)
@@ -193,13 +215,14 @@ class PadInput(
      */
     val ticking: Boolean
         get() = heldBack.isNotEmpty() || tapped.isNotEmpty() || (chordFormed && !chordMenu) ||
-            (mouseMode && (deflected(axes.lx, axes.ly) || deflected(axes.rx, axes.ry)))
+            (mouseMode && axesNow().let { deflected(it.lx, it.ly) || deflected(it.rx, it.ry) })
 
     /**
      * Lets go of the controller (an overlay layer opened): its buttons and sticks go neutral, X
      * keys and buttons are released, a chord in progress is forgotten. Buttons still held count
      * again once pressed anew. The on-screen controls' share ([onVirtual]) stays: they play on
-     * beside the in-game menu, and let go themselves when they hide.
+     * beside the in-game menu, and let go themselves when they hide; so does the scripted
+     * controller's ([onScripted]), which the Game view lets go itself.
      */
     fun releaseAll() {
         held.clear()
@@ -232,8 +255,12 @@ class PadInput(
         restY = 0f
     }
 
+    /** The real controller's axes with the scripted one's ([combine]); the real ones while it rests. */
+    private fun axesNow(): PadAxes = if (scriptedAxes == AT_REST) axes else combine(axes, scriptedAxes)
+
     /** Every button pressed now: keys, triggers past half way and the hat as the d-pad. */
     private fun pressed(): Set<PadButton> = buildSet {
+        val axes = axesNow()
         addAll(held)
         if (axes.leftTrigger >= TRIGGER_PRESSED) add(PadButton.L2)
         if (axes.rightTrigger >= TRIGGER_PRESSED) add(PadButton.R2)
@@ -245,14 +272,15 @@ class PadInput(
 
     /**
      * The pressed buttons that act while held: not chord buttons in a chord or still held back,
-     * nor ones that act on release; and a held-back chord button's tap while it shows.
+     * nor ones that act on release; and a held-back chord button's tap while it shows; and every
+     * button of the scripted controller.
      */
     private fun holding(): Set<PadButton> {
         val chord = controls.chord
         return (pressed() + tapped.keys).filterTo(HashSet()) { button ->
             val chordButton = button == chord.first || button == chord.second
             button !in inChord && button !in heldBack && (!chordButton || controls.action(button, mouseMode) == PadAction.Pad)
-        }
+        }.apply { addAll(scriptedButtons) }
     }
 
     /** Brings X's keys and buttons in line with what is held now; a new press of a wheel binding clicks. */
@@ -307,9 +335,10 @@ class PadInput(
         for (button in holding()) {
             if (controls.action(button, mouse = false) == PadAction.Pad) buttons = buttons or button.bit
         }
+        val axes = axesNow()
         fun triggerOf(button: PadButton, value: Float): Int = when {
             controls.action(button, mouse = false) != PadAction.Pad -> 0
-            button in held -> 255
+            button in held || button in scriptedButtons -> 255
             else -> trigger(value)
         }
         return PadState(
@@ -346,6 +375,8 @@ class PadInput(
          */
         const val CHORD_WINDOW_MS = 60L
 
+        private val AT_REST = PadAxes()
+
         /** A stick at rest, in XInput thumb units: inside the dead zone. */
         private val REST = (DEAD_ZONE * Short.MAX_VALUE).toInt()
 
@@ -361,6 +392,24 @@ class PadInput(
                 ly = if (leftReal) real.ly else virtual.ly,
                 rx = if (rightReal) real.rx else virtual.rx,
                 ry = if (rightReal) real.ry else virtual.ry,
+            )
+        }
+
+        /**
+         * The real controller's [real] axes with the scripted one's [scripted]: each stick the
+         * scripted one's where it is out of the centre and the real one rests (inside
+         * [DEAD_ZONE]), else the real one's; the larger of the triggers; the real hat.
+         */
+        fun combine(real: PadAxes, scripted: PadAxes): PadAxes {
+            val left = !deflected(real.lx, real.ly) && (scripted.lx != 0f || scripted.ly != 0f)
+            val right = !deflected(real.rx, real.ry) && (scripted.rx != 0f || scripted.ry != 0f)
+            return real.copy(
+                lx = if (left) scripted.lx else real.lx,
+                ly = if (left) scripted.ly else real.ly,
+                rx = if (right) scripted.rx else real.rx,
+                ry = if (right) scripted.ry else real.ry,
+                leftTrigger = maxOf(real.leftTrigger, scripted.leftTrigger),
+                rightTrigger = maxOf(real.rightTrigger, scripted.rightTrigger),
             )
         }
 

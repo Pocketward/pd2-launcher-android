@@ -8,7 +8,6 @@
     <string name="files_refused_game_running">Diablo II is running: it writes its folder, and the characters when it closes. Change files once it has closed.</string>
     <string name="files_refused_game_starting">Diablo II is starting: the Launcher is preparing its files. Change files once it has closed, or if it does not start.</string>
     <string name="files_refused_busy">The Launcher is working on the game folder. Change files once it is done.</string>
-    <string name="files_refused_executable">Programs and libraries (such as .exe and .dll files) in the game folder cannot be added, changed, renamed or moved from here.</string>
 
     <!-- Settings → App → Game files. -->
     <string name="settings_section_game_files">Game files</string>
@@ -16,7 +15,8 @@
     <string name="settings_open_files_body">Diablo II with Project Diablo 2 and your characters (in Save), under PD2 Launcher in Android\'s Files app and file pickers. Files there cannot change while the game runs.</string>
     <string name="settings_open_files_action">Open in Files</string>
     <string name="settings_import_files">Import files…</string>
-    <string name="settings_import_files_body">Pick files, then the folder of the game folder they go to.</string>
+    <!-- Any file is imported, programs and libraries too. -->
+    <string name="settings_import_files_body">Pick files, then the folder of the game folder they go to. Programs and libraries (such as .exe and .dll files) run with the game: import only files that you trust.</string>
     <string name="settings_import_files_action">Import…</string>
     <string name="settings_export_files">Export files…</string>
     <string name="settings_export_files_body">Choose files and folders of the game folder, then where they go.</string>

@@ -9,7 +9,6 @@
     <string name="install_task_copy_d2">Copy your Diablo II</string>
     <string name="install_task_adopt_d2">Adopt your Diablo II</string>
     <string name="install_task_lod">Install Lord of Destruction</string>
-    <string name="install_task_update_pd2">Update Project Diablo 2</string>
     <string name="install_task_verify">Verify</string>
     <!-- The page's title while the install starts, and the running row then. -->
     <string name="install_title_starting">Starting the install</string>

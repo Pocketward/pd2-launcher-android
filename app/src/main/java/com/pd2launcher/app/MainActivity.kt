@@ -48,9 +48,12 @@ import com.pd2launcher.app.control.Game
 import com.pd2launcher.app.control.Installation
 import com.pd2launcher.app.control.Installer
 import com.pd2launcher.app.control.Step
+import com.pd2launcher.app.input.ControllerLog
 import com.pd2launcher.app.input.PadButton
+import com.pd2launcher.app.input.PadLayouts
 import com.pd2launcher.app.ui.AboutScreen
 import com.pd2launcher.app.ui.ControlsEditor
+import com.pd2launcher.app.ui.rememberImportRecord
 import com.pd2launcher.app.ui.CheckScreen
 import com.pd2launcher.app.ui.CheckingDeviceScreen
 import com.pd2launcher.app.ui.DownloadScreen
@@ -75,6 +78,8 @@ import com.pd2launcher.app.ui.NotSupportedScreen
 import com.pd2launcher.app.ui.Play
 import com.pd2launcher.app.ui.PlayDestinations
 import com.pd2launcher.app.ui.PlayScreen
+import com.pd2launcher.app.ui.NewVersionQuestion
+import com.pd2launcher.app.ui.playCheckWaiting
 import com.pd2launcher.app.ui.RefusalNotice
 import com.pd2launcher.app.ui.RepairScreen
 import com.pd2launcher.app.ui.rememberImported
@@ -135,8 +140,24 @@ class MainActivity : ComponentActivity() {
     private val networkCheck = NetworkCheckUi(onRecheck = ::checkNetwork, onOpenSettings = ::openAppSettings)
     /** The network checks' results, beside the app's other logs (Share logs packs them). */
     private val networkLog by lazy { RotatingLog(paths.logs, "network") }
+    /** Each controller as it connects, beside the app's other logs (Share logs packs them): what a player's controller sends. */
+    private val controllerLog by lazy {
+        val log = RotatingLog(paths.logs, "controllers")
+        ControllerLog(this) { line ->
+            Log.i(CONTROLLERS_TAG, line)
+            log.line(line)
+        }
+    }
     /** Save logs: Android's "Save as" screen for the zip; [saveChosen] copies it where the player chose. */
     private val saveLogsTo = registerForActivityResult(SaveInDownload(), ::saveChosen)
+    /**
+     * The source step's folder picker; the picked folder's copy starts ([SourceImport.copyFolder]).
+     * Registered with the activity, not in Root, so a pick that comes back after Android made the
+     * activity again still arrives.
+     */
+    private val pickFolder = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { tree ->
+        if (tree != null) SourceImport.copyFolder(this, tree)
+    }
     /** Which layout the launcher screens use, from the display's shape (ui/FormFactor.kt). */
     private lateinit var formFactor: FormFactor
     private val batteryRestricted = mutableStateOf(false)
@@ -145,7 +166,7 @@ class MainActivity : ComponentActivity() {
     private var sessionStarted = false
     /**
      * Back on the first screen (Play, or Repair in its place) closes the app: Android moves it to
-     * the back, and the idle session ends after the short wait, not the long one of Home
+     * the back, and the idle session ends at once, not after the short wait of Home
      * ([SessionIdle]). Until the next onStart.
      */
     private var closing = false
@@ -155,6 +176,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Each controller's layout is read as it connects, for the life of the process.
+        PadLayouts.watch(this)
         if (debuggable) {
             // `am start -n com.pd2launcher.app.dev/com.pd2launcher.app.MainActivity --ez probe true`.
             if (intent.getBooleanExtra("probe", false)) {
@@ -183,8 +206,14 @@ class MainActivity : ComponentActivity() {
         readScreenExtras(intent)
         AppSettingsStore.load(this)
         appUpdate.create(intent, fresh = savedInstanceState == null)
-        // An install started and not finished opens on Install; an installed game on Play (Root).
-        nav.value = FlowNav.opening(SetupRecordStore.load(this))
+        // An install started and not finished opens on Install; an installed game on Play (Root
+        // follows the record, so it loads on every start, before the page is chosen). When Android
+        // makes the activity again (for example, the process ended under the folder picker), the
+        // first run's page and source choice come back: the picked folder's copy shows, not Check
+        // and the default source.
+        val record = SetupRecordStore.load(this)
+        nav.value = FlowNav.start(savedInstanceState?.getStringArrayList(STATE_NAV), record)
+        sourceChoice.value = SourceChoice.named(savedInstanceState?.getString(STATE_SOURCE))
         // The device check comes before anything is unpacked; the session service (which
         // unpacks and starts the engine) starts only once it passed.
         DeviceCheckRun.start(this)
@@ -287,16 +316,16 @@ class MainActivity : ComponentActivity() {
         val showKeys = keys.value && debuggable
         BackHandler(enabled = showKeys) { keys.value = false }
         val sourceCopy by SourceImport.copy.collectAsState()
-        val pickFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { tree ->
-            if (tree != null) SourceImport.copyFolder(this, tree)
-        }
 
         val back = { nav.value = nav.value.back() }
+        // An import never installs or updates Project Diablo 2: Repair instead (InstallProgress.page).
+        val importRecord by rememberImportRecord(status.snapshot?.step to status.snapshot?.installation)
+        val imported = importRecord == true
         // The download finished while Download was shown: Install follows.
-        val installReady = InstallProgress.page(status) != null
+        val installReady = InstallProgress.page(status, imported) != null
         LaunchedEffect(installReady) { if (installReady) nav.value = nav.value.downloadDone() }
         // Start over reset the interrupted stage: straight to the keys, or Install's start button.
-        val installPage = InstallProgress.page(status)
+        val installPage = InstallProgress.page(status, imported)
         LaunchedEffect(installPage) {
             val snapshot = status.snapshot
             if (startedOver.value && installPage == InstallProgress.Page.KEYS && snapshot != null) {
@@ -398,8 +427,8 @@ class MainActivity : ComponentActivity() {
                 onBack = { settingsOpen.value = false },
                 updates = appUpdate.available,
                 newVersion = appUpdate.newVersion(),
-                // The app's own Play only: a game the official launcher starts takes the launcher's size.
-                running = runningScreen.takeIf { playing && !Play.officialLauncherRunning(status) },
+                // The app's own Play and the official launcher (and a game it starts) use the game resolution.
+                running = runningScreen.takeIf { playing },
             )
         } else if (previewName == DebugPreview.SOURCE) {
             // Continue sends nothing here: the running Download preview shows what follows.
@@ -505,11 +534,21 @@ class MainActivity : ComponentActivity() {
                 facts = Play.facts(status.snapshot?.takeIf(Onboarding::audited), (device as? DeviceCheckState.Done)?.facts?.gpu?.name),
                 problem = (installed as? Installed.Play)?.problem?.let { text(it) }
                     ?: status.gameEnvironmentFailure ?: Play.officialLauncherProblem(status)?.let { getString(it) },
-                waiting = (installed as? Installed.Play)?.waiting?.let { text(it) },
+                // Play's look for a new version says what it does, over the engine's own audit
+                // under it ("Getting ready…").
+                waiting = playCheckWaiting(status.playCheck)?.let { getString(it) }
+                    ?: (installed as? Installed.Play)?.waiting?.let { text(it) },
                 onPlay = {
-                    pressed()
+                    // With the checks on, Play's check holds the buttons ("Checking for updates…",
+                    // the question, the start), and Cancel gives them back at once.
+                    if (PlayCheck.checks(status.snapshot)) SessionService.dismissRefusal() else pressed()
                     SessionService.send(this@MainActivity, SessionService.ACTION_PLAY)
                 },
+                onPlayWithoutUpdating = {
+                    pressed()
+                    SessionService.send(this@MainActivity, SessionService.ACTION_PLAY_WITHOUT_CHECK)
+                },
+                playAfterUpdate = status.playCheck is PlayCheck.State.Updating,
                 // In the engine alone: no game environment. Check files (Install Project Diablo 2) can
                 // fall back to the PD2 installer: it starts as Install's.
                 update = Play.update(status),
@@ -522,7 +561,8 @@ class MainActivity : ComponentActivity() {
                     pressed()
                     SessionService.send(this@MainActivity, SessionService.ACTION_OFFICIAL_LAUNCHER)
                 }.takeIf { Play.officialLauncherEnabled(status) },
-                launching = launching,
+                // Also after Play's check, until the game shows.
+                launching = launching || status.playCheck is PlayCheck.State.Starting,
                 onTryAgain = { SessionService.send(this@MainActivity, SessionService.ACTION_RETRY) }.takeIf { Onboarding.failed(status) },
                 destinations = PlayDestinations(
                     onSettings = { openSettings(SettingsNav.GAME) },
@@ -553,6 +593,16 @@ class MainActivity : ComponentActivity() {
                         SessionService.removeInstallerDownloads { Log.i(TAG, "installer downloads from the notice: $it") }
                     },
                     onLater = { answer() },
+                )
+            }
+            // Play found a new version: Update (the game starts when it is done) or Cancel.
+            if (status.playCheck == PlayCheck.State.Found) {
+                NewVersionQuestion(
+                    onUpdate = {
+                        pressed()
+                        SessionService.answerNewVersion(update = true)
+                    },
+                    onCancel = { SessionService.answerNewVersion(update = false) },
                 )
             }
         } else when (
@@ -594,7 +644,7 @@ class MainActivity : ComponentActivity() {
                 )
             }
             // An interrupted stage takes no keys and no install until Start over (Repair).
-            Screen.Install, Screen.Keys -> if (InstallProgress.page(status) == InstallProgress.Page.REPAIR) {
+            Screen.Install, Screen.Keys -> if (InstallProgress.page(status, imported) == InstallProgress.Page.REPAIR) {
                 RepairScreen(
                     status,
                     onCheckAgain = { SessionService.send(this, SessionService.ACTION_CHECK_AGAIN) },
@@ -638,6 +688,8 @@ class MainActivity : ComponentActivity() {
      */
     private fun startInstall(status: SessionStatus) {
         val snapshot = status.snapshot ?: return
+        // An import never installs or updates Project Diablo 2 (the owner's rule of 2026-10-26).
+        if (snapshot.step == Step.INSTALL_PD2 && InstallerDownloads.imported(SessionPaths(DeviceCheck.dataDir(this)).managedRoot)) return
         val existing = snapshot.installer as? Installer.Existing
         val imports = existing != null && DiabloSource.importsExisting(snapshot)
         when (InstallProgress.startAction(snapshot, InstallProgress.view(status).state, imports, SessionService.keysHeld())) {
@@ -675,11 +727,9 @@ class MainActivity : ComponentActivity() {
     /** The task names for the player's source (an installed Diablo II is copied or adopted). */
     private fun taskLabels(status: SessionStatus): InstallProgress.TaskLabels {
         val existing = status.snapshot?.installer as? Installer.Existing
-        val copied = SourceImport.copy.value as? SourceCopy.Copied
         return InstallProgress.TaskLabels(
             source = installSource(status),
             inPlace = existing?.inPlacePossible == true,
-            projectDiabloFound = copied != null && copied.projectDiablo != ProjectDiabloFound.NONE,
         )
     }
 
@@ -741,7 +791,9 @@ class MainActivity : ComponentActivity() {
                 )
                 if (outcome !is LogShare.ReportOutcome.Saved) Log.w(TAG, "${action.name.lowercase()} logs: engine report ${LogShare.describe(outcome)}")
                 val zip = withContext(Dispatchers.IO) {
-                    LogShare.write(cacheDir, paths, aboutDevice(outcome), (outcome as? LogShare.ReportOutcome.Saved)?.file)
+                    SessionService.checkpointLogs()
+                    val launcher = officialLauncherFolder()
+                    LogShare.write(cacheDir, paths, aboutDevice(outcome, launcher), (outcome as? LogShare.ReportOutcome.Saved)?.file, launcher)
                 }
                 lifecycle.withStarted { hand(zip) }
                 true
@@ -799,11 +851,16 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** The official PD2 launcher's folder (ProjectD2) in the game folder in use; null without a game folder. */
+    private fun officialLauncherFolder(): File? =
+        GameFilesProvider.gameFolder(paths, SessionService.status.value.snapshot?.gameFolder?.path)?.let { File(it, LauncherFiles.FOLDER) }
+
     /**
-     * `device.txt`: this device, the app, where the installation stands and how the wait for the
-     * engine's [report] ended. Free space is measured now, not at the device check.
+     * `device.txt`: this device, the app, where the installation stands, the official PD2
+     * launcher's program in [launcher] (its folder) and how the wait for the engine's [report]
+     * ended. Free space is measured now, not at the device check.
      */
-    private fun aboutDevice(report: LogShare.ReportOutcome): String {
+    private fun aboutDevice(report: LogShare.ReportOutcome, launcher: File?): String {
         val status = SessionService.status.value
         val device = DeviceCheckRun.state.value
         val facts = (device as? DeviceCheckState.Done)?.facts
@@ -831,9 +888,48 @@ class MainActivity : ComponentActivity() {
                 "Step" to (snapshot?.step?.toString() ?: "unknown"),
                 "Operation" to (operation?.let { "${it.phase} ${it.status}, failure ${it.failure ?: "none"}" } ?: "none"),
                 "Game environment" to (status.gameEnvironmentFailure?.let { "failed: $it" } ?: if (status.gameEnvironment) "running" else "stopped"),
+                "Official launcher" to (
+                    launcher?.let { "${LauncherFiles.LAUNCHER} ${LauncherFiles.describe(LauncherFiles.launcher(it))}" }
+                        ?: "no game folder"
+                    ),
                 "Engine report" to LogShare.describe(report),
+                "CPU" to HardwareFacts.cpuOfDevice(),
+                "Memory" to HardwareFacts.memoryOfDevice(),
+                "Time zone" to HardwareFacts.timeZone(java.util.TimeZone.getDefault(), System.currentTimeMillis()),
+                "Runtime" to BuildConfig.RUNTIME_PARTS,
+                "Screen" to screenFacts(),
+                "Thermal state" to thermalState(),
+                "Settings" to SettingsLog.line(
+                    AppSettingsStore.load(this),
+                    LauncherSettings.view(snapshot?.settings, status.engine == SessionStatus.Engine.CONNECTED),
+                ),
+                "Detailed logging" to if (AppSettingsStore.current.value.detailedLogging) "on" else "off",
             ),
         )
+    }
+
+    /** The screen for device.txt: its size and density, its rate now and the full rate the app measured. */
+    private fun screenFacts(): String {
+        val metrics = resources.displayMetrics
+        val now = display?.refreshRate?.let { String.format(java.util.Locale.ROOT, "%.0f Hz now", it) } ?: "rate unknown"
+        val full = ScreenRate.full.value.takeIf { it > 0f }?.let { String.format(java.util.Locale.ROOT, ", full rate %.0f Hz", it) } ?: ""
+        return "${metrics.widthPixels} x ${metrics.heightPixels}, ${metrics.densityDpi} dpi, $now$full"
+    }
+
+    /** Android's thermal status (a throttled CPU is slower) and power saving, for device.txt. */
+    private fun thermalState(): String {
+        val power = getSystemService(PowerManager::class.java) ?: return "unknown"
+        val thermal = when (power.currentThermalStatus) {
+            PowerManager.THERMAL_STATUS_NONE -> "none"
+            PowerManager.THERMAL_STATUS_LIGHT -> "light"
+            PowerManager.THERMAL_STATUS_MODERATE -> "moderate"
+            PowerManager.THERMAL_STATUS_SEVERE -> "severe"
+            PowerManager.THERMAL_STATUS_CRITICAL -> "critical"
+            PowerManager.THERMAL_STATUS_EMERGENCY -> "emergency"
+            PowerManager.THERMAL_STATUS_SHUTDOWN -> "shutdown"
+            else -> "level ${power.currentThermalStatus}"
+        }
+        return "$thermal; power saving ${if (power.isPowerSaveMode) "on" else "off"}"
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -850,11 +946,14 @@ class MainActivity : ComponentActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putBoolean(STATE_ABOUT, aboutOpen.value)
+        outState.putStringArrayList(STATE_NAV, nav.value.saved())
+        sourceChoice.value?.let { outState.putString(STATE_SOURCE, it.name) }
     }
 
     override fun onStart() {
         super.onStart()
         closing = false
+        controllerLog.start()
         SessionService.appForeground(true)
         // The session ends by itself while nothing runs and the app is closed; back in front, it starts again.
         if (sessionStarted) SessionService.resume(this)
@@ -862,6 +961,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
+        controllerLog.stop()
         // Closed (Back on the first screen, or the activity ends), or only left (Home, the lock, another app).
         SessionService.appForeground(false, closed = closing || isFinishing)
     }
@@ -992,10 +1092,15 @@ class MainActivity : ComponentActivity() {
 
     private companion object {
         const val TAG = "pd2-session"
+        /** The controllers log's lines in logcat too ([controllerLog]). */
+        const val CONTROLLERS_TAG = "pd2-controllers"
         /** How long Share logs and Save logs wait for the engine's report before they go on without one. */
         const val REPORT_WAIT_MS = 20_000L
         /** Whether About was open, kept when Android ends the app under it. */
         const val STATE_ABOUT = "about_open"
+        /** The first run's pages and the source choice, kept when Android makes the activity again (for example, the process ended under the folder picker). */
+        const val STATE_NAV = "flow_nav"
+        const val STATE_SOURCE = "source_choice"
     }
 }
 

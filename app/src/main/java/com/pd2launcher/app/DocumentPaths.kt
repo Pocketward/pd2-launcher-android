@@ -4,11 +4,9 @@ import com.pd2launcher.app.ui.Play
 import java.io.File
 import java.io.FileNotFoundException
 import java.io.IOException
-import java.io.UncheckedIOException
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.Paths
-import java.util.Locale
 
 /**
  * The document IDs of the Files app's "PD2 Launcher" root ([GameFilesProvider]) and the files
@@ -81,8 +79,6 @@ class DocumentPaths(game: File?, player: File?) {
         GAME_STARTING,
         /** The Launcher works on the game folder (install, update, repair). */
         LAUNCHER_BUSY,
-        /** A program or library ([executable]): Wine would run it as the app. */
-        EXECUTABLE,
     }
 
     /** What a change does to the document it names. */
@@ -91,18 +87,16 @@ class DocumentPaths(game: File?, player: File?) {
         WRITE,
         /** It is removed. */
         DELETE,
-        /** It is renamed or moved (the new name is [nameRefusal]'s to check). */
+        /** It is renamed or moved. */
         MOVE,
     }
 
     /**
      * Whether a [change] to [documentId] is refused: [gameRunning], the game runs; [gameStarting],
-     * a launch is under way ([Companion.gameStarting]); [busy], a Launcher job runs. Another app
-     * the player lets write here could otherwise put code where Wine loads it, as the app's own
-     * user (a DLL beside the game, say): a file [executable] names is never written, renamed or
-     * moved, nor a folder holding one renamed or moved ([nameRefusal] keeps new names from being
-     * such). Removing one is allowed. The player's own files (characters, loot filters,
-     * settings) are none of these.
+     * a launch is under way ([Companion.gameStarting]); [busy], a Launcher job runs; and the game
+     * folder itself is not removed, renamed or moved. Otherwise any file can change, programs and
+     * libraries too (the DLLs of a mod, say), which Wine runs as the app: the player decides what
+     * goes in the game folder.
      */
     fun refusal(
         documentId: String,
@@ -111,35 +105,14 @@ class DocumentPaths(game: File?, player: File?) {
         change: Change = Change.WRITE,
         gameStarting: Boolean = false,
     ): Refusal? {
-        val file = file(documentId)
+        // Throws for an ID out of the game folder, as for any other use.
+        file(documentId)
         return when {
             change != Change.WRITE && documentId == ROOT -> Refusal.FIXED
             gameRunning -> Refusal.GAME_RUNNING
             gameStarting -> Refusal.GAME_STARTING
             busy -> Refusal.LAUNCHER_BUSY
-            change == Change.WRITE && !file.isDirectory && executable(file.name) -> Refusal.EXECUTABLE
-            change == Change.MOVE && holdsExecutable(file) -> Refusal.EXECUTABLE
             else -> null
-        }
-    }
-
-    /** Whether [name] may be given to a file or folder here (created, renamed to, imported as). */
-    fun nameRefusal(name: String): Refusal? = if (executable(name)) Refusal.EXECUTABLE else null
-
-    /**
-     * Whether [file] is named as an executable, or is a folder with one at any depth (links not
-     * followed). A folder the walk cannot finish (one that vanishes meanwhile, say) counts as
-     * holding one, rather than failing the whole listing.
-     */
-    private fun holdsExecutable(file: File): Boolean {
-        if (executable(file.name)) return true
-        if (Files.isSymbolicLink(file.toPath()) || !file.isDirectory) return false
-        return try {
-            Files.walk(file.toPath(), MAX_DEPTH).use { paths -> paths.anyMatch { executable(it.fileName.toString()) } }
-        } catch (_: IOException) {
-            true
-        } catch (_: UncheckedIOException) {
-            true
         }
     }
 
@@ -147,11 +120,10 @@ class DocumentPaths(game: File?, player: File?) {
      * Whether a descriptor that opened the file [reported] (the path `/proc/self/fd/<n>` names:
      * where it really is, whatever links led there) may be used: below the game folder or the
      * player's, a regular file ([regularFile]; not a FIFO, say) with one name ([links]: a hard link
-     * would reach a file elsewhere) and, opened for [write], not named as a program or library
-     * ([executable]: a link's own name is not the file's).
+     * would reach a file elsewhere).
      */
-    fun openedFile(reported: String, regularFile: Boolean, links: Long, write: Boolean): Boolean =
-        allowed(File(reported)) && regularFile && links == 1L && !(write && executable(File(reported).name))
+    fun openedFile(reported: String, regularFile: Boolean, links: Long): Boolean =
+        allowed(File(reported)) && regularFile && links == 1L
 
     /** Whether a descriptor that opened the folder [reported] (as [openedFile]) may be used: below the game folder or the player's. */
     fun openedFolder(reported: String): Boolean = allowed(File(reported))
@@ -161,7 +133,6 @@ class DocumentPaths(game: File?, player: File?) {
 
     companion object {
         const val ROOT = "game"
-        private const val MAX_DEPTH = 32
 
         /**
          * Whether a Play or official PD2 launcher request taken at [requestedAt] (null: none under
@@ -172,24 +143,6 @@ class DocumentPaths(game: File?, player: File?) {
          */
         fun gameStarting(requestedAt: Long?, now: Long): Boolean =
             requestedAt != null && now - requestedAt < Play.LAUNCH_PENDING_MS
-
-        /**
-         * Programs and libraries Windows and Wine run or load, by upper-case extension: the
-         * game's and its renderers' DLLs (`ddraw.dll`, `d2gl.dll`, the DLLs in `ProjectD2`), ASI
-         * plugins, installers and scripts.
-         */
-        private val EXECUTABLE_EXTENSIONS = setOf(
-            "EXE", "DLL", "ASI", "COM", "BAT", "CMD", "SCR", "PIF", "CPL", "OCX", "DRV", "SYS", "MSI", "MSP",
-        )
-
-        /**
-         * Whether [name]'s extension is a program's or library's ([EXECUTABLE_EXTENSIONS]), after
-         * the trailing dots and spaces Windows names drop (`ddraw.dll.` is `ddraw.dll`). Compared
-         * upper-cased, as Wine matches names: `ı` and `ſ` become `I` and `S` there, so `x.ası`
-         * is `x.ASI`.
-         */
-        fun executable(name: String): Boolean =
-            name.trimEnd('.', ' ').substringAfterLast('.', "").uppercase(Locale.ROOT) in EXECUTABLE_EXTENSIONS
 
         /**
          * [folder] when it is where a game folder can be, else null: the Managed prefix's Diablo II

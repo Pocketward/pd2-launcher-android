@@ -1,6 +1,11 @@
 package com.pd2launcher.app.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.annotation.StringRes
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,17 +26,21 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.layoutId
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pd2launcher.app.Line
 import com.pd2launcher.app.Onboarding
+import com.pd2launcher.app.PlayCheck
 import com.pd2launcher.app.R
 import com.pd2launcher.app.SessionStatus
 import com.pd2launcher.app.control.Command
@@ -75,8 +84,13 @@ object Play {
     fun officialLauncherProblem(status: SessionStatus): Int? {
         if (status.refusal?.reason == "official-launcher-not-permitted") return R.string.refusal_official_launcher
         val operation = status.snapshot?.operation?.takeIf { it.job == Job.OFFICIAL_LAUNCHER } ?: return null
-        return R.string.play_official_launcher_failed.takeIf {
-            operation.status == OperationStatus.FAILED || operation.status == OperationStatus.INDETERMINATE
+        if (operation.status != OperationStatus.FAILED && operation.status != OperationStatus.INDETERMINATE) return null
+        // The game folder has no ProjectD2\PD2Launcher.exe, such as an incomplete copy of a PC
+        // folder: only the player can fix the folder, so the text says where to look.
+        return if (operation.failure == OFFICIAL_LAUNCHER_MISSING) {
+            R.string.play_official_launcher_missing
+        } else {
+            R.string.play_official_launcher_failed
         }
     }
 
@@ -192,16 +206,16 @@ object Play {
     /**
      * The update on Play. [canStart]: the engine takes Update (Resume, Try again) now: no other job
      * runs. While it runs, [percent] of the file downloading now and [summary] (its amount, speed
-     * and time left) are the engine's, each when known; [step] says what runs when there is no
-     * summary. [problem]: why it failed. [client]: only Project Diablo 2's files differ from the
-     * Launcher's record ([clientDiffers]); the update is then Check files, the engine's Install
-     * Project Diablo 2, and Play waits for it.
+     * and time left, [ProgressCaption]) are the engine's, each when known; [step] says what runs
+     * when there is no summary. [problem]: why it failed. [client]: only Project Diablo 2's files
+     * differ from the Launcher's record ([clientDiffers]); the update is then Check files, the
+     * engine's Install Project Diablo 2, and Play waits for it.
      */
     data class UpdateView(
         val state: UpdateState = UpdateState.NONE,
         val canStart: Boolean = false,
         val percent: Int? = null,
-        val summary: String? = null,
+        val summary: Line? = null,
         @param:StringRes val step: Int? = null,
         @param:StringRes val problem: Int? = null,
         val client: Boolean = false,
@@ -267,7 +281,7 @@ object Play {
             return UpdateView(
                 state = if (operation?.status == OperationStatus.SAFE_STOPPING) UpdateState.STOPPING else UpdateState.RUNNING,
                 percent = progress?.percent?.coerceIn(0, 100),
-                summary = progress?.summary,
+                summary = progress?.summary?.let { ProgressCaption.of(it, job) },
                 step = when {
                     operation?.status == OperationStatus.SAFE_STOPPING -> null
                     operation?.phase == Phase.PROMOTION -> R.string.update_step_installing
@@ -283,7 +297,12 @@ object Play {
                 status.refusal?.reason == INSTALL_REFUSED ->
                     UpdateView(UpdateState.FAILED, canStart, problem = R.string.update_client_refused, client = true)
                 operation?.status == OperationStatus.FAILED || operation?.status == OperationStatus.INDETERMINATE ->
-                    UpdateView(UpdateState.FAILED, canStart, problem = R.string.update_client_failed, client = true)
+                    UpdateView(
+                        UpdateState.FAILED, canStart,
+                        // With Check for game updates off, the files could not be kept as they are.
+                        problem = if (operation?.failure == CLIENT_NOT_KEPT) R.string.update_client_not_kept else R.string.update_client_failed,
+                        client = true,
+                    )
                 operation?.status == OperationStatus.CANCELLED -> UpdateView(UpdateState.STOPPED, canStart, client = true)
                 else -> UpdateView(UpdateState.OFFERED, canStart, client = true)
             }
@@ -304,6 +323,12 @@ object Play {
 
     /** The engine's refusal of an update start (its guard: something runs, or nothing is Available). */
     const val UPDATE_REFUSED = "update-not-permitted"
+
+    /** The engine's failure of Check files with the update checks off: the files cannot be kept as they are. */
+    const val CLIENT_NOT_KEPT = "client-not-kept"
+
+    /** The engine's failure of the official PD2 launcher's session: the game folder has no ProjectD2\PD2Launcher.exe. */
+    const val OFFICIAL_LAUNCHER_MISSING = "official-launcher-missing"
 
     /** The engine's refusal of Install Project Diablo 2 ([UpdateView.client]): something runs, or the installation changed. */
     const val INSTALL_REFUSED = "install-not-permitted"
@@ -328,12 +353,14 @@ object Play {
     }
 
     /**
-     * Where Play's two buttons start in a stage [height] tall, with [above] standing on them and
+     * Where Play's buttons start in a stage [height] tall, with [above] standing on them and
      * [below] hanging from them ([PlayStage]): centred, unless either would not fit; then they
-     * give way only as far as needed.
+     * give way only as far as needed. [extra]: the part of [middle] that comes and goes ("Play
+     * without updating" under the main button), left out of the centring, so the main button stays
+     * where it is and only what is under it moves down.
      */
-    fun stageTop(height: Int, above: Int, middle: Int, below: Int): Int =
-        ((height - middle) / 2).coerceAtMost(height - middle - below).coerceAtLeast(above)
+    fun stageTop(height: Int, above: Int, middle: Int, below: Int, extra: Int = 0): Int =
+        ((height - middle + extra) / 2).coerceAtMost(height - middle - below).coerceAtLeast(above)
 
     /** The main button takes a press (as far as the update goes; "Getting ready…" disables it too). */
     fun primaryEnabled(update: UpdateView): Boolean = when (update.state) {
@@ -344,8 +371,9 @@ object Play {
 
     /**
      * The one line of facts under Play: the renderer the next launch uses, the GPU it runs on,
-     * and Project Diablo 2's update state once the engine has checked. Only what is known; no
-     * update state while the game files wait for their check ([clientDiffers]), which comes first.
+     * and Project Diablo 2's update state once the engine has checked, or that its update checks
+     * are off. Only what is known; no update state while the game files wait for their check
+     * ([clientDiffers]), which comes first.
      */
     fun facts(snapshot: Snapshot?, gpu: String?): List<Line> = buildList {
         snapshot?.settings?.renderer?.let {
@@ -353,6 +381,10 @@ object Play {
         }
         if (!gpu.isNullOrBlank()) add(Line(R.string.play_fact_plain, gpu))
         if (snapshot != null && clientDiffers(snapshot)) return@buildList
+        if (snapshot?.settings?.updateChecks == false) {
+            add(Line(R.string.update_checks_off))
+            return@buildList
+        }
         when (snapshot?.update) {
             Update.UP_TO_DATE -> add(Line(R.string.update_up_to_date))
             Update.AVAILABLE -> add(Line(R.string.update_available))
@@ -361,6 +393,23 @@ object Play {
             Update.UNKNOWN, null -> Unit
         }
     }
+}
+
+/**
+ * What Play's look for a new version ([PlayCheck]) says where "Ready to play" goes: the check
+ * runs, or the game starts without its answer and why; null otherwise (the question and the update
+ * show by themselves).
+ */
+@StringRes
+fun playCheckWaiting(state: PlayCheck.State?): Int? = when (state) {
+    is PlayCheck.State.Checking -> R.string.play_check_running
+    is PlayCheck.State.Starting -> when (state.note) {
+        PlayCheck.Note.NO_NETWORK -> R.string.play_check_no_network
+        PlayCheck.Note.FAILED -> R.string.play_check_failed
+        PlayCheck.Note.NO_ANSWER -> R.string.play_check_no_answer
+        null -> null
+    }
+    else -> null
 }
 
 /** Where Play leads, along the foot of the stage. */
@@ -372,17 +421,20 @@ class PlayDestinations(
 )
 
 /**
- * Play: alone in the middle of a quiet field, the official PD2 launcher as a quiet second button
- * under it, one line of facts beneath, the destinations (Settings, Controls, Repair, About) along
- * the foot. [problem]: why the last Play or official launcher did not start.
+ * Play: alone in the middle of a quiet field, the official PD2 launcher as a tool button (a filled
+ * pill, [Kind.TONAL]) at Play's width under it, one line of facts beneath, the destinations
+ * (Settings, Controls, Repair, About) along the foot. More tools go under the launcher, as the same
+ * pill. [problem]: why the last Play or official launcher did not start.
  * [onOfficialLauncher] null: its button is disabled (an install, the game, a check or the update runs).
  * [waiting]: why Play cannot start yet ("Getting ready…"), shown where "Ready to play" goes; both
  * buttons are disabled while it shows.
  * [update]: Project Diablo 2's Available update ([Play.update]): the main button then reads Update
  * (Check files when only the client differs) and sends [onCommand]'s commands (Stop while it runs,
  * Resume, Try again); where "Ready to play" goes, its figure while it runs and a red banner once it
- * failed (with Share logs and Save logs under the check's); "Play without updating" ([onPlay])
- * under the buttons while it does not run, never beside Check files.
+ * failed (with Share logs and Save logs under the check's); "Play without updating" ([onPlay]), a
+ * smaller button in the main button's teal, directly under it while the update does not run, never
+ * beside Check files. It moves what is under it down (the tools, the facts line); the main button
+ * stays where it is while everything fits.
  * [launching]: Play or the official PD2 launcher was pressed and the engine has not shown it yet
  * ([Play.launchPending]): both buttons and "Play without updating" wait.
  */
@@ -399,6 +451,10 @@ fun PlayScreen(
     launching: Boolean = false,
     /** The engine or the game support files failed: under the [problem], a Try again that starts them again. */
     onTryAgain: (() -> Unit)? = null,
+    /** "Play without updating": the game as installed, without Play's look for a new version. */
+    onPlayWithoutUpdating: () -> Unit = onPlay,
+    /** The running update was started by the question after a press of Play: the game starts when it is done. */
+    playAfterUpdate: Boolean = false,
 ) {
     val focus = remember { FocusRequester() }
     InitialFocus(focus, waiting == null)
@@ -417,8 +473,11 @@ fun PlayScreen(
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Wordmark(Modifier.weight(1f))
             }
+            // The engine runs an out-of-date client too (online play may need the update).
+            val playWithout = update.playWithout && waiting == null && !launching
             PlayStage(
                 Modifier.weight(1f).fillMaxWidth(),
+                extra = if (playWithout) PLAY_WITHOUT_HEIGHT + BUTTON_GAP else 0.dp,
                 above = {
                     // Where "Ready to play" goes: what stands, or the update's figure or failure.
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -453,10 +512,15 @@ fun PlayScreen(
                             if (update.working) Kind.SECONDARY else Kind.PRIMARY,
                             enabled = waiting == null && !launching && Play.primaryEnabled(update), focusRequester = focus, height = 68.dp, style = Type.Play,
                         )
-                        Spacer(Modifier.height(10.dp))
+                        Spacer(Modifier.height(BUTTON_GAP))
+                        if (playWithout) {
+                            // The engine runs an out-of-date client too (online play may need the update).
+                            LauncherButton(stringResource(R.string.play_without_updating), onPlayWithoutUpdating, kind = Kind.PRIMARY, height = PLAY_WITHOUT_HEIGHT)
+                            Spacer(Modifier.height(BUTTON_GAP))
+                        }
                         LauncherButton(
                             stringResource(R.string.play_official_launcher), onOfficialLauncher ?: {}, Modifier.width(width),
-                            Kind.SECONDARY, enabled = onOfficialLauncher != null && waiting == null && !launching, height = 48.dp,
+                            Kind.TONAL, enabled = onOfficialLauncher != null && waiting == null && !launching, height = 48.dp,
                         )
                     }
                 },
@@ -472,10 +536,9 @@ fun PlayScreen(
                         } else if (facts.isNotEmpty()) {
                             Text(facts.map { text(it) }.joinToString("  ·  "), style = Type.Hint, color = Palette.Muted, textAlign = TextAlign.Center)
                         }
-                        // The engine runs an out-of-date client too (online play may need the update).
-                        if (update.playWithout && waiting == null && !launching) {
+                        if (playAfterUpdate && update.state == Play.UpdateState.RUNNING) {
                             Spacer(Modifier.height(4.dp))
-                            TextLink(stringResource(R.string.play_without_updating), onPlay)
+                            Text(stringResource(R.string.play_update_then_play), style = Type.Hint, color = Palette.Muted, textAlign = TextAlign.Center)
                         }
                     }
                 },
@@ -491,6 +554,40 @@ fun PlayScreen(
                 ).forEach { (label, go) ->
                     LauncherButton(stringResource(label), go, Modifier.weight(1f), Kind.QUIET, height = 48.dp, style = link, padding = 8.dp)
                 }
+            }
+        }
+    }
+}
+
+/**
+ * "New version found" over Play ([PlayCheck.State.Found]): Update starts the update, and the game
+ * starts when it is done; Cancel closes it, and Play offers Update and "Play without updating".
+ * The server names no version, so none shows. A sheet from the bottom on phones, a panel in the
+ * middle on handhelds, as the downloads notice; Back is Cancel. Update has the focus: the player
+ * pressed Play.
+ */
+@Composable
+fun NewVersionQuestion(onUpdate: () -> Unit, onCancel: () -> Unit) {
+    BackHandler(onBack = onCancel)
+    val phone = LocalFormFactor.current == FormFactor.PHONE
+    val focus = remember { FocusRequester() }
+    InitialFocus(focus)
+    Box(Modifier.fillMaxSize()) {
+        Box(Modifier.matchParentSize().background(Color.Black.copy(alpha = 0.55f)).clickable(remember { MutableInteractionSource() }, null) {})
+        Column(
+            (if (phone) Modifier.align(Alignment.BottomCenter).fillMaxWidth() else Modifier.align(Alignment.Center).widthIn(max = 460.dp))
+                .windowInsetsPadding(WindowInsets.safeDrawing).padding(12.dp)
+                .clip(RowShape).background(Palette.Surface).border(1.dp, Palette.Rule, RowShape)
+                .padding(horizontal = 20.dp, vertical = 18.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text(stringResource(R.string.new_version_title), style = Type.Title, color = Palette.Text)
+            Text(stringResource(R.string.new_version_body), style = Type.Body, color = Palette.Text)
+            Text(stringResource(R.string.new_version_later), style = Type.Hint, color = Palette.Muted)
+            Spacer(Modifier.heightIn(min = 4.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End)) {
+                LauncherButton(stringResource(R.string.action_cancel), onCancel, kind = Kind.QUIET, height = 48.dp, padding = 18.dp)
+                LauncherButton(stringResource(R.string.action_update), onUpdate, kind = Kind.PRIMARY, focusRequester = focus, height = 48.dp, padding = 18.dp)
             }
         }
     }
@@ -525,7 +622,7 @@ private fun UpdateFigure(update: Play.UpdateView, modifier: Modifier = Modifier)
         }
         Spacer(Modifier.height(10.dp))
         Bar(update.percent?.let { it / 100f }, color = Palette.Teal)
-        val caption = update.summary ?: update.step?.let { stringResource(it) }
+        val caption = update.summary?.let { text(it) } ?: update.step?.let { stringResource(it) }
         if (caption != null) {
             Spacer(Modifier.height(8.dp))
             Text(caption, style = Type.Hint, color = Palette.Muted, maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -534,13 +631,15 @@ private fun UpdateFigure(update: Play.UpdateView, modifier: Modifier = Modifier)
 }
 
 /**
- * Play's middle: [middle] (the two buttons) centred in the room, [above] standing on it and [below]
- * hanging from it, so what shows above or below (the update's figure, a banner) never moves the
- * buttons while it fits; where it does not, the buttons give way only as far as needed.
+ * Play's middle: [middle] (the buttons) centred in the room without its [extra] ([Play.stageTop]),
+ * [above] standing on it and [below] hanging from it, so what shows above or below (the update's
+ * figure, a banner) never moves the buttons while it fits; where it does not, the buttons give way
+ * only as far as needed.
  */
 @Composable
 private fun PlayStage(
     modifier: Modifier,
+    extra: Dp,
     above: @Composable () -> Unit,
     middle: @Composable () -> Unit,
     below: @Composable () -> Unit,
@@ -560,7 +659,7 @@ private fun PlayStage(
         val middlePlaced = slot(StageSlot.MIDDLE, height)
         val belowPlaced = slot(StageSlot.BELOW, height - middlePlaced.height)
         val abovePlaced = slot(StageSlot.ABOVE, height - middlePlaced.height - belowPlaced.height)
-        val top = Play.stageTop(height, abovePlaced.height, middlePlaced.height, belowPlaced.height)
+        val top = Play.stageTop(height, abovePlaced.height, middlePlaced.height, belowPlaced.height, extra.roundToPx())
         layout(constraints.maxWidth, height) {
             val centre = { width: Int -> (constraints.maxWidth - width) / 2 }
             abovePlaced.placeRelative(centre(abovePlaced.width), top - abovePlaced.height)
@@ -571,3 +670,9 @@ private fun PlayStage(
 }
 
 private enum class StageSlot { ABOVE, MIDDLE, BELOW }
+
+/** The gap between Play's buttons. */
+private val BUTTON_GAP = 10.dp
+
+/** "Play without updating": smaller than the main button's 68 dp, still a 48 dp target. */
+private val PLAY_WITHOUT_HEIGHT = 48.dp

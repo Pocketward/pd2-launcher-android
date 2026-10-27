@@ -56,9 +56,12 @@ class RotatingLog(
         }
     }
 
-    /** Appends one line, prefixed with the wall-clock time. */
+    /**
+     * Appends one line, prefixed with the wall-clock time and its offset from UTC (`+09:00`, `Z`):
+     * the game's, Battle.net's and the official launcher's own logs are in UTC.
+     */
     fun line(text: String) {
-        val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.ROOT).format(Date())
+        val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSSXXX", Locale.ROOT).format(Date())
         append("$stamp $text\n".toByteArray())
     }
 

@@ -316,7 +316,8 @@ kbase_kmod_dev_create(int fd, uint32_t flags, const struct pan_kmod_allocator *a
       return NULL;
    }
    if (version.minor < 9) {
-      mesa_loge("kbase: CSF uAPI 1.%u has no MEM_ALLOC_EX (needed from 1.9)", version.minor);
+      mesa_loge("kbase: CSF uAPI 1.%u is older than 1.9, the oldest uAPI this backend's calls are "
+                "written for", version.minor);
       return NULL;
    }
 
@@ -324,6 +325,30 @@ kbase_kmod_dev_create(int fd, uint32_t flags, const struct pan_kmod_allocator *a
    if (kbase_kmod_ioctl(fd, KBASE_IOCTL_SET_FLAGS, &set_flags)) {
       mesa_loge("kbase: SET_FLAGS failed (%s)", strerror(errno));
       return NULL;
+   }
+
+   /* A uAPI minor does not prove the calls: MediaTek's r32p1 kbase reports 1.18 but has no
+    * MEM_ALLOC_EX, no BASE_MEM_FIXED and no automatic EXEC_VA zone (all 1.9). A kernel that has
+    * the call refuses flags 0 with a non-zero fixed_address (EINVAL) before it allocates or logs
+    * anything (fixed_address must be 0 without BASE_MEM_FIXED: kbase_api_mem_alloc_ex); only a
+    * missing call answers ENOTTY. Such a kernel places each BO itself: SAME_VA memory where the
+    * mmap() of its cookie puts it, executable memory in an EXEC_VA zone, which must be created
+    * before JIT and before any allocation (kbase_region_tracker_init_exec). The zone is 4 GiB at
+    * the end of the SAME_VA zone, so all shaders share one 4 GiB window, as in PanVK's executable
+    * heap. */
+   union kbase_ioctl_mem_alloc_ex alloc_ex_probe = {
+      .in = { .fixed_address = sysconf(_SC_PAGESIZE) },
+   };
+   bool kernel_places_bos =
+      kbase_kmod_ioctl(fd, KBASE_IOCTL_MEM_ALLOC_EX, &alloc_ex_probe) && errno == ENOTTY;
+   if (kernel_places_bos) {
+      struct kbase_ioctl_mem_exec_init exec = {
+         .va_pages = (1ull << 32) / sysconf(_SC_PAGESIZE),
+      };
+      if (kbase_kmod_ioctl(fd, KBASE_IOCTL_MEM_EXEC_INIT, &exec)) {
+         mesa_loge("kbase: MEM_EXEC_INIT failed (%s)", strerror(errno));
+         return NULL;
+      }
    }
 
    /* kbase allocates tiler heap contexts and chunks itself, without SAME_VA, in the CUSTOM_VA
@@ -348,6 +373,7 @@ kbase_kmod_dev_create(int fd, uint32_t flags, const struct pan_kmod_allocator *a
    kdev->uapi_major = version.major;
    kdev->uapi_minor = version.minor;
    kdev->page_size = sysconf(_SC_PAGESIZE);
+   kdev->kernel_places_bos = kernel_places_bos;
    const char *debug = os_get_option("PAN_KBASE_DEBUG");
    kdev->debug_bo = debug && strstr(debug, "bo");
 
@@ -392,11 +418,12 @@ kbase_kmod_dev_create(int fd, uint32_t flags, const struct pan_kmod_allocator *a
    kbase_fill_props(kdev, &raw);
 
    mesa_logi("kbase: CSF uAPI %u.%u, page size %u, gpu_id 0x%" PRIx64 " variant 0x%x, "
-             "%u CSG slots x %u CS, %u CS registers, %u scoreboards, coherency %u",
+             "%u CSG slots x %u CS, %u CS registers, %u scoreboards, coherency %u%s",
              kdev->uapi_major, kdev->uapi_minor, kdev->page_size, kdev->base.props.gpu_id,
              kdev->base.props.gpu_variant, kdev->csif.csg_slot_count,
              kdev->csif.cs_slot_count, kdev->csif.cs_reg_count,
-             kdev->csif.scoreboard_slot_count, kdev->coherency_mode);
+             kdev->csif.scoreboard_slot_count, kdev->coherency_mode,
+             kdev->kernel_places_bos ? ", no MEM_ALLOC_EX: the kernel places BOs" : "");
 
    return &kdev->base;
 
@@ -470,6 +497,14 @@ kbase_kmod_get_csif_props(const struct pan_kmod_dev *dev)
  * (pan_kmod_bo::fixed_va), the bind only checks it, and the BO's free unmaps (and so frees) it.
  *
  * Imported dma-bufs (kbase_kmod_bo_import) are SAME_VA too, and are placed the same way.
+ *
+ * A kernel without MEM_ALLOC_EX (kbase_kmod_dev::kernel_places_bos) has no BASE_MEM_FIXED, so it
+ * places every BO itself, at its allocation (kbase_bo_place), and the bind only checks the VA, as
+ * for event memory: executable BOs in the EXEC_VA zone (freed with MEM_FREE), all others SAME_VA,
+ * held by a PROT_NONE mapping of their cookie (unmapping it frees them); PanVK's own CPU mappings
+ * are further mmap()s at the GPU VA. kbase aligns a SAME_VA mapping of 2 MiB or more to 2 MiB
+ * (kbase_context_get_unmapped_area), so a BO of 64 KiB or more reserves at least 2 MiB of VA,
+ * backed by its own pages only: an interleaved 64K image needs a 64 KiB aligned VA.
  */
 
 struct kbase_kmod_bo {
@@ -480,12 +515,18 @@ struct kbase_kmod_bo {
    struct kbase_kmod_vm *vm;
    /* The last CPU mapping handed out, for MEM_SYNC. */
    void *cpu;
-   /* GPU_SYNC BOs and imported dma-bufs: the mapping of the SAME_VA region, whose address is
-    * the GPU VA (fixed_va); unmapping it frees the region. */
+   /* GPU_SYNC BOs, imported dma-bufs and BOs the kernel places: the mapping of the SAME_VA
+    * region, whose address is the GPU VA (fixed_va); unmapping it frees the region. */
    void *same_va_cpu;
+   /* The length of that mapping when it is longer than the BO (a reserved 2 MiB), else 0. */
+   uint64_t same_va_size;
+   /* An executable BO the kernel placed in the EXEC_VA zone: freed with MEM_FREE. */
+   bool exec_region;
    /* Imported dma-bufs: held GPU-mapped by a sticky resource mapping. */
    bool sticky;
 };
+
+static int kbase_bo_place(struct kbase_kmod_dev *kdev, struct kbase_kmod_bo *bo);
 
 struct kbase_kmod_vm {
    struct pan_kmod_vm base;
@@ -553,6 +594,8 @@ kbase_kmod_bo_alloc(struct pan_kmod_dev *dev, struct pan_kmod_vm *exclusive_vm, 
          goto err_free;
       }
       bo->base.fixed_va = (uintptr_t)bo->same_va_cpu;
+   } else if (kdev->kernel_places_bos && kbase_bo_place(kdev, bo)) {
+      goto err_free;
    }
 
    return &bo->base;
@@ -593,6 +636,60 @@ kbase_bo_alloc_flags(const struct kbase_kmod_bo *bo)
       f |= BASE_MEM_COHERENT_LOCAL;
 
    return f;
+}
+
+/* Allocates a BO where a kernel without BASE_MEM_FIXED puts it (kernel_places_bos), and records
+ * that VA as the BO's fixed_va. */
+static int
+kbase_bo_place(struct kbase_kmod_dev *kdev, struct kbase_kmod_bo *bo)
+{
+   int fd = kdev->base.fd;
+   uint64_t pages = bo->base.size / kdev->page_size;
+   uint64_t flags = kbase_bo_alloc_flags(bo) & ~BASE_MEM_FIXED;
+
+   if (bo->base.flags & PAN_KMOD_BO_FLAG_EXECUTABLE) {
+      union kbase_ioctl_mem_alloc req = {
+         .in = { .va_pages = pages, .commit_pages = pages, .flags = flags },
+      };
+      if (kbase_kmod_ioctl(fd, KBASE_IOCTL_MEM_ALLOC, &req)) {
+         mesa_loge("kbase: executable allocation of %" PRIu64 " pages (flags 0x%" PRIx64
+                   ") failed: %s", pages, flags, strerror(errno));
+         return -1;
+      }
+      bo->base.fixed_va = req.out.gpu_va;
+      bo->exec_region = true;
+   } else {
+      uint64_t two_mib = (2ull << 20) / kdev->page_size;
+      uint64_t va_pages =
+         bo->base.size >= 64 * 1024 ? align64(pages, two_mib) : pages;
+      uint64_t same_va_flags = flags | BASE_MEM_SAME_VA;
+      union kbase_ioctl_mem_alloc req = {
+         .in = { .va_pages = va_pages, .commit_pages = pages, .flags = same_va_flags },
+      };
+      if (kbase_kmod_ioctl(fd, KBASE_IOCTL_MEM_ALLOC, &req)) {
+         mesa_loge("kbase: SAME_VA allocation of %" PRIu64 " of %" PRIu64 " pages (flags 0x%" PRIx64
+                   ") failed: %s", pages, va_pages, same_va_flags, strerror(errno));
+         return -1;
+      }
+      uint64_t len = va_pages * kdev->page_size;
+      void *hold = os_mmap(NULL, len, PROT_NONE, MAP_SHARED, fd, req.out.gpu_va);
+      if (hold == MAP_FAILED) {
+         mesa_loge("kbase: mapping the cookie of a %" PRIu64 "-page SAME_VA allocation failed: %s",
+                   va_pages, strerror(errno));
+         struct kbase_ioctl_mem_free free_req = { .gpu_addr = req.out.gpu_va };
+         if (kbase_kmod_ioctl(fd, KBASE_IOCTL_MEM_FREE, &free_req))
+            mesa_loge("kbase: freeing the cookie of that allocation failed: %s", strerror(errno));
+         return -1;
+      }
+      bo->same_va_cpu = hold;
+      bo->same_va_size = len != bo->base.size ? len : 0;
+      bo->base.fixed_va = (uintptr_t)hold;
+   }
+
+   if (kdev->debug_bo)
+      mesa_logi("kbase: bo %u placed by the kernel at 0x%" PRIx64 " (%s)", bo->base.handle,
+                bo->base.fixed_va, bo->exec_region ? "EXEC_VA" : "SAME_VA");
+   return 0;
 }
 
 static int
@@ -669,7 +766,7 @@ kbase_bo_unbind(struct kbase_kmod_bo *bo, bool forget)
       mesa_logi("kbase: bo %u unbind 0x%" PRIx64 "-0x%" PRIx64, bo->base.handle, bo->gpu_va,
                 bo->gpu_va + bo->base.size);
 
-   /* Event memory and imports stay until the BO is freed. */
+   /* Event memory, imports and BOs the kernel placed stay until the BO is freed. */
    if (!bo->base.fixed_va && kbase_kmod_ioctl(kdev->base.fd, KBASE_IOCTL_MEM_FREE, &req)) {
       int err = errno;
       mesa_loge("kbase: MEM_FREE at 0x%" PRIx64 " failed: %s", bo->gpu_va, strerror(err));
@@ -705,9 +802,16 @@ kbase_kmod_bo_free(struct pan_kmod_bo *pbo)
                    strerror(errno));
    }
 
-   /* Unmapping the SAME_VA mapping frees the event memory or the import. */
+   /* Unmapping the SAME_VA mapping frees the event memory, the import or the placed BO. */
    if (bo->same_va_cpu)
-      os_munmap(bo->same_va_cpu, pbo->size);
+      os_munmap(bo->same_va_cpu, bo->same_va_size ? bo->same_va_size : pbo->size);
+
+   if (bo->exec_region) {
+      struct kbase_ioctl_mem_free req = { .gpu_addr = pbo->fixed_va };
+      if (kbase_kmod_ioctl(pbo->dev->fd, KBASE_IOCTL_MEM_FREE, &req))
+         mesa_loge("kbase: MEM_FREE of the executable BO at 0x%" PRIx64 " failed: %s",
+                   pbo->fixed_va, strerror(errno));
+   }
 
    pan_kmod_bo_cleanup(pbo);
    pan_kmod_dev_free(pbo->dev, bo);

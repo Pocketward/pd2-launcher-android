@@ -1,0 +1,22 @@
+Subject: [PATCH] wowbox64: GetEnvironmentVariableA ends the value with a NUL
+
+wowbox64's GetEnvironmentVariableA (wine/common/wrt.c) copied the value with
+RtlUnicodeToMultiByteN and wrote no closing NUL. Box64's Windows GetEnv (src/os/os_wine.c) reads
+every variable into one static 1024-byte buffer, so a value kept the end of a longer value read
+before it, and the last name of a BOX64_DYNAREC_PROGRAMS list (patch 0006) did not match. The
+copy is now ended with a NUL when it leaves room for one.
+
+Upstream: ptitSeb/box64 8851be9278e71b3bd608465836a34c2826ba7abb, "[WOWBOX64] Fixed
+GetEnvironnementVariableA (for #4585)" (ptitSeb, 2026-10-22), the same change.
+---
+diff --git a/wine/common/wrt.c b/wine/common/wrt.c
+--- a/wine/common/wrt.c
++++ b/wine/common/wrt.c
+@@ -93,6 +93,7 @@ DWORD WINAPI GetEnvironmentVariableA(LPCSTR name, LPSTR value, DWORD size)
+     else {
+         ret = 0;
+         if (len) RtlUnicodeToMultiByteN(value, size, &ret, valueW, len * sizeof(WCHAR));
++        if (ret < size) value[ret] = 0;
+     }
+
+     RtlFreeUnicodeString(&nameU);

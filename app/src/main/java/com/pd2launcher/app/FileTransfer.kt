@@ -14,7 +14,7 @@ import java.nio.file.attribute.PosixFilePermissions
 /**
  * Settings → App → Game files: Import files… (picked files into a folder of the game folder) and
  * Export files… (files and folders of the game folder into a folder the player picks), any file
- * alike. Import refuses while the game runs or starts or the Launcher
+ * alike, programs and libraries too. Import refuses while the game runs or starts or the Launcher
  * works on the game folder, as [GameFilesProvider] does. Blocking: call off the main thread.
  */
 object FileTransfer {
@@ -54,8 +54,7 @@ object FileTransfer {
 
     /**
      * Copies the picked [uris] into [folderId]; [ask] decides for each one whose name is taken.
-     * A file is written through a temporary name, so the game never sees half of it. Nothing is
-     * copied when a picked file is a program or library ([DocumentPaths.nameRefusal]).
+     * A file is written through a temporary name, so the game never sees half of it.
      */
     suspend fun import(context: Context, uris: List<Uri>, folderId: String, ask: suspend (String) -> Choice): Outcome {
         val documents = GameFilesProvider.documents(context)
@@ -63,7 +62,6 @@ object FileTransfer {
             val refusal = GameFilesProvider.refusal(documents, folderId)
             if (refusal != null) return Outcome.Refused(refusal)
             val names = uris.map { uri -> displayName(context, uri) ?: throw IOException("a picked file has no name") }
-            names.firstNotNullOfOrNull(documents::nameRefusal)?.let { return Outcome.Refused(it) }
             val folder = documents.file(folderId)
             var copied = 0
             var skipped = 0

@@ -71,6 +71,7 @@ import com.pd2launcher.app.GameDisplay
 import com.pd2launcher.app.GameInput
 import com.pd2launcher.app.GameResolution
 import com.pd2launcher.app.LauncherSettings
+import com.pd2launcher.app.LauncherStart
 import com.pd2launcher.app.PresentServer
 import com.pd2launcher.app.R
 import com.pd2launcher.app.ScreenRate
@@ -88,8 +89,11 @@ import com.pd2launcher.app.input.isController
 import com.pd2launcher.app.input.LayoutStore
 import com.pd2launcher.app.input.Mouse
 import com.pd2launcher.app.input.PadAxes
+import com.pd2launcher.app.input.PadButton
 import com.pd2launcher.app.input.PadInput
+import com.pd2launcher.app.input.PadLayouts
 import com.pd2launcher.app.input.RelayEvent
+import com.pd2launcher.app.input.ScriptedPad
 import com.pd2launcher.app.input.TouchGestures
 import com.pd2launcher.app.input.VirtualPad
 import com.pd2launcher.app.input.PadState
@@ -150,7 +154,8 @@ enum class GameLayer {
  * The Game view: the X screen ([framebuffer]) copied into a SurfaceView every display frame,
  * placed as Display says ([GameDisplay], from Settings or the in-game menu, followed live;
  * [GameResolution.viewGeometry]): with Fit to screen what PD2 shows (its 4:3 menu while
- * [GamePicture] says MENU, else its 16:9 game picture) as large as the screen allows, the X
+ * [GamePicture] says MENU, else its 16:9 game picture), or the official launcher's 800 x 600
+ * window in the middle ([GameResolution.LAUNCHER_WINDOW]), as large as the screen allows, the X
  * screen's other parts past the screen's edges where they do not fit; with Center at its own
  * pixels in the middle. Or the game's own buffers on a layer above it while it
  * presents them there ([PresentServer]), the display asked for its highest mode (at the screen's
@@ -240,6 +245,8 @@ fun GameView(
     val app by AppSettingsStore.current.collectAsState()
     // The launcher is a mouse/touch window: no menu/world picture to read.
     val picture = gamePicture(framebuffer, if (running && !launcher) header else null)
+    // While the official launcher starts: its session's start, until its first window shows.
+    val starting = launcherStarting(framebuffer, header.takeIf { running }, status.launcherSince.takeIf { launcher && !previewLauncher })
     // Android's keyboard as it is, closed by its own controls too: here it opens only for the game.
     val keyboard = WindowInsets.isImeVisible
     val buttons = remember { CustomButtons { events -> surface?.send(events) } }
@@ -297,13 +304,13 @@ fun GameView(
             if (!running || screen == null || framebuffer == null) {
                 Text(stringResource(R.string.game_view_waiting), style = Type.Body, color = Palette.Text)
             } else key(screen, framebuffer) {
-                // Display: what PD2 shows as large as fits, or the X screen's own pixels in the middle; the
-                // official launcher's whole window always fits (it has a resolution of its own). A new size
-                // keeps both layers (GameSurface.surfaceChanged).
-                val display = if (launcher) GameDisplay.FIT else app.gameDisplay
+                // Display: what PD2 or the official launcher's window shows as large as fits, or the X
+                // screen's own pixels in the middle. A new size keeps both layers (GameSurface.surfaceChanged).
+                val display = app.gameDisplay
+                val xScreen = screen.width to screen.height
                 val geometry = GameResolution.viewGeometry(
-                    display, GameResolution.shownPicture(launcher, picture == GamePicture.MENU),
-                    screen.width to screen.height, constraints.maxWidth, constraints.maxHeight,
+                    display, GameResolution.shownArea(launcher, picture == GamePicture.MENU, xScreen),
+                    xScreen, constraints.maxWidth, constraints.maxHeight,
                 )
                 if (BuildConfig.DEBUG) {
                     LaunchedEffect(geometry) {
@@ -355,7 +362,11 @@ fun GameView(
             if (layer.padShown(asking) && controls.onScreenShown(controller, picture, launcher)) {
                 OnScreenControls(layout, controls.onScreenOpacity, virtualPad, buttons, inert = layer.padInert(app.lowFrameRateInBackground))
             }
-            if (layer == GameLayer.NONE) MenuGlyph(Modifier.align(Alignment.TopEnd).windowInsetsPadding(WindowInsets.safeDrawing), openMenu)
+            // Over the official launcher's window at the top left: its own buttons (minimize, close, and the
+            // close of its Options and filters) are at the top right, where Fit to screen can put them.
+            val glyphCorner = if (launcher) Alignment.TopStart else Alignment.TopEnd
+            if (layer == GameLayer.NONE) MenuGlyph(Modifier.align(glyphCorner).windowInsetsPadding(WindowInsets.safeDrawing), openMenu)
+            if (layer == GameLayer.NONE && starting != null) LauncherStartingNotice(starting, Modifier.align(Alignment.Center))
             // Top centre, clear of the default controls and of the menu; it takes no touch.
             if (layer.fpsShown(app.showFps, launcher)) FpsCounter({ fps }, Modifier.align(Alignment.TopCenter).windowInsetsPadding(WindowInsets.safeDrawing))
             if (layer == GameLayer.EDIT) ControlsEditor(sample = preview != null, onClose = { go(GameLayer.NONE) })
@@ -510,6 +521,39 @@ private object SteadiedPicture {
     }
 }
 
+/**
+ * While the official launcher starts ([LauncherStart]): its session's start ([since]) until the X
+ * [screen] (the [framebuffer]'s) shows its first window, which is looked for every
+ * [LauncherStart.LOOK_MS] off the main thread; null from then on, also for a Game view made again
+ * in the same session ([LauncherShown]), and while no session or X screen is known.
+ */
+@Composable
+private fun launcherStarting(framebuffer: Framebuffer?, screen: XwdHeader?, since: Long?): Long? {
+    var shown by remember(since) { mutableStateOf(since == null || LauncherShown.seen(since)) }
+    LaunchedEffect(framebuffer, screen, since) {
+        if (shown || framebuffer == null || screen == null || since == null || screen.bitsPerPixel != 32) return@LaunchedEffect
+        withContext(Dispatchers.IO) {
+            val pixels = framebuffer.map()?.takeIf { it.header == screen } ?: return@withContext
+            while (isActive && !LauncherStart.shows(screen.width, screen.height, pixels::pixel)) delay(LauncherStart.LOOK_MS)
+            if (!isActive) return@withContext
+            LauncherShown.keep(since)
+            withContext(Dispatchers.Main) { shown = true }
+        }
+    }
+    return since.takeIf { !shown && screen != null && screen.bitsPerPixel == 32 && framebuffer != null }
+}
+
+/** The official launcher's session ([SessionStatus.launcherSince]) whose first window has shown ([launcherStarting]). */
+private object LauncherShown {
+    @Volatile private var since: Long? = null
+
+    fun seen(since: Long): Boolean = this.since == since
+
+    fun keep(since: Long) {
+        this.since = since
+    }
+}
+
 /** How often the Game view looks at the shape of PD2's picture. */
 private const val PICTURE_MS = 250L
 
@@ -518,6 +562,19 @@ private const val GEOMETRY_TAG = "pd2-view-geometry"
 
 /** Debug builds: one line per change of the controller's mode, from the chord or the Controls screen. */
 private const val PAD_MODE_TAG = "pd2-pad-mode"
+
+/**
+ * Debug builds: each key of a controller (a gamepad or joystick source; no keyboard, so no typed
+ * text), with the keycode its layout gives it and the one the game gets, at debug level.
+ */
+private const val PAD_KEY_TAG = "pd2-pad-keys"
+
+/**
+ * Debug builds: the pad states the game gets (buttons as XInput bits, triggers, thumbs), at debug
+ * level: each change of a button or trigger, a stick's at most every [PAD_STATE_LOG_MS].
+ */
+private const val PAD_STATE_TAG = "pd2-pad-state"
+private const val PAD_STATE_LOG_MS = 100L
 
 /**
  * The X screen and the input into it. While attached it sees every key and controller motion of
@@ -644,6 +701,21 @@ private class GameSurface(
     private val longPress = Runnable { touch?.longPressDue(SystemClock.uptimeMillis()) }
     private var copy: FrameCopy? = null
     private var copyShape: List<Int>? = null
+    /** Debug builds: the pad state last logged ([PAD_STATE_TAG]) and when. */
+    private var loggedPad: PadState? = null
+    private var loggedPadAt = 0L
+
+    /** Debug builds: [state] to logcat when a button or trigger changed, or a stick at most every [PAD_STATE_LOG_MS]. */
+    private fun logPadState(state: PadState) {
+        val last = loggedPad
+        val now = SystemClock.uptimeMillis()
+        val keys = last == null || state.buttons != last.buttons || state.leftTrigger != last.leftTrigger ||
+            state.rightTrigger != last.rightTrigger
+        if (!keys && now - loggedPadAt < PAD_STATE_LOG_MS) return
+        loggedPad = state
+        loggedPadAt = now
+        Log.d(PAD_STATE_TAG, "$state")
+    }
 
     /** The copy's counts so far ([FrameCopy.counts]); null while not copying. Main thread. */
     fun counts(): FrameCounts? = copy?.counts()
@@ -672,7 +744,11 @@ private class GameSurface(
             field = value
             pad = value?.let { game ->
                 PadInput(
-                    pad = { game.gamepad.write(it) }, relay = ::send, onMenu = { onMenu() }, controls = controls,
+                    pad = { state ->
+                        game.gamepad.write(state)
+                        if (BuildConfig.DEBUG) logPadState(state)
+                    },
+                    relay = ::send, onMenu = { onMenu() }, controls = controls,
                     pointerScale = screen.width / GameResolution.OWN_SIZE.first.toFloat(),
                     onMode = { onMouseMode(it) },
                 )
@@ -690,6 +766,7 @@ private class GameSurface(
             field = value
             if (value) {
                 pad?.releaseAll()
+                releaseScripted("an overlay opened")
                 // Keys go to the native screens from now on, their releases too: X lets go now.
                 releaseKeys()
                 handler.removeCallbacks(longPress)
@@ -719,6 +796,43 @@ private class GameSurface(
         pad?.releaseAll()
     }
 
+    /**
+     * Debug builds: the debug pad injector's way to this view's controller ([ScriptedPad]); none
+     * in a release build. The scripted controller takes input only as a real controller's keys
+     * reach the game: a game's pad, no overlay over it, and the window's focus (which also stands
+     * for a focus check before every command). The mode switches whenever there is a game's pad,
+     * as the Controls screen switches it.
+     */
+    private val scriptedTarget: ScriptedPad.Target? = if (!BuildConfig.DEBUG) null else object : ScriptedPad.Target {
+        override fun scripted(buttons: Set<PadButton>, axes: PadAxes): String? {
+            val p = pad ?: return "the game's controller is not ready"
+            if (suspended) return "an overlay shows over the game (the menu or Controls)"
+            if (!hasWindowFocus()) return "the game's window does not have the focus"
+            p.onScripted(buttons, axes)
+            clock()
+            return null
+        }
+
+        override fun scriptedMouseMode(on: Boolean): String? {
+            if (pad == null) return "the game's controller is not ready"
+            useMouseMode(on)
+            // A scripted stick already out now moves the pointer.
+            clock()
+            return null
+        }
+    }
+
+    /**
+     * Debug builds: the scripted controller lets go, and the injector forgets what it holds
+     * ([ScriptedPad.onReleased]) for the reason [why], so that it presses nothing again later.
+     * A real controller's own releases (a device gone, a cancelled key) keep it.
+     */
+    private fun releaseScripted(why: String) {
+        if (!BuildConfig.DEBUG) return
+        pad?.onScripted(emptySet(), PadAxes())
+        ScriptedPad.onReleased?.invoke(why)
+    }
+
     /** Lets go of the keyboard keys X holds down from here. */
     private fun releaseKeys() {
         if (keysDown.isEmpty()) return
@@ -731,6 +845,7 @@ private class GameSurface(
         // The game runs on in the background: nothing stays held there (a running character).
         if (!hasWindowFocus) {
             pad?.releaseAll()
+            releaseScripted("the window lost the focus")
             releaseKeys()
             send(mouse.release())
         }
@@ -828,14 +943,29 @@ private class GameSurface(
         val window = window ?: return
         val base = window.callback
         val wrapper = object : Window.Callback by base {
-            override fun dispatchKeyEvent(event: KeyEvent): Boolean =
-                onGameKey(event) || (suspended && onOverlayKey(event)) || base.dispatchKeyEvent(event)
+            // A controller's keys as its layout reads them ([PadLayouts]), for the game, the
+            // overlay and the screens alike.
+            override fun dispatchKeyEvent(raw: KeyEvent): Boolean {
+                val event = PadLayouts.keyEvent(raw)
+                if (BuildConfig.DEBUG &&
+                    (raw.isFromSource(InputDevice.SOURCE_GAMEPAD) || raw.isFromSource(InputDevice.SOURCE_JOYSTICK))
+                ) {
+                    Log.d(
+                        PAD_KEY_TAG,
+                        "device ${raw.deviceId} source 0x${Integer.toHexString(raw.source)} action ${raw.action} " +
+                            "scan ${raw.scanCode} key ${raw.keyCode} -> ${event.keyCode} game ${PadLayouts.gameKeyCode(event)} " +
+                            "(${raw.device?.let { PadLayouts.entry(it).pick.layout }})",
+                    )
+                }
+                return onGameKey(event) || (suspended && onOverlayKey(event)) || base.dispatchKeyEvent(event)
+            }
             override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean =
                 onGameMotion(event) || base.dispatchGenericMotionEvent(event)
         }
         window.callback = wrapper
         callback = base
         if (sends.isShutdown) sends = Executors.newSingleThreadExecutor { Thread(it, "pd2-input") }
+        if (BuildConfig.DEBUG) ScriptedPad.target = scriptedTarget
     }
 
     // The controller's clock ([frame]) runs only while the window shows (clock): in the background
@@ -866,12 +996,15 @@ private class GameSurface(
     private fun releaseHeld() {
         send(mouse.release())
         pad?.releaseAll()
+        releaseScripted("the game left the screen")
         releaseKeys()
         customButtons?.releaseAll()
         virtualPad?.releaseAll()
     }
 
     override fun onDetachedFromWindow() {
+        if (scriptedTarget != null && ScriptedPad.target === scriptedTarget) ScriptedPad.target = null
+        releaseScripted("the Game view closed")
         Choreographer.getInstance().removeFrameCallback(frame)
         clockRunning = false
         callback?.let { window?.callback = it }
@@ -929,7 +1062,8 @@ private class GameSurface(
                 return true
             }
             if (event.repeatCount == 0) {
-                pad?.onKey(code, down)
+                // A Microsoft pad's Back is its Select here, for the game only (PadLayouts.gameKeyCode).
+                pad?.onKey(PadLayouts.gameKeyCode(event), down)
                 clock()
             }
             return true
@@ -952,18 +1086,7 @@ private class GameSurface(
             return true
         }
         if (event.action != MotionEvent.ACTION_MOVE) return false
-        pad?.onAxes(
-            PadAxes(
-                lx = event.getAxisValue(MotionEvent.AXIS_X),
-                ly = event.getAxisValue(MotionEvent.AXIS_Y),
-                rx = event.getAxisValue(MotionEvent.AXIS_Z),
-                ry = event.getAxisValue(MotionEvent.AXIS_RZ),
-                leftTrigger = maxOf(event.getAxisValue(MotionEvent.AXIS_LTRIGGER), event.getAxisValue(MotionEvent.AXIS_BRAKE)),
-                rightTrigger = maxOf(event.getAxisValue(MotionEvent.AXIS_RTRIGGER), event.getAxisValue(MotionEvent.AXIS_GAS)),
-                hatX = event.getAxisValue(MotionEvent.AXIS_HAT_X),
-                hatY = event.getAxisValue(MotionEvent.AXIS_HAT_Y),
-            ),
-        )
+        pad?.onAxes(PadLayouts.axes(event))
         clock()
         return true
     }

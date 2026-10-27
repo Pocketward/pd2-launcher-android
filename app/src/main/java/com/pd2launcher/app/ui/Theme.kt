@@ -11,7 +11,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
 /**
- * The native screens' tokens: the desktop launcher's look on a dark handheld panel. Teal marks only the main action, the current step and focus; amber and red
+ * The native screens' tokens: the desktop launcher's look on a dark handheld panel. Teal marks only the main action (and Play without updating under Update), the current step and focus; amber and red
  * mean warning and error. The brand mark's gold (#E3AA3E, the "II" in ic_brand_mark and the
  * launcher icon) belongs to the brand alone and is no token here. Every text colour reaches
  * 4.5:1 on [Background] and [Surface] (PaletteContrastTest).
@@ -23,6 +23,15 @@ object Palette {
     val Rule = Color(0xFF263036)
     /** The edge of a quiet pill floating over content (Back, Stop): clearer than [Rule], which marks a disabled one. */
     val Edge = Color(0xFF33404A)
+    /**
+     * A tool button's fill ([Kind.TONAL]: the official PD2 launcher under Play): clearly lighter
+     * than the teal glow behind Play's buttons ([Lattice]), so it reads as a button; [Text] is 8:1 on it.
+     */
+    val Tonal = Color(0xFF31434A)
+    /** A tool button's edge, a step over [Tonal]. */
+    val TonalEdge = Color(0xFF42565D)
+    /** A focused tool button's fill, inside the teal focus ring. */
+    val TonalFocus = Color(0xFF3A5058)
     val Text = Color(0xFFE3E7E4)
     val Muted = Color(0xFF8B979C)
     /** Rows not reached yet and disabled labels: dimmer than [Muted], still 4.9:1 and 4.6:1. */

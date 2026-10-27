@@ -1,5 +1,6 @@
 package com.pd2launcher.app.ui
 
+import android.os.SystemClock
 import android.view.KeyEvent
 import androidx.annotation.DrawableRes
 import androidx.compose.animation.AnimatedVisibility
@@ -50,6 +51,7 @@ import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -86,6 +88,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.pd2launcher.app.FpsReading
 import com.pd2launcher.app.GameDisplay
+import com.pd2launcher.app.LauncherStart
 import com.pd2launcher.app.R
 import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
@@ -136,6 +139,38 @@ internal fun FpsCounter(fps: () -> FpsReading?, modifier: Modifier) {
         modifier = modifier.padding(6.dp).alpha(0.6f).clip(RowShape).background(Palette.Background.copy(alpha = 0.5f))
             .padding(horizontal = 6.dp, vertical = 2.dp),
     )
+}
+
+/**
+ * "Starting the official PD2 launcher…" under a spinner in the middle of the black X screen while
+ * the launcher starts ([LauncherStart]), in the fps counter's style; from [LauncherStart.SLOW_MS]
+ * after [since] (elapsed real time) a second line says that the launcher can take a minute to
+ * start on slower phones. It takes no touch.
+ */
+@Composable
+internal fun LauncherStartingNotice(since: Long, modifier: Modifier) {
+    var slow by remember(since) { mutableStateOf(LauncherStart.slow(since, SystemClock.elapsedRealtime())) }
+    LaunchedEffect(since) {
+        delay(since + LauncherStart.SLOW_MS - SystemClock.elapsedRealtime())
+        slow = true
+    }
+    Column(
+        modifier.padding(16.dp).widthIn(max = 460.dp).clip(RowShape).background(Palette.Background.copy(alpha = 0.8f))
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 3.dp, color = Palette.Teal, trackColor = Palette.Rule)
+        Text(
+            stringResource(R.string.launcher_starting), style = Type.Body, color = Palette.Text, textAlign = TextAlign.Center,
+            modifier = Modifier.padding(top = 10.dp),
+        )
+        if (slow) {
+            Text(
+                stringResource(R.string.launcher_starting_slow), style = Type.Hint, color = Palette.Muted, textAlign = TextAlign.Center,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
+    }
 }
 
 /**
@@ -204,13 +239,18 @@ internal enum class QuickTile { ON_SCREEN, FPS, DISPLAY, KEYBOARD }
 /**
  * What the menu offers over what runs. Over the game: the four tiles, Frame rate and the
  * Controls screen. Over the official PD2 [launcher], a mouse and touch window with no on-screen
- * controls, no game fps, a size of its own and no controller to set up: the Keyboard tile only.
- * The Settings tab is the same for both; its Stop closes the launcher there.
+ * controls, no game fps and no controller to set up: the Display tile (the game's Display, which
+ * shows the launcher's window too) and the Keyboard tile. The Settings tab is the same for both;
+ * its Stop closes the launcher there.
  */
 internal data class MenuItems(val tiles: List<QuickTile>, val frameRate: Boolean, val controls: Boolean) {
     companion object {
         fun of(launcher: Boolean): MenuItems =
-            if (launcher) MenuItems(listOf(QuickTile.KEYBOARD), frameRate = false, controls = false) else MenuItems(QuickTile.entries, frameRate = true, controls = true)
+            if (launcher) {
+                MenuItems(listOf(QuickTile.DISPLAY, QuickTile.KEYBOARD), frameRate = false, controls = false)
+            } else {
+                MenuItems(QuickTile.entries, frameRate = true, controls = true)
+            }
     }
 }
 

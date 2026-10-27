@@ -5,11 +5,14 @@ import android.content.Context
 import android.net.Uri
 import android.provider.DocumentsContract
 import android.util.Log
+import com.pd2launcher.app.control.Command
 import com.pd2launcher.app.control.ExistingProblem
 import com.pd2launcher.app.control.Installer
+import com.pd2launcher.app.control.Snapshot
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.io.InputStream
 import java.nio.file.Files
 import java.nio.file.attribute.PosixFilePermissions
 import java.util.concurrent.Executors
@@ -24,8 +27,9 @@ import kotlinx.coroutines.flow.asStateFlow
  * the engine can read it: a Diablo II folder into its own [SessionPaths.importedGame]. Each copy
  * replaces the previous ones, all but the one the installation uses in place ([replacedCopies]);
  * the engine gets the folder once the copy is complete. The picked files are only read. A copy
- * that fails, or a folder that is refused, leaves nothing, even when the engine's refusal comes
- * after [VERDICT_TIMEOUT_MS].
+ * that fails, a copy that Close stops ([cancel]), or a folder that is refused, leaves nothing,
+ * even when the engine's refusal comes after [VERDICT_TIMEOUT_MS]; a copy that the end of the
+ * app's process cut short goes at the next session start ([removePartialCopies]).
  */
 object SourceImport {
     private const val TAG = "pd2-source"
@@ -43,75 +47,187 @@ object SourceImport {
     /** The deepest a picked folder may nest, and the most files and folders it may hold ([walk]). */
     const val MAX_DEPTH = 32
     const val MAX_ENTRIES = 200_000
+    /**
+     * In a copy's token folder from its first file until the copy is complete and has the engine's
+     * word ([SourceCopy.Copied]): a token folder that still holds it at a session start is a copy
+     * cut short ([partialCopies]).
+     */
+    const val PARTIAL = ".copying"
     private val worker = Executors.newSingleThreadExecutor { Thread(it, "pd2-source") }
     /** Counts the folder copies started; a copy's late verdict counts only while no newer one started. */
     private val generation = AtomicLong()
+    /** The generation of the copy that Close stopped ([cancel]); its thread stops at its next check. */
+    private val cancelled = AtomicLong()
+    /** Close runs: no copy starts until the next session start ([allowCopies]). With [lock]. */
+    private var closed = false
+    /** Orders a copy's start ([copyFolder]) and Close's [cancel]. */
+    private val lock = Any()
+    /** Where the copy that Close stopped writes its end: the session's log ([cancel]). */
+    @Volatile private var closeLog: ((String) -> Unit)? = null
+    /** The token folder of the copy running now, which [removePartialCopies] keeps. */
+    @Volatile private var running: File? = null
     private val _copy = MutableStateFlow<SourceCopy>(SourceCopy.Idle)
     val copy: StateFlow<SourceCopy> = _copy.asStateFlow()
 
+    /** Close stopped the folder copy ([cancel]): its thread ends, and what it copied goes. */
+    class CopyCancelled : IOException("the folder copy was stopped")
+
     /**
-     * One picked entry: its path below the picked folder, its size, where to read it, and its
-     * last change. A folder is listed too, so an empty one is copied as well.
+     * Close: the folder copy running now stops at its next check (a block it reads, a folder it
+     * lists, the wait for the engine's word on it), what it copied goes, and the copy then shows as
+     * never started ([SourceCopy.Idle]), so the player can import again later; [log] (the session's
+     * log) gets how it ended. No copy starts after it until the next session start
+     * ([allowCopies]). Returns whether a copy ran.
      */
-    private data class Pick(val relative: String, val size: Long, val uri: Uri?, val modified: Long = 0)
+    fun cancel(log: (String) -> Unit): Boolean = synchronized(lock) {
+        closed = true
+        if (_copy.value !is SourceCopy.Copying) return false
+        closeLog = log
+        cancelled.set(generation.get())
+        true
+    }
+
+    /** A session starts: copies may start again after a Close ([cancel]). */
+    fun allowCopies() {
+        synchronized(lock) {
+            closed = false
+            closeLog = null
+        }
+    }
+
+    /**
+     * How a copy that ended with [error] shows: as never started ([SourceCopy.Idle]) when Close
+     * stopped it ([CopyCancelled], or [stopped]: a read that Close's end cut off can fail another
+     * way), so the player can import again; else as failed.
+     */
+    fun endOf(error: Throwable, stopped: Boolean): SourceCopy =
+        if (error is CopyCancelled || stopped) SourceCopy.Idle else SourceCopy.Failed(error.message ?: error.javaClass.simpleName)
+
+    /**
+     * The copied Diablo II folder the player chose, from its hand-over to the engine until another
+     * source is chosen ([chosenAfter]) or the engine refuses it; in this process's memory only.
+     * The engine keeps the choice in memory until its Download, so the session gives it to an
+     * engine started since ([SessionService]).
+     */
+    @Volatile
+    var chosen: File? = null
+        private set
+
+    /** [chosen] after the player's [command] ([stillChosen]). */
+    fun chosenAfter(command: Command) {
+        val folder = chosen ?: return
+        if (!stillChosen(command, folder)) chosen = null
+    }
+
+    /**
+     * Whether the copied [folder] is still the player's choice after [command]: not after Start
+     * over, Blizzard's download or another folder.
+     */
+    fun stillChosen(command: Command, folder: File): Boolean =
+        command !is Command.StartOver && !UpgradeImport.declines(command, folder)
+
+    /**
+     * Whether the session gives the [chosen] folder to the engine again: no source was sent to the
+     * engine in its start ([sent]), the copy is still there ([chosenThere]), and the engine, its
+     * check done with nothing running, still needs Diablo II and has not got the folder
+     * ([UpgradeImport.selects]).
+     */
+    fun resends(snapshot: Snapshot, chosen: File?, chosenThere: Boolean, sent: Boolean): Boolean =
+        chosen != null && !sent && UpgradeImport.selects(snapshot, chosen, chosenThere, declined = false)
+
+    /**
+     * One picked entry: its path below the picked folder, its size, its last change, and how to
+     * read it ([open]; null for a folder). A folder is listed too, so an empty one is copied as well.
+     */
+    class Entry(val relative: String, val size: Long, val modified: Long = 0, val open: (() -> InputStream)?)
 
     fun copyFolder(context: Context, tree: Uri) {
         val resolver = context.contentResolver
         val app = context.applicationContext
-        if (_copy.value is SourceCopy.Copying) return
-        _copy.value = SourceCopy.Copying(0, 0)
-        // Only a newer folder copy ends an older one's wait for its verdict.
-        val copy = generation.incrementAndGet()
+        // Only a newer folder copy ends an older one's wait for its verdict. Counted before the
+        // copy shows as running, and with Close's stop in order, so a stop names this copy, or this
+        // copy does not start while Close runs.
+        val copy = synchronized(lock) {
+            if (closed) {
+                Log.i(TAG, "folder copy not started: the app closes")
+                return
+            }
+            if (_copy.value is SourceCopy.Copying) return
+            generation.incrementAndGet().also { _copy.value = SourceCopy.Copying(0, 0) }
+        }
+        val stopped = { cancelled.get() == copy }
+        val stop = { if (stopped()) throw CopyCancelled() }
         worker.execute {
             val paths = SessionPaths(DeviceCheck.dataDir(app))
             var target: File? = null
+            var copied: File? = null
             _copy.value = try {
-                val walked = walk(DocumentsContract.getTreeDocumentId(tree)) { parent -> children(resolver, tree, parent) }
+                val walked = walk(DocumentsContract.getTreeDocumentId(tree)) { parent ->
+                    stop()
+                    children(resolver, tree, parent)
+                }
                 val into = paths.importedGame("copy-${System.currentTimeMillis()}")
                 val picks = walked.map { (relative, entry) ->
-                    val uri = if (entry.folder) null else DocumentsContract.buildDocumentUriUsingTree(tree, entry.id)
-                    Pick(ExistingFolder.canonical(relative), if (entry.folder) 0 else entry.size, uri, if (entry.folder) 0 else entry.modified)
+                    val open = if (entry.folder) null else opener(resolver, DocumentsContract.buildDocumentUriUsingTree(tree, entry.id), relative)
+                    Entry(ExistingFolder.canonical(relative), if (entry.folder) 0 else entry.size, if (entry.folder) 0 else entry.modified, open)
                 }
-                val check = ExistingFolder.check(picks.filter { it.uri != null }.associate { it.relative to it.size })
+                val check = ExistingFolder.check(picks.filter { it.open != null }.associate { it.relative to it.size })
                 // The folder is copied once and used in place (a Launcher copy checks its own space).
                 val total = picks.sumOf { it.size }
                 val free = paths.files.usableSpace
                 when {
-                    check is ExistingFolder.Check.Refused -> {
-                        Log.i(TAG, "folder refused before the copy: ${check.problem}")
-                        SourceCopy.Refused(check.problem)
+                    check is ExistingFolder.Check.Missing -> {
+                        Log.i(TAG, "folder refused before the copy, these files are missing: ${check.files.joinToString(", ")}")
+                        SourceCopy.Missing(check.files)
                     }
                     total > free -> SourceCopy.NoSpace(total, free)
                     else -> {
-                        // This copy's token folder: all that a failed or refused copy removes.
+                        // This copy's token folder: all that a failed, stopped or refused copy removes.
                         val replaced = into.parentFile!!
+                        stop()
                         // A previous copy used in place may still hold the player's characters: they
                         // move into SessionPaths.userSave, so removing the copies takes none.
                         SaveKeeper.moveImported(paths) { Log.i(TAG, it) }
                         target = replaced
+                        copied = into
                         // The engine's word, and while it has none (starting or restarting) the
                         // Launcher's record: without either, the copy in use would go too.
                         val inUse = listOfNotNull(gameFolder(), GameFilesProvider.recordedGameFolder(paths))
+                        // Not for a copy that Close stopped: the earlier copies stay.
                         for (earlier in replacedCopies(paths.imports, inUse)) {
+                            stop()
                             UserlandInstaller.deleteTree(earlier.toPath())
                         }
-                        copyAll(app.contentResolver, into, picks, total)
+                        stop()
+                        // Named running before its mark is made: a session start that finds the
+                        // mark then keeps this copy (removePartialCopies).
+                        running = replaced
+                        copyEntries(into, picks, total, stopped) { done -> _copy.value = SourceCopy.Copying(done, total) }
                         Log.i(TAG, "copied ${picks.size} entries (${total shr 20} MB)")
-                        val picked = folderName(tree.authority, DocumentsContract.getTreeDocumentId(tree), displayName(resolver, tree))
-                        app.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).edit()
-                            .putString(PICKED_FOLDER, picked).putString(PICKED_FROM, tree.authority).apply()
+                        stop()
                         SessionService.command(DiabloSource.selectCommand(into.path))
+                        // After the command is queued: a look of the session that sees the choice
+                        // then comes after it, and does not send it twice.
+                        chosen = into
                         check as ExistingFolder.Check.Usable
-                        val current = { generation.get() == copy }
-                        when (val verdict = awaitVerdict(into, VERDICT_TIMEOUT_MS, current, ::installer)) {
+                        val current = { generation.get() == copy && !stopped() }
+                        val verdict = awaitVerdict(into, VERDICT_TIMEOUT_MS, current, ::installer)
+                        stop()
+                        when (verdict) {
                             is Verdict.Refused -> {
                                 Log.i(TAG, "the engine refused the copied folder: ${verdict.problem}")
-                                UserlandInstaller.deleteTree(replaced.toPath())
+                                if (chosen == into) chosen = null
+                                discard(replaced)
                                 SourceCopy.Refused(verdict.problem)
                             }
-                            Verdict.Accepted -> SourceCopy.Copied(check.projectDiablo)
-                            null -> {
-                                watchLateVerdict(replaced, into, copy)
+                            else -> {
+                                // The engine took the copy, or has not said yet: the copy is complete
+                                // and stays, and the import's notice names where it came from.
+                                markComplete(replaced)
+                                val picked = folderName(tree.authority, DocumentsContract.getTreeDocumentId(tree), displayName(resolver, tree))
+                                app.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).edit()
+                                    .putString(PICKED_FOLDER, picked).putString(PICKED_FROM, tree.authority).apply()
+                                if (verdict == null) watchLateVerdict(replaced, into, copy)
                                 SourceCopy.Copied(check.projectDiablo)
                             }
                         }
@@ -120,12 +236,74 @@ object SourceImport {
             } catch (error: Throwable) {
                 // Any failure, an Error too (a provider's folders deep enough to exhaust the stack or
                 // the memory): on this executor thread it would otherwise end the app.
-                Log.w(TAG, "folder copy failed: $error")
-                // Nothing half copied stays behind.
-                target?.let { runCatching { UserlandInstaller.deleteTree(it.toPath()) } }
-                SourceCopy.Failed(error.message ?: error.javaClass.simpleName)
+                val end = endOf(error, stopped())
+                val log = closeLog.takeIf { end == SourceCopy.Idle }
+                if (log != null) log("the folder copy stopped for Close") else Log.w(TAG, "folder copy failed: $error")
+                // Nothing half copied stays behind, and the copy is no longer the player's choice.
+                if (copied != null && chosen == copied) chosen = null
+                target?.let { token ->
+                    try {
+                        discard(token)
+                        log?.invoke("what the stopped folder copy had copied is gone")
+                    } catch (failure: Exception) {
+                        Log.w(TAG, "the copy's folder: $failure")
+                        log?.invoke("the stopped folder copy was not removed ($failure); the next session start removes it")
+                    }
+                }
+                // Stopped by Close: as if no copy had started, so the player can import again later.
+                end
+            } finally {
+                running = null
             }
         }
+    }
+
+    /** Reads the picked file [uri] ([relative] below the picked folder). */
+    private fun opener(resolver: ContentResolver, uri: Uri, relative: String): () -> InputStream =
+        { resolver.openInputStream(uri) ?: throw IOException("cannot open $relative") }
+
+    /**
+     * Removes a copy's [token] folder: what it holds first, then the token folder with its [PARTIAL]
+     * mark, so a removal that stops part way leaves the mark for the next session start.
+     */
+    fun discard(token: File) {
+        token.listFiles()?.filter { it.name != PARTIAL }?.forEach { UserlandInstaller.deleteTree(it.toPath()) }
+        UserlandInstaller.deleteTree(token.toPath())
+    }
+
+    /** The copy in [token] is complete and has the engine's word: its [PARTIAL] mark goes. */
+    fun markComplete(token: File) {
+        Files.deleteIfExists(File(token, PARTIAL).toPath())
+    }
+
+    /**
+     * At a session start: removes every copy that the end of the app's process cut short
+     * ([partialCopies]), so no half-copied folder is ever used and its space comes back. The copy
+     * running now in this process stays.
+     */
+    fun removePartialCopies(paths: SessionPaths, log: (String) -> Unit) {
+        val inUse = listOfNotNull(gameFolder(), GameFilesProvider.recordedGameFolder(paths))
+        for (token in partialCopies(paths.imports, inUse) { running }) {
+            log("a folder copy that the app's end cut short goes: ${token.name}")
+            try {
+                discard(token)
+            } catch (error: IOException) {
+                log("the folder copy ${token.name} was not removed: $error")
+            }
+        }
+    }
+
+    /**
+     * The token folders below [imports] that still hold the [PARTIAL] mark: copies cut short. Not
+     * the copy running now ([running], read after the folders are listed, as the copy names itself
+     * before it makes its mark), and never one that holds a folder of [inUse] or the older game
+     * folder a failed update keeps ([UpgradeImport.TOKEN]).
+     */
+    fun partialCopies(imports: File, inUse: Collection<String>, running: () -> File?): List<File> {
+        val marked = imports.listFiles()?.filter { it.name != UpgradeImport.TOKEN && File(it, PARTIAL).exists() } ?: return emptyList()
+        val now = running()
+        val kept = inUse.mapNotNull { File(it).parentFile }.toSet()
+        return marked.filter { it != now && it !in kept }
     }
 
     private fun installer(): Installer? = SessionService.status.value.snapshot?.installer
@@ -182,43 +360,56 @@ object SourceImport {
             worker.execute {
                 if (!current()) return@execute
                 Log.i(TAG, "the engine refused the copied folder late: ${verdict.problem}")
+                if (chosen == folder) chosen = null
                 UserlandInstaller.deleteTree(copy.toPath())
                 _copy.value = SourceCopy.Refused(verdict.problem)
             }
         }
     }
 
-    private fun copyAll(resolver: ContentResolver, target: File, picks: List<Pick>, total: Long) {
+    /**
+     * Copies [entries] ([total] bytes in all) into [target], a game folder in its own token folder,
+     * which gets the [PARTIAL] mark first; it keeps it until the copy has the engine's word
+     * ([markComplete]), so a copy that the app's end cuts short keeps it. [progress] gets the
+     * bytes done so far. [stopped] is asked before each entry and after each block: once it says
+     * so, the copy ends with [CopyCancelled], and the caller removes what is there ([discard]).
+     */
+    fun copyEntries(target: File, entries: List<Entry>, total: Long, stopped: () -> Boolean, progress: (Long) -> Unit) {
         UserlandInstaller.deleteTree(target.toPath())
-        target.parentFile?.let(::ownerOnlyDirs)
+        val token = target.parentFile ?: throw IOException("no token folder for $target")
+        ownerOnlyDirs(token)
+        val mark = File(token, PARTIAL)
+        if (!mark.exists() && !mark.createNewFile()) throw IOException("cannot mark the copy as running")
+        Files.setPosixFilePermissions(mark.toPath(), PosixFilePermissions.fromString("rw-------"))
         ownerOnlyDirs(target)
         val buffer = ByteArray(1 shl 18)
         var done = 0L
-        for (pick in picks) {
-            val out = File(target, pick.relative)
-            val uri = pick.uri
-            if (uri == null) {
+        for (entry in entries) {
+            if (stopped()) throw CopyCancelled()
+            val out = File(target, entry.relative)
+            val open = entry.open
+            if (open == null) {
                 ownerOnlyDirs(out)
                 continue
             }
             out.parentFile?.let(::ownerOnlyDirs)
-            val input = resolver.openInputStream(uri) ?: throw IOException("cannot open ${pick.relative}")
-            input.use {
+            open().use { input ->
                 FileOutputStream(out).use { file ->
                     while (true) {
                         val n = input.read(buffer)
                         if (n < 0) break
                         file.write(buffer, 0, n)
                         done += n
-                        _copy.value = SourceCopy.Copying(done, total)
+                        progress(done)
+                        if (stopped()) throw CopyCancelled()
                     }
                     file.fd.sync()
                 }
             }
-            if (pick.size > 0 && out.length() != pick.size) throw IOException("${pick.relative} changed while it was copied")
+            if (entry.size > 0 && out.length() != entry.size) throw IOException("${entry.relative} changed while it was copied")
             // The app's umask is 0: the Launcher's own files are private to it.
             Files.setPosixFilePermissions(out.toPath(), PosixFilePermissions.fromString("rw-------"))
-            if (pick.modified > 0) out.setLastModified(pick.modified)
+            if (entry.modified > 0) out.setLastModified(entry.modified)
         }
     }
 

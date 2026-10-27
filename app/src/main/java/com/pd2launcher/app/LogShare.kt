@@ -23,9 +23,12 @@ import kotlinx.coroutines.withTimeoutOrNull
 /**
  * Share logs (Settings → App, and beside a failure on Check, Download and Install): one zip with
  * `device.txt` (what the app knows about this device and the installation), the logs of the
- * processes the app starts (`files/logs`, under `app/`), the engine's diagnostics and the report
- * it saves for the share (under `engine/`), handed to Android's share sheet. None holds a CD key:
- * the app never logs one, and the engine's diagnostics and report leave out process arguments.
+ * processes the app starts and its own (`files/logs`, under `app/`, the official PD2 launcher's
+ * runs among them: [OfficialLauncherLog]), the official launcher's own logs from the game folder
+ * (under `launcher/`, [LauncherFiles.shareTexts]), the engine's diagnostics and the report it saves
+ * for the share (under `engine/`), handed to Android's share sheet. None holds a CD key: the app
+ * never logs one, the official launcher has none, and the engine's diagnostics and report leave
+ * out process arguments.
  * The app's own logs are not redacted: they can name the player's characters and network
  * addresses, which the row says. The zips are in [folder] (`res/xml/shared_logs.xml`); the next
  * share or save removes those older than [KEEP_MS]. Save logs packs the same zip and copies it where
@@ -121,16 +124,23 @@ object LogShare {
     }
 
     /**
-     * Writes the zip to [target]: [about] as `device.txt`, then each of [entries], opened without
-     * following a link. One that can no longer be opened (rotated away since it was listed) is
-     * left out; one that fails part way ends with a line that says so; a log still being written
-     * is packed as far as it is when read. Only a failure to write the zip fails it.
+     * Writes the zip to [target]: [about] as `device.txt`, then each of [texts] (name and text,
+     * already read: the official launcher's own logs, [LauncherFiles.shareTexts]), then each of
+     * [entries], opened without following a link. One that can no longer be opened (rotated away
+     * since it was listed) is left out; one that fails part way ends with a line that says so; a
+     * log still being written is packed as far as it is when read. Only a failure to write the zip
+     * fails it.
      */
-    fun pack(target: File, about: String, entries: List<Entry>) {
+    fun pack(target: File, about: String, entries: List<Entry>, texts: List<Pair<String, String>> = emptyList()) {
         ZipOutputStream(target.outputStream().buffered()).use { zip ->
             zip.putNextEntry(ZipEntry("device.txt"))
             zip.write(about.toByteArray())
             zip.closeEntry()
+            for ((name, text) in texts) {
+                zip.putNextEntry(ZipEntry(name))
+                zip.write(text.toByteArray())
+                zip.closeEntry()
+            }
             for (entry in entries) {
                 val input = try {
                     Files.newInputStream(entry.file.toPath(), LinkOption.NOFOLLOW_LINKS)
@@ -162,16 +172,24 @@ object LogShare {
 
     /**
      * Packs a new zip into [folder] after removing those earlier shares and saves left more than
-     * [KEEP_MS] before [now]: [about] and the files of [entries] (from [paths] and the engine's
-     * [report]). Returns the zip.
+     * [KEEP_MS] before [now]: [about], the official launcher's own logs in [launcher] (the game
+     * folder's ProjectD2, [LauncherFiles.shareTexts]) and the files of [entries] (from [paths] and
+     * the engine's [report]). Returns the zip.
      */
-    fun write(cacheDir: File, paths: SessionPaths, about: String, report: File?, now: Long = System.currentTimeMillis()): File {
+    fun write(
+        cacheDir: File,
+        paths: SessionPaths,
+        about: String,
+        report: File?,
+        launcher: File? = null,
+        now: Long = System.currentTimeMillis(),
+    ): File {
         val folder = folder(cacheDir)
         folder.mkdirs()
         folder.listFiles()?.filter { now - it.lastModified() >= KEEP_MS }?.forEach { it.delete() }
         val target = File(folder, fileName(now))
         try {
-            pack(target, about, entries(paths.logs, paths.engineDiagnostics, report))
+            pack(target, about, entries(paths.logs, paths.engineDiagnostics, report), LauncherFiles.shareTexts(launcher))
         } catch (error: IOException) {
             target.delete()
             throw error

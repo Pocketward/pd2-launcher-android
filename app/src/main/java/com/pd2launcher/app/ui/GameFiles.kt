@@ -72,10 +72,10 @@ fun ColumnScope.GameFilesRows() {
         message = when (outcome) {
             is Outcome.Refused -> context.getString(
                 when (outcome.refusal) {
-                    DocumentPaths.Refusal.LAUNCHER_BUSY -> R.string.files_refused_busy
-                    DocumentPaths.Refusal.EXECUTABLE -> R.string.files_refused_executable
+                    DocumentPaths.Refusal.FIXED -> R.string.files_refused_fixed
+                    DocumentPaths.Refusal.GAME_RUNNING -> R.string.files_refused_game_running
                     DocumentPaths.Refusal.GAME_STARTING -> R.string.files_refused_game_starting
-                    else -> R.string.files_refused_game_running
+                    DocumentPaths.Refusal.LAUNCHER_BUSY -> R.string.files_refused_busy
                 },
             )
             is Outcome.Done -> context.getString(R.string.settings_files_copied, outcome.copied, outcome.skipped)
@@ -107,7 +107,9 @@ fun ColumnScope.GameFilesRows() {
     }
     Rule(Modifier.padding(horizontal = 14.dp))
     ActionRow(
-        stringResource(R.string.settings_import_files), stringResource(R.string.settings_import_files_body),
+        stringResource(R.string.settings_import_files),
+        // Any file goes in, programs and libraries too: the row says so, as they run with the game.
+        stringResource(R.string.settings_import_files_body),
         stringResource(R.string.settings_import_files_action),
     ) {
         message = null

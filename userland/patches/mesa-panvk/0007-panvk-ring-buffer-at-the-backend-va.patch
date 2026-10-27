@@ -1,0 +1,56 @@
+panvk: a descriptor ring buffer that the backend placed is bound at its VA
+
+A backend can place a BO itself and give its GPU VA (pan_kmod_bo::fixed_va): kbase does so for
+every BO when the kernel has no BASE_MEM_FIXED (MediaTek's r32p1 kbase). The render descriptor
+ring buffer took its VA from the no-exec heap regardless, so the bind failed ("BO lives at ...")
+and vkCreateDevice with it. Such a ring is bound at the BO's own VA, which must meet the ring's
+rule (aligned to twice the ring size, so it never crosses a 4 GiB boundary), and its VA is not
+given back to the heap.
+
+--- a/src/panfrost/vulkan/csf/panvk_vX_gpu_queue.c
++++ b/src/panfrost/vulkan/csf/panvk_vX_gpu_queue.c
+@@ -75,7 +75,9 @@
+          pan_kmod_vm_bind(dev->kmod.vm, PAN_KMOD_VM_OP_MODE_IMMEDIATE, &op, 1);
+       assert(!ret);
+ 
+-      panvk_as_free(dev, ringbuf->addr.dev, ringbuf->size * 2);
++      /* A ring the backend placed did not take its VA from the heap. */
++      if (!ringbuf->bo->fixed_va)
++         panvk_as_free(dev, ringbuf->addr.dev, ringbuf->size * 2);
+    }
+ 
+    if (ringbuf->addr.host) {
+@@ -125,9 +127,20 @@
+ 
+    /* We choose the alignment to guarantee that we won't ever cross a 4G
+     * boundary when accessing the mapping. This way we can encode the wraparound
+-    * using 32-bit operations. */
+-   dev_addr = panvk_as_alloc(dev, PANVK_NO_EXEC_VA_HEAP, ringbuf->size * 2,
+-                             ringbuf->size * 2);
++    * using 32-bit operations. A backend that placed the BO itself (kbase
++    * without BASE_MEM_FIXED) gives its own VA, which must meet the same rule. */
++   if (ringbuf->bo->fixed_va) {
++      dev_addr = ringbuf->bo->fixed_va;
++      if ((dev_addr & (ringbuf->size * 2 - 1)) ||
++          (dev_addr >> 32) != ((dev_addr + ringbuf->size * 2 - 1) >> 32))
++         return panvk_errorf(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY,
++                             "ringbuf BO placed at 0x%" PRIx64
++                             ", not aligned to its size",
++                             dev_addr);
++   } else {
++      dev_addr = panvk_as_alloc(dev, PANVK_NO_EXEC_VA_HEAP, ringbuf->size * 2,
++                                ringbuf->size * 2);
++   }
+ 
+    if (!dev_addr)
+       return panvk_errorf(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY,
+@@ -163,7 +176,8 @@
+    ret = pan_kmod_vm_bind(dev->kmod.vm, PAN_KMOD_VM_OP_MODE_IMMEDIATE, vm_ops,
+                           tracing_enabled || !mirror ? 1 : ARRAY_SIZE(vm_ops));
+    if (ret) {
+-      panvk_as_free(dev, dev_addr, ringbuf->size * 2);
++      if (!ringbuf->bo->fixed_va)
++         panvk_as_free(dev, dev_addr, ringbuf->size * 2);
+       return panvk_errorf(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY,
+                           "Failed to GPU map ringbuf BO");
+    }

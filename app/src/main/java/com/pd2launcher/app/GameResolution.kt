@@ -10,17 +10,14 @@ import kotlin.math.roundToInt
 /**
  * The game's resolution and how the Game view shows it (Settings → Game).
  *
- * Game resolution is the X screen's size for the app's own Play ([forPlay]): the game's own size
- * ([ownSize]: PD2's 1068 x 600 picture, which D2GL draws 1:1), the default, or a Custom size the
- * player typed ([typedCustom], [AppSettings.customSize]). Display ([GameDisplay],
- * [AppSettings.gameDisplay]) is how the Game view shows that X screen ([viewGeometry]), followed
- * live. The official PD2 launcher's sizes ([launcherChoices], [forLauncher]) keep the display's
- * own landscape shape.
+ * Game resolution is the X screen's size for the app's own Play and for the official PD2 launcher
+ * ([forPlay]; a game the launcher starts runs on its X screen): the game's own size ([ownSize]:
+ * PD2's 1068 x 600 picture, which D2GL draws 1:1), the default, or a Custom size the player typed
+ * ([typedCustom], [AppSettings.customSize]). Display ([GameDisplay], [AppSettings.gameDisplay]) is
+ * how the Game view shows that X screen ([viewGeometry]), followed live; the same for the game and
+ * for the launcher's window ([LAUNCHER_WINDOW]).
  */
 object GameResolution {
-    /** The fewest lines the official launcher's choices offer: PD2's 800 x 600 menus stay readable scaled down this far. */
-    const val MIN_LINES = 480
-
     /**
      * Every X screen the app starts has a multiple of these lines and an even width ([xScreen]):
      * Turnip pads a buffer's last rows to 4, so for other lines it wants more memory than the app's
@@ -37,8 +34,17 @@ object GameResolution {
     /** The smallest Custom size; the largest is the display's own ([customMax]). */
     val CUSTOM_MIN = 640 to 480
 
-    /** The official launcher's sizes below the display's full size, in lines. */
-    private val LINES = listOf(1080, 900, 720, 600, MIN_LINES)
+    /**
+     * The official PD2 launcher's window: a fixed 800 x 600 (PD2Launcher.exe's main window at
+     * Wine's 96 DPI), in the middle of the X screen as D2GL puts PD2's 4:3 menu: the X input relay
+     * moves it to the middle when it shows and wherever it is somewhere else (a place the launcher
+     * kept from another X screen, a drag). An X screen with fewer columns or lines cuts it off: below
+     * 788 columns or 588 lines Windows makes the window smaller (the X screen's size and 12 pixels
+     * more each way: 652 x 492 on 640 x 480), its parts overlap and its right and bottom edges are
+     * off the X screen, and the relay leaves it where it is. The relay has the same size
+     * (LAUNCHER_WIDTH, LAUNCHER_HEIGHT in userland/x-input-relay.c): change both together.
+     */
+    val LAUNCHER_WINDOW = 800 to 600
 
     /** The default display's native size in landscape, width to height. */
     @Suppress("DEPRECATION")
@@ -64,32 +70,6 @@ object GameResolution {
         }
         return rounded
     }
-
-    /**
-     * The official launcher's choices for a [width] x [height] landscape display: its full size
-     * first, then each of [LINES] below it and no fewer than [MIN_LINES], at the display's shape
-     * ([at]), each rounded as every X screen ([xScreen]).
-     */
-    fun launcherChoices(width: Int, height: Int): List<Pair<Int, Int>> =
-        (listOf(width to height) + LINES.filter { it < height && it >= MIN_LINES }.map { at(width, height, it) })
-            .map { xScreen(it) }.distinct()
-
-    /**
-     * The [width] x [height] display's shape at [lines] (an even width, rounded down); the full
-     * size at as many lines as the display has or more. On a 1604 x 720 display 480 lines are
-     * 1068 x 480.
-     */
-    fun at(width: Int, height: Int, lines: Int): Pair<Int, Int> {
-        if (lines >= height) return width to height
-        return width * lines / height / 2 * 2 to lines
-    }
-
-    /**
-     * The X screen the official PD2 launcher opens on: the [picked] lines (null: the full size) at
-     * the display's shape, rounded as every X screen ([xScreen], which tells [log]).
-     */
-    fun forLauncher(width: Int, height: Int, picked: Int?, log: ((String) -> Unit)? = null): Pair<Int, Int> =
-        xScreen(at(width, height, picked ?: height), log)
 
     /** Whether a [width] x [height] display holds the game's own size, [OWN_SIZE]. */
     fun holdsOwnSize(width: Int, height: Int): Boolean = width >= OWN_SIZE.first && height >= OWN_SIZE.second
@@ -122,11 +102,22 @@ object GameResolution {
      * What the player typed for Custom ([widthText], [heightText]) on a [width] x [height]
      * display: the size where both are whole numbers and [customAllowed] allows it, else null.
      */
-    fun typedCustom(widthText: String, heightText: String, width: Int, height: Int): Pair<Int, Int>? {
+    fun typedCustom(widthText: String, heightText: String, width: Int, height: Int): Pair<Int, Int>? =
+        typedSize(widthText, heightText)?.takeIf { customAllowed(it, width, height) }
+
+    /** What the player typed for Custom ([widthText], [heightText]) where both are whole numbers, allowed or not; else null. */
+    fun typedSize(widthText: String, heightText: String): Pair<Int, Int>? {
         val w = widthText.trim().toIntOrNull() ?: return null
         val h = heightText.trim().toIntOrNull() ?: return null
-        return (w to h).takeIf { customAllowed(it, width, height) }
+        return w to h
     }
+
+    /**
+     * Whether an X screen of [size] cuts off part of the official launcher's window: it has fewer
+     * columns or lines than [LAUNCHER_WINDOW]. Settings then says so under the game resolution and
+     * in its Custom input (the player decides; the size stays allowed).
+     */
+    fun cutsLauncher(size: Pair<Int, Int>): Boolean = size.first < LAUNCHER_WINDOW.first || size.second < LAUNCHER_WINDOW.second
 
     /**
      * The Custom size to keep for a typed [size] on a [width] x [height] display: none where it is
@@ -138,8 +129,9 @@ object GameResolution {
     fun allowedCustom(width: Int, height: Int, custom: Pair<Int, Int>?): Pair<Int, Int>? = custom?.takeIf { customAllowed(it, width, height) }
 
     /**
-     * The X screen the app's own Play uses on a [width] x [height] display: the kept [custom] size
-     * ([allowedCustom], already an X screen's size), else [ownSize], which tells [log] where it rounds.
+     * The X screen the app's own Play and the official PD2 launcher use on a [width] x [height]
+     * display: the kept [custom] size ([allowedCustom], already an X screen's size), else
+     * [ownSize], which tells [log] where it rounds.
      */
     fun forPlay(width: Int, height: Int, custom: Pair<Int, Int>?, log: ((String) -> Unit)? = null): Pair<Int, Int> =
         allowedCustom(width, height, custom) ?: ownSize(width, height, log)
@@ -159,14 +151,16 @@ object GameResolution {
     }
 
     /**
-     * What the Game view enlarges ([viewGeometry]): the whole X screen for the official [launcher]'s
-     * window (null), else PD2's [MENU_SIZE] while it shows a [menu], else its game picture, [OWN_SIZE]
-     * (also while nothing is known yet, and with D2GL's Stretched Viewport, whose menu has no bars).
+     * What the Game view enlarges ([viewGeometry]) on the [screen] (the X screen), its width and
+     * height in X screen pixels: the official [launcher]'s window, [LAUNCHER_WINDOW] at its own
+     * pixels in the middle (the part the X screen holds); else D2GL's fit ([pictureArea]) of PD2's
+     * [MENU_SIZE] while it shows a [menu], else of its game picture, [OWN_SIZE] (also while nothing
+     * is known yet, and with D2GL's Stretched Viewport, whose menu has no bars).
      */
-    fun shownPicture(launcher: Boolean, menu: Boolean): Pair<Int, Int>? = when {
-        launcher -> null
-        menu -> MENU_SIZE
-        else -> OWN_SIZE
+    fun shownArea(launcher: Boolean, menu: Boolean, screen: Pair<Int, Int>): Pair<Double, Double> = when {
+        launcher -> minOf(LAUNCHER_WINDOW.first, screen.first).toDouble() to minOf(LAUNCHER_WINDOW.second, screen.second).toDouble()
+        menu -> pictureArea(MENU_SIZE, screen)
+        else -> pictureArea(OWN_SIZE, screen)
     }
 
     /**
@@ -192,17 +186,17 @@ object GameResolution {
 
     /**
      * The Game view's geometry for the [screen] (the X screen) in a [width] x [height] pixel area,
-     * as [display] says, while PD2 shows a [picture] ([MENU_SIZE] or [OWN_SIZE] in the game; null:
-     * the whole X screen, as for the official launcher's window).
+     * as [display] says, while the X screen shows [shown] in its middle ([shownArea]: PD2's menu or
+     * game picture, or the official launcher's window; its width and height in X screen pixels).
      *
-     * [GameDisplay.FIT] enlarges or shrinks what the game shows (the picture's [pictureArea] on the
-     * X screen) evenly until it touches the area's edges; the X screen's other parts (D2GL's bars)
-     * reach past the edges where they do not fit. [GameDisplay.CENTER] shows the X screen's own
-     * pixels in the middle where the area holds them, else as [GameDisplay.FIT].
+     * [GameDisplay.FIT] enlarges or shrinks [shown] evenly until it touches the area's edges; the X
+     * screen's other parts (D2GL's bars, the black beside the launcher's window) reach past the
+     * edges where they do not fit. [GameDisplay.CENTER] shows the X screen's own pixels in the
+     * middle where the area holds them, else as [GameDisplay.FIT].
      */
-    fun viewGeometry(display: GameDisplay, picture: Pair<Int, Int>?, screen: Pair<Int, Int>, width: Int, height: Int): ViewGeometry {
+    fun viewGeometry(display: GameDisplay, shown: Pair<Double, Double>, screen: Pair<Int, Int>, width: Int, height: Int): ViewGeometry {
         val (screenWidth, screenHeight) = screen
-        val (areaWidth, areaHeight) = picture?.let { pictureArea(it, screen) } ?: (screenWidth.toDouble() to screenHeight.toDouble())
+        val (areaWidth, areaHeight) = shown
         val scale = if (display == GameDisplay.CENTER && screenWidth <= width && screenHeight <= height) {
             1.0
         } else {
@@ -217,9 +211,13 @@ object GameResolution {
     }
 }
 
-/** How the Game view shows the X screen (Settings → Game → Display, the in-game menu; [AppSettings.gameDisplay]): [title] and [body] as Settings says them. */
+/**
+ * How the Game view shows the X screen, the same for the game and the official launcher's window
+ * (Settings → Game → Display, the in-game menu; [AppSettings.gameDisplay]): [title] and [body] as
+ * Settings says them.
+ */
 enum class GameDisplay(@param:StringRes val title: Int, @param:StringRes val body: Int) {
-    /** What the game shows, as large as the view allows, its shape kept ([GameResolution.viewGeometry]). */
+    /** What the game or the launcher shows, as large as the view allows, its shape kept ([GameResolution.viewGeometry]). */
     FIT(R.string.settings_display_fit, R.string.settings_display_fit_body),
 
     /** One X screen pixel to one display pixel, in the middle, black around it; [FIT] where the view cannot hold it. */

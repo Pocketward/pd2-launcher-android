@@ -18,6 +18,11 @@ object LauncherSettings {
         val renderer: Renderer,
         val skipToBnet: Boolean,
         val soundInBackground: Boolean,
+        /**
+         * Settings → Game's "Check for game updates" ([PlayCheck]); null: the engine has no such
+         * setting (it always checks), so the row does not show.
+         */
+        val gameUpdateChecks: Boolean?,
         /** Changes are taken: the engine is connected and has loaded its settings. */
         val editable: Boolean,
         /** The engine could not save or load them (its stable reason code). */
@@ -29,6 +34,7 @@ object LauncherSettings {
             renderer = it.renderer,
             skipToBnet = it.skipToBnet,
             soundInBackground = it.soundInBackground,
+            gameUpdateChecks = it.updateChecks,
             editable = connected && it.persistence != SettingsPersistence.Loading,
             failure = (it.persistence as? SettingsPersistence.Failed)?.reason,
         )
@@ -48,4 +54,6 @@ object LauncherSettings {
     fun skipToBnet(enabled: Boolean): Command = Command.ChangeSettings(SettingChange.SkipToBnet(enabled))
 
     fun soundInBackground(enabled: Boolean): Command = Command.ChangeSettings(SettingChange.SoundInBackground(enabled))
+
+    fun gameUpdateChecks(enabled: Boolean): Command = Command.ChangeSettings(SettingChange.UpdateChecks(enabled))
 }

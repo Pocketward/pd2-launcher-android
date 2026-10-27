@@ -29,6 +29,7 @@
 #include "util/os_misc.h"
 #include "util/os_time.h"
 #include "util/simple_mtx.h"
+#include "util/u_atomic.h"
 #include "util/u_dynarray.h"
 #include "util/u_math.h"
 
@@ -197,7 +198,10 @@ kbase_group_create_ioctl(struct kbase_kmod_dev *kdev, const struct drm_panthor_g
       (in).csi_handlers = BASE_CSF_TILER_OOM_EXCEPTION_FLAG;                                   \
    } while (0)
 
-   if (kbase_kmod_uapi_at_least(kdev, 36)) {
+   if (p_atomic_read(&kdev->group_create_1_6)) {
+      ret = -1;
+      errno = ENOTTY;
+   } else if (kbase_kmod_uapi_at_least(kdev, 36)) {
       union kbase_ioctl_cs_queue_group_create req = { 0 };
       FILL_COMMON(req.in);
       ret = kbase_kmod_ioctl(fd, KBASE_IOCTL_CS_QUEUE_GROUP_CREATE, &req);
@@ -214,6 +218,35 @@ kbase_group_create_ioctl(struct kbase_kmod_dev *kdev, const struct drm_panthor_g
       *handle = req.out.group_handle;
    }
 #undef FILL_COMMON
+
+   /* A kernel can report a uAPI minor without its calls (MediaTek's r32p1 kbase reports 1.18 but
+    * has only the 1.6 layout, ioctl 42). That layout has no CSI exception handlers, so the
+    * kernel itself grows a group's tiler heap up to its maximum and sends no tiler OOM event:
+    * PanVK's incremental rendering never runs. A render pass that needs more than the heap's
+    * max_chunks while no fragment work is pending then gets a tiler heap OOM error, which makes
+    * the group fatal (the device is lost) where other kernels render it in parts. The limit is
+    * PanVK's own (chunks are made on demand); it is not raised here, so that a dense scene
+    * cannot take more memory on such a kernel than on others. */
+   if (ret && errno == ENOTTY) {
+      union kbase_ioctl_cs_queue_group_create_1_6 req = {
+         .in = {
+            .tiler_mask = gc->tiler_core_mask,
+            .fragment_mask = gc->fragment_core_mask,
+            .compute_mask = gc->compute_core_mask,
+            .cs_min = queue_count,
+            .priority = prio,
+            .tiler_max = gc->max_tiler_cores,
+            .fragment_max = gc->max_fragment_cores,
+            .compute_max = gc->max_compute_cores,
+         },
+      };
+      ret = kbase_kmod_ioctl(fd, KBASE_IOCTL_CS_QUEUE_GROUP_CREATE_1_6, &req);
+      *handle = req.out.group_handle;
+      if (!ret && !p_atomic_read(&kdev->group_create_1_6)) {
+         p_atomic_set(&kdev->group_create_1_6, true);
+         mesa_logi("kbase: CS_QUEUE_GROUP_CREATE in the 1.6 layout (no CSI exception handlers)");
+      }
+   }
 
    if (ret)
       mesa_loge("kbase: CS_QUEUE_GROUP_CREATE failed: %s", strerror(errno));
@@ -919,7 +952,10 @@ kbase_csf_tiler_heap_create(struct kbase_kmod_dev *kdev, struct drm_panthor_tile
       thc->max_chunks = max;
       thc->target_in_flight = target;
    }
-   if (kbase_kmod_uapi_at_least(kdev, 14)) {
+   bool newer = kbase_kmod_uapi_at_least(kdev, 14) && !p_atomic_read(&kdev->tiler_heap_init_1_13);
+   ret = -1;
+   errno = ENOTTY;
+   if (newer) {
       union kbase_ioctl_cs_tiler_heap_init req = {
          .in = {
             .chunk_size = thc->chunk_size,
@@ -931,7 +967,10 @@ kbase_csf_tiler_heap_create(struct kbase_kmod_dev *kdev, struct drm_panthor_tile
       ret = kbase_kmod_ioctl(kdev->base.fd, KBASE_IOCTL_CS_TILER_HEAP_INIT, &req);
       ctx_va = req.out.gpu_heap_va;
       first_chunk_va = req.out.first_chunk_va;
-   } else {
+   }
+   /* Before 1.14, or a kernel that reports 1.14 or later with only the 1.13 layout (MediaTek's
+    * r32p1 kbase reports 1.18). */
+   if (ret && errno == ENOTTY) {
       union kbase_ioctl_cs_tiler_heap_init_1_13 req = {
          .in = {
             .chunk_size = thc->chunk_size,
@@ -943,6 +982,10 @@ kbase_csf_tiler_heap_create(struct kbase_kmod_dev *kdev, struct drm_panthor_tile
       ret = kbase_kmod_ioctl(kdev->base.fd, KBASE_IOCTL_CS_TILER_HEAP_INIT_1_13, &req);
       ctx_va = req.out.gpu_heap_va;
       first_chunk_va = req.out.first_chunk_va;
+      if (!ret && newer) {
+         p_atomic_set(&kdev->tiler_heap_init_1_13, true);
+         mesa_logi("kbase: CS_TILER_HEAP_INIT in the 1.13 layout");
+      }
    }
    if (ret) {
       mesa_loge("kbase: CS_TILER_HEAP_INIT failed: %s", strerror(errno));

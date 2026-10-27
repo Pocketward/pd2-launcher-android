@@ -297,6 +297,18 @@ object PresentCounter {
     fun ensure(file: File) {
         RandomAccessFile(file, "rw").use { if (it.length() < SIZE) it.setLength(SIZE) }
     }
+
+    /** The count in [file] as it changes, through a mapping of its first word; null when it cannot be mapped. */
+    fun reader(file: File): Reader? = try {
+        RandomAccessFile(file, "r").use { Reader(it.channel.map(java.nio.channels.FileChannel.MapMode.READ_ONLY, 0, 4).order(ByteOrder.LITTLE_ENDIAN)) }
+    } catch (_: java.io.IOException) {
+        null
+    }
+
+    /** The game's presents so far ([presents]: the first word, unsigned, so it wraps at 2^32). */
+    class Reader(private val word: ByteBuffer) {
+        fun presents(): Long = word.getInt(0).toLong() and 0xFFFFFFFFL
+    }
 }
 
 /**

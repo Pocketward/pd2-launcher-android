@@ -193,7 +193,8 @@ fun Dot(color: Color, modifier: Modifier = Modifier) {
 
 // ---------------------------------------------------------------- controls
 
-enum class Kind { PRIMARY, SECONDARY, DANGER, QUIET }
+/** [TONAL]: a tool beside the main action (the official PD2 launcher under Play), a filled pill. */
+enum class Kind { PRIMARY, SECONDARY, DANGER, QUIET, TONAL }
 
 /**
  * A pill at least 52 dp tall for thumbs, a ring where the d-pad is, a danger style for Stop.
@@ -220,6 +221,7 @@ fun LauncherButton(
     val fill = when {
         kind == Kind.PRIMARY && enabled -> Palette.Teal
         kind == Kind.DANGER && focused && enabled -> Palette.Red
+        kind == Kind.TONAL -> if (!enabled) Palette.Surface else if (focused) Palette.TonalFocus else Palette.Tonal
         focused -> Palette.Raised
         floating -> Palette.Background
         else -> Color.Transparent
@@ -230,6 +232,7 @@ fun LauncherButton(
         kind == Kind.PRIMARY && enabled -> Palette.Teal
         kind == Kind.DANGER && enabled -> Palette.Red.copy(alpha = 0.7f)
         kind == Kind.QUIET -> Color.Transparent
+        kind == Kind.TONAL && enabled -> Palette.TonalEdge
         floating && enabled -> Palette.Edge
         else -> Palette.Rule
     }

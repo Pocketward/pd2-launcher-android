@@ -15,6 +15,12 @@ enum class SourceChoice {
     BLIZZARD,
     /** The player's Diablo II + LoD folder, picked with the system picker and used in place. */
     EXISTING,
+    ;
+
+    companion object {
+        /** The choice saved as [name] in the activity's saved state; null for none, or for a name this version does not know. */
+        fun named(name: String?): SourceChoice? = entries.firstOrNull { it.name == name }
+    }
 }
 
 /** The app's part of [SourceChoice.EXISTING]: copying the picked folder in. */
@@ -28,72 +34,90 @@ sealed interface SourceCopy {
 
     data class Failed(val reason: String) : SourceCopy
 
-    /** A Diablo II folder refused by its file list or by the engine; nothing of it is kept. */
+    /** A Diablo II folder refused by the engine; nothing of it is kept. */
     data class Refused(val problem: ExistingProblem) : SourceCopy
+
+    /**
+     * A picked folder that lacks [files] (of [ExistingFolder.IMPORT_FILES]): it is not copied,
+     * and the import does not start.
+     */
+    data class Missing(val files: List<String>) : SourceCopy
 
     /** A Diablo II folder copied in and handed to the engine, holding [projectDiablo]. */
     data class Copied(val projectDiablo: ProjectDiabloFound) : SourceCopy
 }
 
-/** The Project Diablo 2 a picked Diablo II folder holds. */
+/** The Project Diablo 2 a picked Diablo II folder holds: the import keeps it as it is. */
 enum class ProjectDiabloFound {
-    NONE,
-    /** One this Launcher installed and keeps up to date: Install adopts it, no PD2 installer runs. */
+    /** One that a PD2 Launcher recorded (`ProjectD2/.pd2launcher`): the import records it again. */
     LAUNCHER,
-    /** Another one (the official launcher's): Install updates it. */
+    /** Another one (the official launcher's, of any version, or modded). */
     OTHER,
 }
 
 /**
- * A picked Diablo II folder judged by its file list alone, before anything is copied: the
- * files Diablo II and Lord of Destruction need must be there and not empty (the engine checks
- * the copy's files again once it is in, and uses a Diablo II of any version as it is), and its
- * ProjectD2 tells whether the PD2 installer runs.
+ * A picked Diablo II folder judged by its file list alone, before anything is copied (the owner's
+ * import rule of 2026-10-26): the important files of Diablo II, Lord of Destruction and Project
+ * Diablo 2 ([IMPORT_FILES]) must be there and not empty, names in any case, with no version check.
+ * Every missing one is named, and the import does not start. The engine checks the copy's files
+ * with the same list once it is in, records the copied Project Diablo 2 as it is, and never updates
+ * it: Play's update check offers the update.
  */
 object ExistingFolder {
-    /** As the engine's lists of the same names: what a complete Diablo II and Lord of Destruction need. */
+    /** As the engine's lists of the same names: the files Windows names of Diablo II and Lord of Destruction. */
     private val BASE_FILES = listOf(
         "Game.exe", "Patch_D2.mpq", "Diablo II.exe", "d2char.mpq", "d2data.mpq", "d2music.mpq",
         "d2sfx.mpq", "d2speech.mpq", "d2video.mpq",
     )
     private val EXPANSION_FILES = listOf("d2exp.mpq", "d2xmusic.mpq", "d2xtalk.mpq", "d2xvideo.mpq")
     private const val PROJECT_D2 = "ProjectD2"
-    /** The update records the Launcher keeps in a ProjectD2 it installed. */
+    /** The update records a PD2 Launcher keeps in a ProjectD2 it installed. */
     private const val ACCEPTED_MANIFEST = ".pd2launcher/accepted-manifest.json"
+
+    /**
+     * What an import needs (the engine's `ANDROID_IMPORT_FILES`): Diablo II's and Lord of
+     * Destruction's programs and main archives, and Project Diablo 2's programs.
+     */
+    val IMPORT_FILES = listOf(
+        "Game.exe", "Diablo II.exe", "d2data.mpq", "d2char.mpq", "d2sfx.mpq", "d2exp.mpq",
+        "$PROJECT_D2/Game.exe", "$PROJECT_D2/ProjectDiablo.dll", "$PROJECT_D2/PD2Launcher.exe",
+    )
 
     sealed interface Check {
         data class Usable(val projectDiablo: ProjectDiabloFound) : Check
-        data class Refused(val problem: ExistingProblem) : Check
+
+        /** The files of [IMPORT_FILES] that are not there or are empty, in its order. */
+        data class Missing(val files: List<String>) : Check
     }
 
     /** [files]: each file's '/'-separated path below the picked folder and its size. */
     fun check(files: Map<String, Long>): Check {
-        val top = files.entries.filter { '/' !in it.key }.associate { it.key.lowercase() to it.value }
-        if ("game.exe" !in top && "d2data.mpq" !in top) return Check.Refused(ExistingProblem.NotDiablo)
-        if ("d2exp.mpq" !in top) return Check.Refused(ExistingProblem.NoExpansion)
-        for (name in BASE_FILES + EXPANSION_FILES) {
-            // An empty file is what a copy that stopped part way leaves.
-            if ((top[name.lowercase()] ?: 0L) <= 0L) return Check.Refused(ExistingProblem.MissingFile(name))
-        }
-        val projectFiles = files.keys.map(::canonical).filter { it.startsWith("$PROJECT_D2/") }
-        val projectDiablo = when {
-            projectFiles.isEmpty() -> ProjectDiabloFound.NONE
-            "$PROJECT_D2/$ACCEPTED_MANIFEST" in projectFiles -> ProjectDiabloFound.LAUNCHER
-            else -> ProjectDiabloFound.OTHER
-        }
-        return Check.Usable(projectDiablo)
+        // An empty file is what a copy that stopped part way leaves.
+        val sizes = files.entries.associate { canonical(it.key).lowercase() to it.value }
+        val missing = IMPORT_FILES.filter { (sizes[it.lowercase()] ?: 0L) <= 0L }
+        if (missing.isNotEmpty()) return Check.Missing(missing)
+        val recorded = "$PROJECT_D2/$ACCEPTED_MANIFEST".lowercase() in sizes
+        return Check.Usable(if (recorded) ProjectDiabloFound.LAUNCHER else ProjectDiabloFound.OTHER)
     }
 
     /**
-     * Where [relative] goes in the copy: a top-level name the game needs, or ProjectD2, takes the
-     * Launcher's spelling (Windows ignores case, the Launcher does not), so the copy can always
-     * be used in place.
+     * Where [relative] goes in the copy: a top-level name the game needs, ProjectD2, and Project
+     * Diablo 2's programs in it take the Launcher's spelling (Windows ignores case, the Launcher
+     * does not), so the copy can always be used in place and its programs are found.
      */
     fun canonical(relative: String): String {
         val first = relative.substringBefore('/')
         val name = (BASE_FILES + EXPANSION_FILES + PROJECT_D2).firstOrNull { it.equals(first, ignoreCase = true) } ?: first
-        return name + relative.substring(first.length)
+        val rest = relative.substring(first.length)
+        if (name == PROJECT_D2) {
+            val program = IMPORT_FILES.firstOrNull { it.equals(name + rest, ignoreCase = true) }
+            if (program != null) return program
+        }
+        return name + rest
     }
+
+    /** Whether [file], one of [IMPORT_FILES], is Project Diablo 2's. */
+    fun isProjectDiablo(file: String): Boolean = file.startsWith("$PROJECT_D2/")
 }
 
 /**
@@ -141,6 +165,7 @@ object DiabloSource {
                 is SourceCopy.NoSpace -> return pick(Tone.ERROR, Line(R.string.source_no_space, copy.needed shr 20, copy.free shr 20))
                 is SourceCopy.Failed -> return pick(Tone.ERROR, Line(R.string.source_copy_failed, copy.reason))
                 is SourceCopy.Refused -> return pick(Tone.ERROR, problem(copy.problem))
+                is SourceCopy.Missing -> return pick(Tone.ERROR, missing(copy.files))
                 SourceCopy.Idle, is SourceCopy.Copied -> {}
             }
         }
@@ -172,13 +197,24 @@ object DiabloSource {
     fun importsExisting(snapshot: Snapshot): Boolean =
         snapshot.installer.let { it is Installer.Existing && it.problem == null }
 
-    private fun inPlace(projectDiablo: ProjectDiabloFound?): Line = Line(
-        when (projectDiablo) {
-            ProjectDiabloFound.LAUNCHER -> R.string.source_existing_with_pd2
-            ProjectDiabloFound.OTHER -> R.string.source_existing_update_pd2
-            ProjectDiabloFound.NONE, null -> R.string.source_existing_in_place
-        },
-    )
+    /** What Install does with the folder's Project Diablo 2: the import keeps it as it is, with no update. */
+    private fun inPlace(projectDiablo: ProjectDiabloFound?): Line =
+        Line(if (projectDiablo != null) R.string.source_existing_keep_pd2 else R.string.source_existing_in_place)
+
+    /**
+     * A picked folder that lacks [files]: whether the game's files or Project Diablo 2's are not
+     * there, and every missing file by name.
+     */
+    fun missing(files: List<String>): Line {
+        val game = files.any { !ExistingFolder.isProjectDiablo(it) }
+        val projectDiablo = files.any { ExistingFolder.isProjectDiablo(it) }
+        val text = when {
+            game && projectDiablo -> R.string.existing_missing_both
+            projectDiablo -> R.string.existing_missing_pd2
+            else -> R.string.existing_missing_game
+        }
+        return Line(text, files.joinToString(", "))
+    }
 
     private fun problem(problem: ExistingProblem): Line = when (problem) {
         ExistingProblem.NotFound -> Line(R.string.existing_not_found)

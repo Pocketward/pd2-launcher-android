@@ -19,10 +19,13 @@ data class AppSettings(
     val showFps: Boolean = false,
     /**
      * The game resolution's Custom size the player typed ([GameResolution.typedCustom]), from the
-     * next Play; null: the game's own size ([GameResolution.ownSize]).
+     * next Play or official PD2 launcher; null: the game's own size ([GameResolution.ownSize]).
      */
     val customSize: Pair<Int, Int>? = null,
-    /** How the Game view shows the game's picture ([GameDisplay]); the Game view reads it live, with no restart of the game. */
+    /**
+     * How the Game view shows the game's picture or the official launcher's window ([GameDisplay]);
+     * the Game view reads it live, with no restart of the game.
+     */
     val gameDisplay: GameDisplay = GameDisplay.FIT,
     /** D2GL's graphics profile the player picked; null: Automatic ([GraphicsProfiles]). */
     val graphicsProfile: GraphicsProfile? = null,
@@ -38,11 +41,6 @@ data class AppSettings(
      * own background frame rate (D2GL's Max Background FPS, 25 by default).
      */
     val lowFrameRateInBackground: Boolean = true,
-    /**
-     * The official PD2 launcher's screen the player picked, in lines; null: the display's full
-     * size ([GameResolution.forLauncher]). Its own, not the game's: its window needs room.
-     */
-    val launcherResolution: Int? = null,
     /** The notice on Play about removing the installer downloads was answered ([InstallerDownloads.showNotice]). */
     val downloadsNoticeAnswered: Boolean = false,
     /**
@@ -52,6 +50,13 @@ data class AppSettings(
     val gamePlayed: Boolean = false,
     /** The app looks for a newer release of itself once a day ([AppUpdater]); off: only About's Check now. */
     val updateChecks: Boolean = true,
+    /**
+     * Detailed logging (Settings → App → Help): the game's and the official launcher's Wine
+     * processes log more from their next start (their network connects and closes, every
+     * exception, Box64's own log), for a problem report; off by default, and it stays as the
+     * player set it. Sent with each Play and each press of the official launcher.
+     */
+    val detailedLogging: Boolean = false,
 ) {
     /**
      * Start over took the installation ([SetupRecord.NONE]): the downloads notice belongs to it,
@@ -79,14 +84,19 @@ data class AppSettings(
             GAME_SIZE to null,
             GAME_DISPLAY to null,
             GRAPHICS_PROFILE to graphicsProfile?.name,
+            // The older Strict CPU emulation pick (a Boolean): not read, removed at the first save.
+            STRICT_CPU_EMULATION to null,
             FRAME_RATE to frameRate,
             // The older "Limit to 60 fps" switch, now FRAME_RATE's 60: removed at the first save.
             LIMIT_FRAME_RATE to null,
             LOW_FRAME_RATE_IN_BACKGROUND to lowFrameRateInBackground,
-            LAUNCHER_RESOLUTION to launcherResolution,
+            // The official launcher's own resolution of earlier versions (lines): not read, as the launcher
+            // now opens at the game resolution; removed at the first save.
+            LAUNCHER_RESOLUTION to null,
             DOWNLOADS_NOTICE_ANSWERED to downloadsNoticeAnswered,
             GAME_PLAYED to gamePlayed,
             UPDATE_CHECKS to updateChecks,
+            DETAILED_LOGGING to detailedLogging,
         )
 
     companion object {
@@ -102,16 +112,20 @@ data class AppSettings(
         const val GAME_SIZE = "game_size"
         const val GAME_DISPLAY = "game_display"
         const val GRAPHICS_PROFILE = "graphics_profile"
+        /** The older Strict CPU emulation pick (a Boolean): not read, removed at the first save. */
+        const val STRICT_CPU_EMULATION = "strict_cpu_emulation"
         const val FRAME_RATE = "frame_rate"
         /** [frameRate]'s value for Full, the screen's full rate: stored, so a player's Full is not the default. */
         const val FULL_FRAME_RATE = 0
         /** The older "Limit to 60 fps" switch (a Boolean): on, it was 60, now the default. */
         const val LIMIT_FRAME_RATE = "limit_frame_rate"
         const val LOW_FRAME_RATE_IN_BACKGROUND = "low_frame_rate_in_background"
+        /** The older official launcher resolution (an Int, lines): not read, removed at the first save. */
         const val LAUNCHER_RESOLUTION = "launcher_resolution"
         const val DOWNLOADS_NOTICE_ANSWERED = "downloads_notice_answered"
         const val GAME_PLAYED = "game_played"
         const val UPDATE_CHECKS = "update_checks"
+        const val DETAILED_LOGGING = "detailed_logging"
 
         /** "<width>x<height>" of positive whole numbers, else null. */
         private fun parseSize(text: String): Pair<Int, Int>? {
@@ -131,10 +145,10 @@ data class AppSettings(
                 frameRate = (values[FRAME_RATE] as? Int)?.takeIf { it == FULL_FRAME_RATE || it >= FrameRateVote.MIN }
                     ?: defaults.frameRate,
                 lowFrameRateInBackground = values[LOW_FRAME_RATE_IN_BACKGROUND] as? Boolean ?: defaults.lowFrameRateInBackground,
-                launcherResolution = (values[LAUNCHER_RESOLUTION] as? Int)?.takeIf { it >= GameResolution.MIN_LINES },
                 downloadsNoticeAnswered = values[DOWNLOADS_NOTICE_ANSWERED] as? Boolean ?: defaults.downloadsNoticeAnswered,
                 gamePlayed = values[GAME_PLAYED] as? Boolean ?: defaults.gamePlayed,
                 updateChecks = values[UPDATE_CHECKS] as? Boolean ?: defaults.updateChecks,
+                detailedLogging = values[DETAILED_LOGGING] as? Boolean ?: defaults.detailedLogging,
             )
         }
     }

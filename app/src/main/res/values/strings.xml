@@ -14,12 +14,12 @@
     <string name="device_checking_title">Checking this device…</string>
     <string name="device_checking_body">Nothing is unpacked until the check passes.</string>
     <string name="not_supported_title">This device is not supported</string>
-    <string name="not_supported_body">PD2 Launcher needs an Adreno 6xx, 7xx or 8xx or a Mali-G310, G610, G615, G715, G720 or G725 GPU, Android 13 or later and 4 KB memory pages.</string>
+    <string name="not_supported_body">PD2 Launcher needs an Adreno 6xx, 7xx or 8xx or a Mali-G310, G610, G710, G615, G715, G720 or G725 GPU, Android 13 or later and 4 KB memory pages.</string>
     <string name="not_supported_close">Close</string>
     <string name="device_check_failed">The device check could not run: %1$s</string>
-    <string name="device_gpu_not_supported">%1$s is not supported. An Adreno 6xx, 7xx or 8xx or a Mali-G310, G610, G615, G715, G720 or G725 GPU is needed.</string>
+    <string name="device_gpu_not_supported">%1$s is not supported. An Adreno 6xx, 7xx or 8xx or a Mali-G310, G610, G710, G615, G715, G720 or G725 GPU is needed.</string>
     <string name="device_gpu_unknown_to_driver">%1$s is not known to the bundled graphics driver. PD2 may not start on it.</string>
-    <string name="device_gpu_unknown">This GPU is not supported. An Adreno 6xx, 7xx or 8xx or a Mali-G310, G610, G615, G715, G720 or G725 GPU is needed.</string>
+    <string name="device_gpu_unknown">This GPU is not supported. An Adreno 6xx, 7xx or 8xx or a Mali-G310, G610, G710, G615, G715, G720 or G725 GPU is needed.</string>
     <string name="device_page_size">Memory pages are %1$d bytes. 4096 is needed.</string>
     <string name="device_data_folder">Android keeps this app\'s files in a folder PD2 Launcher cannot use.</string>
     <string name="device_no_space">%1$d MB free, %2$d MB needed to unpack.</string>
@@ -119,6 +119,11 @@
     <string name="notification_channel_name">Session</string>
     <string name="notification_title">PD2 Launcher is running</string>
     <string name="notification_text">The Launcher runs in the background.</string>
+    <!-- The notification's button: stops what runs safely and closes the app. -->
+    <string name="notification_close">Close</string>
+    <!-- While Close runs. -->
+    <string name="notification_closing_title">PD2 Launcher is closing</string>
+    <string name="notification_closing_text">Stopping safely…</string>
 
     <!-- The Game view before its X screen is up. -->
     <string name="game_view_waiting">Waiting for the X screen. Start the game environment first.</string>

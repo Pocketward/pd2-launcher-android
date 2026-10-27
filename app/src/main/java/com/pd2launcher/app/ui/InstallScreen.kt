@@ -51,8 +51,8 @@ data class InstallView(
     val stage: Line?,
     /** 0..100 for the whole install while it runs (the run's weighted figure, else the engine's). */
     val percent: Int?,
-    /** The running part's bytes or files, its speed and time left (the engine's summary). */
-    val summary: String?,
+    /** The running part's bytes or files, its speed and time left (the engine's summary, [ProgressCaption]). */
+    val summary: Line?,
     /** The running part's bytes done of the total, when it reports bytes. */
     val amount: Line? = null,
     /** Why the last install did not succeed, in the app's words ([Failures]). */
@@ -155,11 +155,13 @@ object InstallPlan {
     const val TIMED_LIMIT = 0.95f
 
     fun segments(source: SourceChoice): List<Segment> = listOf(ENVIRONMENT) + when (source) {
-        SourceChoice.BLIZZARD -> listOf(BASE_DOWNLOAD, BASE_INSTALL, EXPANSION_DOWNLOAD, EXPANSION_INSTALL)
+        SourceChoice.BLIZZARD -> listOf(BASE_DOWNLOAD, BASE_INSTALL, EXPANSION_DOWNLOAD, EXPANSION_INSTALL, PROJECT_DIABLO)
+        // An import keeps the folder's Project Diablo 2 as it is: no task of its own (the owner's
+        // rule of 2026-10-26).
         SourceChoice.EXISTING -> listOf(IMPORT)
-    } + listOf(PROJECT_DIABLO, VERIFY)
+    } + listOf(VERIFY)
 
-    /** The source's tasks, in order: five from Blizzard, four for an installed Diablo II. */
+    /** The source's tasks, in order: five from Blizzard, three for an installed Diablo II. */
     fun tasks(source: SourceChoice): List<InstallTask> = segments(source).map { it.task }.distinct()
 
     /**
@@ -302,7 +304,7 @@ object InstallProgress {
                 run != null && !run.ended -> run.percent
                 else -> operation?.progress?.percent?.coerceIn(0, 100)
             },
-            summary = live?.progress?.summary?.takeIf { working },
+            summary = live?.progress?.summary?.takeIf { working }?.let { ProgressCaption.of(it, live.job) },
             amount = live?.progress?.takeIf { working }?.let(::amount),
             problem = when {
                 state == InstallState.FAILED -> Failures.line(operation?.failure, operation?.job)
@@ -512,10 +514,8 @@ object InstallProgress {
         InstallTask.VERIFY -> R.string.install_title_verify
     }
 
-    /** The task names for the player's source: an installed Diablo II is copied or adopted, its Project Diablo 2 updated. */
-    data class TaskLabels(val source: SourceChoice, val inPlace: Boolean = false, val projectDiabloFound: Boolean = false) {
-        private val updatesPd2 get() = source == SourceChoice.EXISTING && projectDiabloFound
-
+    /** The task names for the player's source: an installed Diablo II is copied or adopted. */
+    data class TaskLabels(val source: SourceChoice, val inPlace: Boolean = false) {
         @StringRes
         fun label(task: InstallTask): Int = when (task) {
             InstallTask.ENVIRONMENT -> R.string.install_task_environment
@@ -525,7 +525,7 @@ object InstallProgress {
                 else -> R.string.install_task_copy_d2
             }
             InstallTask.EXPANSION -> R.string.install_task_lod
-            InstallTask.PROJECT_DIABLO -> if (updatesPd2) R.string.install_task_update_pd2 else R.string.install_step_pd2
+            InstallTask.PROJECT_DIABLO -> R.string.install_step_pd2
             InstallTask.VERIFY -> R.string.install_task_verify
         }
     }
@@ -569,12 +569,18 @@ object InstallProgress {
         REPAIR,
     }
 
-    fun page(session: SessionStatus): Page? {
+    /**
+     * [imported]: the installation was imported (the engine's import record). An import never
+     * installs or updates Project Diablo 2, so one that left it to install shows Repair (Check
+     * again, Start over), never Install Project Diablo 2.
+     */
+    fun page(session: SessionStatus, imported: Boolean = false): Page? {
         val snapshot = session.snapshot ?: return null
         return when {
             snapshot.activeJob in INSTALL_JOBS -> Page.PROGRESS
             snapshot.installation == Installation.STAGE_INTERRUPTED -> Page.REPAIR
             snapshot.installation in DAMAGED && snapshot.activeJob == null && Onboarding.audited(snapshot) -> Page.REPAIR
+            imported && snapshot.step == Step.INSTALL_PD2 && snapshot.activeJob == null && Onboarding.audited(snapshot) -> Page.REPAIR
             snapshot.step == Step.INSTALL_D2 -> Page.KEYS
             snapshot.step == Step.INSTALL_PD2 -> Page.PROGRESS
             else -> null
@@ -592,13 +598,16 @@ object InstallProgress {
         else -> ending
     }
 
-    /** Install Diablo II ended and left Install Project Diablo 2 next: it follows without input. */
-    fun continuesToPd2(ending: Job?, next: Snapshot): Boolean =
-        ending == Job.INSTALL_BASE_GAME && settled(next) && next.step == Step.INSTALL_PD2
+    /**
+     * Install Diablo II ended and left Install Project Diablo 2 next: it follows without input. Not
+     * after an import ([imported]): an import never installs or updates Project Diablo 2.
+     */
+    fun continuesToPd2(ending: Job?, next: Snapshot, imported: Boolean = false): Boolean =
+        !imported && ending == Job.INSTALL_BASE_GAME && settled(next) && next.step == Step.INSTALL_PD2
 
     /** An install job ended and none follows: the game environment stops. */
-    fun installEnded(ending: Job?, next: Snapshot?): Boolean =
-        ending != null && (next == null || (settled(next) && !continuesToPd2(ending, next)))
+    fun installEnded(ending: Job?, next: Snapshot?, imported: Boolean = false): Boolean =
+        ending != null && (next == null || (settled(next) && !continuesToPd2(ending, next, imported)))
 
     /** No job runs and the last operation reached its final status. */
     private fun settled(snapshot: Snapshot): Boolean =
@@ -686,7 +695,7 @@ fun InstallScreen(
     }
     // The figure's caption: the engine's bytes, speed and time left, else the running part's
     // own time ("1:12 elapsed"). What the part does is its task row's.
-    val caption = view.summary ?: InstallProgress.caption(view, clock)?.let { text(it) }
+    val caption = (view.summary ?: InstallProgress.caption(view, clock))?.let { text(it) }
     val title = stringResource(InstallProgress.title(view, tasks))
     val color = when (view.state) {
         InstallState.FAILED -> Palette.Red
@@ -856,16 +865,22 @@ fun RepairScreen(
         )
         Rule()
         val update = snapshot?.update ?: Update.UNKNOWN
+        // Settings → Game → Check for game updates is off: the engine checks nothing.
+        val checksOff = snapshot?.settings?.updateChecks == false
         StatusLine(
-            when (update) {
-                Update.UP_TO_DATE -> Tone.OK
-                Update.AVAILABLE, Update.CHECK_FAILED -> Tone.WARNING
-                Update.CHECKING -> Tone.WORKING
-                Update.UNKNOWN -> Tone.PENDING
+            if (checksOff) {
+                Tone.PENDING
+            } else {
+                when (update) {
+                    Update.UP_TO_DATE -> Tone.OK
+                    Update.AVAILABLE, Update.CHECK_FAILED -> Tone.WARNING
+                    Update.CHECKING -> Tone.WORKING
+                    Update.UNKNOWN -> Tone.PENDING
+                }
             },
             stringResource(R.string.repair_row_update),
-            listOf(stringResource(updateText(update))),
-            dim = update == Update.UNKNOWN,
+            listOf(stringResource(if (checksOff) R.string.update_checks_off else updateText(update))),
+            dim = checksOff || update == Update.UNKNOWN,
         )
         Rule()
         val host = snapshot?.host

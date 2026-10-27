@@ -20,7 +20,9 @@ import com.pd2launcher.app.Tone
  * picker ([onPickFolder], or Continue before a folder is accepted) and copied into the app before
  * the engine checks it. Continue then starts the download at once; no page asks first. Under the
  * options, what the page must say ([sourceNote]): a folder refused or a copy failed, what a
- * picked folder holds, or why Continue waits.
+ * picked folder holds, or why Continue waits. An import keeps the Project Diablo 2 in the folder as
+ * it is, whatever Check for game updates says (the owner's rule of 2026-10-26), so the page has no
+ * switch for it.
  */
 @Composable
 fun SourceScreen(
