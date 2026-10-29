@@ -180,7 +180,7 @@ The app and Project Diablo 2 have different updates.
 
 In Android's Files app, the game folder is under **PD2 Launcher**, in the folder **Diablo II**. **Settings → App → Game files → Open in Files** opens it. Your characters are in its **Save** folder. Your loot filter is in the game folder too.
 
-When the app finds two different copies of a character, it keeps the copy that was saved last. The other copy goes to **Save/Backups**. The app keeps all backups: delete them yourself when you do not need them.
+When the app finds two different copies of a character, it keeps the copy that was saved last. The other copy goes to **Save/Backups**. The app keeps all backups: delete them yourself when you do not need them. When **Save sync** is on, a backup that you delete in the game folder stays in your sync folder. Delete it there too.
 
 When you uninstall the app, Android removes the installation. Copy your characters out first, or use **Save sync**. See [Your files](../README.md#your-files) in the README.
 

@@ -56,9 +56,6 @@ interface SaveTree {
      */
     fun delete(path: String, hash: String)
 
-    /** Removes the folder [path] when it holds nothing at all; whether it did. */
-    fun deleteFolderIfEmpty(path: String): Boolean
-
     /** Removes what a [write] left when it stopped part way (the [SaveSync.TEMPORARY] files). */
     fun clean()
 }
@@ -72,8 +69,10 @@ interface SaveTree {
  * files of the folders inside Save such as PD2's `ProjectD2`). A sync leaves out hidden files and
  * folders, links, and Syncthing's own files ([taken]).
  *
- * A record ([Record]) holds the content hash (SHA-256) of each file at the last sync; file times
- * are never compared to see a change (Android's document picker cannot set them, and FAT keeps
+ * A record ([Record]) holds the content hash (SHA-256) of each file at the last sync (below
+ * `Backups`, 64 zeros in place of a hash, [UNREAD], or the old hash from an earlier build: there
+ * the record only says that the backup went to the folder); file times are never compared to see
+ * a change (Android's document picker cannot set them, and FAT keeps
  * them in 2-second steps). For each path of a group: same content on both sides, nothing; else
  * the side whose content is still the record's did not change it, and the other side did; a path
  * changed on both sides is a conflict. A group then goes as one ([plan]):
@@ -90,13 +89,14 @@ interface SaveTree {
  * laid out as the Save is ([SaveKeeper.backupFolder]). That is the Save's own `Backups` folder
  * (owner, 2026-10-27), so a second pass of the same sync takes a new backup to the folder side too.
  *
- * `Backups` is synced by its own rules ([backupGroup]; owner, 2026-10-27): never as saves, and
- * never backed up again. Each backup folder in it (`Backups/backup-<time>`) is one group, its
- * files each decided on their own: new on one side, copied; changed or deleted on one side only,
- * the same on the other with no backup (a backup folder the player deletes on one side goes on
- * the other side too, and a backup folder left empty goes); changed on both sides, the later
- * file stays (on a tie the app's); changed on one side and deleted on the other, the change
- * stays. Backup folders are not counted with the characters and files that came in or went out.
+ * `Backups` is synced by its own rules ([backupGroup]; owner, 2026-10-27 and 2026-10-29): never
+ * as saves, never backed up again, and from the app to the folder only, one time. Each backup
+ * folder in it (`Backups/backup-<time>`) is one group, its files each decided on their own: a
+ * file of the app that the record does not name goes to the folder, unless the folder has a file
+ * there (which stays as it is), and then the record names it. After that, the sync does not touch
+ * the path again on either side: a change or a delete on one side stays on that side. Nothing
+ * goes from the folder's `Backups` into the app, and no backup file is read to compare it. Backup
+ * folders are not counted with the characters and files that came in or went out.
  *
  * Each write goes through a temporary file ([SaveTree.write]), and a character's own `.d2s` is
  * written last: a stop part way leaves whole files, a group either side of it still has its
@@ -130,7 +130,11 @@ object SaveSync {
         val other: Side get() = if (this == APP) FOLDER else APP
     }
 
-    /** A file of one side as the plan sees it: its content's SHA-256 (hex) and its time. */
+    /**
+     * A file of one side as the plan sees it: its content's SHA-256 (hex) and its time. Below
+     * `Backups` the hash is [UNREAD], never a real hash, so no code may compare the hashes of
+     * backups.
+     */
     data class FileState(val hash: String, val time: Long)
 
     /** Why a group goes as it goes, for the logs. */
@@ -156,7 +160,7 @@ object SaveSync {
     /**
      * A character ([character]: its name, [name]) or one other file ([name]: its path), or a
      * backup folder ([backups]: `Backups/<its name>`), with its [paths] on either side or in the
-     * record; [to]: the side its [steps] change (null: none, or both for a backup folder);
+     * record; [to]: the side its [steps] change (null: none);
      * [after]: the content of each of its paths on both sides once the steps are done, which
      * the record then holds.
      */
@@ -177,26 +181,29 @@ object SaveSync {
 
     /**
      * The content hash of each file at the last sync with the picked [folder] (its document
-     * tree's URI, or a folder's path in the tests), by path. A record of another folder is none:
-     * the first sync with a folder is a merge.
+     * tree's URI, or a folder's path in the tests), by path. A path below `Backups` holds [UNREAD]
+     * (64 zeros) in place of a hash, or its old hash from an earlier build: the record only says
+     * that the backup went to the folder ([backupGroup]). A record of another folder is none: the
+     * first sync with a folder is a merge.
      */
     data class Record(val folder: String, val hashes: Map<String, String>)
 
     /**
      * What [sync] did: [outcome], whether it was a merge ([first]: the first sync with the folder,
-     * or [emptied]: one side had no file at all), and how many paths both sides have after it.
+     * or [emptied]: one side had no file at all), and how many paths both sides have after it
+     * (the backups not counted: the record does not say that both sides have one).
      */
     data class Result(val outcome: Outcome, val first: Boolean, val emptied: Boolean, val files: Int)
 
     /**
      * One sync of [app] and [folder] (whose record names it [folderId]): what an earlier sync
-     * left part way goes ([SaveTree.clean]), both sides are read and hashed ([scan]), the record
-     * in [recordFile] is read ([readRecord]; none: the first sync), and the [plan] is done
-     * ([apply]); the record is written as [apply] goes. A side with no file at all while the
-     * record has some is a merge too ([Result.emptied]): a folder made again, or another SD card
-     * at the same place, is far more likely than the player deleting every character, so
-     * nothing is deleted then. When the sync made a backup (in the app's `Save/Backups`), a second
-     * pass takes it to the folder side; the outcome counts both.
+     * left part way goes ([SaveTree.clean]), both sides are read and hashed ([scan]; the backups
+     * are only listed), the record in [recordFile] is read ([readRecord]; none: the first sync),
+     * and the [plan] is done ([apply]); the record is written as [apply] goes. A side with no file
+     * at all while the record has some is a merge too ([Result.emptied]): a folder made again, or
+     * another SD card at the same place, is far more likely than the player deleting every
+     * character, so nothing is deleted then. When the sync made a backup (in the app's
+     * `Save/Backups`), a second pass takes it to the folder side; the outcome counts both.
      */
     fun sync(
         app: SaveTree,
@@ -209,14 +216,15 @@ object SaveSync {
     ): Result {
         val first = pass(app, folder, folderId, recordFile, backups, now, detail)
         if (first.outcome.backup == null) return first
-        val second = pass(app, folder, folderId, recordFile, backups, now, detail, onlyBackups = true).outcome
+        val again = pass(app, folder, folderId, recordFile, backups, now, detail, onlyBackups = true)
         val one = first.outcome
+        val second = again.outcome
         return first.copy(
             outcome = Outcome(
                 one.toApp + second.toApp, one.toFolder + second.toFolder, one.backedUp + second.backedUp, one.backup,
                 one.failed + second.failed, second.record, one.backupFolders + second.backupFolders,
             ),
-            files = second.record.size,
+            files = again.files,
         )
     }
 
@@ -241,19 +249,21 @@ object SaveSync {
         val outcome = apply(plan, app, folder, hashes.orEmpty(), backups, now, { writeRecord(recordFile, Record(folderId, it)) }, detail)
         // The merge's record replaces the old one, also when both sides are empty.
         if (emptied) writeRecord(recordFile, Record(folderId, outcome.record))
-        return Result(outcome, record == null, emptied, outcome.record.size)
+        return Result(outcome, record == null, emptied, outcome.record.keys.count { !it.startsWith(BACKUPS) })
     }
 
     /**
      * The files of [tree] with their hashes ([SaveTree.files], then each read, [READERS] at a
      * time: each read through a document provider waits mostly for the provider); a file gone
-     * meanwhile is left out.
+     * meanwhile is left out. A file below `Backups` is not read: its hash is [UNREAD] ([backupGroup]).
      */
     fun scan(tree: SaveTree): Map<String, FileState> {
         val entries = tree.files().filter { backupsName(it.path) }
         val readers = Executors.newFixedThreadPool(READERS)
         try {
-            val hashes = readers.invokeAll(entries.map { entry -> Callable { tree.open(entry.path)?.use(::sha256) } })
+            val hashes = readers.invokeAll(
+                entries.map { entry -> Callable { if (entry.path.startsWith(BACKUPS)) UNREAD else tree.open(entry.path)?.use(::sha256) } },
+            )
             val files = sortedMapOf<String, FileState>()
             for ((entry, hash) in entries.zip(hashes)) {
                 val value = try {
@@ -308,14 +318,23 @@ object SaveSync {
     /** The paths below the Save's backups' folder ([SaveKeeper.BACKUPS]), which [backupGroup] syncs. */
     private const val BACKUPS = SaveKeeper.BACKUPS + "/"
 
+    /**
+     * The hash of a file below `Backups` in [scan], in a copy's step and in the record: the sync
+     * never reads a backup to compare it ([backupGroup]), and a backup path in the record means
+     * only that it is done.
+     */
+    private val UNREAD = "0".repeat(64)
+
     private data class GroupKey(val name: String, val character: Boolean, val backups: Boolean = false)
 
     /**
-     * A backup folder ([name], `Backups/<its name>`): each of its [paths] on its own, never backed
-     * up. The side whose file is still the record's takes the other side's (a copy, or a delete);
-     * a file changed on both sides goes as the later one (on a tie the app's); a file changed on
-     * one side and deleted on the other comes back. Without a record, what one side has goes to
-     * the other.
+     * A backup folder ([name], `Backups/<its name>`; owner, 2026-10-29): each of its [paths] on
+     * its own, never backed up, from the app to the folder one time. A file of the app that the
+     * [record] does not name goes to the folder, unless the folder has a file there (which stays
+     * as it is, whatever its content); then the record names it. A path that the record names
+     * stays as it is on both sides (changed, deleted or back again), and the record forgets it
+     * only when neither side has it. A file that only the folder has never goes into the app and
+     * is not recorded. Without a record, the same.
      */
     private fun backupGroup(
         name: String,
@@ -327,31 +346,20 @@ object SaveSync {
         val steps = mutableListOf<Step>()
         val after = mutableMapOf<String, String>()
         for (path in paths) {
-            val x = app[path]
-            val y = folder[path]
-            if (x?.hash == y?.hash) {
-                x?.let { after[path] = it.hash }
-                continue
-            }
             val was = record?.get(path)
-            val from = when {
-                y?.hash == was -> Side.APP
-                x?.hash == was -> Side.FOLDER
-                x == null -> Side.FOLDER
-                y == null -> Side.APP
-                x.time >= y.time -> Side.APP
-                else -> Side.FOLDER
-            }
-            val source = if (from == Side.APP) x else y
-            val target = if (from == Side.APP) y else x
-            if (source == null) {
-                steps += Step.Delete(path, from.other, target!!.hash)
-            } else {
-                steps += Step.Copy(path, from, source.hash, source.time, target?.hash)
-                after[path] = source.hash
+            val file = app[path]
+            when {
+                was != null -> if (file != null || path in folder) after[path] = was
+                file == null -> {}
+                path in folder -> after[path] = UNREAD
+                else -> {
+                    steps += Step.Copy(path, Side.APP, UNREAD, file.time, null)
+                    after[path] = UNREAD
+                }
             }
         }
-        return Group(name, false, paths, if (steps.isEmpty()) Why.SAME else Why.BACKUPS, null, steps, after, backups = true)
+        val why = if (steps.isEmpty()) Why.SAME else Why.BACKUPS
+        return Group(name, false, paths, why, Side.FOLDER.takeIf { steps.isNotEmpty() }, steps, after, backups = true)
     }
 
     private fun group(
@@ -424,8 +432,8 @@ object SaveSync {
 
     /**
      * What [apply] did: groups to the app and to the folder (characters and other files), files
-     * put in [backup], the groups that failed (with why), and the backup folders that changed on
-     * one side or both ([backupFolders]).
+     * put in [backup], the groups that failed (with why), and the backup folders with files copied
+     * to the folder ([backupFolders]).
      */
     data class Outcome(
         val toApp: Int,
@@ -485,16 +493,16 @@ object SaveSync {
                             val target = tree(step.side)
                             if (hash(target, step.path) != step.hash) throw ChangedMeanwhile(step.path)
                             target.delete(step.path, step.hash)
-                            // A backup folder emptied so goes too, as do the empty folders in it.
-                            if (group.backups) {
-                                var folder = step.path.substringBeforeLast('/')
-                                while (folder.startsWith(BACKUPS) && target.deleteFolderIfEmpty(folder)) folder = folder.substringBeforeLast('/')
-                            }
                             detail("save sync: ${step.path}: deleted in the ${side(step.side)} (${group.why.text})")
                         }
                         is Step.Copy -> {
                             val target = tree(step.from.other)
-                            if (hash(target, step.path) != step.over) throw ChangedMeanwhile(step.path)
+                            // Where the plan saw no file, a file there now is not read (a backup of the folder never is).
+                            if (step.over == null) {
+                                target.open(step.path)?.use { throw ChangedMeanwhile(step.path) }
+                            } else if (hash(target, step.path) != step.over) {
+                                throw ChangedMeanwhile(step.path)
+                            }
                             target.write(step.path, step.time, step.over) { out -> copyChecked(tree(step.from), step.path, step.hash, out) }
                             detail("save sync: ${step.path}: from the ${side(step.from)} to the ${side(step.from.other)} (${group.why.text})")
                         }
@@ -536,7 +544,7 @@ object SaveSync {
             Why.DELETED -> "deleted on the other side"
             Why.CHANGED_AND_DELETED -> "changed on one side, deleted on the other; the change stays"
             Why.BOTH_CHANGED -> "changed on both sides; the one saved last stays"
-            Why.BACKUPS -> "a backup folder: no backup of it"
+            Why.BACKUPS -> "a new backup: to the folder one time, no backup of it"
         }
 
     private fun side(side: Side) = if (side == Side.APP) "app" else "folder"
@@ -558,12 +566,15 @@ object SaveSync {
         if (step.time > 0) target.setLastModified(step.time)
     }
 
-    /** [path] of [tree] into [out]; throws [ChangedMeanwhile] when it is gone or its content is not [hash] any more. */
+    /**
+     * [path] of [tree] into [out]; throws [ChangedMeanwhile] when it is gone or its content is not
+     * [hash] any more ([UNREAD], a backup: not compared).
+     */
     private fun copyChecked(tree: SaveTree, path: String, hash: String, out: OutputStream) {
         val digest = MessageDigest.getInstance("SHA-256")
         val input = tree.open(path) ?: throw ChangedMeanwhile(path)
         DigestInputStream(input, digest).use { it.copyTo(out) }
-        if (hex(digest.digest()) != hash) throw ChangedMeanwhile(path)
+        if (hash != UNREAD && hex(digest.digest()) != hash) throw ChangedMeanwhile(path)
     }
 
     /** The content hash of [path] of [tree] now; null when there is no such file. */
@@ -672,13 +683,6 @@ class FileTree(private val top: File) : SaveTree {
     /** The content hash of the regular file [file]; null when there is none. */
     private fun hashOf(file: File): String? =
         if (Files.isRegularFile(file.toPath(), LinkOption.NOFOLLOW_LINKS)) FileInputStream(file).use(SaveSync::sha256) else null
-
-    override fun deleteFolderIfEmpty(path: String): Boolean {
-        val folder = resolve(path) ?: return false
-        if (!Files.isDirectory(folder.toPath(), LinkOption.NOFOLLOW_LINKS) || folder.list()?.isEmpty() != true) return false
-        Files.delete(folder.toPath())
-        return true
-    }
 
     override fun clean() {
         if (!Files.isDirectory(top.toPath(), LinkOption.NOFOLLOW_LINKS)) return

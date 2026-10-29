@@ -118,7 +118,7 @@ When the app finds two different copies of a character, it keeps the copy that w
 - from the game to the folder, after the game and after the official PD2 launcher,
 - in both directions, when you tap **Sync now**.
 
-The app never copies while the game runs. When a character changed in both places, the copy saved last stays and the other copy goes to **Save/Backups**. When you delete a character in one place, the app deletes it in the other place too, after a backup. Backup folders go in both directions too, and a backup folder that you delete in one place goes from the other place. Syncthing's own files, for example its conflict copies, never go into the game. When the folder is not available (for example, the SD card is out), **Play** still works and Settings tells you. When you turn Save sync off, both copies stay.
+The app never copies while the game runs. When a character changed in both places, the copy saved last stays and the other copy goes to **Save/Backups**. When you delete a character in one place, the app deletes it in the other place too, after a backup. The app copies each backup to the folder one time. It never copies backups from the folder into the game, and a backup that you delete in one place stays in the other place. Syncthing's own files, for example its conflict copies, never go into the game. When the folder is not available (for example, the SD card is out), **Play** still works and Settings tells you. When you turn Save sync off, both copies stay.
 
 Uninstalling the app removes the installation. Android offers to keep the app's data; copy your characters out first if you want to be sure to keep them. With Save sync on, your sync folder also has a copy.
 

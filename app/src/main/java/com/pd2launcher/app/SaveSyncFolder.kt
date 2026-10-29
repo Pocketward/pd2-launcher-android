@@ -124,15 +124,6 @@ class DocumentTree(private val resolver: ContentResolver, private val tree: Uri)
         if (!DocumentsContract.deleteDocument(resolver, old)) throw IOException("cannot delete $path")
     }
 
-    override fun deleteFolderIfEmpty(path: String): Boolean {
-        if (path.isEmpty()) return false
-        val folder = findFolder(path) ?: return false
-        if (children(folder).isNotEmpty()) return false
-        if (!DocumentsContract.deleteDocument(resolver, document(folder))) return false
-        folders.remove(path)
-        return true
-    }
-
     /**
      * What a write or a delete left when it stopped part way: a temporary document goes; a file
      * set aside ([setAside]) gets its name back when no file holds the name, and goes otherwise
@@ -544,7 +535,7 @@ object SaveSyncFolder {
                         else -> ""
                     } +
                     (outcome.backup?.let { ", ${outcome.backedUp} files to Backups/${it.name}" } ?: "") +
-                    (if (outcome.backupFolders > 0) ", ${outcome.backupFolders} backup folders synced" else "") +
+                    (if (outcome.backupFolders > 0) ", ${outcome.backupFolders} backup folders copied to the folder" else "") +
                     (if (outcome.failed.isNotEmpty()) ", not synced: ${outcome.failed.joinToString("; ")}" else "") +
                     "; ${result.files} files in each, ${System.currentTimeMillis() - started} ms",
             )

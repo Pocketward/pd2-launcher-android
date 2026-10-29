@@ -51,7 +51,7 @@ object DebugPreview {
     const val DOWNLOAD = "download"
     const val DOWNLOAD_STOPPED = "download-stopped"
     const val DOWNLOAD_FAILED = "download-failed"
-    /** The key page's layout: empty fields that take no input, without FLAG_SECURE. */
+    /** The key page's layout: empty fields that take no input. */
     const val KEYS = "keys"
     /** The same with fields that take focus and the keyboard, still empty (never the debug keys). */
     const val KEYS_TYPING = "keys-typing"

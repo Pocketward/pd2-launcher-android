@@ -13,11 +13,8 @@ import android.text.InputType
 import android.text.TextWatcher
 import android.text.method.HideReturnsTransformationMethod
 import android.text.method.PasswordTransformationMethod
-import android.view.Choreographer
 import android.view.KeyEvent
 import android.view.View
-import android.view.Window
-import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
@@ -55,8 +52,6 @@ import androidx.compose.ui.platform.LocalInputModeManager
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.ui.window.DialogProperties
-import androidx.compose.ui.window.SecureFlagPolicy
 import com.pd2launcher.app.BuildConfig
 import com.pd2launcher.app.DebugKeys
 import com.pd2launcher.app.KeyProblem
@@ -66,14 +61,12 @@ import com.pd2launcher.app.control.isProductKeyChar
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import java.nio.CharBuffer
-import java.util.WeakHashMap
 
 /**
- * The CD keys page, the first of Install. Both keys are typed
- * into password fields Android never autofills, learns from or saves in the instance state;
- * `FLAG_SECURE` keeps the screen out of screenshots and the recents thumbnail, until the screen
- * after it is on display ([SecureWhileShown]). The keys show as
- * dots unless the player turns on Show keys. "Agree and install" is the player's acceptance of
+ * The CD keys page, the first of Install. Both keys are typed into password fields Android never
+ * autofills, learns from or saves in the instance state. The keys show as dots unless the player
+ * turns on Show keys. Accessibility services see each field with its label as a password field,
+ * its text as dots while the keys are hidden. "Agree and install" is the player's acceptance of
  * Blizzard's license terms, said beside it and readable from the terms link; it empties the
  * fields and hands [onAuthorize] the keys as CharArrays, which it must clear once sent.
  *
@@ -100,7 +93,7 @@ fun KeysScreen(
     resuming: Boolean = false,
     /**
      * Debug builds' layout preview (`--es preview keys`): the fields stay empty and cannot be
-     * typed into, so no key can be on screen, and the screen may be captured.
+     * typed into, so no key can be on screen.
      */
     layoutPreview: Boolean = false,
     /**
@@ -129,7 +122,6 @@ fun KeysScreen(
     val activity = LocalContext.current as Activity
     // The fields hold the keys; Compose state holds only whether both look like keys.
     val fields = remember { arrayOfNulls<EditText>(2) }
-    if (!layoutPreview) KeepSecure()
     val refilled = remember { if (layoutPreview) null else refill?.invoke() }
     DisposableEffect(Unit) {
         onDispose {
@@ -213,6 +205,9 @@ fun KeysScreen(
                 // The label, the field and (on the last) the line under it come into view together.
                 Column(Modifier.bringIntoViewRequester(inView[index]), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(label, style = Type.Hint, color = Palette.Muted)
+                    // While an accessibility service is on, Compose marks the AndroidView's holder
+                    // "not visible to user", to keep TalkBack off the holder. The field in it stays
+                    // visible to accessibility services; only `uiautomator dump` then skips it.
                     AndroidView(
                         factory = { context ->
                             lateinit var field: EditText
@@ -308,77 +303,8 @@ fun KeysScreen(
                     }
                 }) { Text(stringResource(R.string.terms_open)) }
             },
-            properties = DialogProperties(securePolicy = if (layoutPreview) SecureFlagPolicy.Inherit else SecureFlagPolicy.SecureOn),
         )
     }
-}
-
-/**
- * Whether `FLAG_SECURE` may come off a window that showed a key page: never while one shows, and
- * only by the check its last [hide] handed out, run once the screen after it is on display, so
- * a key page shown again meanwhile keeps it on.
- */
-class SecureWhileShown {
-    private var shown = 0
-    private var generation = 0
-
-    fun show() {
-        shown++
-        generation++
-    }
-
-    /** The key page left: the check to run once the next screen is on display. */
-    fun hide(): () -> Boolean {
-        shown = (shown - 1).coerceAtLeast(0)
-        val at = ++generation
-        return { shown == 0 && generation == at }
-    }
-}
-
-/** Each window's key pages, without keeping a window alive. */
-private val secureKeyPages = WeakHashMap<Window, SecureWhileShown>()
-
-/**
- * `FLAG_SECURE` on the activity's window while this is composed, out of screenshots and the
- * recents thumbnail: the key page, and the Install screen's view of the installer windows, where
- * Blizzard's installer may show a key. It comes off only once the screen that follows is on
- * display ([SecureWhileShown]), so a screenshot just after Agree and install cannot catch the key
- * page's last frame.
- */
-@Composable
-fun KeepSecure() {
-    val window = (LocalContext.current as Activity).window
-    DisposableEffect(window) {
-        val secure = secureKeyPages.getOrPut(window) { SecureWhileShown() }
-        secure.show()
-        window.setSecure(true)
-        onDispose {
-            val mayClear = secure.hide()
-            window.decorView.afterNextFrame { if (mayClear()) window.setSecure(false) }
-        }
-    }
-}
-
-/**
- * Turns `FLAG_SECURE` on or off through the window's attributes, never Window.addFlags or
- * setFlags: some vendors' Android builds drop FLAG_SECURE in both (addFlags returns for it,
- * setFlags masks it out), which would let the key page be captured.
- */
-private fun Window.setSecure(on: Boolean) {
-    attributes = attributes.also { it.flags = secureFlags(it.flags, on) }
-}
-
-/** [flags] with `FLAG_SECURE` [on] or off, every other flag as it was. */
-fun secureFlags(flags: Int, on: Boolean): Int =
-    if (on) flags or WindowManager.LayoutParams.FLAG_SECURE else flags and WindowManager.LayoutParams.FLAG_SECURE.inv()
-
-/**
- * Runs [block] once the next frame (the screen after the key page) has gone to the compositor,
- * and one frame more, so that frame is what shows when it runs.
- */
-private fun View.afterNextFrame(block: () -> Unit) {
-    viewTreeObserver.registerFrameCommitCallback { Choreographer.getInstance().postFrameCallback { block() } }
-    invalidate()
 }
 
 /**
