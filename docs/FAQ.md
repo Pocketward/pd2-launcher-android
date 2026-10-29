@@ -1,6 +1,6 @@
 # FAQ
 
-Short answers to questions that players often ask. For other problems, see [Problems](../README.md#problems) in the README.
+Short answers to questions that players often ask. For a different problem, open an [issue](https://github.com/Pocketward/pd2-launcher-android/issues) and attach the app's logs (see [How do I send logs?](#how-do-i-send-logs)).
 
 **The game**
 
@@ -119,7 +119,7 @@ Connect a Bluetooth or USB controller. In pad mode, the game sees an Xbox contro
 
 - Press **Select + Start** to switch between pad mode and mouse mode. Hold **Select + Start** to open the in-game menu. To use **L3 + R3** instead, go to **Settings → Controller**.
 - Use mouse mode for the game's menus and for typing. In mouse mode, the sticks move the pointer. **A** or **L2** is a left click, and **B** or **R2** is a right click.
-- To see or change what each button does, open the in-game menu and tap the gamepad icon (**Controls**). Press the row of a button to change it. **Settings → Controller** has the same settings.
+- To see or change what each button does, open the in-game menu and tap the gamepad icon (**Controls**). Press the row of a button to change it, also while you play. Each direction of the d-pad can change too. **Settings → Controller** has the same settings.
 
 If a controller has wrong buttons, send us the logs (see [How do I send logs?](#how-do-i-send-logs)). The logs name each controller and the layout that the app selected.
 
@@ -169,7 +169,7 @@ The **Connection** row on the **Check** screen tells you when the phone blocks t
 
 The app and Project Diablo 2 have different updates.
 
-- **The app:** while the app is open, it looks for a new version each hour. The setting is **Settings → App → Look for new versions** (on by default). When a new version is available, Android shows a notification, and a gold dot shows on **About**. In **About**, tap **Download**, then **Install**, and confirm in Android's window. Your game, characters and settings stay. See [Updates of this app](../README.md#updates-of-this-app).
+- **The app:** while the app is open, it looks for a new version each hour. The setting is **Settings → App → Look for new versions** (on by default). When a new version is available, Android shows a notification, and a gold dot shows on **About**. In **About**, tap **Download**, then **Install**, and confirm in Android's window. The download starts only when you tap **Download**; on mobile data, a note gives the size first. The first time, Android asks you to allow **Install unknown apps** for PD2 Launcher, and can restart the app when you do. Your game, characters and settings stay.
 - **Project Diablo 2:** when you press **Play**, the app first checks for a new version of Project Diablo 2. If there is one, **New version found** asks you. **Update** installs it, and then the game starts. **Cancel** keeps your version, and Play then offers **Update** and **Play without updating**. Online games can need the current version.
 - **Check for game updates** (**Settings → Game**, on by default): turn it off to keep your Project Diablo 2 as it is, for example with a mod. This setting does not change the updates of the app.
 - After the official PD2 launcher updates the game files, Play can ask you to check them one time. Tap **Check files**.
@@ -182,7 +182,7 @@ In Android's Files app, the game folder is under **PD2 Launcher**, in the folder
 
 When the app finds two different copies of a character, it keeps the copy that was saved last. The other copy goes to **Save/Backups**. The app keeps all backups: delete them yourself when you do not need them. When **Save sync** is on, a backup that you delete in the game folder stays in your sync folder. Delete it there too.
 
-When you uninstall the app, Android removes the installation. Copy your characters out first, or use **Save sync**. See [Your files](../README.md#your-files) in the README.
+When you uninstall the app, Android removes the installation. Android offers to keep the app's data. Copy your characters out first, or use **Save sync**. Before you put a mod's files in the game folder, read [Your files](../README.md#your-files) in the README.
 
 ### How do I sync my characters with Syncthing?
 
@@ -194,7 +194,7 @@ Use **Save sync** in **Settings → App → Game files**. It keeps the game's Sa
 
 The app copies from the folder into the game when you press **Play** or open the official PD2 launcher. It copies from the game to the folder after the game or the launcher closes. **Sync now** copies in the two directions. The app never copies while the game runs.
 
-When a character changed in the two places, the copy that was saved last stays. The other copy goes to **Save/Backups**. When you delete a character in one place, the app deletes it in the other place too, after a backup. Syncthing's own files, for example its conflict copies, never go into the game. See [Your files](../README.md#your-files) in the README.
+When a character changed in the two places, the copy that was saved last stays. The other copy goes to **Save/Backups**. When you delete a character in one place, the app deletes it in the other place too, after a backup. The app copies each backup to the folder one time. It never copies backups from the folder into the game. Syncthing's own files, for example its conflict copies, never go into the game. When the folder is not available, for example when the SD card is out, **Play** still works and Settings tells you. When you turn **Save sync** off, both copies stay.
 
 ## Android and problem reports
 
