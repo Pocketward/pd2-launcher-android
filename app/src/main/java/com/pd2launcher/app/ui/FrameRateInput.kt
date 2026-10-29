@@ -102,10 +102,10 @@ internal fun FrameRateInput(current: Int, full: Float, onSet: (Int) -> Unit, onC
 }
 
 /**
- * The Pointer speed input, from the in-game Controls screen: mouse mode's pointer speed in a field
- * ([current]), "×" after it, in the Frame rate input's style. The D-pad's up and down change it by
- * [PointerSpeed.STEP]. OK takes a number inside [PointerSpeed.RANGE], put on the step grid
- * ([PointerSpeed.typed]), and gives [onSet] the value to store.
+ * The Pointer speed input, from the in-game Controls screen: mouse mode's and Trackpad's pointer
+ * speed in a field ([current]), "×" after it, in the Frame rate input's style. The D-pad's up and
+ * down change it by [PointerSpeed.STEP]. OK takes a number inside [PointerSpeed.RANGE], put on the
+ * step grid ([PointerSpeed.typed]), and gives [onSet] the value to store.
  */
 @Composable
 internal fun PointerSpeedInput(current: Float, onSet: (Float) -> Unit, onClose: () -> Unit) {
@@ -176,6 +176,9 @@ private fun NumberInput(
             // The keyboard as the dialog opens only after a tap; after a controller's press only on a tap.
             val keyboard = if (byTouch) WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE else WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN
             window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE or keyboard)
+            // It shows and goes at once, and the screen behind it is not dimmed (its panel is opaque, so it reads over the game).
+            window?.setWindowAnimations(0)
+            window?.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
             // Over the game, as the game: no system bars (they would also shift the screen under the dialog).
             window?.let {
                 WindowCompat.getInsetsController(it, it.decorView).run {

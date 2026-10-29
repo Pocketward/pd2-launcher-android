@@ -28,8 +28,9 @@ import kotlinx.coroutines.launch
 
 /**
  * The activity's part of app updates ([AppUpdater]): it starts the updater, opens Android's
- * confirmation window only while the activity is in front, reads on each return what About needs,
- * and turns About's actions into the updater's. [MainActivity] calls it from its lifecycle.
+ * confirmation window only while the activity is in front, asks for a check when one is due on
+ * each return and on a timer while it stays in front, reads on each return what About needs, and
+ * turns About's actions into the updater's. [MainActivity] calls it from its lifecycle.
  */
 class AppUpdateHost(private val activity: ComponentActivity) {
     /** Android lets the app install its updates ("Install unknown apps"); read on each return. */
@@ -54,6 +55,16 @@ class AppUpdateHost(private val activity: ComponentActivity) {
                 }
             }
         }
+        // While the app stays in front (the game too), a check when one is due: the timer only
+        // hands the question to the updater's thread. It stops when the activity pauses; onResume asks at once.
+        activity.lifecycleScope.launch {
+            activity.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                while (true) {
+                    delay(AppUpdate.TIMER_MS)
+                    AppUpdater.inFront(activity)
+                }
+            }
+        }
     }
 
     /** From onNewIntent. */
@@ -64,7 +75,7 @@ class AppUpdateHost(private val activity: ComponentActivity) {
         allowed.value = activity.packageManager.canRequestPackageInstalls()
         metered.value = AppUpdater.metered(activity)
         returns.intValue++
-        AppUpdater.resumed(activity)
+        AppUpdater.inFront(activity)
     }
 
     /** About's app update while [status] (and a folder [copying]) holds; null where this build gets none. */
@@ -97,6 +108,15 @@ class AppUpdateHost(private val activity: ComponentActivity) {
     /** The newer version that Settings → App names; null: none. */
     @Composable
     fun newVersion(): String? = AppUpdater.state.collectAsState().value.offer?.versionName
+
+    /** Whether Play's About shows the new-version dot ([AppUpdate.newVersionDot]); never where this build gets no updates. */
+    @Composable
+    fun newVersionDot(): Boolean {
+        // The state is read first, at each composition: a read that `available` skipped would
+        // leave Play deaf to the state's changes (a debug build's test feed set while Play shows).
+        val state = AppUpdater.state.collectAsState().value
+        return available && AppUpdate.newVersionDot(state, BuildConfig.VERSION_CODE)
+    }
 
     private fun act(action: AppUpdate.Action) {
         when (action) {

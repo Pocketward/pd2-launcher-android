@@ -41,6 +41,7 @@
 #include <linux/sync_file.h>
 #include <poll.h>
 #include <pthread.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/eventfd.h>
@@ -107,7 +108,13 @@ int64_t fence_time(int fd) {
     return t;
 }
 
-// One client's buffers: freed when nothing refers to them (the client, the layer, a transaction).
+struct CpuAccess {
+    bool reading = false;
+    bool release_pending = false;
+    int release_fence = -1;
+};
+
+// References belong to the client, layer, transactions, and CPU reader.
 struct BufferSet {
     int refs = 0;
     int fd = -1; // the client's socket; -1 once it has gone
@@ -115,6 +122,7 @@ struct BufferSet {
     uint32_t width = 0, height = 0;
     AHardwareBuffer *buffers[MAX_BUFFERS] = {};
     bool at_compositor[MAX_BUFFERS] = {}; // sent to the screen, not yet given back
+    CpuAccess cpu[MAX_BUFFERS];
 };
 
 void unref(BufferSet *set) {
@@ -162,7 +170,13 @@ struct Server {
     int64_t shown_ns = 0, inflight_wait_ns = INFLIGHT_WAIT_NS;
     BufferSet *shown_set = nullptr;
     int shown = -1;
-    AHardwareBuffer *locked = nullptr;
+    int shown_fence = -1;
+    bool shown_readable = false; // false if duplicating the producer fence failed
+    struct {
+        BufferSet *set = nullptr;
+        int index = -1;
+    } read;
+    bool destroy_when_idle = false; // stopped: the last callback or CPU read frees the server
     // Stats since the last line.
     int64_t last_ns = 0;
     uint64_t presents = 0, back_at_once = 0, completes = 0, shown_frames = 0;
@@ -185,6 +199,12 @@ struct Server {
     bool capped = true;
     std::atomic<bool> waits_tick{false};
     int tick_fd = -1;
+
+    ~Server() {
+        for (int i = 0; i < nfences; i++) close(fences[i]);
+        pthread_cond_destroy(&answered);
+        pthread_mutex_destroy(&lock);
+    }
 };
 
 // The server the clock's ticks reach (present_server_tick): the one running.
@@ -258,10 +278,37 @@ void send_release(BufferSet *set, int index, int fence) {
 // Under lock: buffer [index] of [set] goes back to Mesa, once [fence] (taken) signals.
 void give_back(BufferSet *set, int index, int fence) {
     if (set != nullptr && index >= 0 && index < set->count && set->at_compositor[index]) {
+        CpuAccess &cpu = set->cpu[index];
+        if (cpu.reading) {
+            cpu.release_pending = true;
+            cpu.release_fence = fence;
+            return;
+        }
         set->at_compositor[index] = false;
         send_release(set, index, fence);
     }
     if (fence >= 0) close(fence);
+}
+
+// The CPU mapping is already unlocked, or failed before it was mapped.
+void release_cpu_read(Server *s) {
+    pthread_mutex_lock(&s->lock);
+    BufferSet *set = s->read.set;
+    int index = s->read.index;
+    CpuAccess &cpu = set->cpu[index];
+    cpu.reading = false;
+    if (cpu.release_pending) {
+        int fence = cpu.release_fence;
+        cpu.release_pending = false;
+        cpu.release_fence = -1;
+        give_back(set, index, fence);
+    }
+    s->read.set = nullptr;
+    s->read.index = -1;
+    unref(set);
+    bool finished = s->destroy_when_idle && s->inflight == 0;
+    pthread_mutex_unlock(&s->lock);
+    if (finished) delete s;
 }
 
 // Under lock: [frame] goes back to Mesa unshown with its acquire fence, which Mesa waits for before
@@ -347,8 +394,10 @@ void on_complete(void *context, ASurfaceTransactionStats *stats) {
     // since the last (else at its next tick, handle_tick).
     if (s->inflight_current == 0 && s->view && (s->next_vsync || tick_allows(s))) show_next(s);
     pthread_cond_broadcast(&s->answered);
+    bool finished = s->destroy_when_idle && s->inflight == 0 && s->read.set == nullptr;
     pthread_mutex_unlock(&s->lock);
     free(done);
+    if (finished) delete s;
 }
 
 bool same(const ARect &a, const ARect &b) {
@@ -459,6 +508,9 @@ void show_next(Server *s) {
 void show(Server *s, BufferSet *set, int index, int fence, const ARect &source, const ARect &destination) {
     auto *done = (Completion *)malloc(sizeof(Completion));
     ASurfaceTransaction *t = ASurfaceTransaction_create();
+    if (s->shown_fence >= 0) close(s->shown_fence);
+    s->shown_fence = fence >= 0 ? fcntl(fence, F_DUPFD_CLOEXEC, 0) : -1;
+    s->shown_readable = fence < 0 || s->shown_fence >= 0;
     ASurfaceTransaction_setBuffer(t, s->control, set->buffers[index], fence);
     if (!s->configured || !same(source, s->configured_source) || !same(destination, s->configured_destination)) {
         // Not turned: the compositor turns the picture to the panel where it has to.
@@ -474,8 +526,11 @@ void show(Server *s, BufferSet *set, int index, int fence, const ARect &source, 
             ASurfaceTransaction_setFrameRate(t, s->control, s->frame_rate, ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT);
         }
         // The compositor takes this layer's buffers one after another: with one transaction at a
-        // time (present, on_complete), the newest frame goes on each display frame.
-        ASurfaceTransaction_setEnableBackPressure(t, s->control, true);
+        // time (present, on_complete), the newest frame goes on each display frame. Android 11
+        // has no back pressure (API 31); the one transaction at a time stays.
+        if (__builtin_available(android 31, *)) {
+            ASurfaceTransaction_setEnableBackPressure(t, s->control, true);
+        }
         s->configured = true;
     }
     if (!s->visible) {
@@ -797,6 +852,9 @@ void drop_layer(Server *s) {
     unref(s->shown_set);
     s->shown_set = nullptr;
     s->shown = -1;
+    if (s->shown_fence >= 0) close(s->shown_fence);
+    s->shown_fence = -1;
+    s->shown_readable = false;
 }
 
 Server *start(JNIEnv *env, jstring socket_path, jstring counter_path) {
@@ -1007,7 +1065,6 @@ void stop(Server *s) {
     farewell(s, s->active);
     s->view = false;
     drop_layer(s);
-    bool answered = s->inflight == 0;
     if (s->page != nullptr) __atomic_store_n(&s->page[WANTED_WORD], 0u, __ATOMIC_RELEASE);
     for (int i = 0; i < s->nfences; i++) close(s->fences[i]);
     s->nfences = 0;
@@ -1018,8 +1075,11 @@ void stop(Server *s) {
     close(s->tick_fd);
     unlink(s->path);
     munmap(s->page, PAGE);
-    // A late callback would find it: then it stays allocated.
-    if (answered) delete s;
+    pthread_mutex_lock(&s->lock);
+    s->destroy_when_idle = true;
+    bool finished = s->inflight == 0 && s->read.set == nullptr;
+    pthread_mutex_unlock(&s->lock);
+    if (finished) delete s;
     LOG("stopped");
 }
 
@@ -1057,22 +1117,61 @@ extern "C" JNIEXPORT void JNICALL Java_com_pd2launcher_app_PresentServer_nativeS
     set_window((Server *)(intptr_t)handle, covered, x, y, w, h, screen_w, screen_h);
 }
 
+// nativeLockShown read no frame: [size]'s last number says why. SHOWN_NOT_READY: the game's buffer
+// shows, but it cannot be read now (its GPU writes have not finished, its fence could not be kept,
+// or another read runs); the X screen does not show that frame either, so the caller takes no
+// sample. 0: the X screen shows (or the buffer cannot be mapped for the CPU at all).
+static constexpr jint SHOWN_NOT_READY = 1;
+
+static jobject no_shown_frame(JNIEnv *env, jintArray size, jint why) {
+    env->SetIntArrayRegion(size, 7, 1, &why);
+    return nullptr;
+}
+
 // The buffer on the screen, locked for reading: its pixels (R8G8B8A8 words), and [size] = width,
 // height, bytes a row, then where its top-left corner is on the X screen (x, y) and the X
-// screen's width and height; null while none shows. nativeUnlockShown unlocks it.
+// screen's width and height; null while no frame is ready to read, [size][7] then saying why
+// (no_shown_frame). nativeUnlockShown unlocks it.
 extern "C" JNIEXPORT jobject JNICALL Java_com_pd2launcher_app_PresentServer_nativeLockShown(
     JNIEnv *env, jclass, jlong handle, jintArray size) {
     auto *s = (Server *)(intptr_t)handle;
     pthread_mutex_lock(&s->lock);
-    AHardwareBuffer *buffer = s->visible && s->shown_set != nullptr ? s->shown_set->buffers[s->shown] : nullptr;
-    if (buffer != nullptr) AHardwareBuffer_acquire(buffer);
+    if (s->destroy_when_idle || !s->visible || s->shown_set == nullptr) {
+        pthread_mutex_unlock(&s->lock);
+        return no_shown_frame(env, size, 0);
+    }
+    if (!s->shown_readable || s->read.set != nullptr) {
+        pthread_mutex_unlock(&s->lock);
+        return no_shown_frame(env, size, SHOWN_NOT_READY);
+    }
+    int fence = s->shown_fence >= 0 ? fcntl(s->shown_fence, F_DUPFD_CLOEXEC, 0) : -1;
+    if (s->shown_fence >= 0 && fence < 0) {
+        pthread_mutex_unlock(&s->lock);
+        return no_shown_frame(env, size, SHOWN_NOT_READY);
+    }
+    BufferSet *set = s->shown_set;
+    int index = s->shown;
+    set->refs++;
+    set->cpu[index].reading = true;
+    s->read.set = set;
+    s->read.index = index;
+    AHardwareBuffer *buffer = set->buffers[index];
     jint place[4] = {s->window_x, s->window_y, s->screen_w, s->screen_h};
     pthread_mutex_unlock(&s->lock);
-    if (buffer == nullptr) return nullptr;
+    bool ready = true;
+    if (fence >= 0) {
+        pollfd p = {fence, POLLIN, 0};
+        ready = poll(&p, 1, 0) == 1 && p.revents == POLLIN;
+        close(fence);
+    }
+    if (!ready) {
+        release_cpu_read(s);
+        return no_shown_frame(env, size, SHOWN_NOT_READY);
+    }
     void *pixels = nullptr;
     if (AHardwareBuffer_lock(buffer, AHARDWAREBUFFER_USAGE_CPU_READ_RARELY, -1, nullptr, &pixels) != 0) {
-        AHardwareBuffer_release(buffer);
-        return nullptr;
+        release_cpu_read(s);
+        return no_shown_frame(env, size, 0);
     }
     AHardwareBuffer_Desc desc = {};
     AHardwareBuffer_describe(buffer, &desc);
@@ -1083,19 +1182,20 @@ extern "C" JNIEXPORT jobject JNICALL Java_com_pd2launcher_app_PresentServer_nati
     if (direct == nullptr) {
         // No buffer for Java (its exception pending): nothing stays locked for an unlock that never comes.
         AHardwareBuffer_unlock(buffer, nullptr);
-        AHardwareBuffer_release(buffer);
+        release_cpu_read(s);
         return nullptr;
     }
-    s->locked = buffer;
     return direct;
 }
 
 extern "C" JNIEXPORT void JNICALL Java_com_pd2launcher_app_PresentServer_nativeUnlockShown(JNIEnv *, jclass, jlong handle) {
     auto *s = (Server *)(intptr_t)handle;
-    if (s->locked == nullptr) return;
-    AHardwareBuffer_unlock(s->locked, nullptr);
-    AHardwareBuffer_release(s->locked);
-    s->locked = nullptr;
+    pthread_mutex_lock(&s->lock);
+    AHardwareBuffer *buffer = s->read.set != nullptr ? s->read.set->buffers[s->read.index] : nullptr;
+    pthread_mutex_unlock(&s->lock);
+    if (buffer == nullptr) return;
+    AHardwareBuffer_unlock(buffer, nullptr);
+    release_cpu_read(s);
 }
 
 extern "C" JNIEXPORT void JNICALL Java_com_pd2launcher_app_PresentServer_nativeStop(JNIEnv *, jclass, jlong handle) {

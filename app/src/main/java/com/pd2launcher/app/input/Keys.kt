@@ -106,6 +106,15 @@ object Keys {
     /** The X keysym of a hardware keyboard key, or null for a key X has no use for here. */
     fun keysym(keyCode: Int): Int? = table[keyCode]
 
+    /**
+     * A Shift key of Android's keyboard ([KeyEvent.FLAG_SOFT_KEYBOARD] in [flags]), which stays out
+     * of X: the keyboard's text comes with its capitals ([typeText]), and its Shift up in X would let
+     * go of a Shift the player holds (an on-screen button). A hardware keyboard's Shift goes to X.
+     */
+    fun isSoftKeyboardShift(keyCode: Int, flags: Int): Boolean =
+        (keyCode == KeyEvent.KEYCODE_SHIFT_LEFT || keyCode == KeyEvent.KEYCODE_SHIFT_RIGHT) &&
+            flags and KeyEvent.FLAG_SOFT_KEYBOARD != 0
+
     /** The keysym that types [codePoint]: Latin-1 as itself, Return for a line break. */
     fun keysymOf(codePoint: Int): Int? = when {
         codePoint == '\n'.code || codePoint == '\r'.code -> XK_RETURN

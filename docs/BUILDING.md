@@ -94,7 +94,7 @@ Needs the App userland of step 2 (its relocated tree in the userland cache). `ru
 
 ```sh
 build.sh            # debug APK: build/outputs/app-debug.apk
-build.sh release    # signed release APK: build/outputs/app-release.apk (without the lint check)
+build.sh release    # signed release APK: build/outputs/app-release.apk (requires lintVitalRelease)
 build.sh check      # compile the debug APK without engine, userland or runtime, and run the
                     # release build's lint check (lintVitalRelease)
 ```
@@ -144,7 +144,7 @@ EOF
 chmod 600 release.jks release-signing.properties
 ```
 
-`storeFile` is relative to the properties file. Back the folder up offline: Android updates an installed app only with an APK signed by the same key. The release build signs with APK Signature Scheme v2 and checks the APK with `apksigner verify` and `zipalign -c`.
+`storeFile` is relative to the properties file. Back the folder up offline: Android updates an installed app only with an APK signed by the same key. The release build requires `lintVitalRelease` to pass before it verifies the signature with `apksigner verify`, checks alignment with `zipalign -c`, and exports `build/outputs/app-release.apk`. It signs with APK Signature Scheme v2. Tagged and manual release workflows both run this gate before publication.
 
 ## Versions
 
@@ -152,5 +152,5 @@ chmod 600 release.jks release-signing.properties
 
 ## Continuous integration
 
-- `.github/workflows/ci.yml`, on every push to `main` and every pull request: `build.sh check`, with the lint check that the release build leaves out.
+- `.github/workflows/ci.yml`, on every push to `main` and every pull request: `build.sh check`, including the release lint check.
 - `.github/workflows/release.yml`, on a push to `main` whose commit carries a tag `vX.Y.Z` or `vX.Y.Z-betaN` (or `workflow_dispatch` for a given tag): builds the engine from its pinned sources (`PD2_RELEASE_BUILD=1 engine/build.sh`), the userland, and the runtime's Wine, `wowbox64.dll` and sound plugin (`runtime/wine.sh`, `wowbox64.sh`, `pd2audio.sh`, which do not need the userland) side by side; then the runtime (`runtime/build.sh`: the prefix template, made with the userland's tree from its archive, and the pack); then the release APK, signs it with the repository's release key and publishes the APK, its SHA-256 and R8's `mapping.txt` of the same build on the tag's release. Every job builds the one commit the tag names, which must be on `main`; the APK's `versionName` must be the tag's, and a release that already has files is not overwritten. The engine, the userland and the runtime are cached under keys made from their inputs, and so are Wine, `wowbox64.dll`, the sound plugin and the runtime's downloads, together (`PD2_RUNTIME_CACHE`); the userland's parts (the glibc, Xvfb, Mesa and PanVK builds, PanVK's host tools and the downloads) are cached apart, and each build image on its own, by its tag. The release key comes from the secrets of the repository's GitHub Environment `release`, which only the job that builds the APK names: `ANDROID_KEYSTORE_BASE64` (the PKCS12 keystore, base64), `ANDROID_KEYSTORE_PASSWORD` (its password, also the key's) and `ANDROID_KEY_ALIAS`.

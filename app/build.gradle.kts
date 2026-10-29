@@ -48,15 +48,17 @@ android {
 
     defaultConfig {
         applicationId = "com.pd2launcher.app"
-        // Android 13, the oldest Android whose app seccomp policy our glibc and FEX answer; above
-        // targetSdk, which the plugin warns about but builds.
-        minSdk = 33
+        // Android 11: our glibc answers the system calls its app seccomp policy blocks, which are
+        // all those that Android 12 and 13 block too (userland/glibc/README.md). Calls of a later
+        // API check the SDK first; NDK functions above API 30 are weak references
+        // (src/main/cpp/CMakeLists.txt). Above targetSdk, which the plugin warns about but builds.
+        minSdk = 30
         targetSdk = 28
         // arm64 only: the App runs the ARM64 engine, so a 32-bit-only phone gets Android's own
         // "not compatible" refusal at install. abiFilters limits our own CMake libraries and the
         // libraries inside dependencies (zstd-jni, androidx.graphics.path) alike.
         ndk { abiFilters += "arm64-v8a" }
-        versionName = "0.3.4"
+        versionName = "0.3.5"
         versionCode = versionCodeOf(versionName!!)
         // App updates (AppUpdater): the public releases the app looks at (the newest 10; it takes
         // the highest version that is not a pre-release), where their files must be, the name its

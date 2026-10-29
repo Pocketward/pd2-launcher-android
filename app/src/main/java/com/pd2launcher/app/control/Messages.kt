@@ -19,7 +19,7 @@ import kotlinx.serialization.json.JsonClassDiscriminator
 // null when absent), as serde writes it. Integers: u32 and u64 are Long, u8 Int.
 
 /** The protocol version this app speaks (the engine's `PROTOCOL`). */
-const val PROTOCOL: Int = 5
+const val PROTOCOL: Int = 6
 
 /** The JSON settings both directions use: internally tagged by `type`, strict. */
 val ControlJson: Json = Json { classDiscriminator = "type" }
@@ -206,6 +206,13 @@ sealed class Command {
 
     @Serializable @SerialName("request_full_snapshot")
     data object RequestFullSnapshot : Command()
+
+    /**
+     * Stop a running Download, then remove what the Launcher's own downloads made (protocol 6):
+     * sent when an import starts. It drops keys that wait for Download.
+     */
+    @Serializable @SerialName("discard_downloads")
+    data object DiscardDownloads : Command()
 }
 
 @Serializable
@@ -293,6 +300,24 @@ sealed class SettingChange {
      */
     @Serializable @SerialName("update_checks")
     data class UpdateChecks(val enabled: Boolean) : SettingChange()
+
+    /**
+     * Where Blizzard's installers come from, from the next Download or install step on
+     * (protocol 6): the Diablo II source page sends it with its Continue.
+     */
+    @Serializable @SerialName("install_source")
+    data class InstallSource(val source: com.pd2launcher.app.control.InstallSource) : SettingChange()
+}
+
+/**
+ * Where Blizzard's Diablo II and Lord of Destruction installers come from: Blizzard's own
+ * downloader and installers under Wine (the engine's default), or the direct download, which
+ * fetches the same files and installs them without Wine.
+ */
+@Serializable
+enum class InstallSource {
+    @SerialName("official") OFFICIAL,
+    @SerialName("direct_download") DIRECT_DOWNLOAD,
 }
 
 @Serializable
@@ -557,6 +582,8 @@ enum class Job {
     @SerialName("official_launcher") OFFICIAL_LAUNCHER,
     @SerialName("reset") RESET,
     @SerialName("relocation") RELOCATION,
+    /** Removing what the Launcher's own downloads made, for an import (protocol 6). */
+    @SerialName("discard_downloads") DISCARD_DOWNLOADS,
 }
 
 @Serializable
@@ -608,12 +635,13 @@ data class Settings(
     @SerialName("skip_to_bnet") val skipToBnet: Boolean,
     @SerialName("sound_in_background") val soundInBackground: Boolean,
     /**
-     * Project Diablo 2's update checks run (protocol 5): off, the engine runs none, its update
-     * stays unknown and it plays the client as installed. Null from an engine before protocol 5,
-     * which has no such setting and always checks: the one field with a default, so the app
-     * decodes both.
+     * Project Diablo 2's update checks run: off, the engine runs none, its update stays unknown
+     * and it plays the client as installed. Null from an engine that has no such setting and
+     * always checks: the one field with a default, so the app decodes both.
      */
     @SerialName("update_checks") val updateChecks: Boolean? = null,
+    /** Where Blizzard's installers come from (protocol 6). */
+    @SerialName("install_source") val installSource: InstallSource,
     val persistence: SettingsPersistence,
 )
 

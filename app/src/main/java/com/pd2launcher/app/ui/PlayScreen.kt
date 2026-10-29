@@ -40,6 +40,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pd2launcher.app.Line
 import com.pd2launcher.app.Onboarding
+import com.pd2launcher.app.OperationStart
 import com.pd2launcher.app.PlayCheck
 import com.pd2launcher.app.R
 import com.pd2launcher.app.SessionStatus
@@ -48,6 +49,7 @@ import com.pd2launcher.app.control.Game
 import com.pd2launcher.app.control.Host
 import com.pd2launcher.app.control.Installation
 import com.pd2launcher.app.control.Job
+import com.pd2launcher.app.control.Operation
 import com.pd2launcher.app.control.OperationStatus
 import com.pd2launcher.app.control.Phase
 import com.pd2launcher.app.control.Renderer
@@ -115,6 +117,16 @@ object Play {
     /** The official PD2 launcher session was running and is not any more. */
     fun officialLauncherEnded(previous: Job?, next: Job?): Boolean =
         previous == Job.OFFICIAL_LAUNCHER && next != Job.OFFICIAL_LAUNCHER
+
+    /**
+     * The official PD2 launcher's session that the app sent after snapshot [sentAfter] has ended
+     * with no snapshot of it running (it started and ended between two snapshots that the app
+     * took): snapshot [next], number [sequence] (after the send), shows no job, no game, and the
+     * launcher's operation at its end, other than the operation shown before the send ([before]).
+     */
+    fun officialLauncherSettled(sentAfter: Long, before: Operation?, sequence: Long, next: Snapshot): Boolean =
+        sequence > sentAfter && next.activeJob == null && next.game != Game.RUNNING &&
+            next.operation?.job == Job.OFFICIAL_LAUNCHER && OperationStart.terminal(next) && next.operation != before
 
     /** The Game client was running and is not any more (or the engine went away). */
     fun gameEnded(previous: Game?, next: Game?): Boolean = previous == Game.RUNNING && next != Game.RUNNING
@@ -437,6 +449,8 @@ class PlayDestinations(
  * stays where it is while everything fits.
  * [launching]: Play or the official PD2 launcher was pressed and the engine has not shown it yet
  * ([Play.launchPending]): both buttons and "Play without updating" wait.
+ * [newVersion]: a newer version of this app is out ([com.pd2launcher.app.AppUpdate.newVersionDot]):
+ * a gold dot on About until it is installed.
  */
 @Composable
 fun PlayScreen(
@@ -455,6 +469,7 @@ fun PlayScreen(
     onPlayWithoutUpdating: () -> Unit = onPlay,
     /** The running update was started by the question after a press of Play: the game starts when it is done. */
     playAfterUpdate: Boolean = false,
+    newVersion: Boolean = false,
 ) {
     val focus = remember { FocusRequester() }
     InitialFocus(focus, waiting == null)
@@ -546,13 +561,17 @@ fun PlayScreen(
             Rule(Modifier.widthIn(max = 460.dp))
             val link = Type.Hint.copy(fontWeight = FontWeight.Medium)
             Row(Modifier.widthIn(max = 460.dp).fillMaxWidth().padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                val dot = stringResource(R.string.app_update_dot).takeIf { newVersion }
                 listOf(
                     R.string.play_settings to destinations.onSettings,
                     R.string.play_controls to destinations.onControls,
                     R.string.play_repair to destinations.onRepair,
                     R.string.play_about to destinations.onAbout,
                 ).forEach { (label, go) ->
-                    LauncherButton(stringResource(label), go, Modifier.weight(1f), Kind.QUIET, height = 48.dp, style = link, padding = 8.dp)
+                    LauncherButton(
+                        stringResource(label), go, Modifier.weight(1f), Kind.QUIET, height = 48.dp, style = link, padding = 8.dp,
+                        dot = dot.takeIf { label == R.string.play_about },
+                    )
                 }
             }
         }

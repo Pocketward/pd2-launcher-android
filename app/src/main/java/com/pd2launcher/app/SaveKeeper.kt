@@ -38,10 +38,19 @@ import java.util.Locale
  * of a folder), so a stop part way leaves each file in the game folder, the player's folder or a
  * backup, and the next keep goes on from there. A folder more than [MAX_DEPTH] deep fails the keep
  * before anything moves.
+ *
+ * The backups are in the player's folder itself, `Save/Backups` ([BACKUPS], owner 2026-10-27),
+ * where the player sees them in the Files app; the game reads only the top of Save. A Save's
+ * `Backups` folder (in any case) is never merged as saves and nothing in it is ever backed up
+ * again: what it holds moves as it is into `Save/Backups` ([moveBackups]), each entry under a name
+ * not taken there yet, so every spelling of Save brings one `Backups` folder only.
  */
 object SaveKeeper {
     /** How deep a folder inside a Save is kept, as on the desktop. */
     private const val MAX_DEPTH = 16
+
+    /** The backups' folder at the top of the player's Save ([SessionPaths.saveBackups]). */
+    const val BACKUPS = "Backups"
 
     /**
      * Makes [save] a link to [userSave] once its saves, and those of every other spelling of it
@@ -155,7 +164,7 @@ object SaveKeeper {
         ownerOnlyDirs(into)
         val files = regularFiles(from)
         if (folder.isEmpty()) {
-            for ((name, group) in files.groupBy { it.name.substringBefore('.') }.toSortedMap()) {
+            for ((name, group) in files.groupBy { characterName(it.name) }.toSortedMap()) {
                 val existing = characters(into)[name]
                 if (isCharacter(group) || existing != null && isCharacter(existing)) {
                     merge(name, group, into, backups, now, log)
@@ -174,12 +183,49 @@ object SaveKeeper {
             .filter { !it.name.startsWith(".") && Files.isDirectory(it.toPath(), LinkOption.NOFOLLOW_LINKS) }
             .sortedBy { it.name }
         for (child in folders) {
+            // A Save's backups (any case): moved as they are, never merged or backed up again.
+            if (folder.isEmpty() && child.name.lowercase(Locale.ROOT) == BACKUPS.lowercase(Locale.ROOT)) {
+                moveBackups(child, backups, log)
+                if (child.list()?.isEmpty() == true) Files.delete(child.toPath())
+                continue
+            }
             val target = File(into, child.name).toPath()
             // The player's folder holds a file or a link by that name: it stays, and this folder goes with the rest.
             if (Files.exists(target, LinkOption.NOFOLLOW_LINKS) && !Files.isDirectory(target, LinkOption.NOFOLLOW_LINKS)) continue
             mergeFolder(child, target.toFile(), "$folder${child.name}/", backups, now, log, moved)
             if (child.list()?.isEmpty() == true) Files.delete(child.toPath())
         }
+    }
+
+    /**
+     * Moves every entry of [from] (a Save's `Backups`, or the backups' folder of earlier releases)
+     * into [backups] as it is, links unfollowed, each under its own name or, when that is taken,
+     * the first `<name>-<n>` that is not: a backup is never compared, merged or backed up again.
+     * Each move is a rename, so a stop part way leaves each entry in one of the two folders.
+     */
+    private fun moveBackups(from: File, backups: File, log: (String) -> Unit) {
+        val entries = from.listFiles()?.sortedBy { it.name } ?: return
+        if (entries.isEmpty()) return
+        ownerOnlyDirs(backups)
+        for (entry in entries) {
+            val target = generateSequence(0) { it + 1 }
+                .map { n -> File(backups, if (n == 0) entry.name else "${entry.name}-$n") }
+                .first { !Files.exists(it.toPath(), LinkOption.NOFOLLOW_LINKS) }
+            Files.move(entry.toPath(), target.toPath())
+        }
+        log("moved ${entries.size} backups from ${from.path} into ${backups.path}")
+    }
+
+    /**
+     * Once after an update from a release up to 0.3.4: the backups of `files/userdata/backups`
+     * ([SessionPaths.oldSaveBackups]) move into `Save/Backups` ([moveBackups]), and the emptied
+     * folder goes. Nothing when it is not there (or not a real folder).
+     */
+    fun moveOldBackups(paths: SessionPaths, log: (String) -> Unit = {}) {
+        val old = paths.oldSaveBackups
+        if (!Files.isDirectory(old.toPath(), LinkOption.NOFOLLOW_LINKS)) return
+        moveBackups(old, paths.saveBackups, log)
+        if (old.list()?.isEmpty() == true) Files.delete(old.toPath())
     }
 
     /**
@@ -245,7 +291,7 @@ object SaveKeeper {
      * `backup-<now>`, or the first `backup-<now>-<n>` that holds none of the paths [names] ([holds]);
      * for none, the first that does not exist yet.
      */
-    private fun backupFolder(backups: File, now: Long, names: List<String>): File =
+    internal fun backupFolder(backups: File, now: Long, names: List<String>): File =
         generateSequence(0) { it + 1 }
             .map { n -> File(backups, if (n == 0) "backup-$now" else "backup-$now-$n") }
             .first { folder ->
@@ -279,23 +325,39 @@ object SaveKeeper {
 
     /** The regular files of [folder] by character name; empty when it is missing. */
     private fun characters(folder: File): Map<String, List<File>> =
-        regularFiles(folder).groupBy { it.name.substringBefore('.') }.toSortedMap()
+        regularFiles(folder).groupBy { characterName(it.name) }.toSortedMap()
 
     /** Whether [files] are a character's: one of them is a `.d2s`. */
-    private fun isCharacter(files: List<File>): Boolean = files.any { it.name.lowercase(Locale.ROOT).endsWith(".d2s") }
+    private fun isCharacter(files: List<File>): Boolean = files.any { isCharacterFile(it.name) }
+
+    /** The name of the character a file at the top of a Save belongs to, when one does: its name up to the first dot. */
+    internal fun characterName(file: String): String = file.substringBefore('.')
+
+    /** Whether the file [name] makes the files of its [characterName] a character's: a `.d2s`. */
+    internal fun isCharacterFile(name: String): Boolean = name.lowercase(Locale.ROOT).endsWith(".d2s")
 
     /**
      * When the character [name] ([files]) was saved last: by its own `<name>.d2s`, which the game
      * writes at every save (a copy with one comes before a copy without; never `Hero.bak.d2s`),
      * or, for a copy without one, by the latest of its files.
      */
-    private fun savedAt(name: String, files: List<File>): Pair<Boolean, Long> {
-        // Every file of the character is `name` or starts `name.`: this is `name.d2s`, any case of `.d2s`.
-        val own = files.firstOrNull { it.name.length == name.length + 4 && it.name.takeLast(4).lowercase(Locale.ROOT) == ".d2s" }
-        return if (own != null) true to own.lastModified() else false to files.maxOf { it.lastModified() }
+    private fun savedAt(name: String, files: List<File>): Pair<Boolean, Long> = savedAt(name, files.map { it.name to it.lastModified() })
+
+    /** [savedAt] for files given as their names and times ([SaveSync] has no [File] for the picked folder's). */
+    internal fun savedAt(name: String, times: List<Pair<String, Long>>): Pair<Boolean, Long> {
+        val own = times.firstOrNull { (file, _) -> isOwnSave(name, file) }
+        return if (own != null) true to own.second else false to times.maxOf { it.second }
     }
 
-    private val bySavedAt = compareBy<Pair<Boolean, Long>>({ it.first }, { it.second })
+    /**
+     * Whether [file] is the character [name]'s own `.d2s`: every file of the character is `name` or
+     * starts `name.`, so this is `name.d2s`, any case of `.d2s` (never `Hero.bak.d2s`).
+     */
+    internal fun isOwnSave(name: String, file: String): Boolean =
+        file.length == name.length + 4 && file.takeLast(4).lowercase(Locale.ROOT) == ".d2s"
+
+    /** [savedAt]s in the order of when they were saved: a copy with its own `.d2s` after one without, then by time. */
+    internal val bySavedAt = compareBy<Pair<Boolean, Long>>({ it.first }, { it.second })
 
     private fun sameContent(a: List<File>, b: List<File>): Boolean {
         val byName = b.associateBy { it.name }
@@ -307,7 +369,7 @@ object SaveKeeper {
     }
 
     /** [dir] and any missing parents, each owner-only (the app's umask is 0). */
-    private fun ownerOnlyDirs(dir: File) {
+    internal fun ownerOnlyDirs(dir: File) {
         if (dir.isDirectory) return
         dir.parentFile?.let(::ownerOnlyDirs)
         if (!dir.mkdir() && !dir.isDirectory) throw IOException("cannot create ${dir.path}")

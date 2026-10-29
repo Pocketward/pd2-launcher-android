@@ -28,6 +28,7 @@ import com.pd2launcher.app.Tone
 import com.pd2launcher.app.control.EnvironmentPart
 import com.pd2launcher.app.control.EnvironmentSetup
 import com.pd2launcher.app.control.Host
+import com.pd2launcher.app.control.InstallSource
 import com.pd2launcher.app.control.Installation
 import com.pd2launcher.app.control.Job
 import com.pd2launcher.app.control.Operation
@@ -88,10 +89,11 @@ data class InstallView(
 }
 
 /**
- * Install's tasks, in order: Diablo II and Lord of Destruction each from Blizzard (their
- * downloader, then their installer), or an installed Diablo II copied or adopted ([GAME] alone).
+ * Install's tasks, in order: for a download, the rest of Download that the keys joined
+ * ([INSTALLERS]), then Diablo II and Lord of Destruction from Blizzard; or an installed Diablo II
+ * copied or adopted ([GAME] alone).
  */
-enum class InstallTask { ENVIRONMENT, GAME, EXPANSION, PROJECT_DIABLO, VERIFY }
+enum class InstallTask { INSTALLERS, ENVIRONMENT, GAME, EXPANSION, PROJECT_DIABLO, VERIFY }
 
 enum class TaskState { WAITING, RUNNING, DONE, STOPPED, FAILED }
 
@@ -103,8 +105,11 @@ data class TaskRow(
     val detail: Line?,
 )
 
-/** One timed part of a task: the engine phases it covers and how long it typically takes. */
-data class Segment(val task: InstallTask, val phases: Set<Phase>, val seconds: Int)
+/**
+ * One timed part of a task: the engine phases it covers and how long it typically takes. [job]:
+ * the part covers all of that job's phases (Download's); null: the install jobs' [phases].
+ */
+data class Segment(val task: InstallTask, val phases: Set<Phase>, val seconds: Int, val job: Job? = null)
 
 /**
  * What each source's install consists of and how long each part typically takes, for the
@@ -114,9 +119,19 @@ data class Segment(val task: InstallTask, val phases: Set<Phase>, val seconds: I
  * importing an installed Diablo II 30 s. A part the engine reports bytes or files for fills by
  * those; one it reports nothing for fills by its typical time, up to 95 %, so the bar never
  * stands still. On Android each downloader runs right before its installer (the engine's
- * `install_base_game`).
+ * `install_base_game`); Fast download fetches both games first, then installs each.
  */
 object InstallPlan {
+    /**
+     * Fast download's one download of both games (about 2.1 GB) with the check of its files, in
+     * typical seconds: 60 to 110 s on phones on a fast Wi-Fi.
+     */
+    const val FAST_DOWNLOAD_SECONDS = 90
+    /** Diablo II's install from the download, without Wine, with the check after it: 20 to 55 s. */
+    const val FAST_BASE_INSTALL_SECONDS = 35
+    /** Lord of Destruction's install from the download, without Wine: 8 to 21 s. */
+    const val FAST_EXPANSION_INSTALL_SECONDS = 15
+
     /**
      * The game environment's parts and their typical seconds, which the engine names as each
      * starts (`environment` in its operation): Windows (a copy of the app's prefix template,
@@ -146,7 +161,19 @@ object InstallPlan {
     private val BASE_INSTALL = Segment(InstallTask.GAME, setOf(Phase.BASE_GAME_INSTALL), 23)
     private val EXPANSION_DOWNLOAD = Segment(InstallTask.EXPANSION, setOf(Phase.EXPANSION_DOWNLOAD), 318)
     private val EXPANSION_INSTALL = Segment(InstallTask.EXPANSION, setOf(Phase.EXPANSION_INSTALL), 25)
+    /**
+     * Fast download: one download of both games, which the engine counts in bytes under Diablo
+     * II's download, then each game's install without Wine.
+     */
+    private val FAST_DOWNLOAD = Segment(InstallTask.GAME, setOf(Phase.BASE_GAME_DOWNLOAD), FAST_DOWNLOAD_SECONDS)
+    private val FAST_BASE_INSTALL = Segment(InstallTask.GAME, setOf(Phase.BASE_GAME_INSTALL), FAST_BASE_INSTALL_SECONDS)
+    private val FAST_EXPANSION_INSTALL = Segment(InstallTask.EXPANSION, setOf(Phase.EXPANSION_INSTALL), FAST_EXPANSION_INSTALL_SECONDS)
     private val IMPORT = Segment(InstallTask.GAME, setOf(Phase.IMPORT_GAME), 30)
+    /**
+     * The rest of Download (Blizzard's two small downloaders and Project Diablo 2's files) when
+     * the keys joined it: 35 to 56 s in all.
+     */
+    private val INSTALLERS = Segment(InstallTask.INSTALLERS, emptySet(), 45, job = Job.DOWNLOAD)
     /** The engine's client manifest and download, and the hashing between files (`verification`). */
     private val PROJECT_DIABLO = Segment(InstallTask.PROJECT_DIABLO, setOf(Phase.CLIENT_DOWNLOAD, Phase.VERIFICATION), 52)
     private val VERIFY = Segment(InstallTask.VERIFY, setOf(Phase.PROMOTION), 6)
@@ -154,24 +181,32 @@ object InstallPlan {
     /** A part reported nothing for fills by time up to this much. */
     const val TIMED_LIMIT = 0.95f
 
-    fun segments(source: SourceChoice): List<Segment> = listOf(ENVIRONMENT) + when (source) {
-        SourceChoice.BLIZZARD -> listOf(BASE_DOWNLOAD, BASE_INSTALL, EXPANSION_DOWNLOAD, EXPANSION_INSTALL, PROJECT_DIABLO)
-        // An import keeps the folder's Project Diablo 2 as it is: no task of its own (the owner's
-        // rule of 2026-10-26).
-        SourceChoice.EXISTING -> listOf(IMPORT)
-    } + listOf(VERIFY)
+    /**
+     * The source's parts, in order; [installers]: the keys joined Download, whose rest comes first
+     * (a download of Diablo II only).
+     */
+    fun segments(source: SourceChoice, installers: Boolean = false): List<Segment> =
+        listOfNotNull(INSTALLERS.takeIf { installers && source != SourceChoice.EXISTING }, ENVIRONMENT) + when (source) {
+            // Lord of Destruction comes with Diablo II's download: no download part of its own.
+            SourceChoice.FAST -> listOf(FAST_DOWNLOAD, FAST_BASE_INSTALL, FAST_EXPANSION_INSTALL, PROJECT_DIABLO)
+            SourceChoice.BLIZZARD -> listOf(BASE_DOWNLOAD, BASE_INSTALL, EXPANSION_DOWNLOAD, EXPANSION_INSTALL, PROJECT_DIABLO)
+            // An import keeps the folder's Project Diablo 2 as it is: no task of its own (the owner's
+            // rule of 2026-10-26).
+            SourceChoice.EXISTING -> listOf(IMPORT)
+        } + listOf(VERIFY)
 
-    /** The source's tasks, in order: five from Blizzard, three for an installed Diablo II. */
-    fun tasks(source: SourceChoice): List<InstallTask> = segments(source).map { it.task }.distinct()
+    /** The source's tasks, in order: five for both downloads (six with [installers]), three for an installed Diablo II. */
+    fun tasks(source: SourceChoice, installers: Boolean = false): List<InstallTask> = segments(source, installers).map { it.task }.distinct()
 
     /**
-     * The part [phase] of [job] belongs to; null when it names none. `verification` is the
-     * client files' hashing only in Install Project Diablo 2; in Install Diablo II it is the
-     * engine's closing audit.
+     * The part [phase] of [job] belongs to; null when it names none. Every phase of Download is
+     * its own part's. `verification` is the client files' hashing only in Install Project Diablo
+     * 2; in Install Diablo II it is the engine's closing audit.
      */
     fun segmentOf(segments: List<Segment>, phase: Phase, job: Job?): Int? {
+        if (job == Job.DOWNLOAD) return segments.indexOfFirst { it.job == Job.DOWNLOAD }.takeIf { it >= 0 }
         if (phase == Phase.VERIFICATION && job != Job.INSTALL_PROJECT_DIABLO) return null
-        return segments.indexOfFirst { phase in it.phases }.takeIf { it >= 0 }
+        return segments.indexOfFirst { it.job == null && phase in it.phases }.takeIf { it >= 0 }
     }
 
     /** The first part of [task]. */
@@ -237,6 +272,14 @@ data class InstallRun(
     val partSince: Long = 0L,
     /** The engine has named the run's part (its job's start label included) since the run got there. */
     val seen: Boolean = false,
+    /**
+     * The keys joined Download (Blizzard's downloaders and Project Diablo 2's files), which ran
+     * when the player pressed Agree and install: its rest is this run's first job, and Install
+     * Diablo II follows it by itself.
+     */
+    val joined: Boolean = false,
+    /** A stop result showed when the run started (an earlier stop); only a new one ends the run. */
+    val stopAtStart: Boolean = false,
 )
 
 /** Maps the engine's snapshot onto the install screen. Pure, so every state is unit tested. */
@@ -255,9 +298,17 @@ object InstallProgress {
     /** How long a phase more than one part ahead must hold before the run moves there. */
     const val JUMP_HOLD_MS = 3_000L
 
+    /**
+     * [job] is Install's: Install Diablo II or Install Project Diablo 2, or Download once the keys
+     * joined it (the engine holds them, [Snapshot.authorized], or [run] started while it ran).
+     * Before the keys it runs beside the key page and is not Install's.
+     */
+    private fun installJob(job: Job?, snapshot: Snapshot?, run: InstallRun?): Boolean =
+        job in INSTALL_JOBS || (job == Job.DOWNLOAD && (snapshot?.authorized == true || run?.joined == true))
+
     fun view(session: SessionStatus, run: InstallRun? = null): InstallView {
         val snapshot = session.snapshot
-        val operation = snapshot?.operation?.takeIf { it.job in INSTALL_JOBS }
+        val operation = snapshot?.operation?.takeIf { installJob(it.job, snapshot, run) }
         val engineState = when {
             // Until the engine's audit ends its snapshot is a placeholder (the app reopened
             // mid-install opens here, FlowNav.opening): nothing can start or resume yet.
@@ -273,22 +324,25 @@ object InstallProgress {
         }
         // From the press of Install until its job runs, the last outcome does not show.
         val starting = run != null && !run.ended && !run.sawJob && engineState != InstallState.DONE &&
-            snapshot?.activeJob !in INSTALL_JOBS
+            !installJob(snapshot?.activeJob, snapshot, run)
         val state = if (starting) InstallState.STARTING else engineState
         val working = state == InstallState.RUNNING || state == InstallState.STOPPING
         // What runs now: the engine's operation while it is the run's part; else (the start
         // label, a blip, Install Diablo II's closing audit) the run's part itself, without figures.
         val active = run?.takeUnless { it.ended }
         val live = operation?.let { op ->
-            val segments = active?.let { InstallPlan.segments(it.source) }
+            val segments = active?.let { InstallPlan.segments(it.source, it.joined) }
             when {
                 active == null || segments == null -> op
                 op != active.label && InstallPlan.segmentOf(segments, op.phase, op.job) == active.segment -> op
-                else -> op.copy(phase = segments[active.segment].phases.first(), progress = null, environment = null)
+                // A part of a whole job (Download's rest) has no phase of its own: its job's.
+                else -> segments[active.segment].let { part ->
+                    op.copy(phase = part.phases.firstOrNull() ?: op.phase, job = part.job ?: op.job, progress = null, environment = null)
+                }
             }
         }
         val step = when (operation?.job) {
-            Job.INSTALL_BASE_GAME -> Step.INSTALL_D2
+            Job.INSTALL_BASE_GAME, Job.DOWNLOAD -> Step.INSTALL_D2
             Job.INSTALL_PROJECT_DIABLO -> Step.INSTALL_PD2
             else -> null
         }
@@ -297,7 +351,7 @@ object InstallProgress {
         return InstallView(
             state = state,
             step = step.takeIf { working },
-            stage = live?.let { stage(it.phase, it.job, it.progress, it.environment) }?.takeIf { working },
+            stage = live?.let { stage(it.phase, it.job, it.progress, it.environment, fast(snapshot, active)) }?.takeIf { working },
             percent = when {
                 state == InstallState.STARTING -> run?.percent
                 !working -> null
@@ -343,21 +397,30 @@ object InstallProgress {
      * A run the player starts (or resumes) now from [session], at the task the installation
      * stands at by the engine's evidence, with the figure of everything before it.
      */
-    fun start(source: SourceChoice, session: SessionStatus, now: Long): InstallRun {
-        val segments = InstallPlan.segments(source)
+    fun start(
+        source: SourceChoice,
+        session: SessionStatus,
+        now: Long,
+        // Agree and install while Download runs (or Try again of Download that the keys joined):
+        // the keys join it, and its rest comes first.
+        joinsDownload: Boolean = session.snapshot?.activeJob == Job.DOWNLOAD,
+    ): InstallRun {
+        val joined = source != SourceChoice.EXISTING && joinsDownload
+        val segments = InstallPlan.segments(source, joined)
         val at = standingTask(session.snapshot) ?: InstallTask.ENVIRONMENT
         val segment = InstallPlan.first(segments, at).coerceAtLeast(0)
         return InstallRun(
             source, startedAt = now, failureAtStart = session.gameEnvironmentFailure, segment = segment, segmentSince = now,
-            percent = InstallPlan.percent(segments, segment, 0f), refusalAtStart = session.refusal,
+            percent = InstallPlan.percent(segments, segment, 0f), refusalAtStart = session.refusal, joined = joined,
+            stopAtStart = session.snapshot?.stopResult != null,
         )
     }
 
     /**
      * The first task the engine's evidence (its last audit) does not show done, whatever this
      * session saw: Project Diablo 2 once Diablo II and Lord of Destruction are in, Lord of
-     * Destruction once Diablo II is, Diablo II once the game environment is set up. Null once
-     * the game is installed.
+     * Destruction once Diablo II is, Diablo II once the game environment is set up, the game
+     * environment once Download is done, Download before. Null once the game is installed.
      */
     fun standingTask(snapshot: Snapshot?): InstallTask? = when {
         snapshot == null -> InstallTask.ENVIRONMENT
@@ -365,8 +428,12 @@ object InstallProgress {
         snapshot.step == Step.INSTALL_PD2 -> InstallTask.PROJECT_DIABLO
         snapshot.installation == Installation.NEEDS_EXPANSION -> InstallTask.EXPANSION
         snapshot.environmentReady -> InstallTask.GAME
+        snapshot.step in BEFORE_INSTALL -> InstallTask.INSTALLERS
         else -> InstallTask.ENVIRONMENT
     }
+
+    /** The steps before Install: Download is not done. */
+    private val BEFORE_INSTALL = setOf(Step.DEVICE, Step.SETUP, Step.DOWNLOAD)
 
     /**
      * Install Diablo II stands part way with nothing running: the game environment is set up, or
@@ -383,15 +450,16 @@ object InstallProgress {
      * the run's own part, else (further, or a run resumed at a downloader) once the later phase
      * has held for [JUMP_HOLD_MS]: the engine names an install phase for a moment while it checks
      * a cached downloader, before that downloader runs. Install Diablo II going on to Install
-     * Project Diablo 2 keeps the run; any other end marks it [InstallRun.ended].
+     * Project Diablo 2, and Download that the keys joined going on to Install
+     * Diablo II, keep the run; any other end marks it [InstallRun.ended].
      */
     fun track(run: InstallRun?, session: SessionStatus, source: SourceChoice, now: Long): InstallRun? {
         val snapshot = session.snapshot ?: return run
-        val job = snapshot.activeJob?.takeIf { it in INSTALL_JOBS }
-        val operation = snapshot.operation?.takeIf { it.job in INSTALL_JOBS }
+        val job = snapshot.activeJob?.takeIf { installJob(it, snapshot, run) }
+        val operation = snapshot.operation?.takeIf { installJob(it.job, snapshot, run) }
         if (run?.ended == true && job == null) return run
         var current = run?.takeUnless { it.ended } ?: if (job != null) found(source, session, operation, now) else return null
-        val segments = InstallPlan.segments(current.source)
+        val segments = InstallPlan.segments(current.source, current.joined)
         if (job != null) {
             if (!current.sawJob) {
                 val named = operation?.let { InstallPlan.segmentOf(segments, it.phase, it.job) } == current.segment
@@ -403,7 +471,11 @@ object InstallProgress {
             val failed = session.gameEnvironmentFailure.let { it != null && it != current.failureAtStart }
             // The engine refused the start (shown on the screen): nothing runs.
             val refused = session.refusal.let { it != null && it != current.refusalAtStart }
-            if (failed || refused || now - current.startedAt > START_LIMIT_MS) return current.copy(ended = true)
+            // A stop asked at the very end of the Download the keys joined: it ended well, and the
+            // engine then shows the stop. Install Diablo II does not follow.
+            val stoppedAtEnd = current.joined && !current.stopAtStart && snapshot.stopResult != null &&
+                snapshot.operation?.job == Job.DOWNLOAD
+            if (failed || refused || stoppedAtEnd || now - current.startedAt > START_LIMIT_MS) return current.copy(ended = true)
         } else if (!settled(snapshot)) {
             // The job ended; its final status has not landed yet.
         } else if (operation?.job == Job.INSTALL_BASE_GAME && continuesToPd2(Job.INSTALL_BASE_GAME, snapshot)) {
@@ -412,6 +484,16 @@ object InstallProgress {
                 sawJob = false, label = null, startedAt = now, failureAtStart = session.gameEnvironmentFailure, candidate = null,
                 refusalAtStart = session.refusal, seen = false,
             ).let { if (it.segment < pd2) it.copy(segment = pd2, segmentSince = now) else it }
+        } else if (current.joined && operation?.job == Job.DOWNLOAD && operation.status == OperationStatus.SUCCEEDED &&
+            com.pd2launcher.app.KeysWhileDownloading.installFollows(snapshot)
+        ) {
+            // The keys joined Download: Install Diablo II follows with them, by itself. With no
+            // keys waiting any more, or a stop asked at its end, nothing follows, and the run
+            // ends at once (below).
+            current = current.copy(
+                sawJob = false, label = null, startedAt = now, failureAtStart = session.gameEnvironmentFailure, candidate = null,
+                refusalAtStart = session.refusal, stopAtStart = false,
+            )
         } else {
             return current.copy(ended = true)
         }
@@ -426,7 +508,7 @@ object InstallProgress {
 
     private fun found(source: SourceChoice, session: SessionStatus, operation: Operation?, now: Long): InstallRun {
         val run = start(source, session, now)
-        val segments = InstallPlan.segments(source)
+        val segments = InstallPlan.segments(source, run.joined)
         val at = operation?.let { InstallPlan.segmentOf(segments, it.phase, it.job) } ?: run.segment
         return run.copy(segment = maxOf(at, run.segment), sawJob = true, seen = at >= run.segment)
     }
@@ -451,9 +533,9 @@ object InstallProgress {
     fun tasks(view: InstallView, run: InstallRun?, labels: TaskLabels): List<TaskRow> {
         val done = view.state == InstallState.DONE || view.standing == null
         val standing = view.standing
-        val reached = run?.let { InstallPlan.segments(it.source)[it.segment].task }
-            ?: view.phase?.let { phase -> InstallPlan.segmentOf(InstallPlan.segments(labels.source), phase, view.job) }
-                ?.let { InstallPlan.segments(labels.source)[it].task }
+        val reached = run?.let { InstallPlan.segments(it.source, it.joined)[it.segment].task }
+            ?: view.phase?.let { phase -> InstallPlan.segmentOf(InstallPlan.segments(labels.source, labels.installers), phase, view.job) }
+                ?.let { InstallPlan.segments(labels.source, labels.installers)[it].task }
         val at = listOfNotNull(reached, standing).maxOrNull()
         val here = when (view.state) {
             InstallState.STARTING, InstallState.RUNNING, InstallState.STOPPING -> TaskState.RUNNING
@@ -463,7 +545,7 @@ object InstallProgress {
             InstallState.READY, InstallState.WAITING -> if (run?.ended == true && view.problem != null) TaskState.FAILED else null
             InstallState.DONE -> null
         }
-        return InstallPlan.tasks(labels.source).map { task ->
+        return InstallPlan.tasks(labels.source, run?.joined ?: labels.installers).map { task ->
             val state = when {
                 done -> TaskState.DONE
                 here == null -> if (standing != null && task < standing) TaskState.DONE else TaskState.WAITING
@@ -507,6 +589,7 @@ object InstallProgress {
 
     @StringRes
     private fun runningTitle(task: InstallTask): Int = when (task) {
+        InstallTask.INSTALLERS -> R.string.install_title_installers
         InstallTask.ENVIRONMENT -> R.string.install_title_environment
         InstallTask.GAME -> R.string.install_title_game
         InstallTask.EXPANSION -> R.string.install_title_lod
@@ -515,9 +598,10 @@ object InstallProgress {
     }
 
     /** The task names for the player's source: an installed Diablo II is copied or adopted. */
-    data class TaskLabels(val source: SourceChoice, val inPlace: Boolean = false) {
+    data class TaskLabels(val source: SourceChoice, val inPlace: Boolean = false, val installers: Boolean = false) {
         @StringRes
         fun label(task: InstallTask): Int = when (task) {
+            InstallTask.INSTALLERS -> R.string.install_task_installers
             InstallTask.ENVIRONMENT -> R.string.install_task_environment
             InstallTask.GAME -> when {
                 source != SourceChoice.EXISTING -> R.string.install_step_d2
@@ -540,17 +624,25 @@ object InstallProgress {
         HELD_KEYS,
         /** Install Diablo II from the key page. */
         KEY_PAGE,
+        /**
+         * Download that the keys joined stopped or failed: the engine still holds the keys, so
+         * Download runs again and Install Diablo II follows it by itself.
+         */
+        DOWNLOAD_AGAIN,
     }
 
     /**
      * What Install's button starts from [state]: Stop paused Install Diablo II, so its Resume
-     * sends the keys still held in memory ([keysHeld]) and stays on Install. Only a first
-     * install, a retry after a failure (the keys may be wrong), or a Resume after the app was
-     * closed (the keys are gone) opens the key page.
+     * sends the keys still held in memory ([keysHeld]) and stays on Install. Download that the
+     * keys joined and that stopped or failed runs again with the keys the engine holds. Only a
+     * first install, a retry after a failure (the keys may be wrong), or a Resume after the app
+     * was closed (the keys are gone) opens the key page.
      */
     fun startAction(snapshot: Snapshot, state: InstallState, importsExisting: Boolean, keysHeld: Boolean): StartAction = when {
         snapshot.step == Step.INSTALL_PD2 -> StartAction.PROJECT_DIABLO
         importsExisting -> StartAction.IMPORT
+        snapshot.authorized && snapshot.activeJob == null && snapshot.operation?.job == Job.DOWNLOAD &&
+            (state == InstallState.STOPPED || state == InstallState.FAILED) -> StartAction.DOWNLOAD_AGAIN
         state == InstallState.STOPPED && keysHeld -> StartAction.HELD_KEYS
         else -> StartAction.KEY_PAGE
     }
@@ -577,7 +669,7 @@ object InstallProgress {
     fun page(session: SessionStatus, imported: Boolean = false): Page? {
         val snapshot = session.snapshot ?: return null
         return when {
-            snapshot.activeJob in INSTALL_JOBS -> Page.PROGRESS
+            installJob(snapshot.activeJob, snapshot, null) -> Page.PROGRESS
             snapshot.installation == Installation.STAGE_INTERRUPTED -> Page.REPAIR
             snapshot.installation in DAMAGED && snapshot.activeJob == null && Onboarding.audited(snapshot) -> Page.REPAIR
             imported && snapshot.step == Step.INSTALL_PD2 && snapshot.activeJob == null && Onboarding.audited(snapshot) -> Page.REPAIR
@@ -618,13 +710,21 @@ object InstallProgress {
     /**
      * What a phase does, in the player's words. The game environment names its running part
      * once the engine reports it ([part]). Project Diablo 2's part downloads while the engine
-     * counts bytes or files; before that it runs the PD2 installer.
+     * counts bytes or files; before that it runs the PD2 installer. With Fast download ([fast])
+     * one download brings both games and no installer program runs. Download, which the keys
+     * joined, gets the installers ready in all its phases.
      */
-    private fun stage(phase: Phase, job: Job?, progress: Progress?, environment: EnvironmentSetup?): Line? = when (phase) {
+    private fun stage(phase: Phase, job: Job?, progress: Progress?, environment: EnvironmentSetup?, fast: Boolean): Line? = when {
+        job == Job.DOWNLOAD -> Line(R.string.install_stage_installers)
+        else -> installStage(phase, job, progress, environment, fast)
+    }
+
+    private fun installStage(phase: Phase, job: Job?, progress: Progress?, environment: EnvironmentSetup?, fast: Boolean): Line? = when (phase) {
         Phase.RUNTIME_ACQUISITION, Phase.PREFIX_INITIALIZATION -> environment?.let(::part) ?: Line(R.string.install_stage_environment)
-        Phase.BASE_GAME_DOWNLOAD, Phase.EXPANSION_DOWNLOAD -> Line(R.string.install_stage_blizzard_download)
-        Phase.BASE_GAME_INSTALL -> Line(R.string.install_stage_d2_installer)
-        Phase.EXPANSION_INSTALL -> Line(R.string.install_stage_lod_installer)
+        Phase.BASE_GAME_DOWNLOAD, Phase.EXPANSION_DOWNLOAD ->
+            Line(if (fast) R.string.install_stage_fast_download else R.string.install_stage_blizzard_download)
+        Phase.BASE_GAME_INSTALL -> Line(if (fast) R.string.install_stage_d2_files else R.string.install_stage_d2_installer)
+        Phase.EXPANSION_INSTALL -> Line(if (fast) R.string.install_stage_lod_files else R.string.install_stage_lod_installer)
         Phase.IMPORT_GAME -> Line(R.string.install_stage_import)
         Phase.CLIENT_DOWNLOAD -> Line(
             if (progress?.unit == "bytes" || progress?.unit == "files") R.string.install_stage_client_download else R.string.install_stage_pd2_installer,
@@ -634,6 +734,10 @@ object InstallProgress {
         Phase.PROMOTION -> Line(R.string.install_stage_promotion)
         else -> null
     }
+
+    /** The install runs with Fast download: the run's source, else the engine's install source. */
+    private fun fast(snapshot: Snapshot?, run: InstallRun?): Boolean =
+        run?.source?.let { it == SourceChoice.FAST } ?: (snapshot?.settings?.installSource == InstallSource.DIRECT_DOWNLOAD)
 
     /** The game environment's running part, its place and how many this setup runs: "Setting up Windows (1 of 4)". */
     fun part(setup: EnvironmentSetup): Line {

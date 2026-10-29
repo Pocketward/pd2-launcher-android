@@ -41,7 +41,7 @@
     <string name="download_title_failed">Download interrupted</string>
     <string name="download_intro_failed">Your progress is kept. Try again to carry on.</string>
     <string name="download_title_done">Installers downloaded</string>
-    <string name="download_intro_done">Every installer is downloaded and checked. Next, the install: Blizzard\'s installers download the game files there.</string>
+    <string name="download_intro_done">Every installer is downloaded and checked. Next, the install downloads the game files from Blizzard.</string>
 
     <!-- Install. The running title follows the task underway (InstallProgress.title); the rows and caption carry its details. -->
     <string name="install_title_environment">Setting up the game environment</string>
@@ -155,6 +155,8 @@
     <string name="refusal_saves_not_kept">Start over didn\'t run: your characters couldn\'t be moved to their own folder first, so nothing was removed. Try again.</string>
     <string name="refusal_official_launcher">The official PD2 launcher can\'t open now. Wait until nothing else runs, then try again.</string>
     <string name="refusal_busy">Other work is still running. Wait for it to finish, then try again.</string>
+    <string name="refusal_downloads_required">The installers are not ready yet. Wait until they are ready, then try again. If their download stopped, start it again first.</string>
+    <string name="refusal_download">The download cannot start now: other work is still running. Wait for it to finish, then try again.</string>
     <string name="refusal_engine_busy">The Launcher is busy. Try again in a moment.</string>
     <string name="refusal_engine_gone">The Launcher stopped and is starting again. Try again in a moment.</string>
     <string name="refusal_other">The Launcher didn\'t start that (%1$s).</string>

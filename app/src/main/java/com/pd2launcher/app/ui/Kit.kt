@@ -47,6 +47,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalInputModeManager
@@ -58,6 +59,7 @@ import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
@@ -215,6 +217,12 @@ fun LauncherButton(
     style: TextStyle = Type.Button,
     padding: Dp = 22.dp,
     floating: Boolean = false,
+    /**
+     * A small [Palette.Gold] dot at the label's top-right corner, as mobile games mark an icon that
+     * has news (Play's About while a new version is out), and these words for TalkBack after the
+     * label. Null: none. Only drawn: the layout and the focus stay as they are.
+     */
+    dot: String? = null,
 ) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
@@ -256,13 +264,24 @@ fun LauncherButton(
             .border(if (focused) 2.dp else 1.dp, edge, Pill)
             .clip(Pill)
             .background(fill)
+            .then(if (dot != null) Modifier.semantics { stateDescription = dot } else Modifier)
             .then(action)
             .padding(horizontal = padding),
         contentAlignment = Alignment.Center,
     ) {
-        Text(label, style = style, color = ink, textAlign = TextAlign.Center, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+        val mark = if (dot != null) Modifier.drawBehind { drawDot() } else Modifier
+        Text(label, mark, style = style, color = ink, textAlign = TextAlign.Center, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
     }
 }
+
+/** [LauncherButton]'s dot: [DOT_SIZE] across, [DOT_GAP] right of the label, its top on the label's top. */
+private fun DrawScope.drawDot() {
+    val radius = DOT_SIZE.toPx() / 2
+    drawCircle(Palette.Gold, radius, Offset(size.width + DOT_GAP.toPx() + radius, radius))
+}
+
+private val DOT_SIZE = 7.dp
+private val DOT_GAP = 2.dp
 
 /** [requester] on this element, when there is one. */
 internal fun Modifier.focusOn(requester: FocusRequester?): Modifier = if (requester != null) focusRequester(requester) else this
@@ -368,15 +387,27 @@ fun ToggleRow(
     }
 }
 
-/** One of a single choice, with its explanation: a teal ring and dot; the whole row selects. */
+/**
+ * One of a single choice, with its explanation: a teal ring and dot; the whole row selects.
+ * [tinted]: the selected row also gets the teal tint, and the rows are tighter, so three fit a
+ * handheld's screen at a large font (the Diablo II source page).
+ */
 @Composable
-fun OptionRow(title: String, body: String?, selected: Boolean, onSelect: () -> Unit, enabled: Boolean = true, focusRequester: FocusRequester? = null) {
+fun OptionRow(
+    title: String,
+    body: String?,
+    selected: Boolean,
+    onSelect: () -> Unit,
+    enabled: Boolean = true,
+    focusRequester: FocusRequester? = null,
+    tinted: Boolean = false,
+) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
     Row(
         Modifier
             .focusOn(focusRequester)
-            .fillMaxWidth().heightIn(min = 60.dp).focusMark(focused)
+            .fillMaxWidth().heightIn(min = if (tinted) 52.dp else 60.dp).focusMark(focused, selected = tinted && selected)
             .then(
                 if (enabled) {
                     Modifier.selectable(selected, interaction, LocalIndication.current, role = Role.RadioButton, onClick = onSelect)
@@ -384,14 +415,14 @@ fun OptionRow(title: String, body: String?, selected: Boolean, onSelect: () -> U
                     Modifier.semantics { disabled() }.focusable(interactionSource = interaction)
                 },
             )
-            .padding(horizontal = 14.dp, vertical = 10.dp),
+            .padding(horizontal = 14.dp, vertical = if (tinted) 3.dp else 10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Box(Modifier.size(20.dp).clip(CircleShape).border(1.5.dp, if (selected && enabled) Palette.Teal else Palette.Rule, CircleShape), contentAlignment = Alignment.Center) {
             if (selected) Box(Modifier.size(10.dp).clip(CircleShape).background(if (enabled) Palette.Teal else Palette.Faint))
         }
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(if (tinted) 0.dp else 2.dp)) {
             Text(title, style = Type.Body, color = if (enabled) Palette.Text else Palette.Faint)
             if (body != null) Text(body, style = Type.Hint, color = if (enabled) Palette.Muted else Palette.Faint)
         }
@@ -400,20 +431,23 @@ fun OptionRow(title: String, body: String?, selected: Boolean, onSelect: () -> U
 
 /**
  * A segmented choice: the options in one hairline slot, the chosen one teal-tinted. Each option
- * is its own 48 dp focus stop.
+ * is its own 48 dp focus stop. [compact]: the control of a row, beside the row's label (Touch):
+ * each option only as wide as its word and 40 dp high.
  */
 @Composable
-fun Segmented(options: List<String>, selected: Int, onSelect: (Int) -> Unit, modifier: Modifier = Modifier) {
+fun Segmented(options: List<String>, selected: Int, onSelect: (Int) -> Unit, modifier: Modifier = Modifier, compact: Boolean = false) {
+    val gap = if (compact) 2.dp else 3.dp
     Row(
-        modifier.clip(RowShape).border(1.dp, Palette.Rule, RowShape).padding(3.dp),
-        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        modifier.clip(RowShape).border(1.dp, Palette.Rule, RowShape).padding(gap),
+        horizontalArrangement = Arrangement.spacedBy(gap),
     ) {
         options.forEachIndexed { i, label ->
             val interaction = remember { MutableInteractionSource() }
             val focused by interaction.collectIsFocusedAsState()
             val on = i == selected
             Box(
-                Modifier.weight(1f).heightIn(min = 46.dp).focusMark(focused, selected = on, shape = Small)
+                (if (compact) Modifier.heightIn(min = 40.dp) else Modifier.weight(1f).heightIn(min = 46.dp))
+                    .focusMark(focused, selected = on, shape = Small)
                     .selectable(on, interaction, LocalIndication.current, role = Role.RadioButton) { onSelect(i) }
                     .padding(horizontal = 8.dp),
                 contentAlignment = Alignment.Center,
@@ -427,9 +461,17 @@ fun Segmented(options: List<String>, selected: Int, onSelect: (Int) -> Unit, mod
     }
 }
 
-/** A value with − and +: pointer speed, opacity, size. */
+/** A value with − and +: pointer speed, opacity, size; [supporting]: a quiet line under the title. */
 @Composable
-fun StepperRow(title: String, value: String, fraction: Float, onMinus: () -> Unit, onPlus: () -> Unit, enabled: Boolean = true) {
+fun StepperRow(
+    title: String,
+    value: String,
+    fraction: Float,
+    onMinus: () -> Unit,
+    onPlus: () -> Unit,
+    enabled: Boolean = true,
+    supporting: String? = null,
+) {
     Row(
         Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(horizontal = 14.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -440,6 +482,7 @@ fun StepperRow(title: String, value: String, fraction: Float, onMinus: () -> Uni
                 Text(title, style = Type.Body, color = if (enabled) Palette.Text else Palette.Faint, modifier = Modifier.weight(1f))
                 Text(value, style = Type.Body, color = if (enabled) Palette.Teal else Palette.Faint)
             }
+            if (supporting != null) Text(supporting, style = Type.Hint, color = if (enabled) Palette.Muted else Palette.Faint)
             Bar(fraction, height = 3.dp, color = if (enabled) Palette.Teal else Palette.Faint)
         }
         Spacer(Modifier.width(4.dp))

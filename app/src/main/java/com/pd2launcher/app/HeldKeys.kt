@@ -44,6 +44,19 @@ class HeldKeys {
         return d2Key.copyOf() to lodKey.copyOf()
     }
 
+    /**
+     * The held keys themselves, which the receiver clears; none are held after this. For keys the
+     * engine refused: they go back into the key page's fields, not to Resume.
+     */
+    @Synchronized
+    fun take(): Pair<CharArray, CharArray>? {
+        val d2Key = d2 ?: return null
+        val lodKey = lod ?: return null
+        d2 = null
+        lod = null
+        return d2Key to lodKey
+    }
+
     /** Overwrites the held keys and drops them. */
     @Synchronized
     fun clear() {
@@ -57,13 +70,19 @@ class HeldKeys {
         /**
          * The held keys are done with after [next] (the snapshot before it: [previous]): Diablo II
          * and Lord of Destruction are in, so Blizzard's installers need no key any more; or Install
-         * Diablo II has just failed, when the keys may have been wrong and a retry asks again.
+         * Diablo II has just failed, when the keys may have been wrong and a retry asks again. (A
+         * Download that the keys joined and that failed keeps them: the engine holds them for
+         * its Try again.)
          */
         fun spent(previous: Snapshot?, next: Snapshot): Boolean =
             next.installation in INSTALLED || (installFailed(next) && !installFailed(previous))
 
-        /** After Start over or an import no paused Install Diablo II goes on: the held keys go. */
-        fun forgets(command: Command): Boolean = command is Command.StartOver || command is Command.ImportExistingInstall
+        /**
+         * After Start over, an import or the removal of the downloads for one, no paused Install
+         * Diablo II goes on: the held keys go.
+         */
+        fun forgets(command: Command): Boolean =
+            command is Command.StartOver || command is Command.ImportExistingInstall || command is Command.DiscardDownloads
 
         private val INSTALLED = setOf(Installation.NEEDS_CLIENT, Installation.NEEDS_RUNTIME, Installation.READY)
 

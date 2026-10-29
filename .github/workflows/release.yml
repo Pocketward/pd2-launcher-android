@@ -27,8 +27,8 @@
 #   apk       the engine job's build, build.sh release signed with the release
 #             key from the secrets of the environment "release", which only this
 #             job names, then the GitHub release with the APK, its .sha256 file and
-#             R8's mapping.txt of the same build. build.sh release leaves out the
-#             lint check, which build.sh check runs in ci.yml on the same push
+#             R8's mapping.txt of the same build. build.sh release requires the
+#             release lint check before exporting the APK
 #
 # Every build image is cached on its own, as an archive named by the image's tag,
 # which hashes its Containerfile and pins: the scripts load a missing image from

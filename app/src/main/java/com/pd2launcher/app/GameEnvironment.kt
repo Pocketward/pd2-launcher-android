@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import com.pd2launcher.app.input.GamepadFile
+import com.pd2launcher.app.input.PointerBounds
 import com.pd2launcher.app.input.RelaySender
 import com.pd2launcher.app.input.RelayWindows
 import java.io.File
@@ -13,8 +14,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-/** What the Game view drives: the X screen and the game's pad. */
-class GameInput(val relay: RelaySender, val gamepad: GamepadFile)
+/** What the Game view drives: the X screen (its pointer as the app placed it, [pointer]) and the game's pad. */
+class GameInput(val relay: RelaySender, val gamepad: GamepadFile, val pointer: PointerBounds)
 
 /**
  * The Android game environment's own programs:
@@ -107,7 +108,7 @@ class GameEnvironment(
                 it.setBackground(inBackground, soundInBackground, gameRunning)
                 it.start()
             }
-            val r = startInput(bin, env)
+            val r = startInput(bin, env, width, height)
             log(
                 "game environment started: Xvfb pid ${x.pid} at ${width}x$height (framebuffer ${if (memory != null) "in memory" else "in a file"}), " +
                     "x-input-relay pid ${r.pid}",
@@ -121,9 +122,10 @@ class GameEnvironment(
 
     /**
      * The gamepad file (a connected, neutral pad) and x-input-relay on the X display, its
-     * standard input the child end of a socket pair whose app end the Game view writes to.
+     * standard input the child end of a socket pair whose app end the Game view writes to; the
+     * [width] x [height] X screen's pointer starts in its middle ([PointerBounds]).
      */
-    private fun startInput(bin: File, env: List<String>): OwnedProcess {
+    private fun startInput(bin: File, env: List<String>, width: Int, height: Int): OwnedProcess {
         val gamepad = GamepadFile.open(gamepadFile(paths))
         val pair = try {
             Spawner.socketPair()
@@ -145,7 +147,7 @@ class GameEnvironment(
         }
         relay = r
         relaySocket = pair.app
-        _input.value = GameInput(RelaySender(ParcelFileDescriptor.AutoCloseOutputStream(pair.app)), gamepad)
+        _input.value = GameInput(RelaySender(ParcelFileDescriptor.AutoCloseOutputStream(pair.app)), gamepad, PointerBounds(width, height))
         watchWindows(pair.app)
         return r
     }

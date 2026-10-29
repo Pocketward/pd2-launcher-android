@@ -7,7 +7,7 @@
     <string name="network_blocked">Android blocks PD2 Launcher\'s internet access. Allow Wi-Fi and mobile data for PD2 Launcher in its settings.</string>
     <string name="network_none">No internet connection. Connect to Wi-Fi or mobile data to download the game.</string>
     <string name="network_dns">This network can\'t look up Blizzard\'s and Project Diablo 2\'s servers. Turn off Private DNS or a VPN, or use another network.</string>
-    <string name="network_blizzard">Blizzard\'s servers can\'t be reached from this network. Use another network, or Import an existing installation.</string>
+    <string name="network_blizzard">Blizzard\'s servers can\'t be reached from this network. Use another network, or choose Use files you have.</string>
     <string name="network_pd2">Project Diablo 2\'s servers can\'t be reached from this network. Use another network.</string>
     <string name="network_unreachable">Blizzard\'s and Project Diablo 2\'s servers can\'t be reached. Check your connection.</string>
     <!-- Check's title and intro when the connection has a problem: the downloads need it, so it is not one of the optional settings. -->

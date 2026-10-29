@@ -172,6 +172,19 @@ object GameResolution {
         return picture.first * scale to picture.second * scale
     }
 
+    /**
+     * Where the pointer may go on the [screen] (the X screen) while it shows [shown] in its middle
+     * ([shownArea]: PD2's menu or game picture, or the official launcher's window), in X screen
+     * pixels: that picture. The game draws its cursor only there, and the Game view always shows it
+     * whole (Display), also where Fit to screen makes the view wider than the display (PD2's 4:3
+     * menus on a nearly 4:3 screen) or leaves bars beside it ([com.pd2launcher.app.input.PointerBounds]).
+     */
+    fun pointerArea(shown: Pair<Double, Double>, screen: Pair<Int, Int>): PictureRect {
+        val width = shown.first.roundToInt().coerceIn(1, screen.first)
+        val height = shown.second.roundToInt().coerceIn(1, screen.second)
+        return PictureRect((screen.first - width) / 2, (screen.second - height) / 2, width, height)
+    }
+
     /** A rectangle in pixels: [left], [top], [width] x [height]. */
     data class PictureRect(val left: Int, val top: Int, val width: Int, val height: Int) {
         override fun toString() = "${width}x$height at $left,$top"

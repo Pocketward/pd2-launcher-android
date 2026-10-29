@@ -52,11 +52,25 @@ data class Offer(
  * services. [AppUpdater] does the work and keeps the [State].
  */
 object AppUpdate {
-    /** A day between automatic checks that worked, an hour after one that failed. */
-    const val CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000L
-    const val RETRY_INTERVAL_MS = 60 * 60 * 1000L
+    /**
+     * An hour between automatic checks that worked: one request of the 60 an hour that GitHub
+     * allows each IP address without a token. A 304 for the ETag counts too: only a request with
+     * a token gets it free.
+     */
+    const val CHECK_INTERVAL_MS = 60 * 60 * 1000L
+    /**
+     * 15 min after a try that failed. Most fail with no network and send nothing to GitHub; one
+     * that reaches it costs at most 4 requests an hour. GitHub's own refusals wait as it says ([retryAt]).
+     */
+    const val RETRY_INTERVAL_MS = 15 * 60 * 1000L
+    /**
+     * How often the app asks [checkDue] while it is in front ([AppUpdateHost]); a request goes out
+     * only when a check is due. Each ask is a few reads on the updater's own thread.
+     */
+    const val TIMER_MS = 5 * 60 * 1000L
+    private const val DAY_MS = 24 * 60 * 60 * 1000L
     /** About says "up to date" only after a check this recent ([view]); automatic checks can be off. */
-    const val RECENT_CHECK_MS = 7 * CHECK_INTERVAL_MS
+    const val RECENT_CHECK_MS = 7 * DAY_MS
     /** The shortest wait after GitHub refused a check without saying how long ([retryAt]). */
     const val MIN_WAIT_MS = 60_000L
     /** A larger APK is not taken as this app's. */
@@ -155,8 +169,8 @@ object AppUpdate {
 
     /**
      * Whether an automatic check is due at [now] (wall-clock milliseconds): automatic checks are
-     * on ([enabled]), GitHub's wait has passed ([notBefore], [waitingForGitHub]), a day has passed
-     * since the last check that worked ([lastSuccess]) and an hour since the last try
+     * on ([enabled]), GitHub's wait has passed ([notBefore], [waitingForGitHub]), an hour has passed
+     * since the last check that worked ([lastSuccess]) and 15 min since the last try
      * ([lastAttempt]). A time after [now] (the clock went back) holds nothing off.
      */
     fun checkDue(now: Long, enabled: Boolean, lastSuccess: Long, lastAttempt: Long, notBefore: Long): Boolean {
@@ -166,7 +180,7 @@ object AppUpdate {
     }
 
     /** GitHub asked for no request before [notBefore]; a wait longer than a day is taken as a clock change. */
-    fun waitingForGitHub(now: Long, notBefore: Long): Boolean = notBefore > now && notBefore - now <= CHECK_INTERVAL_MS
+    fun waitingForGitHub(now: Long, notBefore: Long): Boolean = notBefore > now && notBefore - now <= DAY_MS
 
     /**
      * When GitHub allows the next request after it answered [code] ([header] reads the answer's
@@ -180,7 +194,7 @@ object AppUpdate {
         val reset = header("x-ratelimit-reset")?.trim()?.toLongOrNull()?.times(1000)
             ?.takeIf { header("x-ratelimit-remaining")?.trim() == "0" }
         val at = maxOf(after ?: reset ?: 0, now + MIN_WAIT_MS)
-        return minOf(at, now + CHECK_INTERVAL_MS)
+        return minOf(at, now + DAY_MS)
     }
 
     private val CONTENT_RANGE = Regex("""bytes (\d+)-\d+/(\d+|\*)""")
@@ -337,6 +351,14 @@ object AppUpdate {
     /** The newer release a state has in hand; null for none. */
     val State.offer: Offer? get() = (this as? WithOffer)?.offer
 
+    /**
+     * Whether Play's About shows the new-version dot in [state], for an app whose versionCode is
+     * [running]: while the updater holds a release newer than it (Available, also with a download
+     * kept or a problem, Downloading, Verifying, Ready, Installing). Opening About does not clear
+     * it: it goes once that version is installed, or once the releases no longer offer it.
+     */
+    fun newVersionDot(state: State, running: Int): Boolean = (state.offer?.versionCode ?: 0) > running
+
     /** What the player can do about the update. */
     enum class Action { CHECK, DOWNLOAD, RESUME, STOP, ALLOW, INSTALL }
 
@@ -434,8 +456,8 @@ object AppUpdate {
         age < MINUTE_MS -> Line(R.string.app_update_checked_now)
         age < HOUR_MS -> Line(R.string.app_update_checked_minutes, age / MINUTE_MS)
         age < 2 * HOUR_MS -> Line(R.string.app_update_checked_one_hour)
-        age < 2 * CHECK_INTERVAL_MS -> Line(R.string.app_update_checked_hours, age / HOUR_MS)
-        else -> Line(R.string.app_update_checked_days, age / CHECK_INTERVAL_MS)
+        age < 2 * DAY_MS -> Line(R.string.app_update_checked_hours, age / HOUR_MS)
+        else -> Line(R.string.app_update_checked_days, age / DAY_MS)
     }
 
     /**

@@ -23,7 +23,7 @@
     <string name="game_fps_unknown">– fps</string>
     <string name="game_view_stop">Stop game</string>
     <string name="game_menu_stop_body">Stop the game? Anything since your last save is lost.</string>
-    <!-- Under a spinner over the black screen until the official launcher's first window shows. -->
+    <!-- Over the black screen until the official launcher's first window shows. -->
     <string name="launcher_starting">Starting the official PD2 launcher…</string>
     <!-- Under launcher_starting when the launcher's window has not shown 20 seconds after its start. -->
     <string name="launcher_starting_slow">The official PD2 launcher can take a minute to start on slower phones.</string>

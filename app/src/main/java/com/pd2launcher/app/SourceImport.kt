@@ -8,6 +8,7 @@ import android.util.Log
 import com.pd2launcher.app.control.Command
 import com.pd2launcher.app.control.ExistingProblem
 import com.pd2launcher.app.control.Installer
+import com.pd2launcher.app.control.Job
 import com.pd2launcher.app.control.Snapshot
 import java.io.File
 import java.io.FileOutputStream
@@ -44,6 +45,10 @@ object SourceImport {
     const val DOWNLOADS = "com.android.providers.downloads.documents"
     /** How long a copied folder waits for the engine's check of it. */
     private const val VERDICT_TIMEOUT_MS = 120_000L
+    /** How long a copy waits for the Download it stopped to end ([awaitNoJob]). */
+    private const val NO_JOB_TIMEOUT_MS = 60_000L
+    /** The engine's refusal of a folder while a job runs: the session sends it again later. */
+    const val BUSY = "installer-media-locked-while-installing"
     /** The deepest a picked folder may nest, and the most files and folders it may hold ([walk]). */
     const val MAX_DEPTH = 32
     const val MAX_ENTRIES = 200_000
@@ -112,6 +117,27 @@ object SourceImport {
     @Volatile
     var chosen: File? = null
         private set
+
+    /** The copy whose acceptance sent the removal of the downloads' files ([acceptedFirst]). */
+    @Volatile private var removedFor: File? = null
+
+    /**
+     * Whether the engine's [installer] state accepts the [chosen] copy for the first time: the
+     * import really starts (the owner's rule of 2026-10-28), so the caller sends the removal of
+     * what the Launcher's own downloads made, once for each copy, whichever look sees the
+     * acceptance first (the copy's wait, a late one, or one after the folder went again).
+     */
+    @Synchronized
+    fun acceptedFirst(installer: Installer?): Boolean {
+        val folder = chosen ?: return false
+        if (!removes(installer, folder, removedFor)) return false
+        removedFor = folder
+        return true
+    }
+
+    /** Whether the engine's [installer] state accepts the copy [folder], whose removal was not sent yet ([removedFor]). */
+    fun removes(installer: Installer?, folder: File, removedFor: File?): Boolean =
+        removedFor != folder && verdictOf(installer, folder) == Verdict.Accepted
 
     /** [chosen] after the player's [command] ([stillChosen]). */
     fun chosenAfter(command: Command) {
@@ -185,6 +211,17 @@ object SourceImport {
                         // This copy's token folder: all that a failed, stopped or refused copy removes.
                         val replaced = into.parentFile!!
                         stop()
+                        // Download runs (the player came back from the key page): the engine takes
+                        // no folder while a job runs. Download stops safely, and the copy waits
+                        // until no job runs. Nothing is removed yet: the downloads' files go only
+                        // once the engine accepts the folder ([acceptedFirst]), so a refused folder
+                        // or a failed copy keeps them.
+                        beforeCopy(activeJob())?.let { command ->
+                            Log.i(TAG, "Download runs: it stops before the copy")
+                            SessionService.command(command)
+                            awaitNoJob(NO_JOB_TIMEOUT_MS, { !stopped() }, ::activeJob)
+                            stop()
+                        }
                         // A previous copy used in place may still hold the player's characters: they
                         // move into SessionPaths.userSave, so removing the copies takes none.
                         SaveKeeper.moveImported(paths) { Log.i(TAG, it) }
@@ -228,6 +265,13 @@ object SourceImport {
                                 app.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).edit()
                                     .putString(PICKED_FOLDER, picked).putString(PICKED_FROM, tree.authority).apply()
                                 if (verdict == null) watchLateVerdict(replaced, into, copy)
+                                // A folder picked and accepted: the import really starts (the owner's
+                                // rule of 2026-10-28), so what the Launcher's own downloads made goes,
+                                // unless the session's look at the acceptance sent it already. The
+                                // import's own Download then fetches nothing.
+                                if (verdict == Verdict.Accepted && acceptedFirst(installer())) {
+                                    SessionService.command(Command.DiscardDownloads)
+                                }
                                 SourceCopy.Copied(check.projectDiablo)
                             }
                         }
@@ -307,6 +351,29 @@ object SourceImport {
     }
 
     private fun installer(): Installer? = SessionService.status.value.snapshot?.installer
+
+    private fun activeJob(): Job? = SessionService.status.value.snapshot?.activeJob
+
+    /**
+     * What goes to the engine before a picked folder is copied while [activeJob] runs: Download's
+     * safe stop, as the engine takes no folder while a job runs. Never the removal of the
+     * downloads' files, which waits for the engine's acceptance of the folder ([acceptedFirst]).
+     */
+    fun beforeCopy(activeJob: Job?): Command? = if (activeJob == Job.DOWNLOAD) Command.RequestSafeStop else null
+
+    /**
+     * Waits up to [timeoutMs] until [activeJob] says no job runs, polled every [pollMs]; false on
+     * the timeout or once [current] says the copy stopped.
+     */
+    fun awaitNoJob(timeoutMs: Long, current: () -> Boolean, activeJob: () -> Job?, pollMs: Long = 200): Boolean {
+        val start = System.nanoTime()
+        while (current()) {
+            if (activeJob() == null) return true
+            if ((System.nanoTime() - start) / 1_000_000 >= timeoutMs) return false
+            Thread.sleep(pollMs)
+        }
+        return false
+    }
 
     /** Where the last copied folder is on the device, as the player finds it ("Download/Diablo II"); null: not known. */
     fun pickedFolder(context: Context): String? =

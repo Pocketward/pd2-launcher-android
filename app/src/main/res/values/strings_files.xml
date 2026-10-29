@@ -9,29 +9,10 @@
     <string name="files_refused_game_starting">Diablo II is starting: the Launcher is preparing its files. Change files once it has closed, or if it does not start.</string>
     <string name="files_refused_busy">The Launcher is working on the game folder. Change files once it is done.</string>
 
-    <!-- Settings → App → Game files. -->
+    <!-- Settings → App → Game files: where the game folder is (mods, loot filters), then Save sync (strings_sync.xml). -->
     <string name="settings_section_game_files">Game files</string>
     <string name="settings_open_files">The game folder in Files</string>
-    <string name="settings_open_files_body">Diablo II with Project Diablo 2 and your characters (in Save), under PD2 Launcher in Android\'s Files app and file pickers. Files there cannot change while the game runs.</string>
+    <!-- Any file can go in the game folder, programs and libraries too. -->
+    <string name="settings_open_files_body">Your Diablo II folder is in Android\'s Files app, under PD2 Launcher.</string>
     <string name="settings_open_files_action">Open in Files</string>
-    <string name="settings_import_files">Import files…</string>
-    <!-- Any file is imported, programs and libraries too. -->
-    <string name="settings_import_files_body">Pick files, then the folder of the game folder they go to. Programs and libraries (such as .exe and .dll files) run with the game: import only files that you trust.</string>
-    <string name="settings_import_files_action">Import…</string>
-    <string name="settings_export_files">Export files…</string>
-    <string name="settings_export_files_body">Choose files and folders of the game folder, then where they go.</string>
-    <string name="settings_export_files_action">Export…</string>
-    <string name="settings_import_to">Where do the picked files (%1$d) go? %2$s</string>
-    <string name="settings_export_from">Choose what to export from %1$s</string>
-    <string name="settings_export_selected">Export %1$d…</string>
-    <string name="settings_files_up">‹ Up</string>
-    <string name="settings_files_cancel">Cancel</string>
-    <string name="settings_files_copy_here">Copy here</string>
-    <string name="settings_files_exists">%1$s is already there.</string>
-    <string name="settings_files_overwrite">Overwrite</string>
-    <string name="settings_files_skip">Skip</string>
-    <string name="settings_files_keep_both">Keep both</string>
-    <string name="settings_files_copied">Copied %1$d, skipped %2$d.</string>
-    <string name="settings_no_game_folder">There is no game folder yet.</string>
-    <string name="settings_transfer_failed">That did not work: %1$s</string>
 </resources>

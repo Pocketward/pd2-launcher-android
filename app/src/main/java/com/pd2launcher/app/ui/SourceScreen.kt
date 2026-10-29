@@ -15,10 +15,10 @@ import com.pd2launcher.app.SourceChoice
 import com.pd2launcher.app.Tone
 
 /**
- * Where Diablo II comes from, the first page of Download:
- * everything downloaded (the default), or an existing Diablo II folder, picked with the system
- * picker ([onPickFolder], or Continue before a folder is accepted) and copied into the app before
- * the engine checks it. Continue then starts the download at once; no page asks first. Under the
+ * Where Diablo II comes from, the first page of Download: Fast download (the default: the engine
+ * fetches and installs Diablo II and Lord of Destruction itself), Blizzard's installers, or an
+ * existing Diablo II folder, picked with the system picker ([onPickFolder], or Continue before a
+ * folder is accepted) and copied into the app before the engine checks it. Continue then starts the download at once; no page asks first. Under the
  * options, what the page must say ([sourceNote]): a folder refused or a copy failed, what a
  * picked folder holds, or why Continue waits. An import keeps the Project Diablo 2 in the folder as
  * it is, whatever Check for game updates says (the owner's rule of 2026-10-26), so the page has no
@@ -48,6 +48,7 @@ fun SourceScreen(
             CornerPill(stringResource(R.string.source_continue), onContinue, Kind.PRIMARY, enabled = view.canContinue, focusRequester = focus)
         },
     ) {
+        Option(SourceChoice.FAST, R.string.source_fast, R.string.source_fast_body, view.selected, !copying, onSelect)
         Option(SourceChoice.BLIZZARD, R.string.source_blizzard, R.string.source_blizzard_body, view.selected, !copying, onSelect)
         Option(SourceChoice.EXISTING, R.string.source_existing, R.string.source_existing_body, view.selected, !copying, onSelect)
         if (view.selected == SourceChoice.EXISTING) {
@@ -83,5 +84,5 @@ fun sourceNote(view: DiabloSource.View): Note? = when {
 
 @Composable
 private fun Option(choice: SourceChoice, title: Int, body: Int, selected: SourceChoice, enabled: Boolean, onSelect: (SourceChoice) -> Unit) {
-    OptionRow(stringResource(title), stringResource(body), selected = choice == selected, onSelect = { onSelect(choice) }, enabled = enabled)
+    OptionRow(stringResource(title), stringResource(body), selected = choice == selected, onSelect = { onSelect(choice) }, enabled = enabled, tinted = true)
 }

@@ -95,6 +95,16 @@ class SessionPaths(val data: String) {
     /** Debug builds only: with this file the userland's `resolv.conf` takes Android's DNS servers as none ([Dns]). */
     val emptyDnsForTest = File(files, "debug-empty-dns")
 
+    /**
+     * Debug builds only: with this file every program the session starts runs under the seccomp
+     * test harness [seccompRun] with Android 11's app seccomp policy ([ProcessStarter]). A getter,
+     * so that a release build, which never reads it, has neither path.
+     */
+    val seccompHarnessForTest: File get() = File(files, "debug-seccomp-api30")
+
+    /** The seccomp test harness (userland/glibc/tests/seccomp-run.c), put there by a development tool. */
+    val seccompRun: File get() = File(files, "seccomp-run")
+
     /** The Managed prefix's Diablo II folder (the engine's `GAME_RELATIVE`). */
     val managedGame = File(managedRoot, "prefix/drive_c/Program Files (x86)/Diablo II")
 
@@ -105,8 +115,15 @@ class SessionPaths(val data: String) {
     val userData = File(files, "userdata")
     /** The player's characters: the game folder's `Save` links here ([SaveKeeper]). */
     val userSave = File(userData, "Save")
-    /** Where a character that met another one of its name is kept (`backup-<time>`). */
-    val saveBackups = File(userData, "backups")
+    /**
+     * Where a character that met another one of its name is kept (`backup-<time>`): `Save/Backups`
+     * (owner, 2026-10-27), so the player sees it in the Files app under the game folder's Save, and
+     * Save sync copies it to the sync folder. The game reads only the top of Save. [SaveKeeper]
+     * never merges it as saves.
+     */
+    val saveBackups = File(userSave, SaveKeeper.BACKUPS)
+    /** Where the backups were up to 0.3.4 (`files/userdata/backups`); [SaveKeeper.moveOldBackups] empties it once. */
+    val oldSaveBackups = File(userData, "backups")
 
     /** Owner-only folders: the app process's umask is 0, so plain mkdirs would make them 0777. */
     fun createFolders() {

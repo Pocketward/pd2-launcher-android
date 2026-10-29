@@ -103,6 +103,12 @@ data class FlowNav(val stack: List<FlowPage> = listOf(FlowPage.CHECK)) {
      */
     fun afterSource(installReady: Boolean): FlowNav = open(if (installReady) FlowPage.INSTALL else FlowPage.DOWNLOAD)
 
+    /**
+     * On from the source with a download of Diablo II: the key page at once, over Install, while
+     * Download runs ([KeysWhileDownloading]). Agree and install goes back to Install, Back too.
+     */
+    fun keysWhileDownloading(): FlowNav = open(FlowPage.INSTALL).open(FlowPage.KEYS)
+
     /** The download finished while Download was shown: Install follows. */
     fun downloadDone(): FlowNav = if (page == FlowPage.DOWNLOAD) open(FlowPage.INSTALL) else this
 
@@ -329,8 +335,12 @@ object Onboarding {
             FlowPage.CHECK -> check
             FlowPage.SOURCE -> Screen.Source
             FlowPage.DOWNLOAD -> download(session)
-            // Install waits for what Download fetches (after a change of source, say).
+            // Install waits for what Download fetches (after a change of source, say). The key page
+            // goes on while it runs, also after it stopped or failed (its line says so). While an
+            // install job runs, Install shows it, not the key page.
             FlowPage.INSTALL, FlowPage.KEYS -> when {
+                session.snapshot?.activeJob in INSTALL_JOBS -> Screen.Install
+                page == FlowPage.KEYS && KeysWhileDownloading.downloadsFirst(session.snapshot) -> Screen.Keys
                 beforeInstall(session) -> download(session)
                 page == FlowPage.INSTALL -> Screen.Install
                 else -> Screen.Keys

@@ -66,16 +66,19 @@ class PresentServer private constructor(private val handle: Long) {
     }
 
     /**
-     * [read] the X screen as the game's buffer on the screen shows it ([ShownFrame]); null while
-     * the X screen itself shows. Off the main thread.
+     * [read] the X screen as the game's buffer on the screen shows it ([ShownFrame]):
+     * [Shown.Read]; [Shown.NotReady] while that buffer shows but cannot be read now (its GPU
+     * writes have not finished: the X screen does not show that frame either); null while the X
+     * screen itself shows. Off the main thread.
      */
-    fun <T> readShown(read: (ShownFrame) -> T): T? = synchronized(lock) {
+    fun <T> readShown(read: (ShownFrame) -> T): Shown<T>? = synchronized(lock) {
         if (stopped) return null
-        val size = IntArray(7)
-        val pixels = nativeLockShown(handle, size) ?: return null
+        // Seven numbers of the frame read, then the native side's word when it read none.
+        val size = IntArray(8)
+        val pixels = nativeLockShown(handle, size) ?: return if (size[7] == SHOWN_NOT_READY) Shown.NotReady else null
         try {
             val buffer = ScreenPixels(XwdHeader(size[0], size[1], 32, size[2], 0), pixels.order(ByteOrder.LITTLE_ENDIAN))
-            read(ShownFrame(buffer, size[3], size[4], size[5], size[6]))
+            Shown.Read(read(ShownFrame(buffer, size[3], size[4], size[5], size[6])))
         } finally {
             nativeUnlockShown(handle)
         }
@@ -91,6 +94,9 @@ class PresentServer private constructor(private val handle: Long) {
         init {
             System.loadLibrary("framecopy")
         }
+
+        /** nativeLockShown's word (the size array's last number): the game's buffer shows, not ready to read. */
+        private const val SHOWN_NOT_READY = 1
 
         private val _current = MutableStateFlow<PresentServer?>(null)
         /** The running game environment's server, for the Game view; null while it is stopped. */
@@ -141,6 +147,28 @@ class PresentServer private constructor(private val handle: Long) {
 
         @JvmStatic
         private external fun nativeStop(handle: Long)
+    }
+}
+
+/** What [PresentServer.readShown] found while the game's buffer shows. */
+sealed interface Shown<out T> {
+    /** The buffer on the screen, read. */
+    data class Read<out T>(val value: T) : Shown<T>
+
+    /** The buffer shows, but cannot be read now (its GPU writes have not finished). */
+    data object NotReady : Shown<Nothing>
+
+    companion object {
+        /**
+         * One sample of what shows: the buffer read, else the X screen ([xScreen]) while the X screen
+         * shows; null (no sample) while the buffer shows but is not ready, as the X screen does not
+         * show that frame.
+         */
+        fun <T> sample(shown: Shown<T>?, xScreen: () -> T): T? = when (shown) {
+            null -> xScreen()
+            is Read -> shown.value
+            NotReady -> null
+        }
     }
 }
 

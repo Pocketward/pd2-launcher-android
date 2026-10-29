@@ -10,8 +10,6 @@ import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.LocalIndication
 import android.view.InputDevice
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -60,7 +58,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -114,7 +111,7 @@ private const val LABEL_MAX = 6
 /**
  * The on-screen controls editor, over the live game or, when not playing ([sample]), a sample
  * screen. Nothing is open on entry: the pieces over a light dim and a faint snap grid, the menu
- * glyph, and a hint that fades.
+ * glyph, and a hint that goes after a few seconds.
  *
  * - A finger drags a piece at once (an 8 dp grid, drawn to the edges and centre lines, kept on
  *   screen); two pinch it; a tap selects it: a teal outline, a corner handle that resizes it,
@@ -162,7 +159,6 @@ internal fun ControlsEditor(sample: Boolean, onClose: () -> Unit) {
             delay(4000)
             hint = false
         }
-        val hintAlpha by animateFloatAsState(if (hint) 1f else 0f, tween(900), label = "hint")
         val root = remember { FocusRequester() }
         LaunchedEffect(menu, draft == null) { if (!menu && draft == null) runCatching { root.requestFocus() } }
         BackHandler {
@@ -296,10 +292,10 @@ internal fun ControlsEditor(sample: Boolean, onClose: () -> Unit) {
                 },
             )
 
-            // How to edit, in the middle the default leaves clear; it fades after a few seconds.
-            if (hintAlpha > 0f) {
+            // How to edit, in the middle the default leaves clear; it goes at once after a few seconds or at the first touch, with no fade.
+            if (hint) {
                 Column(
-                    Modifier.align(Alignment.Center).alpha(hintAlpha).clip(RowShape).background(Palette.Background.copy(alpha = 0.75f))
+                    Modifier.align(Alignment.Center).clip(RowShape).background(Palette.Background.copy(alpha = 0.75f))
                         .padding(horizontal = 14.dp, vertical = 10.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {

@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Settings → App → Game files → Save sync (SaveSyncFolder): the game's Save folder and a folder the player picked, kept the same. -->
+    <string name="sync_switch">Save sync</string>
+    <string name="sync_help">Keeps the game\'s Save folder and a folder that you pick the same. Use it with a sync app such as Syncthing.</string>
+    <!-- A row that shows or hides the lines below it. -->
+    <string name="sync_how">How it works</string>
+    <string name="sync_how_in">Before Play and before the official launcher, the app copies changes from the folder into the game.</string>
+    <string name="sync_how_out">After the game and after the official launcher, the app copies changes from the game to the folder.</string>
+    <string name="sync_how_never">The app never copies while the game runs.</string>
+    <string name="sync_how_both">When a character changed in both places, the copy saved last stays. The other copy goes to a backup.</string>
+    <string name="sync_how_backups">Copies set aside in a conflict are in Save/Backups.</string>
+    <string name="sync_how_delete">When you delete a character in one place, the app deletes it in the other place too, after a backup.</string>
+    <string name="sync_how_off">When you turn Save sync off, both copies stay.</string>
+    <!-- The picked folder: "Folder: Documents/PD2 Saves", "Folder: SD card/PD2 Saves". -->
+    <string name="sync_folder">Folder: %1$s</string>
+    <string name="sync_folder_change">Change</string>
+    <string name="sync_internal_storage">Internal storage</string>
+    <string name="sync_sd_card">SD card</string>
+    <string name="sync_now">Sync now</string>
+    <string name="sync_running">Syncing…</string>
+    <string name="sync_never">Not synced yet.</string>
+    <!-- "in": characters and files that came into the game; "out": that went to the folder. -->
+    <string name="sync_last_now">Last sync: just now · %1$d in, %2$d out</string>
+    <string name="sync_last_minutes">Last sync: %1$d min ago · %2$d in, %3$d out</string>
+    <string name="sync_last_one_hour">Last sync: 1 hour ago · %1$d in, %2$d out</string>
+    <!-- 2 to 47 hours. -->
+    <string name="sync_last_hours">Last sync: %1$d hours ago · %2$d in, %3$d out</string>
+    <string name="sync_last_days">Last sync: %1$d days ago · %2$d in, %3$d out</string>
+    <string name="sync_folder_gone">The sync folder is not available. Check the SD card, or pick the folder again.</string>
+    <string name="sync_busy">Not synced: the game, the official launcher or an install is running. Try again when it stops.</string>
+    <string name="sync_files_failed">Some files did not sync. Tap Sync now to try again.</string>
+    <string name="sync_failed">The sync did not work. Tap Sync now to try again.</string>
+    <string name="sync_own_folder">This folder is in PD2 Launcher. Pick a folder in your device storage or on the SD card.</string>
+    <string name="sync_no_access">The app did not get access to this folder. Pick the folder again.</string>
+    <string name="sync_off">Save sync is off. Your characters stay in the game and in the folder.</string>
+</resources>

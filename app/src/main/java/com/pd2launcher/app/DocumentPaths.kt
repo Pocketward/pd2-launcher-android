@@ -134,6 +134,12 @@ class DocumentPaths(game: File?, player: File?) {
     companion object {
         const val ROOT = "game"
 
+        /** `name (2).ext`, `name (3).ext` and on: the first that is not [taken] (a new file whose name is taken). */
+        fun keepBothName(name: String, taken: (String) -> Boolean): String {
+            val dot = name.lastIndexOf('.').takeIf { it > 0 } ?: name.length
+            return generateSequence(2) { it + 1 }.map { "${name.substring(0, dot)} ($it)${name.substring(dot)}" }.first { !taken(it) }
+        }
+
         /**
          * Whether a Play or official PD2 launcher request taken at [requestedAt] (null: none under
          * way) still holds the game folder at [now]: the engine prepares the game's files

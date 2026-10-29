@@ -6,7 +6,7 @@ import com.pd2launcher.app.control.Job
  * The official PD2 launcher's start as the Game view shows it. From the start of its session
  * until its first window shows, the X screen stays black: PD2Launcher.exe, a .NET program, can
  * work for a minute or more on a slow phone before it shows a window. Meanwhile a notice over the
- * black screen says that the launcher starts, under a spinner ([R.string.launcher_starting]), and
+ * black screen says that the launcher starts ([R.string.launcher_starting]), and
  * from [SLOW_MS] on ([slow]) that it can take a minute on slower phones
  * ([R.string.launcher_starting_slow]). The notice goes when the X screen shows more than the
  * X pointer ([shows]: the launcher's window, or a message it shows first), and does not come back

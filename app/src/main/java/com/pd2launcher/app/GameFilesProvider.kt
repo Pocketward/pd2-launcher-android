@@ -238,7 +238,7 @@ class GameFilesProvider : DocumentsProvider() {
             documents.caseClash(parentId, candidate) ||
                 Files.exists(documents.file(documents.child(parentId, candidate)).toPath(), LinkOption.NOFOLLOW_LINKS)
         }
-        return documents.child(parentId, if (taken(name)) FileTransfer.keepBothName(name, taken) else name)
+        return documents.child(parentId, if (taken(name)) DocumentPaths.keepBothName(name, taken) else name)
     }
 
     override fun deleteDocument(documentId: String) {

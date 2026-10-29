@@ -8,7 +8,7 @@
     if (!wsi->sw)
        WSI_GET_CB(GetMemoryFdKHR);
     WSI_GET_CB(GetPhysicalDeviceCalibrateableTimeDomainsKHR);
-@@ -3090,8 +3091,23 @@ wsi_select_host_memory_type(const struct wsi_device *wsi,
+@@ -3108,8 +3109,23 @@ wsi_select_host_memory_type(const struct wsi_device *wsi,
  {
     VkMemoryPropertyFlags req_props = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
  
@@ -34,7 +34,7 @@
  
     return wsi_select_memory_type(wsi, req_props, 0 /* deny_props */, type_bits);
  }
-@@ -3153,6 +3169,10 @@ wsi_create_buffer_blit_context(const struct wsi_swapchain *chain,
+@@ -3171,6 +3187,10 @@ wsi_create_buffer_blit_context(const struct wsi_swapchain *chain,
           info->select_blit_dst_memory_type(wsi, reqs.memoryTypeBits),
     };
  

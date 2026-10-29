@@ -26,7 +26,16 @@ object Failures {
         "expansion-key-rejected" -> R.string.failure_lod_key
         "base-game-installer-error", "expansion-installer-error",
         "base-game-installer-menu", "expansion-installer-menu" -> R.string.failure_installer
-        else -> if (job == Job.DOWNLOAD) R.string.failure_download else R.string.failure_install
+        // Fast download (the engine's direct download).
+        "direct-download-refused" -> R.string.failure_direct_refused
+        "direct-download-incomplete" -> R.string.failure_direct_incomplete
+        "direct-download-mismatch" -> R.string.failure_direct_mismatch
+        // The engine's own key check before an installer runs; the key page says why under the field.
+        else -> when (KeyProblems.of(code)?.field) {
+            KeyProblems.D2 -> R.string.failure_d2_key_check
+            KeyProblems.LOD -> R.string.failure_lod_key_check
+            else -> if (job == Job.DOWNLOAD) R.string.failure_download else R.string.failure_install
+        }
     }
 
     fun line(code: String?, job: Job?): Line = Line(text(code, job))

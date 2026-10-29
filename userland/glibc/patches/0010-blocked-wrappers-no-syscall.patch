@@ -1,7 +1,7 @@
 From: User <noreply@users.noreply.github.com>
 Subject: [PATCH 10/10] blocked explicit wrappers answer without a syscall
 
-Every remaining glibc wrapper of a syscall the Android 13 (API 33) app
+Every remaining glibc wrapper of a syscall the Android 11 (API 30) app
 seccomp policy traps fails without issuing it: EPERM where Linux answers
 an unprivileged process EPERM, ENOSYS otherwise.
 - Wrappers generated from syscalls.list: a new aarch64 syscall-template.S
@@ -14,19 +14,22 @@ an unprivileged process EPERM, ENOSYS otherwise.
   values; ENOSYS from fanotify_mark, open_by_handle_at, epoll_pwait2,
   pkey_mprotect (pkey -1 is still mprotect) and __alloc_gcs's
   map_shadow_stack.
+- close_range answers ENOSYS, so closefrom closes through /proc/self/fd
+  (its existing fallback); posix_spawn's closefrom file action goes to
+  that fallback directly instead of its inline close_range.
 Blocked syscalls without a glibc wrapper are reachable only through
 syscall(), which patch 0009 answers.
 ---
 --- /dev/null
 +++ b/sysdeps/unix/sysv/linux/aarch64/syscall-template.S
-@@ -0,0 +1,128 @@
+@@ -0,0 +1,132 @@
 +/* Generated syscall wrappers for the Android app sandbox (aarch64).  */
 +
 +/* make-syscalls.sh builds every wrapper listed in a syscalls.list by
 +   defining SYSCALL_NAME (the kernel syscall), SYSCALL_SYMBOL and the rest,
 +   then including <syscall-template.S>; this file is found first for
 +   aarch64.  When SYSCALL_NAME is trapped by the Android app seccomp policy
-+   (API 33), the wrapper fails with the errno below and issues no syscall:
++   (API 30), the wrapper fails with the errno below and issues no syscall:
 +   EPERM where an unprivileged process gets EPERM, ENOSYS otherwise.  Any
 +   other syscall gets the generic wrapper.
 +
@@ -44,6 +47,7 @@ syscall(), which patch 0009 answers.
 +#define ANDROID_ANSWER_chroot ~, EPERM
 +#define ANDROID_ANSWER_clock_adjtime ~, EPERM
 +#define ANDROID_ANSWER_clock_settime ~, EPERM
++#define ANDROID_ANSWER_close_range ~, ENOSYS
 +#define ANDROID_ANSWER_delete_module ~, EPERM
 +#define ANDROID_ANSWER_epoll_pwait2 ~, ENOSYS
 +#define ANDROID_ANSWER_fanotify_init ~, ENOSYS
@@ -100,9 +104,12 @@ syscall(), which patch 0009 answers.
 +#define ANDROID_ANSWER_open_by_handle_at ~, ENOSYS
 +#define ANDROID_ANSWER_open_tree ~, EPERM
 +#define ANDROID_ANSWER_openat2 ~, ENOSYS
++#define ANDROID_ANSWER_pidfd_getfd ~, ENOSYS
++#define ANDROID_ANSWER_pidfd_send_signal ~, ENOSYS
 +#define ANDROID_ANSWER_pkey_alloc ~, ENOSYS
 +#define ANDROID_ANSWER_pkey_free ~, ENOSYS
 +#define ANDROID_ANSWER_pkey_mprotect ~, ENOSYS
++#define ANDROID_ANSWER_process_madvise ~, ENOSYS
 +#define ANDROID_ANSWER_process_mrelease ~, ENOSYS
 +#define ANDROID_ANSWER_quotactl_fd ~, EPERM
 +#define ANDROID_ANSWER_reboot ~, EPERM
@@ -389,3 +396,17 @@ syscall(), which patch 0009 answers.
  }
  
  #define GCS_MAX_SIZE (1UL << 31)
+--- a/sysdeps/unix/sysv/linux/spawni.c
++++ b/sysdeps/unix/sysv/linux/spawni.c
+@@ -265,8 +265,9 @@
+ 	    case spawn_do_closefrom:
+ 	      {
+ 		int lowfd = action->action.closefrom_action.from;
+-	        int r = INLINE_SYSCALL_CALL (close_range, lowfd, ~0U, 0);
+-		if (r != 0 && !__closefrom_fallback (lowfd, false))
++		/* The Android app seccomp policy (API 30) traps close_range:
++		   close through /proc/self/fd, without issuing it.  */
++		if (!__closefrom_fallback (lowfd, false))
+ 		  goto fail;
+ 	      } break;
+ 

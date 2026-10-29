@@ -3,20 +3,30 @@
     <!-- Why a Download or Install did not finish (Failures.kt); "Try again" is the screens' button. -->
     <!-- Blizzard's downloader: the program itself could not be fetched (a connection problem), and
          each way it can fail under Wine, which the engine tells apart. Only the first two are
-         certainly the connection; the others point to the logs under them. -->
-    <string name="failure_blizzard_download">The app couldn\'t get Blizzard\'s downloader. Check your connection and Try again, or use Import an existing installation.</string>
-    <string name="failure_blizzard_stalled">Blizzard\'s download got no data for a minute. Check your connection and Try again; what is downloaded is kept. Or use Import an existing installation.</string>
-    <string name="failure_blizzard_error">Blizzard\'s downloader showed an error. Try again, or use Import an existing installation. If it happens again, send the logs.</string>
-    <string name="failure_blizzard_incomplete">Blizzard\'s downloader stopped before the download was complete. Try again, or use Import an existing installation. If it happens again, send the logs.</string>
-    <string name="failure_blizzard_rejected">The game files from Blizzard\'s downloader didn\'t pass the check. Try again, or use Import an existing installation. If it happens again, send the logs.</string>
+         certainly the connection; the others point to the logs under them. The other choices are
+         the source page's rows (Fast download, Use files you have). -->
+    <string name="failure_blizzard_download">The app couldn\'t get Blizzard\'s downloader. Check your connection and Try again, or go back and choose Use files you have.</string>
+    <string name="failure_blizzard_stalled">Blizzard\'s download got no data for a minute. Check your connection and Try again; what is downloaded is kept. Or go back and choose Fast download or Use files you have.</string>
+    <string name="failure_blizzard_error">Blizzard\'s downloader showed an error. Try again, or go back and choose Fast download or Use files you have. If it happens again, send the logs.</string>
+    <string name="failure_blizzard_incomplete">Blizzard\'s downloader stopped before the download was complete. Try again, or go back and choose Fast download or Use files you have. If it happens again, send the logs.</string>
+    <string name="failure_blizzard_rejected">The game files from Blizzard\'s downloader didn\'t pass the check. Try again, or go back and choose Fast download or Use files you have. If it happens again, send the logs.</string>
     <string name="failure_blizzard_store">Blizzard\'s download finished, but its files couldn\'t be saved. Check the free space and Try again.</string>
     <!-- Something the install needs (such as a fresh copy of Blizzard's downloader) must be downloaded again. -->
     <string name="failure_downloads_required">Something the install needs has to be downloaded again. Check your connection and Try again.</string>
-    <string name="failure_blizzard_ended">Blizzard\'s downloader stopped unexpectedly. Try again, or use Import an existing installation. If it happens again, send the logs.</string>
+    <string name="failure_blizzard_ended">Blizzard\'s downloader stopped unexpectedly. Try again, or go back and choose Fast download or Use files you have. If it happens again, send the logs.</string>
+    <!-- Fast download (the engine's direct download): Blizzard refused it; it stopped with game
+         files still missing; the files did not pass the check. The other choice is the source
+         page's Blizzard's installers. -->
+    <string name="failure_direct_refused">Blizzard didn\'t allow the download. Try again, or go back and choose Blizzard\'s installers.</string>
+    <string name="failure_direct_incomplete">The download stopped before it was complete. Check your connection and Try again; what is downloaded is kept. Or go back and choose Blizzard\'s installers.</string>
+    <string name="failure_direct_mismatch">The game files from Blizzard didn\'t pass the check. Try again, or go back and choose Blizzard\'s installers. If it happens again, send the logs.</string>
     <string name="failure_client_not_kept">The Project Diablo 2 in the game folder cannot be kept as it is. Check your connection and Try again: the app needs Project Diablo 2\'s file list to record your files. If it happens again, Game.exe, ProjectDiablo.dll or another of its files is missing: import a complete folder.</string>
     <string name="failure_download">A download didn\'t finish. Check your connection and Try again. What is already downloaded is kept.</string>
     <string name="failure_d2_key">Diablo II\'s installer didn\'t accept the Diablo II key. Check the key and Try again.</string>
     <string name="failure_lod_key">Lord of Destruction\'s installer didn\'t accept the Lord of Destruction key. Check the key and Try again.</string>
+    <!-- The engine's own key check at the start of Install Diablo II; the key page then says why under the field (KeyProblems). -->
+    <string name="failure_d2_key_check">The Diablo II key is not correct. Check the key and Try again.</string>
+    <string name="failure_lod_key_check">The Lord of Destruction key is not correct. Check the key and Try again.</string>
     <string name="failure_installer">Blizzard\'s installer stopped with an error. Check both CD keys and Try again.</string>
     <string name="failure_install">The install didn\'t finish. Try again. What is already downloaded is kept.</string>
     <!-- The game environment did not start for the install: the session service's reason. -->

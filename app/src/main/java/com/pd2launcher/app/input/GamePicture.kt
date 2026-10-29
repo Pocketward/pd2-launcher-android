@@ -95,10 +95,11 @@ enum class GamePicture {
 
 /**
  * [GamePicture] samples into a steady answer: the first known picture at once, a change only
- * after [needed] samples in a row agree, [GamePicture.UNKNOWN] never (it keeps what was). It can
- * start from a picture steadied before ([initial]), which then changes as any other.
+ * after [needed] samples in a row agree ([leaveMenu] for a change away from [GamePicture.MENU]),
+ * [GamePicture.UNKNOWN] never (it keeps what was). It can start from a picture steadied before
+ * ([initial]), which then changes as any other.
  */
-class PictureDebounce(initial: GamePicture = GamePicture.UNKNOWN, private val needed: Int = 3) {
+class PictureDebounce(initial: GamePicture = GamePicture.UNKNOWN, private val needed: Int = 3, private val leaveMenu: Int = needed) {
     var current: GamePicture = initial
         private set
     private var candidate: GamePicture = GamePicture.UNKNOWN
@@ -112,7 +113,7 @@ class PictureDebounce(initial: GamePicture = GamePicture.UNKNOWN, private val ne
         } else {
             count = if (picture == candidate) count + 1 else 1
             candidate = picture
-            if (count >= needed) {
+            if (count >= (if (current == GamePicture.MENU) leaveMenu else needed)) {
                 current = picture
                 count = 0
             }

@@ -95,9 +95,12 @@
     <!-- Step 2: Diablo II source. -->
     <string name="source_title">Diablo II source</string>
     <string name="source_intro">Project Diablo 2 needs Diablo II and Lord of Destruction. Choose where they come from.</string>
-    <string name="source_blizzard">Download</string>
-    <string name="source_blizzard_body">Diablo II and Lord of Destruction from Blizzard (about 2 GB), and Project Diablo 2 from Project Diablo 2. Your CD keys come in Install.</string>
-    <string name="source_existing">Import an existing installation</string>
+    <!-- The page's three options, in this order; Fast download is the default. -->
+    <string name="source_fast">Fast download</string>
+    <string name="source_fast_body">The quickest way. Diablo II and Lord of Destruction come straight from Blizzard (about 2 GB). Your CD keys come next.</string>
+    <string name="source_blizzard">Blizzard\'s installers</string>
+    <string name="source_blizzard_body">Blizzard\'s own installers run in the app. This takes longer. Your CD keys come next.</string>
+    <string name="source_existing">Use files you have</string>
     <string name="source_existing_body">Copy your Diablo II folder from your PC to this device, then choose it here. It will be copied into the app.</string>
     <string name="source_existing_pick_action">Choose Diablo II folder</string>
     <string name="source_continue">Continue</string>

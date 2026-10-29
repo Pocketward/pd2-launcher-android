@@ -75,6 +75,9 @@ internal fun CustomSizeInput(current: Pair<Int, Int>?, display: Pair<Int, Int>, 
         DisposableEffect(window) {
             window?.setGravity(Gravity.TOP)
             window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE or WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
+            // As the Frame rate input: it shows and goes at once, and the screen behind it is not dimmed (its panel is opaque).
+            window?.setWindowAnimations(0)
+            window?.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
             // A controller's A selects and B is Back here too.
             val base = window?.let(::withNavigationKeys)
             onDispose { if (window != null && base != null) window.callback = base }

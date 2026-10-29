@@ -78,14 +78,26 @@ class PadInput(
         onMode(mouseMode)
     }
 
-    private val held = HashSet<PadButton>() // digital buttons down
-    private var axes = PadAxes()
-    private var chordFormed = false // both chord buttons went down together and neither went up yet
-    private var chordHeldMs = 0L
-    private var chordMenu = false // this chord opened the menu: its release does not switch the mode
-    private val inChord = HashSet<PadButton>() // chord buttons that were part of a chord, until released
-    private val heldBack = HashMap<PadButton, Long>() // pad-bound chord buttons held alone, not shown yet: ms so far
-    private val tapped = HashMap<PadButton, Long>() // ones let go while held back, shown as a press: ms so far
+    private class PhysicalPad {
+        val held = HashSet<PadButton>()
+        var axes = PadAxes()
+        var chordFormed = false
+        var chordHeldMs = 0L
+        var chordMenu = false
+        val inChord = HashSet<PadButton>()
+        val heldBack = HashMap<PadButton, Long>()
+        val tapped = HashMap<PadButton, Long>()
+
+        fun resetChord() {
+            chordFormed = false
+            chordMenu = false
+            inChord.clear()
+            heldBack.clear()
+            tapped.clear()
+        }
+    }
+
+    private val physical = linkedMapOf<Int, PhysicalPad>()
     private var sent: PadState? = null
     private var virtual = PadState.NEUTRAL
     // The scripted controller's buttons and axes (debug builds' pad injector; [onScripted]).
@@ -103,33 +115,34 @@ class PadInput(
      * A controller key; returns false for a key this class does not map (the caller still
      * consumes every key from a gamepad, so none reaches Android's Back).
      */
-    fun onKey(keyCode: Int, down: Boolean): Boolean {
+    fun onKey(deviceId: Int, keyCode: Int, down: Boolean): Boolean {
         val button = PadButton.of(keyCode) ?: return false
+        val source = physical[deviceId] ?: if (down) PhysicalPad().also { physical[deviceId] = it } else return true
         val mode = mouseMode
         val out = ArrayList<RelayEvent>()
-        val was = button in held
-        if (down) held += button else held -= button
+        val was = button in source.held
+        if (down) source.held += button else source.held -= button
         val chord = controls.chord
         if (button == chord.first || button == chord.second) {
             val other = if (button == chord.first) chord.second else chord.first
-            if (down && !was && other in held) {
-                chordFormed = true
-                chordHeldMs = 0
-                chordMenu = false
-                inChord += button
-                inChord += other
-                heldBack.remove(other)
+            if (down && !was && other in source.held) {
+                source.chordFormed = true
+                source.chordHeldMs = 0
+                source.chordMenu = false
+                source.inChord += button
+                source.inChord += other
+                source.heldBack.remove(other)
             } else if (down && !was && controls.action(button, mouseMode) == PadAction.Pad) {
-                heldBack[button] = 0
+                source.heldBack[button] = 0
             } else if (!down && was) {
-                if (heldBack.remove(button) != null) tapped[button] = 0
-                if (chordFormed) {
-                    chordFormed = false
-                    if (!chordMenu) toggle()
-                } else if (button !in inChord) {
+                if (source.heldBack.remove(button) != null) source.tapped[button] = 0
+                if (source.chordFormed) {
+                    source.chordFormed = false
+                    if (!source.chordMenu) toggle()
+                } else if (button !in source.inChord) {
                     tapAction(controls.action(button, mouseMode), out)
                 }
-                inChord -= button
+                source.inChord -= button
             }
         }
         update(out)
@@ -166,8 +179,8 @@ class PadInput(
     }
 
     /** New axis values from a joystick motion event. */
-    fun onAxes(next: PadAxes) {
-        axes = next
+    fun onAxes(deviceId: Int, next: PadAxes) {
+        physical.getOrPut(deviceId) { PhysicalPad() }.axes = next
         val out = ArrayList<RelayEvent>()
         update(out)
         flush(out)
@@ -181,18 +194,24 @@ class PadInput(
      */
     fun tick(elapsedMs: Long) {
         if (elapsedMs <= 0) return
-        if (age(heldBack, elapsedMs) or age(tapped, elapsedMs)) {
+        var changed = false
+        var openMenu = false
+        for (source in physical.values) {
+            changed = age(source.heldBack, elapsedMs) or age(source.tapped, elapsedMs) or changed
+            if (source.chordFormed && !source.chordMenu) {
+                source.chordHeldMs += elapsedMs
+                if (source.chordHeldMs >= MENU_HOLD_MS) {
+                    source.chordMenu = true
+                    openMenu = true
+                }
+            }
+        }
+        if (changed) {
             val out = ArrayList<RelayEvent>()
             update(out)
             flush(out)
         }
-        if (chordFormed && !chordMenu) {
-            chordHeldMs += elapsedMs
-            if (chordHeldMs >= MENU_HOLD_MS) {
-                chordMenu = true
-                onMenu()
-            }
-        }
+        if (openMenu) onMenu()
         if (!mouseMode) return
         val axes = axesNow()
         val seconds = elapsedMs / 1000f
@@ -214,7 +233,9 @@ class PadInput(
      * Game view runs no display-frame clock for it (each display frame woke the main thread).
      */
     val ticking: Boolean
-        get() = heldBack.isNotEmpty() || tapped.isNotEmpty() || (chordFormed && !chordMenu) ||
+        get() = physical.values.any {
+            it.heldBack.isNotEmpty() || it.tapped.isNotEmpty() || (it.chordFormed && !it.chordMenu)
+        } ||
             (mouseMode && axesNow().let { deflected(it.lx, it.ly) || deflected(it.rx, it.ry) })
 
     /**
@@ -225,21 +246,35 @@ class PadInput(
      * controller's ([onScripted]), which the Game view lets go itself.
      */
     fun releaseAll() {
-        held.clear()
-        axes = PadAxes()
-        resetChord()
+        physical.clear()
         val out = ArrayList<RelayEvent>()
         update(out)
         flush(out)
     }
 
-    private fun resetChord() {
-        chordFormed = false
-        chordMenu = false
-        inChord.clear()
-        heldBack.clear()
-        tapped.clear()
+    /** A removed or cancelled device releases only its own physical input, without completing a chord. */
+    fun removeDevice(deviceId: Int) {
+        if (physical.remove(deviceId) == null) return
+        val out = ArrayList<RelayEvent>()
+        update(out)
+        flush(out)
     }
+
+    /**
+     * A cancelled motion of [deviceId] (focus lost, the device reset): its sticks, triggers and
+     * hat rest, as the game would keep their last values; its buttons stay as they are (their own
+     * key events let go of them), and so does every other device's input.
+     */
+    fun resetAxes(deviceId: Int) {
+        val source = physical[deviceId] ?: return
+        if (source.axes == AT_REST) return
+        source.axes = AT_REST
+        val out = ArrayList<RelayEvent>()
+        update(out)
+        flush(out)
+    }
+
+    private fun resetChord() = physical.values.forEach { it.resetChord() }
 
     /** Adds [elapsedMs] to each of [waits]; removes those that reached [CHORD_WINDOW_MS] and says whether any did. */
     private fun age(waits: MutableMap<PadButton, Long>, elapsedMs: Long): Boolean {
@@ -255,13 +290,14 @@ class PadInput(
         restY = 0f
     }
 
-    /** The real controller's axes with the scripted one's ([combine]); the real ones while it rests. */
-    private fun axesNow(): PadAxes = if (scriptedAxes == AT_REST) axes else combine(axes, scriptedAxes)
+    private fun axesNow(): PadAxes {
+        val axes = physical.values.fold(AT_REST) { axes, source -> combine(axes, source.axes) }
+        return if (scriptedAxes == AT_REST) axes else combine(axes, scriptedAxes)
+    }
 
-    /** Every button pressed now: keys, triggers past half way and the hat as the d-pad. */
-    private fun pressed(): Set<PadButton> = buildSet {
-        val axes = axesNow()
-        addAll(held)
+    private fun pressed(source: PhysicalPad): Set<PadButton> = buildSet {
+        val axes = source.axes
+        addAll(source.held)
         if (axes.leftTrigger >= TRIGGER_PRESSED) add(PadButton.L2)
         if (axes.rightTrigger >= TRIGGER_PRESSED) add(PadButton.R2)
         if (axes.hatX <= -HAT_PRESSED) add(PadButton.LEFT)
@@ -277,10 +313,18 @@ class PadInput(
      */
     private fun holding(): Set<PadButton> {
         val chord = controls.chord
-        return (pressed() + tapped.keys).filterTo(HashSet()) { button ->
-            val chordButton = button == chord.first || button == chord.second
-            button !in inChord && button !in heldBack && (!chordButton || controls.action(button, mouseMode) == PadAction.Pad)
-        }.apply { addAll(scriptedButtons) }
+        return buildSet {
+            for (source in physical.values) {
+                (pressed(source) + source.tapped.keys).filterTo(this) { button ->
+                    val chordButton = button == chord.first || button == chord.second
+                    button !in source.inChord && button !in source.heldBack &&
+                        (!chordButton || controls.action(button, mouseMode) == PadAction.Pad)
+                }
+            }
+            addAll(scriptedButtons)
+            if (scriptedAxes.leftTrigger >= TRIGGER_PRESSED) add(PadButton.L2)
+            if (scriptedAxes.rightTrigger >= TRIGGER_PRESSED) add(PadButton.R2)
+        }
     }
 
     /** Brings X's keys and buttons in line with what is held now; a new press of a wheel binding clicks. */
@@ -338,7 +382,7 @@ class PadInput(
         val axes = axesNow()
         fun triggerOf(button: PadButton, value: Float): Int = when {
             controls.action(button, mouse = false) != PadAction.Pad -> 0
-            button in held || button in scriptedButtons -> 255
+            physical.values.any { button in it.held } || button in scriptedButtons -> 255
             else -> trigger(value)
         }
         return PadState(

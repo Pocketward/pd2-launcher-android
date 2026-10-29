@@ -59,6 +59,8 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.SecureFlagPolicy
 import com.pd2launcher.app.BuildConfig
 import com.pd2launcher.app.DebugKeys
+import com.pd2launcher.app.KeyProblem
+import com.pd2launcher.app.Line
 import com.pd2launcher.app.R
 import com.pd2launcher.app.control.isProductKeyChar
 import kotlinx.coroutines.delay
@@ -106,16 +108,40 @@ fun KeysScreen(
      * to show the page while typing; they are still never filled with the debug keys.
      */
     typingPreview: Boolean = false,
+    /**
+     * The key the engine refused, and why: a red line under its field and a red outline, until
+     * the player changes that key. Agree and install waits until then.
+     */
+    keyProblem: KeyProblem? = null,
+    /**
+     * The keys the engine refused, to put back in the fields (called once): the player corrects
+     * only the wrong one. The page clears them once they are in the fields.
+     */
+    refill: (() -> Pair<CharArray, CharArray>?)? = null,
+    /**
+     * Download while the keys are typed ([com.pd2launcher.app.KeysWhileDownloading.line]): how
+     * far it is, or that it stopped; then [onRetryDownload] starts it again. The page stays usable
+     * either way.
+     */
+    download: Line? = null,
+    onRetryDownload: (() -> Unit)? = null,
 ) {
     val activity = LocalContext.current as Activity
     // The fields hold the keys; Compose state holds only whether both look like keys.
     val fields = remember { arrayOfNulls<EditText>(2) }
     if (!layoutPreview) KeepSecure()
+    val refilled = remember { if (layoutPreview) null else refill?.invoke() }
     DisposableEffect(Unit) {
-        onDispose { fields.forEach { it?.takeKey()?.fill('\u0000') } }
+        onDispose {
+            fields.forEach { it?.takeKey()?.fill('\u0000') }
+            refilled?.let { (d2, lod) -> d2.fill('\u0000'); lod.fill('\u0000') }
+        }
     }
     val valid = remember { BooleanArray(2) }
-    var ready by remember { mutableStateOf(false) }
+    var refused by remember(keyProblem) { mutableStateOf(keyProblem) }
+    var looksRight by remember { mutableStateOf(false) }
+    // A refused key waits until the player changes it: the same key would be refused again.
+    val ready = looksRight && refused == null
     var reveal by remember { mutableStateOf(false) }
     var terms by remember { mutableStateOf(false) }
     val first = remember { FocusRequester() }
@@ -161,11 +187,19 @@ fun KeysScreen(
         onBack = onBack,
         backButton = true,
         lead = {
+            // Download, which runs while the keys are typed: one small line, with Try again when
+            // it stopped or failed.
+            download?.let {
+                Text(
+                    text(it), style = Type.Hint, color = if (onRetryDownload != null) Palette.Amber else Palette.Muted,
+                    modifier = Modifier.padding(bottom = if (onRetryDownload != null) 0.dp else 12.dp),
+                )
+            }
+            onRetryDownload?.let { TextLink(stringResource(R.string.action_try_again), it, Modifier.padding(bottom = 4.dp)) }
             GroupLabel(stringResource(R.string.keys_where_label), Modifier.padding(top = 0.dp))
             Text(stringResource(R.string.keys_where), style = Type.Body, color = Palette.Text)
             GroupLabel(stringResource(R.string.keys_example_label))
             Text(stringResource(R.string.keys_example), style = Type.Body.copy(fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace), color = Palette.Muted)
-            Text(stringResource(R.string.keys_example_old), style = Type.Hint, color = Palette.Faint, modifier = Modifier.padding(top = 2.dp))
             TextLink(stringResource(R.string.keys_terms_link), { terms = true }, Modifier.padding(top = 8.dp))
         },
         action = { CornerPill(stringResource(if (resuming) R.string.keys_resume else R.string.keys_install), install, Kind.PRIMARY, enabled = ready) },
@@ -180,6 +214,8 @@ fun KeysScreen(
                     AndroidView(
                         factory = { context ->
                             lateinit var field: EditText
+                            // The refused key put back in the field is not a change by the player.
+                            var filling = false
                             field = keyField(
                                 context, label, example, last = index == labels.lastIndex,
                                 onFocus = { has -> if (has) focused = index else if (focused == index) focused = -1 },
@@ -188,7 +224,8 @@ fun KeysScreen(
                                 // wiped below).
                                 if (fields[index] === field) {
                                     valid[index] = looksLikeKey
-                                    ready = valid.all { it }
+                                    looksRight = valid.all { it }
+                                    if (!filling && refused?.field == index) refused = null
                                 }
                             }
                             field.setOnEditorActionListener { _, _, event ->
@@ -204,8 +241,14 @@ fun KeysScreen(
                                 true
                             }
                             fields[index] = field
+                            val again = refilled?.let { (d2, lod) -> if (index == 0) d2 else lod }
                             if (layoutPreview) {
                                 field.isEnabled = typingPreview
+                            } else if (again != null) {
+                                filling = true
+                                field.setText(CharBuffer.wrap(again))
+                                filling = false
+                                again.fill('\u0000')
                             } else if (BuildConfig.DEBUG) {
                                 // Debug builds pre-fill the keys a developer pushed
                                 // ([DebugKeys]); no APK carries any.
@@ -219,14 +262,20 @@ fun KeysScreen(
                         update = { field ->
                             val method = if (reveal) HideReturnsTransformationMethod.getInstance() else PasswordTransformationMethod.getInstance()
                             if (field.transformationMethod !== method) field.transformationMethod = method
+                            field.markRefused(refused?.field == index)
                         },
                         // A layout change (rotation) makes new fields: the old ones are wiped.
                         onRelease = { old -> old.takeKey().fill('\u0000') },
                         modifier = Modifier.fillMaxWidth(),
                     )
+                    // Why the engine refused this key, never the key itself.
+                    refused?.takeIf { it.field == index }?.let {
+                        Text(stringResource(it.text), style = Type.Hint, color = Palette.Red)
+                    }
                     // Under the last key, beside what accepts it (the pill, or the keyboard's Done):
-                    // why Agree and install waits, else the license notice it accepts.
-                    if (index == labels.lastIndex) {
+                    // why Agree and install waits, else the license notice it accepts. Not while
+                    // a refused key waits to be changed: its red line says what to do.
+                    if (index == labels.lastIndex && refused == null) {
                         Text(
                             stringResource(keysLine(ready)), style = Type.Hint, color = if (ready) Palette.Muted else Palette.Amber,
                             modifier = Modifier.padding(top = 4.dp),
@@ -386,19 +435,18 @@ private fun keyField(
     setTextColor(Palette.Text.toArgb())
     textSize = 15f
     letterSpacing = 0.05f
-    // A rounded 52 dp slot; the outline turns teal with focus.
+    // A rounded 52 dp slot; the outline turns teal with focus, red for a refused key.
     val density = resources.displayMetrics.density
-    val outline = GradientDrawable().apply {
+    background = GradientDrawable().apply {
         cornerRadius = 12 * density
         setColor(Palette.Surface.toArgb())
-        setStroke((1 * density).toInt(), Palette.Rule.toArgb())
     }
-    background = outline
+    paintOutline()
     minHeight = (52 * density).toInt()
     val inset = (14 * density).toInt()
     setPadding(inset, 0, inset, 0)
     setOnFocusChangeListener { _, focused ->
-        outline.setStroke(((if (focused) 2 else 1) * density).toInt(), (if (focused) Palette.Teal else Palette.Rule).toArgb())
+        paintOutline()
         onFocus(focused)
     }
     addTextChangedListener(object : TextWatcher {
@@ -408,6 +456,26 @@ private fun keyField(
             onChange(s.isNotEmpty() && (0 until s.length).all { isProductKeyChar(s[it]) })
         }
     })
+}
+
+/** Marks the key field as refused by the engine (a red outline) or not. */
+private fun EditText.markRefused(refused: Boolean) {
+    if (tag == refused) return
+    tag = refused
+    paintOutline()
+}
+
+/** The key field's outline: red while refused ([markRefused]), else teal with focus, else the rule. */
+private fun EditText.paintOutline() {
+    val density = resources.displayMetrics.density
+    val refused = tag == true
+    val color = when {
+        refused -> Palette.Red
+        isFocused -> Palette.Teal
+        else -> Palette.Rule
+    }
+    val width = if (refused || isFocused) 2 else 1
+    (background as? GradientDrawable)?.setStroke((width * density).toInt(), color.toArgb())
 }
 
 /** The field's characters, without a String; the field is overwritten and emptied. */

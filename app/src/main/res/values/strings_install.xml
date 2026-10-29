@@ -18,6 +18,14 @@
     <string name="install_stage_blizzard_download">Downloading game files from Blizzard</string>
     <string name="install_stage_d2_installer">Running the Diablo II installer</string>
     <string name="install_stage_lod_installer">Running the Lord of Destruction installer</string>
+    <!-- Download, which the keys joined: the first task of Install (its row, the title while it runs, what it does). -->
+    <string name="install_task_installers">Get the installers ready</string>
+    <string name="install_title_installers">Getting the installers ready</string>
+    <string name="install_stage_installers">Downloading Blizzard\'s small downloaders and Project Diablo 2\'s files</string>
+    <!-- Fast download: one download brings both games, then the app installs each without an installer program. -->
+    <string name="install_stage_fast_download">Downloading Diablo II and Lord of Destruction from Blizzard</string>
+    <string name="install_stage_d2_files">Installing the Diablo II files</string>
+    <string name="install_stage_lod_files">Installing the Lord of Destruction files</string>
     <string name="install_stage_pd2_installer">Running the Project Diablo 2 installer</string>
     <!-- The game environment's running part, its place and how many parts this setup runs. -->
     <string name="install_part_windows">Setting up Windows (%1$d of %2$d)</string>

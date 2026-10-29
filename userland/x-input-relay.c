@@ -162,10 +162,20 @@ static void key(KeySym sym, int down) {
         fprintf(stderr, "x-input-relay: keysym 0x%lx is on no key and no keycode is spare\n", sym);
         return;
     }
-    KeyCode shift_code = shift ? XKeysymToKeycode(display, XK_Shift_L) : 0;
-    if (shift_code && down) XTestFakeKeyEvent(display, shift_code, True, CurrentTime);
+    KeyCode borrowed_shift = 0;
+    if (shift && down) {
+        KeyCode left = XKeysymToKeycode(display, XK_Shift_L);
+        KeyCode right = XKeysymToKeycode(display, XK_Shift_R);
+        char held[32];
+        XQueryKeymap(display, held);
+        int left_down = left && (held[left / 8] & (1 << (left % 8)));
+        int right_down = right && (held[right / 8] & (1 << (right % 8)));
+        /* A keymap with no Shift_L key borrows Shift_R. */
+        if (!left_down && !right_down) borrowed_shift = left ? left : right;
+    }
+    if (borrowed_shift) XTestFakeKeyEvent(display, borrowed_shift, True, CurrentTime);
     XTestFakeKeyEvent(display, code, down ? True : False, CurrentTime);
-    if (shift_code && down) XTestFakeKeyEvent(display, shift_code, False, CurrentTime);
+    if (borrowed_shift) XTestFakeKeyEvent(display, borrowed_shift, False, CurrentTime);
 }
 
 /* A window can go between listing it and reading its attributes: that BadWindow is no error. */

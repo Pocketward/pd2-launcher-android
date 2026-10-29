@@ -22,6 +22,7 @@ object SettingsLog {
         append(", show fps ").append(onOff(app.showFps))
         append(", app update checks ").append(onOff(app.updateChecks))
         append(", detailed logging ").append(onOff(app.detailedLogging))
+        append(", save sync ").append(onOff(app.syncFolder != null))
         append("; engine: ")
         if (launcher == null) {
             append("not known yet")

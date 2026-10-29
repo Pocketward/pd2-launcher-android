@@ -1,8 +1,8 @@
 # Checks of every push to main and every pull request: `build.sh check` compiles
 # the debug APK in the pinned build container and runs the release build's lint
-# check (lintVitalRelease), which release.yml's build leaves out. It needs no
-# engine, userland or runtime; release.yml builds the full APK. The build image is
-# cached by its Containerfile, as in release.yml.
+# check (lintVitalRelease). Checks needs no engine, userland or runtime.
+# release.yml builds the full APK and also requires lint before APK export.
+# The build image is cached by its Containerfile, as in release.yml.
 name: Checks
 
 on:

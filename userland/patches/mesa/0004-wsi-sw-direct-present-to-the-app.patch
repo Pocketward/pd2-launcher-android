@@ -16,7 +16,7 @@
     WSI_GET_CB(GetPhysicalDeviceCalibrateableTimeDomainsKHR);
     WSI_GET_CB(GetPhysicalDeviceProperties);
     WSI_GET_CB(GetPhysicalDeviceFormatProperties);
-@@ -2759,10 +2761,17 @@ wsi_common_queue_present(const struct wsi_device *wsi,
+@@ -2777,10 +2779,17 @@ wsi_common_queue_present(const struct wsi_device *wsi,
           }
  
           if (swapchain->blit.type != WSI_SWAPCHAIN_NO_BLIT) {

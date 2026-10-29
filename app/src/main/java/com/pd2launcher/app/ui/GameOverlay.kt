@@ -3,15 +3,9 @@ package com.pd2launcher.app.ui
 import android.os.SystemClock
 import android.view.KeyEvent
 import androidx.annotation.DrawableRes
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.IndicationNodeFactory
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -19,7 +13,9 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.InteractionSource
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.relocation.BringIntoViewRequester
@@ -51,7 +47,6 @@ import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -69,8 +64,12 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.ContentDrawScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.node.DelegatableNode
+import androidx.compose.ui.node.DrawModifierNode
+import androidx.compose.ui.node.invalidateDraw
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
@@ -91,9 +90,13 @@ import com.pd2launcher.app.GameDisplay
 import com.pd2launcher.app.LauncherStart
 import com.pd2launcher.app.R
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
-/** The slim menu glyph over the game: clear at first, then a quiet 30 %. */
+/**
+ * The slim menu glyph over the game: clear at first, then a quiet 30 % after 2.5 s, at once (a
+ * fade would draw the screen again for each of its steps, over the game).
+ */
 @Composable
 internal fun MenuGlyph(modifier: Modifier, onClick: () -> Unit) {
     val label = stringResource(R.string.game_view_menu)
@@ -102,7 +105,7 @@ internal fun MenuGlyph(modifier: Modifier, onClick: () -> Unit) {
         delay(2500)
         faded = true
     }
-    val a by animateFloatAsState(if (faded) 0.3f else 0.95f, tween(900), label = "glyph")
+    val a = if (faded) 0.3f else 0.95f
     Box(
         modifier.padding(6.dp).size(48.dp).alpha(a).clip(CircleShape)
             .clickable(role = Role.Button, onClick = onClick)
@@ -142,10 +145,11 @@ internal fun FpsCounter(fps: () -> FpsReading?, modifier: Modifier) {
 }
 
 /**
- * "Starting the official PD2 launcher…" under a spinner in the middle of the black X screen while
- * the launcher starts ([LauncherStart]), in the fps counter's style; from [LauncherStart.SLOW_MS]
- * after [since] (elapsed real time) a second line says that the launcher can take a minute to
- * start on slower phones. It takes no touch.
+ * "Starting the official PD2 launcher…" in the middle of the black X screen while the launcher
+ * starts ([LauncherStart]), in the fps counter's style, with no spinner (one would draw the screen
+ * again at each of its frames, over the game); from [LauncherStart.SLOW_MS] after [since]
+ * (elapsed real time) a second line says that the launcher can take a minute to start on slower
+ * phones. It takes no touch.
  */
 @Composable
 internal fun LauncherStartingNotice(since: Long, modifier: Modifier) {
@@ -159,11 +163,7 @@ internal fun LauncherStartingNotice(since: Long, modifier: Modifier) {
             .padding(horizontal = 16.dp, vertical = 12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 3.dp, color = Palette.Teal, trackColor = Palette.Rule)
-        Text(
-            stringResource(R.string.launcher_starting), style = Type.Body, color = Palette.Text, textAlign = TextAlign.Center,
-            modifier = Modifier.padding(top = 10.dp),
-        )
+        Text(stringResource(R.string.launcher_starting), style = Type.Body, color = Palette.Text, textAlign = TextAlign.Center)
         if (slow) {
             Text(
                 stringResource(R.string.launcher_starting_slow), style = Type.Hint, color = Palette.Muted, textAlign = TextAlign.Center,
@@ -316,6 +316,47 @@ internal const val UNSEEN_TAG = "unseen"
 internal fun Modifier.takesTouches(): Modifier = pointerInput(Unit) { awaitEachGesture { awaitFirstDown(requireUnconsumed = false) } }
 
 /**
+ * The press mark of the overlays over the game ([GameView] gives it to them, and to the dialogs
+ * they open, as [LocalIndication]): a plain [Palette.Pressed] tint while a finger or a key presses
+ * a control, with no animation. Material's ripple spreads and fades, a new frame for each of its
+ * steps, over the game. Focus and hover draw nothing here: the controls mark the focus themselves
+ * ([focusMark]). The app's screens outside the game keep the ripple.
+ */
+internal object PressTint : IndicationNodeFactory {
+    override fun create(interactionSource: InteractionSource): DelegatableNode = PressTintNode(interactionSource)
+    override fun equals(other: Any?): Boolean = other === this
+    override fun hashCode(): Int = System.identityHashCode(this)
+}
+
+private class PressTintNode(private val source: InteractionSource) : Modifier.Node(), DrawModifierNode {
+    private var pressed = false
+
+    override fun onAttach() {
+        coroutineScope.launch {
+            // The presses in progress: a new one can start before the last one ends.
+            val presses = mutableListOf<PressInteraction.Press>()
+            source.interactions.collect { interaction ->
+                when (interaction) {
+                    is PressInteraction.Press -> presses += interaction
+                    is PressInteraction.Release -> presses -= interaction.press
+                    is PressInteraction.Cancel -> presses -= interaction.press
+                }
+                if (presses.isNotEmpty() != pressed) {
+                    pressed = presses.isNotEmpty()
+                    invalidateDraw()
+                }
+            }
+        }
+    }
+
+    override fun ContentDrawScope.draw() {
+        // Over the control's own fill, under its label and icon.
+        if (pressed) drawRect(Palette.Pressed)
+        drawContent()
+    }
+}
+
+/**
  * The in-game menu: one panel at the right edge, no scrim; the game stays live beside it and
  * never pauses, its on-screen controls too (with Slower game in the background on, the game is
  * in the background meanwhile, [GameLayer.suspends], and the on-screen controls show dimmed and
@@ -327,8 +368,8 @@ internal fun Modifier.takesTouches(): Modifier = pointerInput(Unit) { awaitEachG
  * settings that apply at once, then a quiet Stop game, which asks in place first ([asking]; the
  * Game view hides the on-screen controls meanwhile). Both tabs share one size ([MenuSize]),
  * so nothing moves when the tab changes. While Android's keyboard is up the menu keeps above it
- * and scrolls if it must. Back, ✕ or a tap on the game closes it. It slides in and out at the
- * screen's edge; [fades]: it only fades, to and from the Controls screen. [onPanelHeight]: its panel's height
+ * and scrolls if it must. Back, ✕ or a tap on the game closes it. It shows and goes at once, with
+ * no slide or fade: the tap must open it at once. [onPanelHeight]: its panel's height
  * in px, for the Controls screen's strip ([ControlsScreen]).
  */
 @Composable
@@ -342,13 +383,9 @@ internal fun BoxScope.GameMenu(
     actions: MenuActions,
     focusTab: Int,
     onPanelHeight: (Int) -> Unit,
-    fades: Boolean = false,
 ) {
-    AnimatedVisibility(
-        visible, Modifier.align(Alignment.CenterEnd),
-        enter = if (fades) fadeIn() else slideInHorizontally { it } + fadeIn(),
-        exit = if (fades) fadeOut() else slideOutHorizontally { it } + fadeOut(),
-    ) {
+    // Composed while visible only, so it shows and goes in the frame that changes the layer.
+    if (visible) {
         val items = MenuItems.of(state.launcher)
         val quick = remember { FocusRequester() }
         val settings = remember { FocusRequester() }
@@ -357,7 +394,10 @@ internal fun BoxScope.GameMenu(
         LaunchedEffect(focusTab) {
             if (focusTab > 0) runCatching { (if (tab == MenuTab.QUICK) quick else settings).requestFocus() }
         }
-        BoxWithConstraints(Modifier.windowInsetsPadding(WindowInsets.safeDrawing).fillMaxHeight(), contentAlignment = Alignment.CenterEnd) {
+        BoxWithConstraints(
+            Modifier.align(Alignment.CenterEnd).windowInsetsPadding(WindowInsets.safeDrawing).fillMaxHeight(),
+            contentAlignment = Alignment.CenterEnd,
+        ) {
             Panel(
                 Modifier.padding(MenuSize.INSET).onSizeChanged { onPanelHeight(it.height) }
                     .heightIn(max = (maxHeight - MenuSize.INSET * 2).coerceAtLeast(0.dp))

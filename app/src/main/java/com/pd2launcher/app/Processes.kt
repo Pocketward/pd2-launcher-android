@@ -50,8 +50,18 @@ object OwnedProcesses : UserlandProcesses {
  * into the process's own [RotatingLog] in [logs], and
  * every start and exit is logged with pid, name and status or signal, both in that log and
  * in [serviceLog].
+ *
+ * Debug builds: when [harness] gives a program (the seccomp test harness, `seccomp-run`), each
+ * process starts under it, `seccomp-run --notify <path> <argv after argv[0]>`: the process and
+ * all it starts run under the app seccomp policy of the harness's allowlist, and the harness's
+ * own lines (`seccomp-run: BLOCKED ...`, one for each blocked call) also go to logcat with the tag
+ * [HARNESS_TAG]. The harness passes signals on to the process; the process's argv[0] is [path].
  */
-class ProcessStarter(private val logs: File, private val serviceLog: RotatingLog) {
+class ProcessStarter(
+    private val logs: File,
+    private val serviceLog: RotatingLog,
+    private val harness: () -> File? = { null },
+) {
     private val lock = Any()
     /**
      * One log per name: a process started again under a name (the engine after a restart, each
@@ -75,6 +85,16 @@ class ProcessStarter(private val logs: File, private val serviceLog: RotatingLog
         mirror: ((String) -> Unit)? = null,
         onExit: (OwnedProcess, ExitStatus) -> Unit = { _, _ -> },
     ): OwnedProcess {
+        val wrapper = harness()
+        val (program, arguments) = if (wrapper == null) path to argv else wrapper.path to listOf(wrapper.path, "--notify", path) + argv.drop(1)
+        val lines: ((String) -> Unit)? = if (wrapper == null) {
+            mirror
+        } else {
+            { line ->
+                if (line.startsWith(HARNESS_LINE)) Log.w(HARNESS_TAG, "$name: $line")
+                mirror?.invoke(line)
+            }
+        }
         val log = synchronized(lock) { logsByName.getOrPut(name) { RotatingLog(logs, name) } }
         val pipe = ParcelFileDescriptor.createPipe()
         val devNull = if (stdin == null) ParcelFileDescriptor.open(File("/dev/null"), ParcelFileDescriptor.MODE_READ_ONLY) else null
@@ -84,7 +104,7 @@ class ProcessStarter(private val logs: File, private val serviceLog: RotatingLog
             // Held until the process is registered, so its exit cannot be handled first.
             synchronized(lock) {
                 var started: OwnedProcess? = null
-                val pid = Spawner.spawn(path, argv, env, stdin ?: devNull!!, pipe[1], fd3) { status ->
+                val pid = Spawner.spawn(program, arguments, env, stdin ?: devNull!!, pipe[1], fd3) { status ->
                     synchronized(lock) { OwnedProcesses.remove(started?.pid ?: -1) }
                     // The exit is handled whatever the logging does: the spawner drops an
                     // exception here, and with it the exit, so the engine would show as running.
@@ -112,11 +132,11 @@ class ProcessStarter(private val logs: File, private val serviceLog: RotatingLog
             pipe[1].close()
             devNull?.close()
         }
-        val line = "start pid=${process.pid} name=$name: ${argv.joinToString(" ")}"
+        val line = "start pid=${process.pid} name=$name: ${arguments.joinToString(" ")}"
         log.line(line)
         serviceLog.line(line)
         Log.i(TAG, line)
-        Thread({ drain(pipe[0], log, drained, mirror?.let(::LineSplitter)) }, "pd2-log-$name").apply { isDaemon = true }.start()
+        Thread({ drain(pipe[0], log, drained, lines?.let(::LineSplitter)) }, "pd2-log-$name").apply { isDaemon = true }.start()
         return process
     }
 
@@ -141,6 +161,9 @@ class ProcessStarter(private val logs: File, private val serviceLog: RotatingLog
 
     companion object {
         private const val TAG = "pd2-processes"
+        /** The logcat tag of the seccomp test harness's lines (debug builds, [harness]). */
+        const val HARNESS_TAG = "pd2-seccomp"
+        private const val HARNESS_LINE = "seccomp-run:"
 
         fun describe(status: ExitStatus): String =
             if (status.signal != null) "signal=${status.signal}${signalName(status.signal)}" else "status=${status.code}"

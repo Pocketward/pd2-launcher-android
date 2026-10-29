@@ -1,8 +1,10 @@
 package com.pd2launcher.app
 
 import android.content.Context
+import android.content.SharedPreferences
 import com.pd2launcher.app.control.GraphicsDriver
 import com.pd2launcher.app.control.GraphicsProfile
+import com.pd2launcher.app.input.TouchMode
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -10,7 +12,7 @@ import kotlinx.coroutines.flow.asStateFlow
 /**
  * The Android app's own settings: kept in the app's preferences, not the Launcher's. Most are read
  * when the Game view opens or at Play, so a change takes effect on the next Play; the Game view
- * follows some live (Display, the frame rate, Show fps), as each one's KDoc says.
+ * follows some live (Display, the frame rate, Show fps, Touch), as each one's KDoc says.
  */
 data class AppSettings(
     /** The screen stays on while the Game view shows. */
@@ -48,7 +50,7 @@ data class AppSettings(
      * installed: that notice waits for it.
      */
     val gamePlayed: Boolean = false,
-    /** The app looks for a newer release of itself once a day ([AppUpdater]); off: only About's Check now. */
+    /** The app looks for a newer release of itself each hour while it is open ([AppUpdater]); off: only About's Check now. */
     val updateChecks: Boolean = true,
     /**
      * Detailed logging (Settings → App → Help): the game's and the official launcher's Wine
@@ -57,6 +59,24 @@ data class AppSettings(
      * player set it. Sent with each Play and each press of the official launcher.
      */
     val detailedLogging: Boolean = false,
+    /**
+     * Save sync (Settings → App → Game files, [SaveSyncFolder]): the
+     * folder the player picked, as its document tree's URI, which the app holds a lasting grant
+     * for; null: off (the default).
+     */
+    val syncFolder: String? = null,
+    /**
+     * The source page's row the player last selected (Fast download, Blizzard's installers or
+     * Use files you have): the page selects it again after a restart, before the engine's own
+     * default ([DiabloSource.pageChoice]); null: none selected yet (Fast download shows).
+     */
+    val sourceChoice: SourceChoice? = null,
+    /**
+     * How touch on the game moves the pointer ([TouchMode]): Trackpad, by the finger's moves (the
+     * default, also for a player who never picked one), or Direct, to the finger. The in-game
+     * Controls screen and Settings → Controller set it; the Game view follows it live.
+     */
+    val touchMode: TouchMode = TouchMode.TRACKPAD,
 ) {
     /**
      * Start over took the installation ([SetupRecord.NONE]): the downloads notice belongs to it,
@@ -97,6 +117,9 @@ data class AppSettings(
             GAME_PLAYED to gamePlayed,
             UPDATE_CHECKS to updateChecks,
             DETAILED_LOGGING to detailedLogging,
+            SYNC_FOLDER to syncFolder,
+            SOURCE_CHOICE to sourceChoice?.name,
+            TOUCH_MODE to touchMode.takeIf { it != TouchMode.TRACKPAD }?.name,
         )
 
     companion object {
@@ -126,6 +149,12 @@ data class AppSettings(
         const val GAME_PLAYED = "game_played"
         const val UPDATE_CHECKS = "update_checks"
         const val DETAILED_LOGGING = "detailed_logging"
+        /** [syncFolder]'s URI; none: the sync is off. */
+        const val SYNC_FOLDER = "sync_folder"
+        /** [sourceChoice]'s name; none: no row selected yet. */
+        const val SOURCE_CHOICE = "source_choice"
+        /** [touchMode]'s name; none: [TouchMode.TRACKPAD]. */
+        const val TOUCH_MODE = "touch_mode"
 
         /** "<width>x<height>" of positive whole numbers, else null. */
         private fun parseSize(text: String): Pair<Int, Int>? {
@@ -149,6 +178,9 @@ data class AppSettings(
                 gamePlayed = values[GAME_PLAYED] as? Boolean ?: defaults.gamePlayed,
                 updateChecks = values[UPDATE_CHECKS] as? Boolean ?: defaults.updateChecks,
                 detailedLogging = values[DETAILED_LOGGING] as? Boolean ?: defaults.detailedLogging,
+                syncFolder = (values[SYNC_FOLDER] as? String)?.takeIf { it.isNotEmpty() },
+                sourceChoice = SourceChoice.named(values[SOURCE_CHOICE] as? String),
+                touchMode = TouchMode.entries.firstOrNull { it.name == values[TOUCH_MODE] } ?: defaults.touchMode,
             )
         }
     }
@@ -157,17 +189,33 @@ data class AppSettings(
 /** [AppSettings] in the app's `app_settings` preferences, and as a flow the screens follow. */
 object AppSettingsStore {
     private const val PREFERENCES = "app_settings"
+    private val lock = Any()
     private val _current = MutableStateFlow(AppSettings())
 
-    /** The settings [load] read last, or the defaults before. */
+    /** The latest settings loaded or saved, or the defaults before. */
     val current: StateFlow<AppSettings> = _current.asStateFlow()
 
-    fun load(context: Context): AppSettings =
-        AppSettings.fromPreferences(context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).all)
-            .also { _current.value = it }
+    private fun preferences(context: Context): SharedPreferences =
+        context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
 
-    fun save(context: Context, settings: AppSettings) {
-        val editor = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).edit()
+    fun load(context: Context): AppSettings = load(preferences(context))
+
+    internal fun load(preferences: SharedPreferences): AppSettings = synchronized(lock) {
+        AppSettings.fromPreferences(preferences.all).also { _current.value = it }
+    }
+
+    /** Apply a field change to the latest settings and publish the persisted result as one operation. */
+    fun update(context: Context, transform: (AppSettings) -> AppSettings) = update(preferences(context), transform)
+
+    internal fun update(preferences: SharedPreferences, transform: (AppSettings) -> AppSettings) = synchronized(lock) {
+        val settings = AppSettings.fromPreferences(preferences.all)
+        val next = transform(settings)
+        if (next != settings) save(preferences, next)
+        _current.value = next
+    }
+
+    private fun save(preferences: SharedPreferences, settings: AppSettings) {
+        val editor = preferences.edit()
         for ((key, value) in settings.toPreferences()) {
             when (value) {
                 is Boolean -> editor.putBoolean(key, value)
@@ -177,19 +225,20 @@ object AppSettingsStore {
             }
         }
         editor.apply()
-        _current.value = settings
     }
 
     /** A game session ended ([AppSettings.gamePlayed]): saved the first time only. */
-    fun gamePlayed(context: Context) {
-        val settings = load(context)
-        if (!settings.gamePlayed) save(context, settings.copy(gamePlayed = true))
-    }
+    fun gamePlayed(context: Context) = gamePlayed(preferences(context))
+
+    internal fun gamePlayed(preferences: SharedPreferences) = update(preferences) { it.copy(gamePlayed = true) }
+
+    /** The player selected [choice] on the source page ([AppSettings.sourceChoice]). */
+    fun sourceChosen(context: Context, choice: SourceChoice) = sourceChosen(preferences(context), choice)
+
+    internal fun sourceChosen(preferences: SharedPreferences, choice: SourceChoice) = update(preferences) { it.copy(sourceChoice = choice) }
 
     /** Start over's reset succeeded ([AppSettings.afterStartOver]). */
-    fun startedOver(context: Context) {
-        val settings = load(context)
-        val next = settings.afterStartOver()
-        if (next != settings) save(context, next)
-    }
+    fun startedOver(context: Context) = startedOver(preferences(context))
+
+    internal fun startedOver(preferences: SharedPreferences) = update(preferences) { it.afterStartOver() }
 }

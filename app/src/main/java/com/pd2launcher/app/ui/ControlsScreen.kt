@@ -1,8 +1,5 @@
 package com.pd2launcher.app.ui
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -69,6 +66,7 @@ import com.pd2launcher.app.R
 import com.pd2launcher.app.input.Chord
 import com.pd2launcher.app.input.Controls
 import com.pd2launcher.app.input.PadButton
+import com.pd2launcher.app.input.TouchMode
 import kotlin.math.roundToInt
 
 /** The in-game Controls screen's sizes, in dp. */
@@ -128,9 +126,10 @@ internal fun modeTextsFitLeft(rows: Int, texts: Int, gap: Int, room: Int): Boole
  * selected. The strip's ✕ goes back to the game ([onClose]), its Quick and Settings to those tabs
  * ([onStop]; L1 and R1 too, the Game view), Back to the menu. Left:
  * the two modes to view and change, the one the controller is in ([activeMouse]) with an "In use"
- * badge; Pointer speed (its input, [PointerSpeedInput]); Edit on-screen layout
- * ([onEditOnScreen]); then what the viewed mode does and how the chord switches it, where the
- * pane has the height ([modeTextsFitLeft]). Right: the viewed mode's name and "In use", or a
+ * badge; Pointer speed (its input, [PointerSpeedInput]); Touch, Trackpad or Direct ([TouchRow],
+ * [touch]; a press changes it at once, [onTouch]); Edit on-screen layout ([onEditOnScreen]); then
+ * what the viewed mode does and how the chord switches it, where the pane has the height
+ * ([modeTextsFitLeft]). Right: the viewed mode's name and "In use", or a
  * button that switches the controller to it at once ([onUseMode], as the chord does); then every
  * button by where it sits ([Cluster]; the d-pad's four directions one by one), in as many columns
  * (one to three) as fit with no word cut, scrolling where they need more height. Each row is the
@@ -146,6 +145,8 @@ internal fun BoxScope.ControlsScreen(
     activeMouse: Boolean,
     canUseMode: Boolean,
     save: (Controls) -> Unit,
+    touch: TouchMode,
+    onTouch: (TouchMode) -> Unit,
     onUseMode: (mouse: Boolean) -> Unit,
     menuHeight: Int?,
     onStop: (MenuStop) -> Unit,
@@ -153,7 +154,8 @@ internal fun BoxScope.ControlsScreen(
     onPopup: (Boolean) -> Unit,
     onEditOnScreen: () -> Unit,
 ) {
-    AnimatedVisibility(visible, Modifier.matchParentSize(), enter = fadeIn(), exit = fadeOut()) {
+    // Composed while visible only, so it shows and goes in the frame that changes the layer.
+    if (visible) {
         var mouse by remember { mutableStateOf(activeMouse) }
         var picker by remember { mutableStateOf<PadButton?>(null) }
         var speedInput by remember { mutableStateOf(false) }
@@ -173,7 +175,7 @@ internal fun BoxScope.ControlsScreen(
         LaunchedEffect(switched) {
             if (switched > 0) runCatching { rows.getValue(PadButton.A).requestFocus() }
         }
-        Box(Modifier.fillMaxSize()) {
+        Box(Modifier.matchParentSize()) {
             // The game shows dimmed around the screen, and takes no touch from here.
             Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.55f)).takesTouches())
             // As the menu's panel: no padding on the strip's side, so the strip sits where the menu has it.
@@ -195,6 +197,8 @@ internal fun BoxScope.ControlsScreen(
                             },
                             first = first,
                             onPointerSpeed = { speedInput = true },
+                            touch = touch,
+                            onTouch = onTouch,
                             onEditOnScreen = onEditOnScreen,
                         ) {
                             picked = it
@@ -229,6 +233,8 @@ private fun ColumnScope.ControlsBody(
     onUseMode: (Boolean) -> Unit,
     first: FocusRequester,
     onPointerSpeed: () -> Unit,
+    touch: TouchMode,
+    onTouch: (TouchMode) -> Unit,
     onEditOnScreen: () -> Unit,
     onPick: (PadButton) -> Unit,
 ) {
@@ -243,7 +249,7 @@ private fun ColumnScope.ControlsBody(
     var textsLeft by remember { mutableStateOf<Boolean?>(null) }
     Row(Modifier.weight(1f).fillMaxWidth().padding(top = 4.dp)) {
         LeftPane(modeText, otherText, chordText, textsLeft != false, { if (textsLeft != it) textsLeft = it }) {
-            ModesPane(controls, mouse, activeMouse, onView, first, onPointerSpeed, onEditOnScreen)
+            ModesPane(controls, mouse, activeMouse, onView, first, onPointerSpeed, touch, onTouch, onEditOnScreen)
         }
         Rule(Modifier.padding(start = ControlsScreenSize.RULE_START, end = ControlsScreenSize.RULE_END).fillMaxHeight(), vertical = true)
         Box(Modifier.weight(1f).fillMaxHeight()) {
@@ -310,7 +316,7 @@ private fun StripAt(menuHeight: Int?, strip: @Composable () -> Unit) {
 
 private val PillShape = RoundedCornerShape(percent = 50)
 
-/** The left pane's rows: the two modes, Pointer speed and Edit on-screen layout. */
+/** The left pane's rows: the two modes, Pointer speed, Touch and Edit on-screen layout. */
 @Composable
 private fun ModesPane(
     controls: Controls,
@@ -319,6 +325,8 @@ private fun ModesPane(
     onMode: (Boolean) -> Unit,
     first: FocusRequester,
     onPointerSpeed: () -> Unit,
+    touch: TouchMode,
+    onTouch: (TouchMode) -> Unit,
     onEditOnScreen: () -> Unit,
 ) {
     Column {
@@ -327,7 +335,33 @@ private fun ModesPane(
         ModeItem(stringResource(R.string.controls_mouse_mode), mouse, activeMouse, if (mouse) first else null) { onMode(true) }
         Rule(Modifier.padding(vertical = 6.dp))
         LinkRow(stringResource(R.string.controls_pointer_speed_title), stringResource(R.string.controls_factor, speedText(controls.pointerSpeed)), onPointerSpeed)
+        // As high as the rows around it, its control where their values and chevrons are.
+        TouchRow(touch, onTouch, Modifier.heightIn(min = MenuSize.ROW).padding(start = 14.dp, end = 9.dp))
         LinkRow(stringResource(R.string.controls_edit_layout), null, onEditOnScreen)
+    }
+}
+
+/**
+ * Touch: how touch on the game moves the pointer ([TouchMode]), its label and a compact choice of
+ * Trackpad (the default, first) or Direct in one row; a press changes it at once ([onTouch]). The
+ * in-game Controls screen has it under Pointer speed, Settings → Controller too ([modifier]: the
+ * row's height and room, as its neighbours there).
+ */
+@Composable
+internal fun TouchRow(touch: TouchMode, onTouch: (TouchMode) -> Unit, modifier: Modifier = Modifier) {
+    Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(stringResource(R.string.controls_touch), style = Type.Body, color = Palette.Text, modifier = Modifier.weight(1f))
+        Segmented(
+            TouchMode.entries.map {
+                stringResource(
+                    when (it) {
+                        TouchMode.TRACKPAD -> R.string.controls_touch_trackpad
+                        TouchMode.DIRECT -> R.string.controls_touch_direct
+                    },
+                )
+            },
+            TouchMode.entries.indexOf(touch), { onTouch(TouchMode.entries[it]) }, compact = true,
+        )
     }
 }
 

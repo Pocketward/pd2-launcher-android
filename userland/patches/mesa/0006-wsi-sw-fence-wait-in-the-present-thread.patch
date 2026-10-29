@@ -1,6 +1,6 @@
 --- a/src/vulkan/wsi/wsi_common.c
 +++ b/src/vulkan/wsi/wsi_common.c
-@@ -2903,7 +2903,7 @@ wsi_common_queue_present(const struct wsi_device *wsi,
+@@ -2921,7 +2921,7 @@ wsi_common_queue_present(const struct wsi_device *wsi,
  #endif
        }
  

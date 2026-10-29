@@ -89,29 +89,35 @@ internal fun OnScreenControls(layout: ControlsLayout, opacity: Float, pad: Virtu
         val minHit = with(LocalDensity.current) { MIN_TARGET.toPx() }
         layout.pieces.forEach { piece ->
             if (!piece.hidden) {
-                // A change to or from inert starts the piece again: what it held goes up (its gesture's end).
-                key(piece.id, inert) {
+                // The same piece in play and inert (only its input and its dim change): the menu opens and closes with no piece made again.
+                key(piece.id) {
                     val drawn = piece.area(width, height)
                     val hit = piece.hitArea(width, height, minHit)
-                    if (inert) {
-                        InertPiece(piece, drawn, hit, pieceAlpha(opacity, piece))
-                    } else {
-                        PlayPiece(piece, drawn, hit, pieceAlpha(opacity, piece), pad, buttons)
-                    }
+                    OnScreenPiece(piece, drawn, hit, pieceAlpha(opacity, piece), inert, pad, buttons)
                 }
             }
         }
     }
 }
 
-/** One piece in play: its hit area takes the finger, its drawing lights what is pressed. */
+/** The opacity of the whole drawing (outline, label and shadow alike) while the pieces are inert ([OnScreenControls]). */
+internal const val INERT_DIM = 0.5f
+
+/**
+ * One piece: its hit area takes the finger, its drawing lights what is pressed. [inert]: drawn as
+ * in play at [alpha], the whole drawing dimmed to [INERT_DIM]; it takes a touch ([takesTouches])
+ * and does nothing. A change to or from inert starts its input again: the gesture in progress is
+ * cut short, so what it held goes up ([thumb], [press]).
+ */
 @Composable
-private fun PlayPiece(piece: Piece, drawn: Area, hit: Area, alpha: Float, pad: VirtualPad, buttons: CustomButtons) {
+private fun OnScreenPiece(piece: Piece, drawn: Area, hit: Area, alpha: Float, inert: Boolean, pad: VirtualPad, buttons: CustomButtons) {
     var lit by remember { mutableIntStateOf(0) }
     var dot by remember { mutableStateOf<Offset?>(null) }
     val radius = drawn.width / 2
     val kind = piece.kind
-    val input = when (kind) {
+    // The release at a change to or from inert needs a new start of the piece's pointer input: the
+    // inert input's key (Unit, takesTouches) differs from the play input's (piece; piece and radius).
+    val input = if (inert) Modifier.takesTouches() else when (kind) {
         PieceKind.STICK -> Modifier.thumb(piece, radius, follow = { x, y ->
             // The dot stays inside the ring.
             val rim = maxOf(1f, hypot(x, y))
@@ -153,45 +159,18 @@ private fun PlayPiece(piece: Piece, drawn: Area, hit: Area, alpha: Float, pad: V
         Modifier
             .offset { IntOffset(hit.left.roundToInt(), hit.top.roundToInt()) }
             .size(with(density) { hit.width.toDp() }, with(density) { hit.height.toDp() })
+            // Not merging: Android then reports an inert piece as not enabled.
             .semantics {
                 contentDescription = description
                 if (kind != PieceKind.STICK && kind != PieceKind.DPAD && kind != PieceKind.FACE) role = Role.Button
+                if (inert) disabled()
             }
             .then(input),
         contentAlignment = Alignment.Center,
     ) {
-        PieceGraphic(piece, with(density) { drawn.width.toDp() }, with(density) { drawn.height.toDp() }, lit, dot, alpha = alpha)
-    }
-}
-
-/** The opacity of the whole drawing (outline, label and shadow alike) while the pieces are inert ([OnScreenControls]). */
-internal const val INERT_DIM = 0.5f
-
-/**
- * One piece while the game is in the background for the menu: drawn as in play at [alpha], the
- * whole drawing dimmed to [INERT_DIM]; it takes a touch ([takesTouches]) and does nothing.
- */
-@Composable
-private fun InertPiece(piece: Piece, drawn: Area, hit: Area, alpha: Float) {
-    val description = pieceDescription(piece)
-    val density = LocalDensity.current
-    val kind = piece.kind
-    Box(
-        Modifier
-            .offset { IntOffset(hit.left.roundToInt(), hit.top.roundToInt()) }
-            .size(with(density) { hit.width.toDp() }, with(density) { hit.height.toDp() })
-            // Not merging: Android then reports the piece as not enabled.
-            .semantics {
-                contentDescription = description
-                if (kind != PieceKind.STICK && kind != PieceKind.DPAD && kind != PieceKind.FACE) role = Role.Button
-                disabled()
-            }
-            .takesTouches(),
-        contentAlignment = Alignment.Center,
-    ) {
         PieceGraphic(
-            piece, with(density) { drawn.width.toDp() }, with(density) { drawn.height.toDp() },
-            modifier = Modifier.alpha(INERT_DIM), alpha = alpha,
+            piece, with(density) { drawn.width.toDp() }, with(density) { drawn.height.toDp() }, lit, dot,
+            modifier = if (inert) Modifier.alpha(INERT_DIM) else Modifier, alpha = alpha,
         )
     }
 }
@@ -216,7 +195,8 @@ private fun faceTo(pad: VirtualPad, from: Int, to: Int): Int {
 /**
  * One finger's way over a round piece of [radius] pixels: [follow] with its offset from the
  * centre in radii (down positive) on touch and every move, [lift] when it goes, also when the
- * gesture is cut short (the piece's layout changed and its input started again).
+ * gesture is cut short (the piece's layout changed, or the piece went to or from inert, and its
+ * input started again). A finger still down after that moves nothing: only a new touch starts a gesture.
  */
 private fun Modifier.thumb(piece: Piece, radius: Float, follow: (Float, Float) -> Unit, lift: () -> Unit): Modifier = pointerInput(piece, radius) {
     fun at(position: Offset) = follow((position.x - size.width / 2f) / radius, (position.y - size.height / 2f) / radius)
@@ -237,7 +217,7 @@ private fun Modifier.thumb(piece: Piece, radius: Float, follow: (Float, Float) -
     }
 }
 
-/** A button's press while a finger is on it (no focus, no ripple); let go also when the gesture is cut short. */
+/** A button's press while a finger is on it (no focus, no ripple); let go also when the gesture is cut short (as at a change to or from inert). */
 private fun Modifier.press(piece: Piece, onPress: () -> Unit, onRelease: () -> Unit): Modifier =
     semantics { onClick { onPress(); onRelease(); true } }.pointerInput(piece) {
         awaitEachGesture {

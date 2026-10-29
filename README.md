@@ -9,7 +9,7 @@ Play [Project Diablo 2](https://www.projectdiablo2.com/) on your Android phone o
 - **The official PD2 launcher:** open Project Diablo 2's own launcher to manage your loot filters and its other settings.
 - **Game updates:** **Play** checks for a new version of Project Diablo 2 and asks you before it updates. To keep your version, for example with a mod, turn **Check for game updates** off.
 - **Online and single player:** play online with other players, or play single player. **Skip to Battle.net** opens the game on the online screen.
-- **Install with no PC:** the app installs Diablo II and Lord of Destruction with Blizzard's official installers, then Project Diablo 2. Or import your Diablo II folder with Project Diablo 2 from a PC.
+- **Install with no PC:** the app downloads Diablo II and Lord of Destruction straight from Blizzard and installs them itself (**Fast download**, the default), or runs Blizzard's official installers. Then it installs Project Diablo 2. Or import your Diablo II folder with Project Diablo 2 from a PC.
 - **Controller support:** Bluetooth and USB controllers work as an Xbox controller, with a button layout for each controller. **Select + Start** switches between pad mode and mouse mode. You can change what each button does.
 - **On-screen controls:** a virtual controller on the touch screen. **Edit on-screen layout** moves, resizes and fades each control, and adds buttons for keys.
 - **In-game menu:** open it with the floating button, Android's Back gesture or your controller. It has **Quick**, **Controls** and **Settings**, and the game does not pause.
@@ -17,7 +17,7 @@ Play [Project Diablo 2](https://www.projectdiablo2.com/) on your Android phone o
 - **Frame rate and display:** set the **Frame rate**, the **Game resolution** and the **Display** (**Fit to screen** or **Center**). The **FPS counter** shows the frame rate.
 - **Low sound delay:** the game's sound comes with little delay.
 - **App updates:** the app tells you about its new versions and updates itself. Your game, characters and settings stay.
-- **Your files:** the game folder, with your characters and loot filters, shows in Android's Files app.
+- **Your files:** the game folder, with your characters and loot filters, shows in Android's Files app. **Save sync** keeps your characters the same in a folder that you pick, for a sync app such as Syncthing.
 - **On your device:** no root and no PC streaming. The game runs on your device's own graphics chip.
 
 ## See it run
@@ -44,11 +44,11 @@ https://github.com/user-attachments/assets/f294dbf7-d77c-46bf-a42d-584854420aa3
 
 ## What your device needs
 
-- An ARM64 device with Android 13 or later, using 4 KB memory pages (almost every phone and handheld does).
+- An ARM64 device with Android 11 or later, using 4 KB memory pages (almost every phone and handheld does).
 - A supported GPU:
   - Qualcomm Adreno 6xx, 7xx or 8xx (Snapdragon devices), or
   - Arm Mali of the v10 to v13 architectures on Arm's CSF kernel driver, such as the Mali-G310, G610, G710, G615, G715, G720 and G725.
-- Free storage for the app and its runtime (about 0.6 GB), the game (about 3 GB), and the installer downloads (about 2.6 GB). The downloads are needed only during the installation: once the game works, the app offers to remove them.
+- Free storage for the app and its runtime (about 0.6 GB), the game (about 3 GB), and the installer downloads (about 2.7 GB). The downloads are needed only during the installation: once the game works, the app offers to remove them.
 
 The app checks all of this when it first starts and says what is missing. A GPU of a supported family that the bundled graphics driver does not know gets a warning instead: the game may still run. The check does not look at the kernel version.
 
@@ -75,18 +75,18 @@ Not in this version. The game uses only the built-in driver.
 
 Download the APK from the [releases page](https://github.com/Pocketward/pd2-launcher-android/releases) and open it on your device. Android asks once to allow installs from the app you opened it with (your browser or file manager). The app is not on Google Play.
 
-You need your Diablo II and Lord of Destruction CD keys (two different keys) and an internet connection; the app downloads Blizzard's official installers and Project Diablo 2's files from their official sources. If you already have Diablo II and Lord of Destruction installed on a PC, of any version, you can copy that folder to the device instead and need no CD keys: the app uses it as it is when the Diablo II and Lord of Destruction files are in it.
+You need your Diablo II and Lord of Destruction CD keys (two different keys of 26 letters and numbers) and an internet connection; the app downloads Diablo II and Lord of Destruction from Blizzard and Project Diablo 2's files from their official sources. If you already have Diablo II and Lord of Destruction installed on a PC, of any version, you can copy that folder to the device instead and need no CD keys: the app uses it as it is when the Diablo II and Lord of Destruction files are in it.
 
 ## Using it
 
 The app walks you through four steps:
 
 1. **Check:** your device, notifications and battery settings (both optional, but without them Android may stop the game while the app is in the background), and the game's support files, which the app unpacks once.
-2. **Download:** pick **Download** (Diablo II and Lord of Destruction from Blizzard, about 2 GB) or **Import an existing installation** (your Diablo II folder copied from a PC; the app makes its own copy). The installers download and are checked.
-3. **Install:** enter your CD keys and accept Blizzard's terms; the app then runs Blizzard's installers and Project Diablo 2's unattended, with a small live view of their windows. Expect half an hour or more. **Stop** pauses safely and **Resume** continues where it stopped. The app never saves your CD keys: it passes them to Blizzard's installer only. Blizzard's installer stores them in the installed game, as Diablo II requires; **Repair → Start over** removes the installed game and with it the keys.
-4. **Play:** first checks for a new version of Project Diablo 2, then starts the game. When there is a new version, Play asks you: **Update** installs it, then the game starts; **Cancel** keeps your version, and Play then offers **Update** and **Play without updating**. When there is no network or the check fails, the game starts without the check. **Official PD2 launcher** opens Project Diablo 2's own launcher, for example to manage loot filters. When the official launcher has updated the game files, Play asks you to check them once with **Check files**.
+2. **Download:** pick **Fast download** (the default: Diablo II and Lord of Destruction straight from Blizzard, about 2 GB), **Blizzard's installers** (Blizzard's own installers run in the app; this takes longer) or **Use files you have** (your Diablo II folder copied from a PC; the app makes its own copy). For a download, the app gets the installers ready (Blizzard's two small downloaders and Project Diablo 2's files) and asks for your CD keys at once.
+3. **Install:** enter your CD keys and accept Blizzard's terms, also while the installers get ready. The app checks the keys first: a red line under a key says what is wrong with it. When you tap **Agree and install**, the game download starts as soon as the installers are ready. With **Fast download**, the app downloads both games and installs them itself, much faster than Blizzard's installers: a few minutes on our test phones. With **Blizzard's installers**, the app runs Blizzard's installers unattended, with a small live view of their windows; expect half an hour or more. Then the app installs Project Diablo 2. **Stop** pauses safely and **Resume** continues where it stopped. The app never saves your CD keys: it uses them only for the install. The installed game keeps them, as Diablo II requires; **Repair → Start over** removes the installed game and with it the keys.
+4. **Play:** first checks for a new version of Project Diablo 2, then starts the game. When there is a new version, Play asks you: **Update** installs it, then the game starts; **Cancel** keeps your version, and Play then offers **Update** and **Play without updating**. When there is no network or the check fails, the game starts without the check. **Official PD2 launcher** opens Project Diablo 2's own launcher, for example to manage loot filters. When you start the game from it, the launcher closes and the game continues to run. When the official launcher has updated the game files, Play asks you to check them once with **Check files**.
 
-**Import an existing installation** always keeps the Project Diablo 2 in your folder as it is, of any version or with a mod: the import does not update it. Before the copy, the app checks the important files: Game.exe, Diablo II.exe, d2data.mpq, d2char.mpq, d2sfx.mpq and d2exp.mpq, and in the ProjectD2 folder Game.exe, ProjectDiablo.dll and PD2Launcher.exe. If a file is missing, the app lists it and the import does not start. The app checks for a new version of Project Diablo 2 only when you press **Play**, and you then choose **Update** or **Cancel**.
+**Use files you have** always keeps the Project Diablo 2 in your folder as it is, of any version or with a mod: the import does not update it. Before the copy, the app checks the important files: Game.exe, Diablo II.exe, d2data.mpq, d2char.mpq, d2sfx.mpq and d2exp.mpq, and in the ProjectD2 folder Game.exe, ProjectDiablo.dll and PD2Launcher.exe. If a file is missing, the app lists it and the import does not start. If you choose **Use files you have** after a download started, the app removes the downloaded files when it accepts your folder. The app checks for a new version of Project Diablo 2 only when you press **Play**, and you then choose **Update** or **Cancel**.
 
 For PD2 mods and older versions of Project Diablo 2: import your version, turn **Check for game updates** off in **Settings → Game**, and play. The setting is on by default. When it is off:
 
@@ -102,21 +102,33 @@ In the game:
 - **Mouse:** a USB or Bluetooth mouse moves the game's cursor directly; its left, right and middle buttons and the wheel work as on a PC.
 - **Controller:** works as an Xbox controller. Press **Select + Start** (or **L3 + R3**, set in Settings → Controller) to switch to mouse mode for menus and typing; hold it to open the in-game menu. Every button can be rebound, each direction of the d-pad too, also while you play.
 - **In-game menu:** the floating button, Android's Back gesture, or the controller chord opens a menu on the right edge, without pausing the game. **L1** and **R1** step through **Quick**, **Controls** and **Settings**. While the menu is open, the game runs at its background frame rate, and the on-screen controls show dimmed and do not work (with **Slower game in the background** on). **Quick:** On-screen controls, FPS counter, Display, Keyboard and Frame rate. **Settings:** Slower game in the background, Sound in background, Keep the screen on during play, and Stop game. The gamepad icon opens **Controls**, which keeps the menu's side bar: pad mode and mouse mode (**Use mouse mode** or **Use pad mode** switches the controller, as Select + Start does), what each button does (press a button's row to change it), the pointer speed and the on-screen layout.
-- **Settings:** the renderer (Glide, recommended, or DirectDraw), the game resolution (the game's own 1068 × 600 by default, or a custom size; on a smaller screen, its full size), the display (Fit to screen: the game's menus and the game as large as the screen allows; or Center: each game pixel as one screen pixel; also in the in-game menu), the graphics profile (Default or Performance), Skip to Battle.net, sound in the background, Check for game updates, the controller, and storage.
+- **Settings:** the renderer (Glide, recommended, or DirectDraw), the game resolution (the game's own 1068 × 600 by default, or a custom size; on a smaller screen, its full size), the display (Fit to screen: the game's menus and the game as large as the screen allows; or Center: each game pixel as one screen pixel; also in the in-game menu), the graphics profile (Default or Performance), Skip to Battle.net, sound in the background, Check for game updates, the controller, Save sync and storage.
 
 The game keeps running when you switch apps; a notification shows while it does. The official PD2 launcher, a download and an install also keep running, with the same notification. Its **Close** button stops them safely (an install pauses, and **Resume** continues it later) and closes the app. When nothing runs, there is no notification: the app stops in the background 10 seconds after you leave it, and at once when you close it or swipe it away.
 
 ## Your files
 
-Characters are kept in the app's own storage, apart from the installation, so reinstalling or updating Project Diablo 2 never touches them. The game folder (with your characters and loot filter) appears in Android's Files app under **PD2 Launcher**, and **Settings → App → Game files** imports and exports files. You can put files of all types in the game folder, for example programs and libraries such as the .dll files of a mod. These files run with the game: put only files that you trust there, and give the game folder to another app only if you trust that app.
+Characters are kept in the app's own storage, apart from the installation, so reinstalling or updating Project Diablo 2 never touches them. The game folder (with your characters and loot filter) appears in Android's Files app under **PD2 Launcher**. **Open in Files** in **Settings → App → Game files** opens it. You can put files of all types in the game folder, for example programs and libraries such as the .dll files of a mod. These files run with the game: put only files that you trust there, and give the game folder to another app only if you trust that app.
 
-Uninstalling the app removes the installation. Android offers to keep the app's data; copy your characters out first if you want to be sure to keep them.
+When the app finds two different copies of a character, it keeps the copy that was saved last. The other copy goes to **Save/Backups** in the game folder. The game does not read this folder. The app keeps all backups: delete them yourself when you do not need them.
+
+**Save sync** (**Settings → App → Game files**) keeps the game's Save folder and a folder that you pick the same, for a sync app such as Syncthing. The folder can be on the device or on an SD card. Turn Save sync on, pick or make a folder (for example **Documents/PD2 Saves**), and allow access once. Then the app copies:
+
+- from the folder into the game, before **Play** and before the official PD2 launcher,
+- from the game to the folder, after the game and after the official PD2 launcher,
+- in both directions, when you tap **Sync now**.
+
+The app never copies while the game runs. When a character changed in both places, the copy saved last stays and the other copy goes to **Save/Backups**. When you delete a character in one place, the app deletes it in the other place too, after a backup. Backup folders go in both directions too, and a backup folder that you delete in one place goes from the other place. Syncthing's own files, for example its conflict copies, never go into the game. When the folder is not available (for example, the SD card is out), **Play** still works and Settings tells you. When you turn Save sync off, both copies stay.
+
+Uninstalling the app removes the installation. Android offers to keep the app's data; copy your characters out first if you want to be sure to keep them. With Save sync on, your sync folder also has a copy.
 
 ## Updates of this app
 
-The app looks for a new version of itself once a day, while **Settings → App → Look for new versions** is on. It is on by default. When a new version is out, Android shows one notification for it, and **About** shows it under **App updates**. The download starts only when you tap **Download**. On a network that can count data, for example mobile data, a note gives the size first. Android always asks you to confirm the update. The first time, you allow **Install unknown apps** for PD2 Launcher in Android's settings, and Android can restart the app when you do this. Your game, characters and settings stay. Nothing about app updates shows on **Play**.
+While the app is open, it looks for a new version of itself each hour, while **Settings → App → Look for new versions** is on. It is on by default. When a new version is out, Android shows one notification for it, a gold dot shows on **About** on **Play**, and **About** shows the version under **App updates**. The dot stays until you install the new version. The download starts only when you tap **Download**. On a network that can count data, for example mobile data, a note gives the size first. Android always asks you to confirm the update. The first time, you allow **Install unknown apps** for PD2 Launcher in Android's settings, and Android can restart the app when you do this. Your game, characters and settings stay.
 
 ## Problems
+
+The [FAQ](docs/FAQ.md) has short answers to questions that players often ask.
 
 Open an [issue](https://github.com/Pocketward/pd2-launcher-android/issues) with your device's model, Android version and GPU (the Check screen shows them) and what happened, and attach the app's logs: **Share logs** in **Settings → App**, or under the error on the Check, Download and Install screens (and on Install while it runs or is paused), makes one file to send; **Save logs** beside it saves that file on the device instead, for example in Downloads. It holds no CD keys, but it can show your character names and network addresses.
 
@@ -124,7 +136,7 @@ Common problems:
 
 - **The download or install stops part way, for example at about 80%.** Tap **Try again**. The app keeps what is already downloaded and continues from there; a second try often finishes.
 - **A download stops while the app is in the background, or the app asks you to check a connection that works.** Some phones cut off an app's network access, or stop it, while it is in the background, to save battery or data. In the phone's settings for PD2 Launcher, allow it to use the network in the background and set its battery use to no restrictions; the names of these settings are different on each phone. The Check screen's Connection row tells you when the phone blocks the app's network, and opens the app's settings.
-- **The official PD2 launcher is slow to open.** While the launcher starts, the screen is black and shows a spinner. On a slower phone, the official PD2 launcher can take up to a minute to open. Wait for its window.
+- **The official PD2 launcher is slow to open.** While the launcher starts, the screen is black and shows **Starting the official PD2 launcher…** in the middle. On a slower phone, the official PD2 launcher can take up to a minute to open. Wait for its window.
 
 ## How it works
 

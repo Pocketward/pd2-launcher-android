@@ -69,24 +69,28 @@ class CustomButtons(private val send: (List<RelayEvent>) -> Unit) {
     fun press(id: String, action: PadAction) {
         val events = events(action, down = true)
         if (events.isEmpty() || id in held) return
+        val alreadyHeld = action in held.values
         held[id] = action
-        send(events)
+        if (!alreadyHeld || isWheel(action)) send(events)
     }
 
     fun release(id: String) {
         val action = held.remove(id) ?: return
-        events(action, down = false).takeIf { it.isNotEmpty() }?.let(send)
+        if (action !in held.values) events(action, down = false).takeIf { it.isNotEmpty() }?.let(send)
     }
 
     /** Lets go of everything held (the controls were hidden or the game view left). */
     fun releaseAll() {
         if (held.isEmpty()) return
-        val events = held.values.flatMap { events(it, down = false) }
+        val events = held.values.toSet().flatMap { events(it, down = false) }
         held.clear()
         if (events.isNotEmpty()) send(events)
     }
 
     companion object {
+        private fun isWheel(action: PadAction) = action is PadAction.Mouse &&
+            (action.button == RelayEvent.WHEEL_UP || action.button == RelayEvent.WHEEL_DOWN)
+
         /** What pressing ([down]) or letting go of a button bound to [action] sends. */
         fun events(action: PadAction, down: Boolean): List<RelayEvent> = when (action) {
             is PadAction.Key -> listOf(RelayEvent.Key(action.keysym, down))

@@ -19,7 +19,7 @@ struct frame_layer;
 struct frame_layer *frame_layer_create(ANativeWindow *window, int buffer_w, int buffer_h, int transform, float frame_rate);
 
 // The next free buffer, locked for writing: its pixels and stride in pixels (1). 0 when the
-// compositor still holds it (try again on the next display frame); -1 when it is not allocated
+// compositor still holds it (frame_layer_rest requests a redraw); -1 when it is not allocated
 // and the allocator refuses it (frame_layer_rest then asks for a frame again; the allocator is
 // asked again 100 ms later at the soonest).
 int frame_layer_lock(struct frame_layer *layer, uint32_t **pixels, int *stride);
@@ -40,8 +40,8 @@ void frame_layer_resize(struct frame_layer *layer, int dest_w, int dest_h);
 // Call on every display frame ([frame_ns]): [resting] while the copy shows nothing, the game's
 // own buffers covering the whole view. After 5 s of rest without a break, the buffers that are not
 // on the screen go once the compositor no longer holds them (the one on the screen stays under the
-// game's); frame_layer_lock allocates them again. True from then (or from a refused allocation)
-// until the next frame_layer_post: the copy shows the X screen again at once, whatever changed.
+// game's); frame_layer_lock allocates them again. A released buffer, refused allocation, or busy
+// slot requests redraw until the next frame_layer_post, whatever changed on the X screen.
 int frame_layer_rest(struct frame_layer *layer, int64_t frame_ns, int resting);
 
 // Takes the layer off the screen, lets it go, and frees the buffers and the rest once the

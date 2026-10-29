@@ -11,6 +11,7 @@ import android.content.Intent
 import android.graphics.drawable.Icon
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.os.SystemClock
@@ -25,6 +26,7 @@ import com.pd2launcher.app.control.EngineMessage
 import com.pd2launcher.app.control.Game
 import com.pd2launcher.app.control.HostFacts
 import com.pd2launcher.app.control.Installation
+import com.pd2launcher.app.control.Operation
 import com.pd2launcher.app.control.OperationStatus
 import com.pd2launcher.app.control.Snapshot
 import com.pd2launcher.app.control.collect
@@ -138,6 +140,8 @@ class SessionService : Service() {
     private lateinit var starter: ProcessStarter
     private lateinit var game: GameEnvironment
     private val worker: ExecutorService = Executors.newSingleThreadExecutor { Thread(it, "pd2-session") }
+    /** The save syncs that wait for nothing ([syncSavesSoon]): off the worker, so a slow folder holds no other step. */
+    private val syncWorker: ExecutorService = Executors.newSingleThreadExecutor { Thread(it, "pd2-save-sync") }
     /** Awake while a job downloads or installs ([WorkLocks]); changed on the worker only. */
     private val workLocks by lazy { WorkLocks(this) }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -153,18 +157,30 @@ class SessionService : Service() {
     private var restartJob: Job? = null
     /** Looks for the official PD2 launcher's game while its session runs ([watchLauncherGame]). */
     private var launcherGameWatch: Job? = null
+    /** The end of PD2Launcher.exe beside its game ([endLauncher]), while it runs. Worker thread only. */
+    private var launcherEnd: Job? = null
     /** The older game folder of a failed update went to the engine as the existing Diablo II ([UpgradeImport]). */
     @Volatile private var upgradeImportSent = false
     /** Keeps the userland's resolv.conf on the default network's DNS servers. */
     private var dns: Dns? = null
-    /** The install job running, or ending until the engine settles its outcome ([InstallProgress]). */
-    @Volatile private var endingInstall: com.pd2launcher.app.control.Job? = null
+    /** The install job sent, owned until the engine settles its outcome ([InstallWork], [InstallProgress]). Worker thread only. */
+    private val installWork = InstallWork()
     /** The running X screen's size, sent with `LaunchGame` as D2GL's viewport. */
     private var xScreen: Pair<Int, Int>? = null
     /** The X screen's size came from `--es xscreen` (debug builds), so Play and the official launcher keep it. */
     private var xScreenGiven = false
     /** The `seq` of the install start the game environment was started for, until it is refused or another starts. */
     private var installStart: Long? = null
+    /**
+     * The official PD2 launcher's command sent ([OpenOfficialLauncher][Command.OpenOfficialLauncher]
+     * `seq`, the newest snapshot before it and that snapshot's operation), until its session shows,
+     * the engine refuses it, or a snapshot shows that it ended with no snapshot of it running
+     * ([Play.officialLauncherSettled]). Worker thread only.
+     */
+    private var launcherSent: LauncherSent? = null
+    private var pendingStart: OperationStart? = null
+    private val sessionSnapshots = SessionSnapshots()
+
     /**
      * The game environment runs for an install start, until it stops ([sendInstallStart]): also
      * between Install Diablo II and Install Project Diablo 2, so the session keeps it
@@ -208,6 +224,8 @@ class SessionService : Service() {
      * snapshot collection too.
      */
     @Volatile private var sourceSent = false
+    /** The `seq` of the last copied folder sent to the engine ([SourceImport.BUSY]). */
+    @Volatile private var selectSent: Long? = null
     /** Android is ending the service ([onDestroy]): a session start under way does not start the engine. */
     @Volatile private var destroyed = false
     /** Held while Close runs, so its waits go on with the screen off ([close], [finishClose]). */
@@ -222,7 +240,7 @@ class SessionService : Service() {
         serviceLog = RotatingLog(paths.logs, "service")
         launcherRunLog = RotatingLog(paths.logs, OfficialLauncherLog.NAME, OfficialLauncherLog.LIMIT, OfficialLauncherLog.KEEP)
         launcherLog = OfficialLauncherLog(launcherRunLog::line, SystemClock::elapsedRealtime)
-        starter = ProcessStarter(paths.logs, serviceLog)
+        starter = ProcessStarter(paths.logs, serviceLog, ::seccompHarness)
         game = GameEnvironment(paths, starter, ::log, this)
         SetupRecordStore.load(this)
         // The first notification channel triggers Android 13's permission prompt at targetSdk 28:
@@ -237,6 +255,12 @@ class SessionService : Service() {
             paths.removeOldRuntimeFiles().takeIf { it.isNotEmpty() }?.let { log("removed what older releases left in ${paths.runtimeDir}: ${it.joinToString()}") }
         } catch (error: Exception) {
             log("older releases' files in ${paths.runtimeDir}: $error")
+        }
+        // The save backups of releases up to 0.3.4 into Save/Backups, once; what does not move stays where it was.
+        try {
+            SaveKeeper.moveOldBackups(paths, ::log)
+        } catch (error: Exception) {
+            log("the older save backups in ${paths.oldSaveBackups} did not all move: $error")
         }
         // How the app's earlier processes ended: a kill for low memory shows in the logs.
         scope.launch(Dispatchers.IO) { logProcessExits() }
@@ -412,7 +436,8 @@ class SessionService : Service() {
             ACTION_USE_BLIZZARD_DOWNLOAD -> worker.execute { sendCommand(Command.UseBlizzardDownload) }
             ACTION_DOWNLOAD -> worker.execute { sendCommand(Command.DownloadAll) }
             ACTION_STOP_SAFELY -> worker.execute { sendCommand(Command.RequestSafeStop) }
-            ACTION_INSTALL_PD2 -> worker.execute { installProjectDiablo() }
+            ACTION_INSTALL_PD2 -> worker.execute { installProjectDiablo(press = true) }
+            ACTION_SYNC_SAVES -> syncSavesSoon(intent.getStringExtra(EXTRA_SYNC_WHY) ?: "Sync now")
         }
         return START_NOT_STICKY
     }
@@ -464,6 +489,8 @@ class SessionService : Service() {
         }
         stoppingWorker = worker
         worker.shutdown()
+        // A sync already asked for still runs; none starts after it.
+        syncWorker.shutdown()
         super.onDestroy()
     }
 
@@ -811,6 +838,7 @@ class SessionService : Service() {
         return try {
             connection.send(command).also {
                 log("command seq $it: $command")
+                if (command is Command.SelectExistingInstall) selectSent = it
                 _status.update { status -> status.copy(refusal = null) }
                 // No paused Install Diablo II goes on after Start over or an import.
                 if (HeldKeys.forgets(command)) heldKeys.clear()
@@ -871,14 +899,30 @@ class SessionService : Service() {
      * the game environment was started for stops it again, so nothing idles ([Refusals]).
      */
     private fun onCommandError(error: EngineMessage.CommandError) {
+        if (pendingStart?.clearCommand == error.seq) cancelOperationStart()
         log("engine command error: seq ${error.seq}: ${error.reason}")
         launcherLog.refused(error.seq, error.reason)
+        // The removal for a picked folder was refused (another job runs): the downloads' files
+        // stay, and the player asked for nothing that did not start.
+        if (error.reason == DiabloSource.DISCARD_REFUSED) return
+        // The engine took no folder while a job ran: the copied folder goes again once no job
+        // runs ([resendChosen]); the screens wait for it.
+        if (error.seq == selectSent && error.reason == SourceImport.BUSY) {
+            selectSent = null
+            sourceSent = false
+            log("the copied Diablo II folder waits until no job runs, then goes to the engine again")
+            return
+        }
         _status.update { it.copy(refusal = Refusal(error.seq, error.reason)) }
         if (Refusals.stopsGameEnvironment(error.seq, installStart, _status.value.snapshot)) {
             log("install start seq ${error.seq} refused; stopping the game environment started for it")
             stopGameEnvironment()
         }
-        if (error.seq == installStart) installStart = null
+        // A refused install owns nothing: its environment no longer keeps the session busy. Not
+        // while its job runs: then the refusal was an earlier command's ([InstallWork.refused]).
+        if (installWork.refused(error.seq, _status.value.snapshot)) log("install seq ${error.seq} refused; it owns nothing now")
+        if (error.seq == installStart && installWork.sequence != error.seq) installStart = null
+        if (error.seq == launcherSent?.seq) launcherSent = null
         if (error.seq == launchSent?.first) {
             launchSent = null
             launchRequested(null)
@@ -942,124 +986,160 @@ class SessionService : Service() {
         snapshots?.cancel()
         snapshots = scope.launch {
             connection.snapshot.filterNotNull().collect { message ->
-                val next = message.snapshot
-                val now = SystemClock.elapsedRealtime()
-                // A channel that has closed no longer speaks for the engine: a snapshot it delivers
-                // late would put back what the engine's exit cleared. Checked in the same update
-                // that the exit's own follows (it closes the channel first).
-                var stale = false
-                val before = _status.getAndUpdate {
-                    stale = connection.state.value !is ControlChannel.State.Connected
-                    if (stale) {
-                        it
-                    } else {
-                        it.copy(
-                            snapshotSeq = message.seq, snapshot = next, updateRecheck = Play.recheck(it.updateRecheck, it.snapshot, next),
-                            playCheck = PlayCheck.observe(it.playCheck, next),
-                            launcherSince = LauncherStart.since(it.launcherSince, it.snapshot?.activeJob, next.activeJob, now),
-                        )
-                    }
-                }
-                if (stale) return@collect
-                snapshotLines.next(summary(message), message.seq, System.currentTimeMillis())
-                launcherLog.snapshot(next, ::otherProcesses)
-                val previous = before.snapshot
-                // The engine's check after a finished update shows as Checking at once; were that
-                // snapshot missed (and the check found Available), Play waits at most this long.
-                if (before.updateRecheck == null && _status.value.updateRecheck == Play.Recheck.WAITING) {
-                    scope.launch {
-                        delay(RECHECK_WAIT_MS)
-                        _status.update { if (it.updateRecheck == Play.Recheck.WAITING) it.copy(updateRecheck = null) else it }
-                    }
-                }
-                // How far the installation got, by the app's own record: where the next start lands
-                // (SetupRecord). Written once the screens have the snapshot: written first, the new
-                // record met the snapshot before it for a frame (installed, with the install job
-                // still running: Repair); the other way round both route to the same screen.
-                SetupRecordStore.follow(this@SessionService, next)?.let { record ->
-                    log("setup record: $record")
-                    // Start over took the installation: the downloads notice waits for the next one.
-                    if (record == SetupRecord.NONE) AppSettingsStore.startedOver(this@SessionService)
-                }
-                post { applyBackgroundSound() }
-                post { holdWorkLocks(WorkLocks.wanted(next)) }
-                // An install or an import makes the game folder, and Start over removes it.
-                if (previous == null || previous.installation != next.installation || previous.gameFolder != next.gameFolder ||
-                    (previous.activeJob == null) != (next.activeJob == null)
-                ) {
-                    post { followGameFolder() }
-                }
-                AppRuntime.sweep(previous, next)?.let { sweep -> post { keepRuntimeArchives(sweep) } }
-                // After an update in place that failed: the older game folder, for Install to import;
-                // once a session, again at the next start, until the player chooses another source.
-                val kept = paths.upgradeGame
-                val declined = File(kept.parentFile, UpgradeImport.DECLINED)
-                if (!upgradeImportSent && UpgradeImport.selects(next, kept, kept.isDirectory, declined.exists())) {
-                    upgradeImportSent = true
-                    log("the older game folder of the update goes to the engine for Import: $kept")
-                    post { sendCommand(DiabloSource.selectCommand(kept.path)) }
-                }
-                // The folder the player copied in for Import, which the engine holds in memory
-                // only until its Download: an engine started since (after the session ended in
-                // the background) gets it again ([resendChosen]).
-                if (SourceImport.chosen != null && !sourceSent) post { resendChosen() }
-                // Diablo II and Lord of Destruction are in, or their install failed: the held keys are done with.
-                if (HeldKeys.spent(previous, next)) heldKeys.clear()
-                // The launch sent has shown: Play and the official PD2 launcher take presses again, and
-                // the running game or session holds the game folder from here (GameFilesProvider).
-                // On the worker: a snapshot quicker than the launch's own return would otherwise be
-                // cleared first and the launch's seq set after it, holding the buttons back.
-                if (next.game == Game.RUNNING || next.activeJob == com.pd2launcher.app.control.Job.OFFICIAL_LAUNCHER) {
-                    post {
-                        launchSent = null
-                        launchRequested(null)
-                    }
-                }
-                if (Play.gameStarted(previous?.game, next.game)) {
-                    gameRunningSince = now
-                    post { followMemory() }
-                }
-                // The Game client exited: the game environment goes with it.
-                if (Play.gameEnded(previous?.game, next.game)) {
-                    val since = gameRunningSince
-                    // The device's memory after the game's end: Game.exe has exited, and after Stop
-                    // in the Game view the game environment has stopped too.
-                    post { followMemory() }
-                    // Logged before wineserver -k, while what the launch left still runs.
-                    if (EarlyGameEnd.early(since, now)) post { logEarlyGameEnd(now - since!!) }
-                    post { stopGameEnvironment() }
-                    // A game session that ran: Play's one-time notice may show from now on
-                    // (InstallerDownloads.showNotice); one that ended at once does not count.
-                    if (InstallerDownloads.played(gameRunningSince, now)) post { AppSettingsStore.gamePlayed(this@SessionService) }
-                    gameRunningSince = null
-                }
-                // So does the official PD2 launcher's session; its run in the log waits a while for the operation's end.
-                if (Play.officialLauncherEnded(previous?.activeJob, next.activeJob)) {
-                    post { stopGameEnvironment() }
-                    scope.launch {
-                        delay(OfficialLauncherLog.OPERATION_END_MS)
-                        launcherLog.settle()
-                    }
-                }
-                // While it runs, whether it has started the game.
-                post { watchLauncherGame(next.activeJob == com.pd2launcher.app.control.Job.OFFICIAL_LAUNCHER) }
-                // Install Diablo II done: Install Project Diablo 2 follows; after the last
-                // install job the game environment stops.
-                val ending = endingInstall
-                // An import never installs or updates Project Diablo 2 (the owner's rule of 2026-10-26).
-                val imported = ending != null && InstallerDownloads.imported(paths.managedRoot)
-                if (InstallProgress.continuesToPd2(ending, next, imported)) {
-                    post { installProjectDiablo() }
-                } else if (InstallProgress.installEnded(ending, next, imported)) {
-                    post { stopGameEnvironment() }
-                }
-                endingInstall = InstallProgress.endingInstallJob(ending, next)
+                post { applySnapshot(connection, message) }
             }
         }
     }
 
+    private fun applySnapshot(connection: ControlChannel, message: EngineMessage.SnapshotMessage) {
+        val next = message.snapshot
+        val now = SystemClock.elapsedRealtime()
+        val before = _status.value
+        val previous = before.snapshot
+        val installOwned = installWork.sequence != null
+        // The official launcher's session sent started and ended between two snapshots: no
+        // snapshot showed it running, and this one shows its end.
+        val launcherSettled = launcherSent?.let { Play.officialLauncherSettled(it.afterSnapshot, it.before, message.seq, next) } == true
+        var continueInstall = false
+        val applied = sessionSnapshots.apply(
+            connection, channel?.takeIf { it.state.value is ControlChannel.State.Connected }, message.seq,
+            cleanup = {
+                // Install Diablo II done: Install Project Diablo 2 follows; after the last
+                // install job the game environment stops.
+                continueInstall = installWork.shouldContinueToPd2(message.seq, next, ::stopGameEnvironment)
+                if (Play.gameEnded(previous?.game, next.game) && EarlyGameEnd.early(gameRunningSince, now)) {
+                    logEarlyGameEnd(now - gameRunningSince!!)
+                }
+                if (Play.gameEnded(previous?.game, next.game) ||
+                    Play.officialLauncherEnded(previous?.activeJob, next.activeJob) ||
+                    (launcherSettled && game.running && installWork.sequence == null)) {
+                    stopGameEnvironment()
+                }
+            },
+            publish = {
+                _status.update { it.copy(
+                    snapshotSeq = message.seq, snapshot = next, updateRecheck = Play.recheck(it.updateRecheck, it.snapshot, next),
+                    playCheck = PlayCheck.observe(it.playCheck, next),
+                    launcherSince = LauncherStart.since(it.launcherSince, it.snapshot?.activeJob, next.activeJob, now),
+                ) }
+            },
+        )
+        if (!applied) return
+        snapshotLines.next(summary(message), message.seq, System.currentTimeMillis())
+        launcherLog.snapshot(next, ::otherProcesses)
+        // The engine's check after a finished update shows as Checking at once; were that
+        // snapshot missed (and the check found Available), Play waits at most this long.
+        if (before.updateRecheck == null && _status.value.updateRecheck == Play.Recheck.WAITING) {
+            scope.launch {
+                delay(RECHECK_WAIT_MS)
+                _status.update { if (it.updateRecheck == Play.Recheck.WAITING) it.copy(updateRecheck = null) else it }
+            }
+        }
+        // How far the installation got, by the app's own record: where the next start lands
+        // (SetupRecord). Written once the screens have the snapshot: written first, the new
+        // record met the snapshot before it for a frame (installed, with the install job
+        // still running: Repair); the other way round both route to the same screen.
+        SetupRecordStore.follow(this@SessionService, next)?.let { record ->
+            log("setup record: $record")
+            // Start over took the installation: the downloads notice waits for the next one.
+            if (record == SetupRecord.NONE) AppSettingsStore.startedOver(this@SessionService)
+        }
+        post { applyBackgroundSound() }
+        post { holdWorkLocks(WorkLocks.wanted(next)) }
+        // An install or an import makes the game folder, and Start over removes it.
+        if (previous == null || previous.installation != next.installation || previous.gameFolder != next.gameFolder ||
+            (previous.activeJob == null) != (next.activeJob == null)
+        ) {
+            post { followGameFolder() }
+        }
+        AppRuntime.sweep(previous, next)?.let { sweep -> post { keepRuntimeArchives(sweep) } }
+        // After an update in place that failed: the older game folder, for Install to import;
+        // once a session, again at the next start, until the player chooses another source.
+        val kept = paths.upgradeGame
+        val declined = File(kept.parentFile, UpgradeImport.DECLINED)
+        if (!upgradeImportSent && UpgradeImport.selects(next, kept, kept.isDirectory, declined.exists())) {
+            upgradeImportSent = true
+            log("the older game folder of the update goes to the engine for Import: $kept")
+            post { sendCommand(DiabloSource.selectCommand(kept.path)) }
+        }
+        // The folder the player copied in for Import, which the engine holds in memory
+        // only until its Download: an engine started since (after the session ended in
+        // the background) gets it again ([resendChosen]).
+        if (SourceImport.chosen != null && !sourceSent) post { resendChosen() }
+        // Diablo II and Lord of Destruction are in, or their install failed: the held keys are done with.
+        if (HeldKeys.spent(previous, next)) heldKeys.clear()
+        // The launch sent has shown: Play and the official PD2 launcher take presses again, and
+        // the running game or session holds the game folder from here (GameFilesProvider).
+        // On the worker: a snapshot quicker than the launch's own return would otherwise be
+        // cleared first and the launch's seq set after it, holding the buttons back.
+        if (next.game == Game.RUNNING || next.activeJob == com.pd2launcher.app.control.Job.OFFICIAL_LAUNCHER) {
+            launchSent = null
+            if (next.activeJob == com.pd2launcher.app.control.Job.OFFICIAL_LAUNCHER) launcherSent = null
+            if (installWork.sequence == null) installStart = null
+            launchRequested(null)
+        }
+        // The launcher's session ended unseen (its game environment stopped in the cleanup above):
+        // Play and the official launcher take presses again, and the Save syncs as after a session.
+        if (launcherSettled) {
+            log("official PD2 launcher: its session (seq ${launcherSent?.seq}) started and ended between two snapshots")
+            launcherSent = null
+            launchSent = null
+            if (installWork.sequence == null) installStart = null
+            launchRequested(null)
+            post { syncSavesSoon("after the official launcher") }
+        }
+        if (Play.gameStarted(previous?.game, next.game)) {
+            gameRunningSince = now
+            post { followMemory() }
+        }
+        // The Game client exited: the game environment goes with it.
+        if (Play.gameEnded(previous?.game, next.game)) {
+            // The device's memory after the game's end: Game.exe has exited, and after Stop
+            // in the Game view the game environment has stopped too.
+            post { followMemory() }
+            // The game environment stopped in the cleanup above: what the game saved goes to the sync folder.
+            post { syncSavesSoon("after the game") }
+            // A game session that ran: Play's one-time notice may show from now on
+            // (InstallerDownloads.showNotice); one that ended at once does not count.
+            if (InstallerDownloads.played(gameRunningSince, now)) post { AppSettingsStore.gamePlayed(this@SessionService) }
+            gameRunningSince = null
+        }
+        // So does the official PD2 launcher's session; its run in the log waits a while for the operation's end.
+        if (Play.officialLauncherEnded(previous?.activeJob, next.activeJob)) {
+            post { syncSavesSoon("after the official launcher") }
+            scope.launch {
+                delay(OfficialLauncherLog.OPERATION_END_MS)
+                launcherLog.settle()
+            }
+        }
+        // While it runs, whether it has started the game.
+        post { watchLauncherGame(next.activeJob == com.pd2launcher.app.control.Job.OFFICIAL_LAUNCHER) }
+        // The install job this snapshot settled no longer holds launches back.
+        if (installOwned && installWork.sequence == null) installStart = null
+        if (continueInstall) installProjectDiablo(press = false)
+        // A picked folder the engine accepted (in time, late, or sent again): the import really
+        // starts, so what the Launcher's own downloads made goes, once for each copy.
+        if (SourceImport.acceptedFirst(next.installer)) {
+            log("the copied Diablo II folder is accepted: the downloads' files are removed")
+            sendCommand(Command.DiscardDownloads)
+        }
+        // The keys joined Download and no install follows it (it failed or stopped, or no keys
+        // wait any more): the game environment started for them stops, and the install it was
+        // started for owns nothing.
+        if (KeysWhileDownloading.noInstallFollows(next) && installEnvironment && installWork.sequence != null) {
+            log("the Download that the keys joined ended without the install; stopping the game environment")
+            installWork.clear()
+            installStart = null
+            stopGameEnvironment()
+        }
+        val pending = pendingStart
+        if (pending != null && pending.observe(connection, message.seq, next)) pendingStart = null
+        followPlayCheck()
+    }
+
     /** Closing the channel makes the engine stop safely and exit; SIGKILL if it does not in time. */
     private fun stopEngine() {
+        cancelOperationStart()
         val process = engine ?: return
         channel?.close()
         if (!awaitExit(process, ENGINE_STOP_TIMEOUT_MS)) {
@@ -1078,6 +1158,7 @@ class SessionService : Service() {
      */
     private fun onChannelClosed(connection: ControlChannel, process: OwnedProcess) {
         if (stopping || channel !== connection || engine?.pid != process.pid) return
+        cancelOperationStart()
         val cause = (connection.state.value as? ControlChannel.State.Closed)?.cause
         log("the Control channel closed (${cause ?: "the engine ended it"}); engine pid ${process.pid} has $ENGINE_STOP_TIMEOUT_MS ms to exit")
         launcherLog.note("the engine's Control channel closed (${cause ?: "the engine ended it"})")
@@ -1097,6 +1178,7 @@ class SessionService : Service() {
     private fun onEngineExit(process: OwnedProcess, status: ExitStatus) {
         if (engine?.pid != process.pid) return
         engine = null
+        cancelOperationStart()
         snapshots?.cancel()
         channel?.close()
         channel = null
@@ -1121,6 +1203,8 @@ class SessionService : Service() {
         xScreen = null
         installStart = null
         installEnvironment = false
+        installWork.clear()
+        launcherSent = null
         launchSent = null
         _status.update { it.copy(gameEnvironment = false, refusal = null, updateRecheck = null, launchRequestedAt = null) }
 
@@ -1254,7 +1338,8 @@ class SessionService : Service() {
      * started again at another size, it would take the running game or session with it).
      */
     private fun launchBusy(what: String): Boolean =
-        Play.launchBusy(_status.value.snapshot, launchSent?.second, SystemClock.elapsedRealtime()).also { busy ->
+        // An owned install holds launches until its end; a launch only for its own time (Play.launchBusy).
+        (pendingStart != null || installWork.sequence != null || Play.launchBusy(_status.value.snapshot, launchSent?.second, SystemClock.elapsedRealtime())).also { busy ->
             if (busy) log("$what not started: the game, a job or a launch already runs; the game environment stays as it is")
         }
 
@@ -1393,10 +1478,14 @@ class SessionService : Service() {
             setPlayCheck(null)
             return
         }
-        val seq = sendCommand(Command.ApplyUpdate)
-        log("Play: the new version's question: Update${seq?.let { " (seq $it); the game starts when it succeeds" } ?: " not sent"}")
-        setPlayCheck(seq?.let { PlayCheck.State.Updating(it, SystemClock.elapsedRealtime()) })
-        if (seq != null) followLater(PlayCheck.WAIT_MS)
+        beginOperation("Update", cancelled = { setPlayCheck(null) }) {
+            val after = _status.value.snapshotSeq ?: -1
+            val seq = sendCommand(Command.ApplyUpdate)
+            log("Play: the new version's question: Update${seq?.let { " (seq $it); the game starts when it succeeds" } ?: " not sent"}")
+            setPlayCheck(seq?.let { PlayCheck.State.Updating(it, SystemClock.elapsedRealtime(), afterSnapshot = after) })
+            // An update that never shows is dropped after the check's wait, also with no other snapshot.
+            if (seq != null) followLater(PlayCheck.WAIT_MS)
+        }
     }
 
     /**
@@ -1420,20 +1509,27 @@ class SessionService : Service() {
             launchRequested(null)
             return
         }
-        linkSaves()
-        log("Play: settings: ${settingsLine(settings)}")
-        launchSent = sendCommand(
-            Command.LaunchGame(
-                display = DisplaySize(width.toLong(), height.toLong()),
-                graphicsDriver = settings.graphicsDriver,
-                graphicsProfile = GraphicsProfiles.forPlay(settings.graphicsProfile, gpu),
-                strictMemoryOrder = false,
-                detailedLogging = settings.detailedLogging,
-            ),
-        )?.let { it to SystemClock.elapsedRealtime() }
-        // The engine prepares the game's files once it has the command: the wait counts from the
-        // send, and a command not sent holds nothing.
-        launchRequested(launchSent?.second)
+        // No other sync from the Save's link to the command: one that waited sees the launch after it.
+        SaveSyncFolder.locked {
+            linkSaves()
+            syncSaves("before Play", forLaunch = true)
+            log("Play: settings: ${settingsLine(settings)}")
+            launchSent = sendCommand(
+                Command.LaunchGame(
+                    display = DisplaySize(width.toLong(), height.toLong()),
+                    graphicsDriver = settings.graphicsDriver,
+                    graphicsProfile = GraphicsProfiles.forPlay(settings.graphicsProfile, gpu),
+                    strictMemoryOrder = false,
+                    detailedLogging = settings.detailedLogging,
+                ),
+            )?.let { it to SystemClock.elapsedRealtime() }
+            // The engine prepares the game's files once it has the command: the wait counts from the
+            // send, and a command not sent holds nothing.
+            launchRequested(launchSent?.second)
+            // The game environment is this launch's now: a late end of an earlier official
+            // launcher session must not stop it ([launcherSent]).
+            if (launchSent != null) launcherSent = null
+        }
     }
 
     /**
@@ -1504,11 +1600,20 @@ class SessionService : Service() {
                 "(Game resolution: $resolution); " +
                 "game environment ${if (started) "started for it" else "already running"}",
         )
-        // Its Play starts the game: the characters as for the app's own Play.
-        linkSaves()
-        log("official launcher: settings: ${settingsLine(settings)}")
-        launcherLog.note("settings: ${settingsLine(settings)}")
-        val seq = sendCommand(Command.OpenOfficialLauncher(strictMemoryOrder = false, detailedLogging = settings.detailedLogging))
+        // What the engine showed before the send: a session that starts and ends between two
+        // snapshots shows only by its end ([launcherSent]).
+        val sentAfter = _status.value.snapshotSeq ?: -1
+        val before = _status.value.snapshot?.operation
+        // Its Play starts the game: the characters as for the app's own Play, with no other sync
+        // from the Save's link to the command (one that waited sees the launch after it).
+        val seq = SaveSyncFolder.locked {
+            linkSaves()
+            syncSaves("before the official launcher", forLaunch = true)
+            log("official launcher: settings: ${settingsLine(settings)}")
+            launcherLog.note("settings: ${settingsLine(settings)}")
+            sendCommand(Command.OpenOfficialLauncher(strictMemoryOrder = false, detailedLogging = settings.detailedLogging))
+                ?.also { launchRequested(SystemClock.elapsedRealtime()) }
+        }
         if (seq == null) {
             launcherLog.end("not sent to the engine (service.log says why)")
         } else {
@@ -1526,6 +1631,7 @@ class SessionService : Service() {
             return
         }
         installStart = seq?.takeIf { started }
+        launcherSent = seq?.let { LauncherSent(it, sentAfter, before) }
         launchSent = seq?.let { it to SystemClock.elapsedRealtime() }
         launchRequested(launchSent?.second)
     }
@@ -1563,7 +1669,8 @@ class SessionService : Service() {
         val snapshot = _status.value.snapshot
         if (snapshot?.activeJob != null || snapshot?.game == Game.RUNNING) return true
         return try {
-            SaveKeeper.keepAll(SessionPaths(DeviceCheck.dataDir(this)), log = ::log)
+            // Not during a save sync: both write the player's Save.
+            SaveSyncFolder.locked { SaveKeeper.keepAll(SessionPaths(DeviceCheck.dataDir(this)), log = ::log) }
             true
         } catch (error: Exception) {
             log("Start over not sent: the saves could not be moved to the player's folder: $error")
@@ -1597,34 +1704,144 @@ class SessionService : Service() {
     }
 
     /**
+     * The save sync ([SaveSyncFolder.run]) when the setting is on, named [why] in the log:
+     * before a launch ([forLaunch], on the worker, after [linkSaves] and before the launch is
+     * sent, whatever the folder's state: the launch goes on), else only while the game, a launch,
+     * the official PD2 launcher (and a game it started), an install and every job are not running,
+     * as seen once the sync has its turn: else Sync now's line says so. One sync at a time.
+     */
+    private fun syncSaves(why: String, forLaunch: Boolean = false) {
+        if (AppSettingsStore.load(this).syncFolder == null) return
+        val busy = {
+            val status = _status.value
+            // A launch counts from its request until its game or session shows, it fails or it
+            // is refused (launchRequested), or at most SYNC_LAUNCH_WAIT_MS.
+            val launching = status.launchRequestedAt?.let { SystemClock.elapsedRealtime() - it < SYNC_LAUNCH_WAIT_MS } == true
+            status.snapshot?.game == Game.RUNNING || status.snapshot?.activeJob != null || status.launcherGame ||
+                installEnvironment || launching
+        }
+        SaveSyncFolder.run(this, paths, why, AppSettingsStore.load(this).detailedLogging, busy.takeUnless { forLaunch }, ::log)
+    }
+
+    /** [syncSaves] on the sync's own thread: after the game or the official launcher, and from Settings. */
+    private fun syncSavesSoon(why: String) {
+        try {
+            syncWorker.execute { syncSaves(why) }
+        } catch (_: RejectedExecutionException) {
+        }
+    }
+
+    /**
+     * Starts a job ([dispatch]) for the press or step [what]: at once, or, while the snapshot still
+     * shows the last operation's end, once the engine has cleared it (`DismissResult`,
+     * [OperationStart]; protocol 5 has no operation ID, so an old result could pass for the new
+     * job's). Nothing starts while the session closes, another start waits, the engine is not
+     * connected, or the game or a job runs, nor when the engine does not clear its last result in
+     * [PlayCheck.WAIT_MS]: then [cancelled] runs, the log says why and, with [shown], the screens
+     * too ([Refusal] -1 with the engine's code for it, [Refusals.text]). [joinsDownload]: keys
+     * that join a running Download (the engine takes `authorize` while it runs), which is then no
+     * job that holds the start back.
+     */
+    private fun beginOperation(
+        what: String, shown: Boolean = true, cancelled: () -> Unit = {}, joinsDownload: Boolean = false, dispatch: () -> Unit,
+    ): Boolean {
+        val refused = { why: String, reason: String? ->
+            log("$what not started: $why")
+            if (shown && reason != null) _status.update { it.copy(refusal = Refusal(-1, reason)) }
+            cancelled()
+            false
+        }
+        if (closing) return refused("the session is closing", null)
+        if (pendingStart != null) return refused("another start waits for the engine to clear its last result", REFUSED_ENGINE_BUSY)
+        val connection = channel ?: return refused("the engine is not connected", REFUSED_ENGINE_GONE)
+        val status = _status.value
+        val job = status.snapshot?.activeJob
+        if ((job != null && !(joinsDownload && job == com.pd2launcher.app.control.Job.DOWNLOAD)) || status.snapshot?.game == Game.RUNNING) {
+            return refused("the game or a job runs", REFUSED_BUSY)
+        }
+        if (!OperationStart.terminal(status.snapshot)) {
+            dispatch()
+            return true
+        }
+        val seq = sendCommand(Command.DismissResult) ?: return refused("the last result could not be cleared (DismissResult not sent)", REFUSED_ENGINE_GONE)
+        val pending = OperationStart(connection, status.snapshotSeq ?: -1, seq, SystemClock.elapsedRealtime(), dispatch) {
+            // No clear in PlayCheck.WAIT_MS, its DismissResult refused, or the engine stopped.
+            refused("the engine did not clear its last result (DismissResult seq $seq)", REFUSED_ENGINE_BUSY.takeUnless { closing })
+        }
+        pendingStart = pending
+        scope.launch {
+            delay(PlayCheck.WAIT_MS)
+            post {
+                if (pendingStart === pending) {
+                    pendingStart = null
+                    pending.cancel()
+                }
+            }
+        }
+        return true
+    }
+
+    private fun cancelOperationStart() {
+        val pending = pendingStart
+        pendingStart = null
+        pending?.cancel()
+    }
+
+    /**
      * Install runs Wine with the game environment's X screen and sound: the game environment
      * first (installs keep the game's own size, whatever the game resolution; a Play at another
      * size starts it again), then [send]; nothing is sent without it. The game environment then
      * runs for an install ([installEnvironment]: this one, or the Diablo II install that Install
      * Project Diablo 2 continues), also when it ran before with nothing in it (a launch that failed
      * leaves it), and a command that could not be sent, or one the engine refuses, stops it again:
-     * nothing would run in it.
+     * nothing would run in it. [shown]: a press of the player's, whose refusal the screens show
+     * ([beginOperation]).
      */
-    private fun sendInstallStart(send: () -> Long?): Boolean {
-        val started = !game.running
-        if (started) startGameEnvironment(GameResolution.display(this).let { (w, h) -> GameResolution.ownSize(w, h, ::log) }, given = false)
-        if (!game.running) {
-            log("install not sent: the game environment is not running")
-            return false
-        }
-        installEnvironment = true
-        val seq = send()
-        if (seq == null) {
-            log("install not sent; stopping the game environment started for it")
-            stopGameEnvironment()
-            return false
-        }
-        installStart = seq
-        return true
+    private fun sendInstallStart(
+        job: com.pd2launcher.app.control.Job,
+        imported: Boolean = false,
+        shown: Boolean = true,
+        cancelled: () -> Unit = {},
+        joinsDownload: Boolean = false,
+        send: () -> Long?,
+    ): Boolean = beginOperation("install ($job)", shown, cancelled, joinsDownload) {
+        dispatchInstall(job, imported, cancelled, send)
     }
 
-    private fun installProjectDiablo() {
-        sendInstallStart { sendCommand(Command.InstallProjectDiablo) }
+    private fun dispatchInstall(job: com.pd2launcher.app.control.Job, imported: Boolean, cancelled: () -> Unit, send: () -> Long?) {
+        val sent = installWork.start(
+            job, imported, _status.value.snapshotSeq ?: -1,
+            prepare = {
+                if (!game.running) {
+                    startGameEnvironment(GameResolution.display(this).let { (w, h) -> GameResolution.ownSize(w, h, ::log) }, given = false)
+                }
+                if (!game.running) log("install not sent: the game environment is not running")
+                game.running.also { if (it) installEnvironment = true }
+            },
+            send = send,
+            stop = {
+                log("install not sent; stopping the game environment started for it")
+                stopGameEnvironment()
+            },
+        )
+        if (sent) installStart = installWork.sequence else cancelled()
+    }
+
+    /**
+     * Install Project Diablo 2: the player's press ([press]), or the step after Install Diablo II.
+     * When it does not start, the game environment that Install Diablo II left for it stops (none
+     * other runs in it), so the session can become idle.
+     */
+    private fun installProjectDiablo(press: Boolean) {
+        sendInstallStart(com.pd2launcher.app.control.Job.INSTALL_PROJECT_DIABLO, shown = press, cancelled = {
+            val snapshot = _status.value.snapshot
+            if (installWork.sequence == null && installEnvironment && game.running &&
+                snapshot?.activeJob == null && snapshot?.game != Game.RUNNING
+            ) {
+                log("Install Project Diablo 2 did not start; stopping the game environment left for it")
+                stopGameEnvironment()
+            }
+        }) { sendCommand(Command.InstallProjectDiablo) }
     }
 
     /**
@@ -1643,9 +1860,9 @@ class SessionService : Service() {
      * same looks go to the launcher's run ([OfficialLauncherLog.processes]), and every second one,
      * while its game does not run, whether the X screen shows a picture ([OfficialLauncherLog.screen]).
      * While the launcher runs and none of its other programs ([LauncherHang.watched]), also the
-     * windows on the X screen ([XWindows]): a launcher that runs on without one stops
-     * ([LauncherHang], [launcherHung]). Worker thread only; the looking runs in [scope] and reads
-     * only the app's own processes and its own X screen.
+     * windows on the X screen ([XWindows]): a launcher that runs on without one, or beside its
+     * game, stops ([LauncherHang], [launcherStop]). Worker thread only; the looking runs in [scope]
+     * and reads only the app's own processes and its own X screen.
      */
     private fun watchLauncherGame(on: Boolean) {
         if (!on) {
@@ -1688,25 +1905,58 @@ class SessionService : Service() {
                 }
                 val step = LauncherHang.next(hang, processes, windows, SystemClock.elapsedRealtime())
                 hang = step.watch
-                if (step.stop) post { if (launcherGameWatch === watch) launcherHung(step.watch.launchers) }
+                step.stop?.let { stop -> post { if (launcherGameWatch === watch) launcherStop(stop, step.watch.launchers) } }
                 delay(LauncherGame.POLL_MS)
             }
         }
     }
 
     /**
-     * The official PD2 launcher runs on without a window ([LauncherHang]): its session stops as
-     * Close launcher stops it, through the engine's safe stop. Only while the engine still runs
-     * the launcher's job: not again when a stop is already under way. Worker thread only.
+     * The official PD2 launcher runs on when the player is done with it ([LauncherHang]): without a
+     * window (its X), its session stops as Close launcher stops it, through the engine's safe stop;
+     * beside its game, only PD2Launcher.exe ends ([endLauncher]) and the game runs on. Only while
+     * the engine still runs the launcher's job: not again when a stop is already under way.
+     * Worker thread only.
      */
-    private fun launcherHung(launchers: Set<Int>) {
+    private fun launcherStop(stop: LauncherHang.Stop, launchers: Set<Int>) {
         val snapshot = _status.value.snapshot
         if (snapshot?.activeJob != com.pd2launcher.app.control.Job.OFFICIAL_LAUNCHER || snapshot.operation?.status != OperationStatus.RUNNING) return
-        val why = "no window for ${LauncherHang.NO_WINDOW_MS / 1_000} s while PD2Launcher.exe (pid ${launchers.joinToString()}) " +
-            "runs on and none of its other programs runs"
-        log("official PD2 launcher: $why; safe stop, as Close launcher")
-        launcherLog.note("$why: the engine is asked to stop the session safely, as Close launcher does")
-        sendCommand(Command.RequestSafeStop)
+        val pids = launchers.joinToString()
+        when (stop.why) {
+            LauncherHang.Why.NO_WINDOW -> {
+                val why = "no window for ${stop.afterMs} ms while PD2Launcher.exe (pid $pids) runs on and none of its other programs runs"
+                log("official PD2 launcher stops (its X): $why; safe stop, as Close launcher")
+                launcherLog.note("stop (its X): $why: the engine is asked to stop the session safely, as Close launcher does")
+                sendCommand(Command.RequestSafeStop)
+            }
+            LauncherHang.Why.GAME -> {
+                if (launcherEnd?.isActive == true) return
+                val why = "its game Game.exe has run for ${stop.afterMs} ms beside PD2Launcher.exe (pid $pids)"
+                log("official PD2 launcher stops (game started): $why; only PD2Launcher.exe ends, the game runs on")
+                launcherLog.note("stop (game started): $why: only PD2Launcher.exe ends, the game runs on")
+                launcherEnd = scope.launch(Dispatchers.IO) { endLauncher(launchers) }
+            }
+        }
+    }
+
+    /**
+     * Ends the PD2Launcher.exe processes [launchers] and no other process ([UidCleanup]): SIGTERM,
+     * and SIGKILL after [LauncherHang.END_GRACE_MS] to one that still runs. Wine's server sees the
+     * end as any end of one of its programs, and the engine's session waits for the rest of the
+     * prefix (the game) as after any end of the launcher. Off the worker.
+     */
+    private fun endLauncher(launchers: Set<Int>) {
+        val start = SystemClock.elapsedRealtime()
+        val targets = { otherProcesses().filter { it.pid in launchers && it.name.equals(LauncherHang.PROCESS, ignoreCase = true) } }
+        UidCleanup(targets, ::sendSignal, { line -> log("official PD2 launcher: $line") }).run(LauncherHang.END_GRACE_MS)
+        val left = targets()
+        val text = if (left.isEmpty()) {
+            "PD2Launcher.exe ended ${SystemClock.elapsedRealtime() - start} ms after the stop"
+        } else {
+            "PD2Launcher.exe (pid ${left.joinToString { it.pid.toString() }}) still runs after SIGKILL"
+        }
+        log("official PD2 launcher: $text")
+        launcherLog.note(text)
     }
 
     /** The app's other processes now: those of its user ID that the session service did not start itself. */
@@ -1744,6 +1994,8 @@ class SessionService : Service() {
         xScreen = null
         xScreenGiven = false
         installEnvironment = false
+        installStart = null
+        installWork.clear()
         _status.update { it.copy(gameEnvironment = false) }
         log("game environment stopped")
     }
@@ -1762,6 +2014,7 @@ class SessionService : Service() {
     private fun close() {
         if (closeStarted || stopping) return
         closeStarted = true
+        cancelOperationStart()
         closing = true
         val now = SystemClock.elapsedRealtime()
         val stop = BackgroundWork.stop(_status.value, now)
@@ -1971,6 +2224,22 @@ class SessionService : Service() {
         }
     }
 
+    /**
+     * Debug builds only: the seccomp test harness that every program starts under while
+     * [SessionPaths.seccompHarnessForTest] exists ([ProcessStarter]), so a test runs the whole
+     * session, started from the app as usual, under Android 11's app seccomp policy on a device
+     * whose Android puts no filter on apps. A blocked call gets ENOSYS and a line in the program's
+     * log and in logcat. Without the harness program the start fails: a test that asks for the
+     * harness must not pass without it.
+     */
+    private fun seccompHarness(): File? {
+        if (!BuildConfig.DEBUG || !paths.seccompHarnessForTest.exists()) return null
+        if (!paths.seccompRun.canExecute()) {
+            throw IOException("${paths.seccompHarnessForTest.name} is there, but no seccomp test harness at ${paths.seccompRun}")
+        }
+        return paths.seccompRun
+    }
+
     /** Whether [process] ended within [timeoutMs]. */
     private fun awaitExit(process: OwnedProcess, timeoutMs: Long): Boolean {
         val deadline = SystemClock.elapsedRealtime() + timeoutMs
@@ -2021,7 +2290,9 @@ class SessionService : Service() {
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentIntent(open)
             .setOngoing(true)
-            .setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE)
+        // Shown at once: Android 12 and later may hold a foreground service's notification back
+        // for 10 seconds (the hold-back came with Android 12).
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) builder.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE)
         if (closing) {
             return builder
                 .setContentTitle(getString(R.string.notification_closing_title))
@@ -2031,17 +2302,19 @@ class SessionService : Service() {
         val close = PendingIntent.getService(
             this, REQUEST_CLOSE, Intent(this, SessionService::class.java).setAction(ACTION_CLOSE), PendingIntent.FLAG_IMMUTABLE,
         )
+        val action = Notification.Action.Builder(Icon.createWithResource(this, R.drawable.ic_close), getString(R.string.notification_close), close)
+        // Not from the lock screen: the game or an install stops only after an unlock (Android 12
+        // and later; Android 11 has no such option, so there the button asks for no unlock).
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) action.setAuthenticationRequired(true)
         return builder
             .setContentTitle(getString(R.string.notification_title))
             .setContentText(getString(R.string.notification_text))
-            .addAction(
-                Notification.Action.Builder(Icon.createWithResource(this, R.drawable.ic_close), getString(R.string.notification_close), close)
-                    // Not from the lock screen: the game or an install stops only after an unlock.
-                    .setAuthenticationRequired(true)
-                    .build(),
-            )
+            .addAction(action.build())
             .build()
     }
+
+    /** The official launcher's command [seq], sent after snapshot [afterSnapshot], which showed operation [before]. */
+    private data class LauncherSent(val seq: Long, val afterSnapshot: Long, val before: Operation?)
 
     companion object {
         private const val TAG = "pd2-session"
@@ -2072,8 +2345,12 @@ class SessionService : Service() {
         const val ACTION_INSTALL_PD2 = "com.pd2launcher.app.action.INSTALL_PD2"
         /** The notification's Close: what runs stops safely, then the session and the app's screens ([close]). */
         const val ACTION_CLOSE = "com.pd2launcher.app.action.CLOSE"
+        /** Settings → App → Game files → Save sync: a sync now ([syncSavesSoon]), named by [EXTRA_SYNC_WHY]. */
+        const val ACTION_SYNC_SAVES = "com.pd2launcher.app.action.SYNC_SAVES"
         /** Debug builds: the X screen's size for [ACTION_GAME_START], `<width>x<height>`. */
         const val EXTRA_X_SCREEN = "xscreen"
+        /** Why [ACTION_SYNC_SAVES] came (Sync now, the setting turned on, another folder), for the log. */
+        const val EXTRA_SYNC_WHY = "sync_why"
         /** The service was started with startForegroundService ([send]'s fallback): it shows the notification at once. */
         private const val EXTRA_FOREGROUND = "foreground"
         private const val CHANNEL = "session"
@@ -2095,6 +2372,16 @@ class SessionService : Service() {
         private const val PREVIOUS_STOP_TIMEOUT_MS = 40_000L
         /** The longest Play waits for the check after a finished update to show ([Play.Recheck.WAITING]). */
         private const val RECHECK_WAIT_MS = 30_000L
+        /**
+         * The longest a launch request holds a save sync back ([syncSaves]) when nothing clears
+         * it: longer than Play's buttons wait ([Play.LAUNCH_PENDING_MS]), as a slow game start
+         * must not meet a sync.
+         */
+        private const val SYNC_LAUNCH_WAIT_MS = 120_000L
+        /** The engine's refusal codes that [beginOperation] shows for its own refusals ([Refusals.text]). */
+        private const val REFUSED_BUSY = "mutation-already-active"
+        private const val REFUSED_ENGINE_BUSY = "engine-busy"
+        private const val REFUSED_ENGINE_GONE = "service-unavailable"
 
         private val _status = MutableStateFlow(SessionStatus())
         val status: StateFlow<SessionStatus> = _status.asStateFlow()
@@ -2162,8 +2449,45 @@ class SessionService : Service() {
             return true
         }
 
+        /**
+         * Agree and install after Download failed or stopped ([KeysWhileDownloading.retries]):
+         * one start, with the game environment, sends Download again and then the keys, which
+         * join it; Install Diablo II follows it by itself.
+         */
+        fun authorizeWithDownload(d2Key: CharArray, lodKey: CharArray) {
+            heldKeys.hold(d2Key, lodKey)
+            val service = running
+            try {
+                if (service != null) {
+                    service.worker.execute {
+                        service.sendInstallStart(
+                            com.pd2launcher.app.control.Job.INSTALL_BASE_GAME, cancelled = { d2Key.fill('\u0000'); lodKey.fill('\u0000') },
+                        ) {
+                            if (service.sendCommand(Command.DownloadAll) != null) {
+                                service.sendAuthorize(d2Key, lodKey)
+                            } else {
+                                d2Key.fill('\u0000')
+                                lodKey.fill('\u0000')
+                                null
+                            }
+                        }
+                    }
+                    return
+                }
+            } catch (_: java.util.concurrent.RejectedExecutionException) {
+            }
+            d2Key.fill('\u0000')
+            lodKey.fill('\u0000')
+        }
+
         /** Whether [resumeInstall] has keys to send. */
         fun keysHeld(): Boolean = heldKeys.held
+
+        /**
+         * The keys the engine refused ([KeyProblems]), for the key page's fields; they are held no
+         * more, so Resume cannot send them again. The caller clears them.
+         */
+        fun takeRefusedKeys(): Pair<CharArray, CharArray>? = heldKeys.take()
 
         /** The keys to the engine with the game environment; cleared once sent, or at once. */
         private fun sendKeys(d2Key: CharArray, lodKey: CharArray) {
@@ -2171,14 +2495,10 @@ class SessionService : Service() {
             try {
                 if (service != null) {
                     service.worker.execute {
-                        try {
-                            service.sendInstallStart { service.sendAuthorize(d2Key, lodKey) }
-                        } finally {
-                            // Without the game environment the install cannot run: the keys are
-                            // not sent (cleared here), and the key screen shows why (gameEnvironmentFailure).
-                            d2Key.fill('\u0000')
-                            lodKey.fill('\u0000')
-                        }
+                        service.sendInstallStart(
+                            com.pd2launcher.app.control.Job.INSTALL_BASE_GAME, cancelled = { d2Key.fill('\u0000'); lodKey.fill('\u0000') },
+                            joinsDownload = true,
+                        ) { service.sendAuthorize(d2Key, lodKey) }
                     }
                     return
                 }
@@ -2197,7 +2517,10 @@ class SessionService : Service() {
             val service = running ?: return
             try {
                 service.worker.execute {
-                    if (withGameEnvironment) service.sendInstallStart { service.sendCommand(command) } else service.sendCommand(command)
+                    if (withGameEnvironment) service.sendInstallStart(
+                        if (command is Command.InstallProjectDiablo) com.pd2launcher.app.control.Job.INSTALL_PROJECT_DIABLO else com.pd2launcher.app.control.Job.INSTALL_BASE_GAME,
+                        imported = command is Command.ImportExistingInstall,
+                    ) { service.sendCommand(command) } else service.sendCommand(command)
                 }
             } catch (_: java.util.concurrent.RejectedExecutionException) {
             }
@@ -2256,9 +2579,10 @@ class SessionService : Service() {
          * comes back): then a start in the foreground, which shows the notification until the
          * service sees that nothing must go on.
          */
-        fun send(context: Context, action: String = ACTION_START, xScreen: String? = null) {
+        fun send(context: Context, action: String = ACTION_START, xScreen: String? = null, syncWhy: String? = null) {
             val intent = Intent(context, SessionService::class.java).setAction(action)
             if (xScreen != null) intent.putExtra(EXTRA_X_SCREEN, xScreen)
+            if (syncWhy != null) intent.putExtra(EXTRA_SYNC_WHY, syncWhy)
             try {
                 context.startService(intent)
             } catch (error: IllegalStateException) {

@@ -78,14 +78,17 @@ enum class Chord(val first: PadButton, val second: PadButton) {
 
 /**
  * The player's controls: the controller's bindings in pad and mouse mode, the chord,
- * the pointer speed in mouse mode, and whether the on-screen controls show and how strongly
- * (their layout is [LayoutStore]'s).
+ * the pointer speed in mouse mode and Trackpad, and whether the on-screen controls show and how
+ * strongly (their layout is [LayoutStore]'s).
  */
 data class Controls(
     val padMode: Map<PadButton, PadAction> = DEFAULT_PAD,
     val mouseMode: Map<PadButton, PadAction> = DEFAULT_MOUSE,
     val chord: Chord = Chord.SELECT_START,
-    /** Mouse mode's pointer speed, a factor of the sticks' base speeds ([PointerSpeed]). */
+    /**
+     * Mouse mode's pointer speed, a factor of the sticks' base speeds ([PointerSpeed]); Trackpad's
+     * too, a factor of the finger's moves ([TrackpadGestures]).
+     */
     val pointerSpeed: Float = PointerSpeed.DEFAULT,
     /** On-screen controls shown; null: shown only while no controller is connected. */
     val onScreen: Boolean? = null,

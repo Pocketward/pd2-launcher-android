@@ -3,21 +3,32 @@ package com.pd2launcher.app
 import com.pd2launcher.app.control.Command
 import com.pd2launcher.app.control.ExistingProblem
 import com.pd2launcher.app.control.ImportMode
+import com.pd2launcher.app.control.InstallSource
+import com.pd2launcher.app.control.Job
 import com.pd2launcher.app.control.Installer
+import com.pd2launcher.app.control.SettingChange
 import com.pd2launcher.app.control.Snapshot
 
 /**
- * Step 2's two ways to Diablo II. The engine also takes installer files on the desktop; the
- * Android app does not offer them.
+ * Step 2's three ways to Diablo II, in the page's order. The engine also takes installer files on
+ * the desktop; the Android app does not offer them.
  */
 enum class SourceChoice {
-    /** Everything is downloaded: Diablo II and LoD from Blizzard, Project Diablo 2 (the default). */
+    /**
+     * Fast download (the default): the engine fetches Diablo II and Lord of Destruction from
+     * Blizzard and installs them itself, with no Wine (the engine's `direct_download` source).
+     */
+    FAST,
+    /** Blizzard's installers: Blizzard's own downloader and installers run under Wine (`official`). */
     BLIZZARD,
-    /** The player's Diablo II + LoD folder, picked with the system picker and used in place. */
+    /** The player's Diablo II + LoD folder, picked with the system picker and copied into the app. */
     EXISTING,
     ;
 
     companion object {
+        /** The choice for a new install. */
+        val DEFAULT = FAST
+
         /** The choice saved as [name] in the activity's saved state; null for none, or for a name this version does not know. */
         fun named(name: String?): SourceChoice? = entries.firstOrNull { it.name == name }
     }
@@ -139,14 +150,26 @@ object DiabloSource {
     )
 
     /**
-     * The choice the engine's [installer] stands for; null when none is made yet, and for installer
-     * files, which the Android app does not offer (Continue then selects the download).
+     * The choice the engine's [snapshot] stands for: its installer, and for Blizzard's download
+     * its install source. Null when none is made yet, and for installer files, which the Android
+     * app does not offer (Continue then selects the download).
      */
-    fun choiceOf(installer: Installer): SourceChoice? = when (installer) {
+    fun choiceOf(snapshot: Snapshot): SourceChoice? = when (snapshot.installer) {
         Installer.NotSelected, is Installer.Folder, is Installer.Invalid -> null
-        Installer.BlizzardDownload -> SourceChoice.BLIZZARD
+        Installer.BlizzardDownload ->
+            if (snapshot.settings.installSource == InstallSource.DIRECT_DOWNLOAD) SourceChoice.FAST else SourceChoice.BLIZZARD
         is Installer.Existing -> SourceChoice.EXISTING
     }
+
+    /**
+     * The row the source page selects: the player's [selected] one, else the row the player last
+     * selected before a restart ([saved], [AppSettings.sourceChoice]), else what the engine's
+     * [snapshot] stands for, else Fast download. The engine selects Blizzard's download with its
+     * own downloader by itself at each start, so that state is no choice of the player's and
+     * shows the default.
+     */
+    fun pageChoice(selected: SourceChoice?, snapshot: Snapshot?, saved: SourceChoice? = null): SourceChoice =
+        selected ?: saved ?: snapshot?.let(::choiceOf)?.takeUnless { it == SourceChoice.BLIZZARD } ?: SourceChoice.DEFAULT
 
     fun view(selected: SourceChoice, session: SessionStatus, copy: SourceCopy): View {
         val snapshot = session.snapshot?.takeIf { session.engine == SessionStatus.Engine.CONNECTED }
@@ -155,7 +178,7 @@ object DiabloSource {
         // No folder accepted: Continue opens the picker (again), as Choose Diablo II folder does.
         fun pick(tone: Tone, status: Line) = View(selected, tone, status, canContinue = true, continuePicks = true, progress = null)
 
-        if (selected != SourceChoice.BLIZZARD) {
+        if (selected == SourceChoice.EXISTING) {
             when (copy) {
                 is SourceCopy.Copying -> return view(
                     Tone.WORKING,
@@ -171,20 +194,40 @@ object DiabloSource {
         }
         if (snapshot == null) return view(Tone.PENDING, Line(R.string.source_waiting))
         val installer = snapshot.installer
+        // While the removal for a picked folder runs, the engine starts no Download: Continue waits.
+        val free = snapshot.activeJob != Job.DISCARD_DOWNLOADS
         return when (selected) {
-            SourceChoice.BLIZZARD -> view(Tone.OK, Line(R.string.source_blizzard_ready), canContinue = true)
+            SourceChoice.FAST, SourceChoice.BLIZZARD -> view(Tone.OK, Line(R.string.source_blizzard_ready), canContinue = free)
             SourceChoice.EXISTING -> when {
                 installer !is Installer.Existing -> pick(Tone.PENDING, Line(R.string.source_existing_pick))
                 installer.problem != null -> pick(Tone.ERROR, problem(installer.problem))
-                installer.inPlacePossible -> view(Tone.OK, inPlace((copy as? SourceCopy.Copied)?.projectDiablo), canContinue = true)
-                else -> view(Tone.OK, Line(R.string.source_existing_copy, installer.copyBytes shr 20), canContinue = true)
+                installer.inPlacePossible -> view(Tone.OK, inPlace((copy as? SourceCopy.Copied)?.projectDiablo), canContinue = free)
+                else -> view(Tone.OK, Line(R.string.source_existing_copy, installer.copyBytes shr 20), canContinue = free)
             }
         }
     }
 
-    /** What Continue sends for [selected]; the picks were already sent once copied. */
+    /**
+     * The installer Continue selects for [selected]; the picks were already sent once copied.
+     * Both downloads use Blizzard's download: only the install source tells them apart
+     * ([sourceSetting]), so a change between them downloads nothing again.
+     */
     fun continueCommand(selected: SourceChoice, installer: Installer?): Command? =
-        if (selected == SourceChoice.BLIZZARD && installer != Installer.BlizzardDownload) Command.UseBlizzardDownload else null
+        if (selected != SourceChoice.EXISTING && installer != Installer.BlizzardDownload) Command.UseBlizzardDownload else null
+
+    /**
+     * The install source Continue sets for [selected] when the engine's [current] one differs:
+     * `direct_download` for Fast download, `official` for Blizzard's installers. The engine saves
+     * it and reads it when Install Diablo II starts. Null for a folder, which needs neither.
+     */
+    fun sourceSetting(selected: SourceChoice, current: InstallSource?): Command? {
+        val wanted = when (selected) {
+            SourceChoice.FAST -> InstallSource.DIRECT_DOWNLOAD
+            SourceChoice.BLIZZARD -> InstallSource.OFFICIAL
+            SourceChoice.EXISTING -> return null
+        }
+        return if (wanted != current) Command.ChangeSettings(SettingChange.InstallSource(wanted)) else null
+    }
 
     /** The command that hands a finished folder copy in [folder] to the engine. */
     fun selectCommand(folder: String): Command = Command.SelectExistingInstall(folder)
@@ -196,6 +239,9 @@ object DiabloSource {
     /** Install for an existing folder imports it instead of asking for keys. */
     fun importsExisting(snapshot: Snapshot): Boolean =
         snapshot.installer.let { it is Installer.Existing && it.problem == null }
+
+    /** The engine's refusal of the removal of the downloads' files (an install stage or another job runs). */
+    const val DISCARD_REFUSED = "discard-downloads-not-permitted"
 
     /** What Install does with the folder's Project Diablo 2: the import keeps it as it is, with no update. */
     private fun inPlace(projectDiablo: ProjectDiabloFound?): Line =

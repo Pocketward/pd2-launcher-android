@@ -8,7 +8,7 @@
 # `build.sh check` compiles the debug APK without the App userland, the CI check; it copies no APK
 # to build/outputs, as one without the userland cannot run. The JVM tests, where the repository
 # has them (app/src/test), run on the debug variant. It also runs the release build's lint check
-# (lintVitalRelease), which `build.sh release` leaves out: the CI runs both on the same commit.
+# (lintVitalRelease), which must pass before either check or release succeeds.
 # `build.sh mockup` and `build.sh spike` build development apps that are not part of the
 # public source.
 # `build.sh verification-metadata` writes gradle/verification-metadata.xml again (after a
@@ -34,7 +34,7 @@ fi
 case "$target" in
     app) tasks=":app:assembleDebug :app:testDebugUnitTest" ;;
     release)
-        tasks=":app:assembleRelease :app:testDebugUnitTest -x :app:lintVitalRelease"
+        tasks=":app:assembleRelease :app:testDebugUnitTest :app:lintVitalRelease"
         after=" && apksigner verify --verbose --print-certs $release_apk && zipalign -c 4 $release_apk"
         ;;
     # The release variant's lint check needs no release key: its signing guard (preReleaseBuild)
@@ -73,6 +73,10 @@ cache="${PD2_ANDROID_CACHE:-$HOME/.cache/pd2-android}"
 if [[ "${PD2_ANDROID_IN_CONTAINER:-}" == 1 ]]; then
     echo "refusing: build.sh runs on the host and starts the container itself" >&2
     exit 1
+fi
+
+if [[ "$target" == check && -f "$here/app/src/test/scripts/release-gate-test.sh" ]]; then
+    bash "$here/app/src/test/scripts/release-gate-test.sh"
 fi
 
 if command -v podman >/dev/null 2>&1; then
@@ -215,12 +219,28 @@ run_gradle() {
         sh -c "mkdir -p \"\$HOME\" && ./gradlew --no-daemon $tasks$after"
 }
 
+# The run's output, also kept in a file: only a network failure (of the container's default
+# network, or of Gradle's downloads) is tried again, with host networking; a failed build, test or
+# lint check is not.
+run_log="$(mktemp)"
+trap 'rm -f "$run_log"' EXIT
+network_failure() {
+    grep -Eq 'netavark|pasta|slirp4netns|Could not (resolve|GET|HEAD)|UnknownHostException|Connection (refused|reset|timed out)|Network is unreachable|No route to host|Temporary failure in name resolution|Read timed out' "$run_log"
+}
+lint_failure() {
+    grep -Eq "Execution failed for task ':app:lintVital(Analyze|Report)?Release'" "$run_log"
+}
 # AGP reads ANDROID_USER_HOME as its ".android" directory, so the debug keystore is $cache/debug.keystore.
-if ! run_gradle "${net_args[@]}"; then
-    if [[ ${#net_args[@]} -eq 0 ]]; then
-        echo "gradle run failed; retrying with --network host" >&2
+if ! run_gradle "${net_args[@]}" 2>&1 | tee "$run_log"; then
+    if [[ ${#net_args[@]} -eq 0 ]] && network_failure; then
+        echo "gradle run failed on the network; retrying with --network host" >&2
         run_gradle --network host
     else
+        if lint_failure; then
+            echo "build failed: the release lint check (lintVitalRelease) found errors; its report is above" >&2
+        else
+            echo "build failed (not a network failure: no retry); the reason is above" >&2
+        fi
         exit 1
     fi
 fi

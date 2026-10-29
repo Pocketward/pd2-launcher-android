@@ -6,6 +6,10 @@ project(seccompprobe C CXX)
 # option is explicit.
 add_link_options("LINKER:-z,max-page-size=4096")
 
+# minSdk is 30 (Android 11): an NDK function from a later API level is a weak reference, and each
+# call of one must check the API level first (__builtin_available), or the build stops.
+add_compile_options(-D__ANDROID_UNAVAILABLE_SYMBOLS_ARE_WEAK__ -Werror=unguarded-availability)
+
 # Debug probe for the app's seccomp policy: which syscalls it lets through.
 add_library(seccompprobe SHARED seccomp_probe.c)
 target_compile_options(seccompprobe PRIVATE -Wall -Wextra -Werror)

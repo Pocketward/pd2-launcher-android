@@ -16,14 +16,13 @@
 
 // One shown, one queued, one being written.
 #define BUFFERS 3
-// A buffer the compositor has not given back this long after a frame replaced it is taken back
-// anyway.
-#define STUCK_NS 1000000000LL
 // The copy rests this long without a break before the buffers off the screen go
 // (frame_layer_rest): a short return to the copy keeps them.
 #define REST_RELEASE_NS 5000000000LL
 // A buffer the allocator refused is asked for again after this long at the soonest.
 #define ALLOCATE_AGAIN_NS 100000000LL
+// The compositor holds the next buffer this long: one line in the log (nothing else changes).
+#define HELD_LOG_NS 1000000000LL
 
 struct frame_layer {
     // Under lock once frame_layer_destroy runs: it lets the layer go before it waits (NULL).
@@ -41,9 +40,13 @@ struct frame_layer {
     int locked; // the buffer frame_layer_lock gave, -1 none
     int refusals; // allocations refused in a row (the first is logged)
     int64_t refused_ns; // the last refusal
+    // frame_layer_lock (the copy's thread): since when the compositor holds the next buffer (0:
+    // it does not), and whether that wait is logged (HELD_LOG_NS).
+    int64_t held_since;
+    int held_logged;
     // frame_layer_rest: whether the copy rests and since when, and whether every buffer that can
-    // go has gone. [redraw]: a buffer went, or the allocator refused one, since the last frame
-    // shown: the copy shows the X screen again, changed or not.
+    // go has gone. [redraw]: a buffer went, allocation failed, or a busy slot prevented a post
+    // since the last frame shown. The copy shows the X screen again, changed or not.
     int resting;
     int64_t rest_since;
     int rest_done;
@@ -56,7 +59,6 @@ struct frame_layer {
     pthread_mutex_t lock;
     pthread_cond_t answered;
     int busy[BUFFERS];
-    int64_t busy_since[BUFFERS]; // when a frame replaced it on the screen (or it was locked)
     int release_fence[BUFFERS];
     int inflight;
     // frame_layer_destroy stopped waiting for the compositor: the last callback frees the layer.
@@ -157,19 +159,27 @@ int frame_layer_lock(frame_layer *l, uint32_t **pixels, int *stride) {
     int64_t now = now_ns();
     int fence = -1;
     pthread_mutex_lock(&l->lock);
-    if (l->busy[i] && now - l->busy_since[i] > STUCK_NS) {
-        LOG("buffer %d not given back for %lld ms; taking it back", i, (long long)((now - l->busy_since[i]) / 1000000));
-        l->busy[i] = 0;
-    }
     int busy = l->busy[i];
     if (!busy) {
         fence = l->release_fence[i];
         l->release_fence[i] = -1;
         l->busy[i] = 1;
-        l->busy_since[i] = now;
     }
     pthread_mutex_unlock(&l->lock);
-    if (busy) return 0;
+    if (busy) {
+        l->redraw = 1;
+        if (l->held_since == 0) {
+            l->held_since = now;
+        } else if (!l->held_logged && now - l->held_since >= HELD_LOG_NS) {
+            LOG("buffer %d still held by the compositor after %lld ms; no frame until it is given back", i,
+                (long long)((now - l->held_since) / 1000000));
+            l->held_logged = 1;
+        }
+        return 0;
+    }
+    if (l->held_logged) LOG("buffer %d given back after %lld ms", i, (long long)((now - l->held_since) / 1000000));
+    l->held_since = 0;
+    l->held_logged = 0;
     void *bits = nullptr;
     // A buffer not allocated yet has no fence: it was never on the screen, or went once it was
     // off the screen and its fence had signalled. One the allocator refuses is asked for again
@@ -279,9 +289,6 @@ void frame_layer_post(frame_layer *l) {
     ASurfaceTransaction_setOnComplete(t, done, on_complete);
     pthread_mutex_lock(&l->lock);
     l->inflight++;
-    // The buffer it replaces is given back from now on: one that stayed on the screen through a
-    // rest is not stuck.
-    if (l->shown >= 0) l->busy_since[l->shown] = now_ns();
     l->shown = i;
     pthread_mutex_unlock(&l->lock);
     ASurfaceTransaction_apply(t);

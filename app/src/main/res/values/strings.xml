@@ -14,7 +14,7 @@
     <string name="device_checking_title">Checking this device…</string>
     <string name="device_checking_body">Nothing is unpacked until the check passes.</string>
     <string name="not_supported_title">This device is not supported</string>
-    <string name="not_supported_body">PD2 Launcher needs an Adreno 6xx, 7xx or 8xx or a Mali-G310, G610, G710, G615, G715, G720 or G725 GPU, Android 13 or later and 4 KB memory pages.</string>
+    <string name="not_supported_body">PD2 Launcher needs an Adreno 6xx, 7xx or 8xx or a Mali-G310, G610, G710, G615, G715, G720 or G725 GPU, Android 11 or later and 4 KB memory pages.</string>
     <string name="not_supported_close">Close</string>
     <string name="device_check_failed">The device check could not run: %1$s</string>
     <string name="device_gpu_not_supported">%1$s is not supported. An Adreno 6xx, 7xx or 8xx or a Mali-G310, G610, G710, G615, G715, G720 or G725 GPU is needed.</string>
@@ -130,7 +130,7 @@
 
     <!-- Key screen. -->
     <string name="keys_title">Your CD keys</string>
-    <string name="keys_intro">Blizzard\'s installers need your own two keys. They go only to the installers, stay only in the app\'s memory, and are forgotten once Diablo II is installed or the app closes.</string>
+    <string name="keys_intro">Diablo II needs your own two keys. The app keeps them only in its memory until the install uses them. The installed game keeps them, as Diablo II requires.</string>
     <string name="keys_d2_label">Diablo II key</string>
     <string name="keys_lod_label">Lord of Destruction key</string>
     <string name="keys_placeholder">XXXX-XXXX-XXXX-XXXX-XXXX-XX</string>
@@ -140,13 +140,24 @@
     <string name="keys_where">Blizzard account → Games &amp; Subscriptions → Diablo II, or the manual and CD case.</string>
     <string name="keys_example_label">A key looks like</string>
     <string name="keys_example">ABCD-EFGH-JKLM-NPQR-STVW-XY</string>
-    <string name="keys_example_old">Older 16-character keys work too.</string>
     <string name="keys_terms_link">Read Blizzard\'s terms</string>
     <string name="keys_show">Show keys</string>
     <string name="keys_show_body">Keys are hidden unless you choose to see them.</string>
     <string name="keys_install">Agree and install</string>
+    <!-- Download (Blizzard's two small downloaders and Project Diablo 2's files) while the keys are typed (KeysWhileDownloading.line): one small line under the intro. -->
+    <string name="keys_installers_running">Getting the installers ready…</string>
+    <string name="keys_installers_percent">Getting the installers ready: %1$d%%</string>
+    <string name="keys_installers_done">The installers are ready.</string>
+    <string name="keys_installers_stopped">Getting the installers ready has stopped.</string>
+    <!-- The engine refused a key (KeyProblems): a red line under its field, which gets a red outline. Never the key itself. -->
+    <string name="key_problem_length">This key is too short or too long. A key has 26 letters and numbers.</string>
+    <string name="key_problem_16_characters">This is a 16-character key. Only 26-character keys work.</string>
+    <string name="key_problem_character">This key has a character that keys never use. Check the key.</string>
+    <string name="key_problem_is_lod_key">This is a Lord of Destruction key. Type it in the second field.</string>
+    <string name="key_problem_is_d2_key">This is a Diablo II key. Type it in the first field.</string>
+    <string name="key_problem_not_valid">This is not a valid key. Check each character.</string>
     <string name="terms_title">Blizzard\'s license terms</string>
-    <string name="terms_body">Diablo II and Lord of Destruction are installed with Blizzard\'s own installers. Each asks you to accept Blizzard\'s End User License Agreement; Agree and install accepts it for you, for both games.</string>
+    <string name="terms_body">To install Diablo II and Lord of Destruction, you must accept Blizzard\'s End User License Agreement. When you tap Agree and install, you accept it for both games.</string>
     <string name="terms_url">https://www.blizzard.com/legal/</string>
     <string name="terms_open">Open in browser</string>
     <string name="terms_close">Close</string>

@@ -50,9 +50,11 @@
     <string name="app_update_whats_new">What\'s new</string>
     <!-- Settings → App. -->
     <string name="app_update_auto">Look for new versions</string>
-    <string name="app_update_auto_body">Once a day, the app asks its GitHub release page if a new version is out. It downloads nothing until you tap Download.</string>
+    <string name="app_update_auto_body">While the app is open, it asks its GitHub release page each hour if a new version is out. It downloads nothing until you tap Download.</string>
     <string name="app_update_new_version">Version %1$s is out</string>
     <string name="app_update_new_version_body">Open About to download and install it.</string>
+    <!-- TalkBack, after "About" on Play, while the dot shows: a new version is out and not installed yet. -->
+    <string name="app_update_dot">New version available</string>
     <!-- The notice: an Android notification, once per version. -->
     <string name="app_update_channel">App updates</string>
     <string name="app_update_notice_title">A new version of PD2 Launcher is out</string>

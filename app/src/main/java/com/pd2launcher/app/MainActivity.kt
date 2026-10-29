@@ -36,6 +36,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.core.view.WindowCompat
@@ -125,6 +126,10 @@ class MainActivity : ComponentActivity() {
     private val launchPress = mutableStateOf<Play.LaunchPress?>(null)
     /** The source step's selection while the player chooses; null: the engine's or the default. */
     private val sourceChoice = mutableStateOf<SourceChoice?>(null)
+    /** The CD key the engine refused at Install, shown under its field on the key page ([KeyProblems]). */
+    private val keyProblem = mutableStateOf<KeyProblem?>(null)
+    /** The `seq` of the last key refusal shown, so it opens the key page once. */
+    private var keyRefusalShown = -1L
     /** Settings, from Play or the game's menu, and where in it. */
     private val settingsOpen = mutableStateOf(false)
     private val settingsNav = SettingsNav()
@@ -214,6 +219,7 @@ class MainActivity : ComponentActivity() {
         val record = SetupRecordStore.load(this)
         nav.value = FlowNav.start(savedInstanceState?.getStringArrayList(STATE_NAV), record)
         sourceChoice.value = SourceChoice.named(savedInstanceState?.getString(STATE_SOURCE))
+        keyRefusalShown = savedInstanceState?.getLong(STATE_KEY_REFUSAL, -1L) ?: -1L
         // The device check comes before anything is unpacked; the session service (which
         // unpacks and starts the engine) starts only once it passed.
         DeviceCheckRun.start(this)
@@ -233,8 +239,9 @@ class MainActivity : ComponentActivity() {
         }
         setContent {
             LauncherTheme {
-                // The engine's refusal of the last command shows on the screen it came from.
-                val refusal = SessionService.status.collectAsState().value.refusal
+                // The engine's refusal of the last command shows on the screen it came from; a
+                // refused CD key shows under its field on the key page instead.
+                val refusal = SessionService.status.collectAsState().value.refusal?.takeIf { KeyProblems.of(it.reason) == null }
                 CompositionLocalProvider(
                     LocalFormFactor provides formFactor,
                     LocalRefusal provides refusal?.let { RefusalNotice(it, SessionService::dismissRefusal) },
@@ -333,6 +340,17 @@ class MainActivity : ComponentActivity() {
                 nav.value = nav.value.afterStartOver(needsKeys = !DiabloSource.importsExisting(snapshot))
             }
         }
+        // The engine refused a CD key at Install: back to the key page, with why under the field.
+        val refusal = status.refusal
+        LaunchedEffect(refusal) {
+            val problem = refusal?.let { KeyProblems.of(it.reason) } ?: return@LaunchedEffect
+            if (refusal.seq == keyRefusalShown) return@LaunchedEffect
+            keyRefusalShown = refusal.seq
+            keyProblem.value = problem
+            // No install started with the refused keys, also when they were to join Fast download's own download.
+            installRun.value = null
+            nav.value = nav.value.open(FlowPage.KEYS)
+        }
         val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             // Android stops asking once the player declined twice: its settings page instead.
             if (!granted && !shouldShowRequestPermissionRationale(Manifest.permission.POST_NOTIFICATIONS)) openNotificationSettings()
@@ -354,11 +372,16 @@ class MainActivity : ComponentActivity() {
 
         @Composable
         fun Source(onBack: () -> Unit = back, onPreviewContinue: (() -> Unit)? = null) {
-            val choice = sourceChoice.value ?: status.snapshot?.installer?.let(DiabloSource::choiceOf) ?: SourceChoice.BLIZZARD
+            // The row the player last selected, kept over a restart (AppSettings.sourceChoice).
+            val saved = AppSettingsStore.current.collectAsState().value.sourceChoice
+            val choice = DiabloSource.pageChoice(sourceChoice.value, status.snapshot, saved)
             val view = DiabloSource.view(choice, status, sourceCopy)
             SourceScreen(
                 view,
-                onSelect = { sourceChoice.value = it },
+                onSelect = {
+                    sourceChoice.value = it
+                    if (onPreviewContinue == null) AppSettingsStore.sourceChosen(this@MainActivity, it)
+                },
                 onPickFolder = { pickFolder.launch(null) },
                 onContinue = {
                     if (view.continuePicks) {
@@ -366,15 +389,33 @@ class MainActivity : ComponentActivity() {
                     } else if (onPreviewContinue != null) {
                         onPreviewContinue()
                     } else {
-                        // No confirmation page: the download starts as Download shows.
+                        // A new start: an install run of an earlier source is over.
+                        installRun.value = null
+                        // No confirmation page: the download starts as Download shows. The install
+                        // source goes first; Install Diablo II reads it when it starts.
+                        val setting = DiabloSource.sourceSetting(choice, status.snapshot?.settings?.installSource)
+                        setting?.let { SessionService.command(it) }
                         val select = DiabloSource.continueCommand(choice, status.snapshot?.installer)
                         select?.let { SessionService.command(it) }
                         // A new source makes what was downloaded or installed for the old one stale.
                         val ready = installReady && select == null
-                        if (!ready && Onboarding.startsDownload(status, sourceChanges = select != null)) {
+                        // The engine still holds keys that joined a Download that failed or stopped:
+                        // Download runs again with the game environment, and Install Diablo II
+                        // follows it by itself with those keys (as Install's Try again does).
+                        val joins = KeysWhileDownloading.continueJoins(choice, status.snapshot, sourceChanges = setting != null || select != null)
+                        if (joins) {
+                            beginInstall(status, joinsDownload = true)
+                            SessionService.command(Command.DownloadAll, withGameEnvironment = true)
+                        } else if (!ready && Onboarding.startsDownload(status, sourceChanges = select != null)) {
                             SessionService.command(Command.DownloadAll)
                         }
-                        nav.value = nav.value.afterSource(ready)
+                        // A download of Diablo II: the key page at once, while Download gets the
+                        // installers ready (KeysWhileDownloading); a folder goes on as before.
+                        nav.value = when {
+                            joins -> nav.value.open(FlowPage.INSTALL)
+                            KeysWhileDownloading.keysAtOnce(choice, status.snapshot) -> nav.value.keysWhileDownloading()
+                            else -> nav.value.afterSource(ready)
+                        }
                     }
                 },
                 onBack = onBack,
@@ -419,7 +460,7 @@ class MainActivity : ComponentActivity() {
                 nav = settingsNav,
                 back = Onboarding.settingsBack(showGameView, previewName == DebugPreview.REPAIR || repairOpen.value || installed == Installed.Repair),
                 onCommand = { SessionService.command(it) },
-                onAppChange = { AppSettingsStore.save(this, it) },
+                onAppChange = { AppSettingsStore.update(this, it) },
                 onBatterySettings = { openSystemSettings(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) },
                 onNotificationSettings = ::openNotificationSettings,
                 onEditOnScreen = { editorOpen.value = true },
@@ -459,6 +500,7 @@ class MainActivity : ComponentActivity() {
                 onPlay = {},
                 destinations = PlayDestinations({ openSettings(SettingsNav.GAME) }, { openSettings(SettingsNav.CONTROLLER) }, {}, { aboutOpen.value = true }),
                 update = Play.update(shown),
+                newVersion = appUpdate.newVersionDot(),
             )
             // Its answers save nothing here.
             DebugPreview.notice(previewName)?.let { DownloadsNotice(it, onRemove = leavePreview, onLater = leavePreview) }
@@ -570,6 +612,7 @@ class MainActivity : ComponentActivity() {
                     onRepair = { repairOpen.value = true },
                     onAbout = { aboutOpen.value = true },
                 ),
+                newVersion = appUpdate.newVersionDot(),
             )
             // Once, after the first game session (never right after the install): the installer
             // downloads can go and, after an import from Android's own storage, so can the Diablo II
@@ -582,7 +625,7 @@ class MainActivity : ComponentActivity() {
             if (downloads != null && imported != null &&
                 InstallerDownloads.showNotice(status.snapshot, app.downloadsNoticeAnswered, app.gamePlayed, downloads.bytes, imported)
             ) {
-                val answer = { AppSettingsStore.save(this@MainActivity, AppSettingsStore.load(this@MainActivity).copy(downloadsNoticeAnswered = true)) }
+                val answer = { AppSettingsStore.update(this@MainActivity) { it.copy(downloadsNoticeAnswered = true) } }
                 DownloadsNotice(
                     InstallerDownloads.notice(
                         downloads.bytes, imported, remember { SourceImport.pickedFolder(this@MainActivity) },
@@ -633,10 +676,19 @@ class MainActivity : ComponentActivity() {
                 DownloadScreen(
                     screen,
                     onDownload = {
-                        if (status.snapshot?.installer == Installer.NotSelected) {
-                            SessionService.send(this, SessionService.ACTION_USE_BLIZZARD_DOWNLOAD)
+                        if (KeysWhileDownloading.keysWait(status.snapshot)) {
+                            // Keys wait in the engine (a Download they joined stopped or failed):
+                            // Install Diablo II follows Download by itself, so it runs with the
+                            // game environment, and Install shows it.
+                            beginInstall(status, joinsDownload = true)
+                            SessionService.command(Command.DownloadAll, withGameEnvironment = true)
+                            nav.value = nav.value.open(FlowPage.INSTALL)
+                        } else {
+                            if (status.snapshot?.installer == Installer.NotSelected) {
+                                SessionService.send(this, SessionService.ACTION_USE_BLIZZARD_DOWNLOAD)
+                            }
+                            SessionService.send(this, SessionService.ACTION_DOWNLOAD)
                         }
-                        SessionService.send(this, SessionService.ACTION_DOWNLOAD)
                     },
                     onStopSafely = { SessionService.send(this, SessionService.ACTION_STOP_SAFELY) },
                     onContinue = { nav.value = nav.value.open(FlowPage.INSTALL) },
@@ -667,18 +719,54 @@ class MainActivity : ComponentActivity() {
                     onBack = back,
                     window = framebuffer.takeIf { status.gameEnvironment },
                 )
-            } else KeysScreen(
-                onAuthorize = { d2Key, lodKey ->
-                    // The running Install shows at once; the game environment starts first.
-                    beginInstall(status)
-                    SessionService.authorize(d2Key, lodKey)
-                    nav.value = nav.value.installStarted()
-                },
-                onBack = back,
-                problem = InstallProgress.view(status).problem?.let { text(it) },
-                // A paused Install Diablo II whose keys went with the app: they continue it.
-                resuming = InstallProgress.view(status).state == InstallState.STOPPED,
-            )
+            } else {
+                val install = InstallProgress.view(status)
+                // The engine's key check failed at the start of Install Diablo II: under the field too.
+                val failedKey = KeyProblems.of(status.snapshot?.operation?.failure).takeIf { install.state == InstallState.FAILED }
+                val refused = keyProblem.value
+                // The Download line last shown (KeysWhileDownloading.hold).
+                val downloadLine = remember { arrayOfNulls<Line>(1) }
+                KeysScreen(
+                    onAuthorize = { d2Key, lodKey ->
+                        keyProblem.value = null
+                        // The running Install shows at once; the game environment starts first.
+                        // After a Download that failed or stopped, Download runs again first and
+                        // the keys join it.
+                        if (KeysWhileDownloading.retries(status)) {
+                            beginInstall(status, joinsDownload = true)
+                            SessionService.authorizeWithDownload(d2Key, lodKey)
+                        } else {
+                            beginInstall(status)
+                            SessionService.authorize(d2Key, lodKey)
+                        }
+                        nav.value = nav.value.installStarted()
+                    },
+                    onBack = {
+                        keyProblem.value = null
+                        back()
+                    },
+                    problem = install.problem?.takeIf { failedKey == null }?.let { text(it) },
+                    // A paused Install Diablo II whose keys went with the app: they continue it.
+                    resuming = install.state == InstallState.STOPPED,
+                    keyProblem = refused ?: failedKey,
+                    // Only the keys of this refusal go back into the fields.
+                    refill = SessionService::takeRefusedKeys.takeIf { refused != null },
+                    // Download, which gets the installers ready while the keys are typed.
+                    download = KeysWhileDownloading.hold(downloadLine[0], KeysWhileDownloading.line(status)).also { downloadLine[0] = it },
+                    onRetryDownload = {
+                        if (startDownload(status)) nav.value = nav.value.installStarted()
+                    }.takeIf { KeysWhileDownloading.retries(status) },
+                )
+                // Nothing started Download in this engine's run (the app was closed since Continue):
+                // the key page starts it, after a moment for Continue's own start to show.
+                val current by rememberUpdatedState(status)
+                val starts = KeysWhileDownloading.startsOnKeyPage(status)
+                LaunchedEffect(starts) {
+                    if (!starts) return@LaunchedEffect
+                    delay(KeysWhileDownloading.START_WAIT_MS)
+                    if (KeysWhileDownloading.startsOnKeyPage(current) && startDownload(current)) nav.value = nav.value.installStarted()
+                }
+            }
         }
     }
 
@@ -707,11 +795,31 @@ class MainActivity : ComponentActivity() {
                 if (!SessionService.resumeInstall()) nav.value = nav.value.open(FlowPage.KEYS)
             }
             InstallProgress.StartAction.KEY_PAGE -> nav.value = nav.value.open(FlowPage.KEYS)
+            // The engine holds the keys: Download runs again, and the install follows it by itself.
+            InstallProgress.StartAction.DOWNLOAD_AGAIN -> {
+                beginInstall(status, joinsDownload = true)
+                SessionService.command(Command.DownloadAll, withGameEnvironment = true)
+            }
         }
     }
 
-    private fun beginInstall(status: SessionStatus) {
-        installRun.value = InstallProgress.start(installSource(status), status, SystemClock.elapsedRealtime())
+    /**
+     * Download from the key page: with keys waiting in the engine ([KeysWhileDownloading.keysWait]),
+     * Install Diablo II follows it by itself, so it runs with the game environment and the run
+     * joins it (true: Install shows it); else a plain Download (false).
+     */
+    private fun startDownload(status: SessionStatus): Boolean {
+        if (!KeysWhileDownloading.keysWait(status.snapshot)) {
+            SessionService.command(Command.DownloadAll)
+            return false
+        }
+        beginInstall(status, joinsDownload = true)
+        SessionService.command(Command.DownloadAll, withGameEnvironment = true)
+        return true
+    }
+
+    private fun beginInstall(status: SessionStatus, joinsDownload: Boolean = status.snapshot?.activeJob == com.pd2launcher.app.control.Job.DOWNLOAD) {
+        installRun.value = InstallProgress.start(installSource(status), status, SystemClock.elapsedRealtime(), joinsDownload)
     }
 
     private fun trackInstall() {
@@ -722,7 +830,7 @@ class MainActivity : ComponentActivity() {
 
     /** The source the engine has, else the one on screen. */
     private fun installSource(status: SessionStatus): SourceChoice =
-        status.snapshot?.installer?.let(DiabloSource::choiceOf) ?: sourceChoice.value ?: SourceChoice.BLIZZARD
+        status.snapshot?.let(DiabloSource::choiceOf) ?: sourceChoice.value ?: SourceChoice.DEFAULT
 
     /** The task names for the player's source (an installed Diablo II is copied or adopted). */
     private fun taskLabels(status: SessionStatus): InstallProgress.TaskLabels {
@@ -730,6 +838,8 @@ class MainActivity : ComponentActivity() {
         return InstallProgress.TaskLabels(
             source = installSource(status),
             inPlace = existing?.inPlacePossible == true,
+            // The keys joined Download: its rest is the first task.
+            installers = installRun.value?.joined == true,
         )
     }
 
@@ -871,7 +981,8 @@ class MainActivity : ComponentActivity() {
                 "App" to "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}, ${BuildConfig.APPLICATION_ID}, ${BuildConfig.BUILD_TYPE})",
                 "Created" to Instant.now().toString(),
                 "Device" to "${Build.MANUFACTURER} ${Build.MODEL} (${Build.DEVICE})",
-                "Chip" to "${Build.SOC_MANUFACTURER} ${Build.SOC_MODEL}",
+                // Android 11 names no chip: its hardware name (Build.HARDWARE) instead.
+                "Chip" to if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) "${Build.SOC_MANUFACTURER} ${Build.SOC_MODEL}" else "hardware ${Build.HARDWARE}",
                 "Android" to "${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT}), ${Build.SUPPORTED_ABIS.joinToString(" ")}",
                 "GPU" to (facts?.gpu?.name ?: "not found"),
                 "Page size" to (facts?.pageSize?.toString() ?: "unknown"),
@@ -948,6 +1059,7 @@ class MainActivity : ComponentActivity() {
         outState.putBoolean(STATE_ABOUT, aboutOpen.value)
         outState.putStringArrayList(STATE_NAV, nav.value.saved())
         sourceChoice.value?.let { outState.putString(STATE_SOURCE, it.name) }
+        outState.putLong(STATE_KEY_REFUSAL, keyRefusalShown)
     }
 
     override fun onStart() {
@@ -1044,14 +1156,14 @@ class MainActivity : ComponentActivity() {
     private fun debugGameSettings(intent: Intent) {
         intent.getStringExtra("display")?.let { name ->
             val display = GameDisplay.entries.firstOrNull { it.name.equals(name, ignoreCase = true) }
-            if (display != null) AppSettingsStore.save(this, AppSettingsStore.load(this).copy(gameDisplay = display))
+            if (display != null) AppSettingsStore.update(this) { it.copy(gameDisplay = display) }
             Log.i(TAG, "debug display $name: ${display ?: "unknown, not changed"}")
         }
         intent.getStringExtra("resolution")?.let { value ->
             val (width, height) = GameResolution.display(this)
             val size = if (value == "own") GameResolution.ownSize(width, height) else SessionService.parseSize(value)
             if (size != null && (value == "own" || GameResolution.customAllowed(size, width, height))) {
-                AppSettingsStore.save(this, AppSettingsStore.load(this).copy(customSize = GameResolution.customPick(size, width, height)))
+                AppSettingsStore.update(this) { it.copy(customSize = GameResolution.customPick(size, width, height)) }
                 Log.i(TAG, "debug resolution $value: ${size.first}x${size.second} from the next Play")
             } else {
                 Log.i(TAG, "debug resolution $value: not allowed on ${width}x$height, not changed")
@@ -1101,6 +1213,8 @@ class MainActivity : ComponentActivity() {
         /** The first run's pages and the source choice, kept when Android makes the activity again (for example, the process ended under the folder picker). */
         const val STATE_NAV = "flow_nav"
         const val STATE_SOURCE = "source_choice"
+        /** The key refusal already shown ([keyRefusalShown]). */
+        const val STATE_KEY_REFUSAL = "key_refusal_shown"
     }
 }
 

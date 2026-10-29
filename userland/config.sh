@@ -31,8 +31,8 @@ DEBIAN_SNAPSHOT=20261006T000000Z
 # MESA_SHA256 is that of GitLab's archive of the commit, recorded on first download (the archive's
 # tar is byte-identical to `git archive --prefix=mesa-<commit>/ <commit>`); MESA_VERSION is the
 # tree's VERSION file.
-MESA_COMMIT=5e4bcb1c791fcfa6e9257e3fef33314cf6f7b92a
-MESA_SHA256=2a96067f6dcd0b824cf16d09f3de9c5018a60ec564612e6255c899935d2167de
+MESA_COMMIT=1c3a936490f9f0951188218e136cd03bca497386
+MESA_SHA256=5bb135de0ff28b9a05ffb1f25f9320734bcd0c88ff02c3d41c12b919560cb1e8
 MESA_VERSION=27.0.0-devel
 MESA_URL="https://gitlab.freedesktop.org/mesa/mesa/-/archive/$MESA_COMMIT/mesa-$MESA_COMMIT.tar.gz"
 

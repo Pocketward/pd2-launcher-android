@@ -111,14 +111,14 @@ class SettingsNav {
  * graphics profile, whose Automatic follows the [gpu]; the frame rate, whose choices follow the
  * screen's full rate ([fullFrameRate], [com.pd2launcher.app.ScreenRate]); and the lower frame rate in the background; next Play), App (the app's
  * own, [app], and the system settings it depends on; at once) and Controller (the physical
- * controller, [ControlsStore]; at once, in the game too). Each tab opens with when its settings
+ * controller, [ControlsStore], and Touch, [app]; at once, in the game too). Each tab opens with when its settings
  * apply; while the game or the official launcher runs on another X screen than the game
  * resolution makes ([running]: its size), the game resolution also says that the new size applies
  * at the next start. Controller leads with On-screen controls, the way to the on-screen controls
  * ([onEditOnScreen]: their editor holds all their options); a binding opens the picker as a
  * sheet over the column, as the game resolution opens its choices. [back]: the back label, to where
  * Settings returns ([com.pd2launcher.app.Onboarding.settingsBack]). [updates]: this build gets app
- * updates (the App tab's App updates: the daily check, and [newVersion] when one is out, which
+ * updates (the App tab's App updates: the hourly check, and [newVersion] when one is out, which
  * About installs).
  */
 @Composable
@@ -132,7 +132,7 @@ fun SettingsScreen(
     nav: SettingsNav,
     @StringRes back: Int,
     onCommand: (Command) -> Unit,
-    onAppChange: (AppSettings) -> Unit,
+    onAppChange: ((AppSettings) -> AppSettings) -> Unit,
     onBatterySettings: () -> Unit,
     onNotificationSettings: () -> Unit,
     onEditOnScreen: () -> Unit,
@@ -178,17 +178,17 @@ fun SettingsScreen(
                     when (nav.tab) {
                         SettingsNav.GAME -> GameTab(launcher, onCommand, app, display, fullFrameRate, gpu, nav, onAppChange, running)
                         SettingsNav.APP -> AppTab(app, system, onAppChange, onBatterySettings, onNotificationSettings, onAbout, updates, newVersion)
-                        else -> ControllerTab(controls, nav, phone, save, onEditOnScreen)
+                        else -> ControllerTab(controls, app, nav, phone, save, onAppChange, onEditOnScreen)
                     }
                 }
             }
         }
         nav.picker?.let { button -> BindingPicker(controls, button, nav.mouse, side = !phone, save) { nav.picker = null } }
         if (nav.resolutions) ResolutionSheet(app, display, phone, onAppChange, { nav.customSize = true }) { nav.resolutions = false }
-        if (nav.customSize) CustomSizeInput(app.customSize, display, { onAppChange(app.copy(customSize = it)) }) { nav.customSize = false }
+        if (nav.customSize) CustomSizeInput(app.customSize, display, { value -> onAppChange { it.copy(customSize = value) } }) { nav.customSize = false }
         if (nav.displays) DisplaySheet(app, phone, onAppChange) { nav.displays = false }
         if (nav.profiles) GraphicsProfileSheet(app, gpu, phone, onAppChange) { nav.profiles = false }
-        if (nav.frameRates) FrameRateInput(app.frameRate, fullFrameRate, { onAppChange(app.copy(frameRate = it)) }) { nav.frameRates = false }
+        if (nav.frameRates) FrameRateInput(app.frameRate, fullFrameRate, { value -> onAppChange { it.copy(frameRate = value) } }) { nav.frameRates = false }
     }
 }
 
@@ -250,7 +250,7 @@ private fun GameTab(
     fullFrameRate: Float,
     gpu: HostGpu?,
     nav: SettingsNav,
-    onAppChange: (AppSettings) -> Unit,
+    onAppChange: ((AppSettings) -> AppSettings) -> Unit,
     running: Pair<Int, Int>?,
 ) {
     val enabled = launcher?.editable == true
@@ -283,7 +283,7 @@ private fun GameTab(
         ToggleRow(
             stringResource(R.string.settings_background_frame_rate),
             stringResource(R.string.settings_background_frame_rate_body),
-            app.lowFrameRateInBackground, { onAppChange(app.copy(lowFrameRateInBackground = it)) },
+            app.lowFrameRateInBackground, { value -> onAppChange { it.copy(lowFrameRateInBackground = value) } },
         )
         RowRule()
         ToggleRow(
@@ -330,7 +330,7 @@ private fun BoxScope.GraphicsProfileSheet(
     app: AppSettings,
     gpu: HostGpu?,
     phone: Boolean,
-    onAppChange: (AppSettings) -> Unit,
+    onAppChange: ((AppSettings) -> AppSettings) -> Unit,
     onClose: () -> Unit,
 ) {
     ChoiceSheet(stringResource(R.string.settings_graphics_profile), phone, onClose) { first ->
@@ -339,7 +339,7 @@ private fun BoxScope.GraphicsProfileSheet(
             OptionRow(
                 text(choice.title), text(choice.body), app.graphicsProfile == choice.profile,
                 {
-                    onAppChange(app.copy(graphicsProfile = choice.profile))
+                    onAppChange { it.copy(graphicsProfile = choice.profile) }
                     onClose()
                 },
                 focusRequester = first.takeIf { index == 0 },
@@ -424,7 +424,7 @@ private fun DisplaySection(app: AppSettings, onOpen: () -> Unit) {
 private fun BoxScope.DisplaySheet(
     app: AppSettings,
     phone: Boolean,
-    onAppChange: (AppSettings) -> Unit,
+    onAppChange: ((AppSettings) -> AppSettings) -> Unit,
     onClose: () -> Unit,
 ) {
     ChoiceSheet(stringResource(R.string.settings_section_display), phone, onClose) { first ->
@@ -433,7 +433,7 @@ private fun BoxScope.DisplaySheet(
             OptionRow(
                 stringResource(choice.title), stringResource(choice.body), app.gameDisplay == choice,
                 {
-                    onAppChange(app.copy(gameDisplay = choice))
+                    onAppChange { it.copy(gameDisplay = choice) }
                     onClose()
                 },
                 focusRequester = first.takeIf { index == 0 },
@@ -476,7 +476,7 @@ private fun BoxScope.ResolutionSheet(
     app: AppSettings,
     display: Pair<Int, Int>,
     phone: Boolean,
-    onAppChange: (AppSettings) -> Unit,
+    onAppChange: ((AppSettings) -> AppSettings) -> Unit,
     onCustom: () -> Unit,
     onClose: () -> Unit,
 ) {
@@ -490,7 +490,7 @@ private fun BoxScope.ResolutionSheet(
             ),
             custom == null,
             {
-                onAppChange(app.copy(customSize = null))
+                onAppChange { it.copy(customSize = null) }
                 onClose()
             },
             focusRequester = first,
@@ -514,7 +514,7 @@ private fun BoxScope.ResolutionSheet(
 private fun AppTab(
     app: AppSettings,
     system: SystemState,
-    onAppChange: (AppSettings) -> Unit,
+    onAppChange: ((AppSettings) -> AppSettings) -> Unit,
     onBatterySettings: () -> Unit,
     onNotificationSettings: () -> Unit,
     onAbout: () -> Unit,
@@ -525,15 +525,20 @@ private fun AppTab(
     Section(stringResource(R.string.settings_section_screen)) {
         ToggleRow(
             stringResource(R.string.settings_keep_screen_on), stringResource(R.string.settings_keep_screen_on_body),
-            app.keepScreenOn, { onAppChange(app.copy(keepScreenOn = it)) },
+            app.keepScreenOn, { value -> onAppChange { it.copy(keepScreenOn = value) } },
         )
         RowRule()
         ToggleRow(
             stringResource(R.string.settings_show_fps), stringResource(R.string.settings_show_fps_body),
-            app.showFps, { onAppChange(app.copy(showFps = it)) },
+            app.showFps, { value -> onAppChange { it.copy(showFps = value) } },
         )
     }
-    Section(stringResource(R.string.settings_section_game_files)) { GameFilesRows() }
+    // Where the game folder is (mods, loot filters), then Save sync for the characters.
+    Section(stringResource(R.string.settings_section_game_files)) {
+        GameFilesRows()
+        RowRule()
+        SaveSyncRows(app)
+    }
     Section(stringResource(R.string.settings_section_storage)) { StorageRows() }
     Section(stringResource(R.string.settings_section_android)) {
         SystemRow(
@@ -555,14 +560,14 @@ private fun AppTab(
         RowRule()
         ToggleRow(
             stringResource(R.string.settings_detailed_logging), stringResource(R.string.settings_detailed_logging_body),
-            app.detailedLogging, { onAppChange(app.copy(detailedLogging = it)) },
+            app.detailedLogging, { value -> onAppChange { it.copy(detailedLogging = value) } },
         )
     }
-    // The app's own updates: the daily check, and a new version's way to About, which installs it.
+    // The app's own updates: the hourly check, and a new version's way to About, which installs it.
     if (updates) Section(stringResource(R.string.app_update_title)) {
         ToggleRow(
             stringResource(R.string.app_update_auto), stringResource(R.string.app_update_auto_body),
-            app.updateChecks, { onAppChange(app.copy(updateChecks = it)) },
+            app.updateChecks, { value -> onAppChange { it.copy(updateChecks = value) } },
         )
         if (newVersion != null) {
             RowRule()
@@ -611,7 +616,15 @@ private fun SystemRow(title: String, ok: Boolean, status: String, action: String
 // ---------------------------------------------------------------- Controller
 
 @Composable
-private fun ControllerTab(controls: Controls, nav: SettingsNav, phone: Boolean, save: (Controls) -> Unit, onEditOnScreen: () -> Unit) {
+private fun ControllerTab(
+    controls: Controls,
+    app: AppSettings,
+    nav: SettingsNav,
+    phone: Boolean,
+    save: (Controls) -> Unit,
+    onAppChange: ((AppSettings) -> AppSettings) -> Unit,
+    onEditOnScreen: () -> Unit,
+) {
     EditOnScreenRow(onEditOnScreen)
     Applies(stringResource(R.string.settings_applies_controller))
     Section(stringResource(R.string.controls_section_controller)) {
@@ -625,6 +638,9 @@ private fun ControllerTab(controls: Controls, nav: SettingsNav, phone: Boolean, 
         }
         RowRule()
         PointerSpeedRow(controls, save)
+        RowRule()
+        // As the in-game Controls screen's, at this tab's row height and room.
+        TouchRow(app.touchMode, { mode -> onAppChange { it.copy(touchMode = mode) } }, Modifier.heightIn(min = 64.dp).padding(horizontal = 14.dp, vertical = 6.dp))
     }
     Section(stringResource(R.string.controls_section_buttons)) {
         ModeSwitch(nav)
@@ -656,14 +672,15 @@ private fun EditOnScreenRow(onClick: () -> Unit) {
     }
 }
 
-/** Mouse mode's pointer speed; the in-game Controls screen changes it too ([PointerSpeedInput]). */
+/** The pointer speed of mouse mode and Trackpad; the in-game Controls screen changes it too ([PointerSpeedInput]). */
 @Composable
 private fun PointerSpeedRow(controls: Controls, save: (Controls) -> Unit) {
     StepperRow(
-        stringResource(R.string.controls_pointer_speed), stringResource(R.string.controls_factor, speedText(controls.pointerSpeed)),
+        stringResource(R.string.controls_pointer_speed_title), stringResource(R.string.controls_factor, speedText(controls.pointerSpeed)),
         Controls.fraction(controls.pointerSpeed, PointerSpeed.RANGE),
         { save(controls.copy(pointerSpeed = Controls.stepped(controls.pointerSpeed, PointerSpeed.STEP, -1, PointerSpeed.RANGE))) },
         { save(controls.copy(pointerSpeed = Controls.stepped(controls.pointerSpeed, PointerSpeed.STEP, 1, PointerSpeed.RANGE))) },
+        supporting = stringResource(R.string.controls_pointer_speed_body),
     )
 }
 

@@ -17,6 +17,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import androidx.annotation.StringRes
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.WindowInsets
@@ -24,6 +25,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -50,6 +52,7 @@ import com.pd2launcher.app.input.Keys
 import com.pd2launcher.app.input.LayoutStore
 import com.pd2launcher.app.input.PadAction
 import com.pd2launcher.app.input.PadButton
+import com.pd2launcher.app.input.TouchMode
 import com.pd2launcher.app.input.VirtualPad
 import com.pd2launcher.app.input.isController
 import com.pd2launcher.app.ui.ControlsEditor
@@ -65,6 +68,7 @@ import com.pd2launcher.app.ui.MenuStop
 import com.pd2launcher.app.ui.MenuTab
 import com.pd2launcher.app.ui.MenuGlyph
 import com.pd2launcher.app.ui.OnScreenControls
+import com.pd2launcher.app.ui.PressTint
 import com.pd2launcher.app.ui.TapToClose
 import com.pd2launcher.app.ui.frameRateLabel
 import java.util.concurrent.atomic.AtomicBoolean
@@ -272,7 +276,7 @@ private val PLAYER_CONTROLS = Controls()
 /** The fake layout's custom button: F5 (a skill key), labelled "TP". */
 private const val CUSTOM_ID = "custom-1"
 
-/** The editor's hint fades 4 s after it opens: steps in the editor start after that. */
+/** The editor's hint goes 4 s after it opens, with no fade: steps in the editor start after that. */
 private const val AFTER_HINT_MS = 5_000L
 private const val STEP_MS = 700L
 private const val SETTLE_MS = 900L
@@ -359,7 +363,6 @@ private fun OverlayPreview(screen: PreviewScreen, onScreenAtStart: Boolean, pref
     val context = LocalContext.current
     // The Controls screen opens from the menu, as in the game: its strip takes the menu's place.
     var layer by remember { mutableStateOf(if (screen.layer == GameLayer.CONTROLS) GameLayer.MENU else screen.layer) }
-    var menuFades by remember { mutableStateOf(false) }
     var menuHeight by remember { mutableStateOf<Int?>(null) }
     var tab by remember { mutableStateOf(screen.tab) }
     var asking by remember { mutableStateOf(screen.asking) }
@@ -374,13 +377,13 @@ private fun OverlayPreview(screen: PreviewScreen, onScreenAtStart: Boolean, pref
     var keepOn by remember { mutableStateOf(true) }
     var controls by remember { mutableStateOf(screen.controls) }
     var mouseActive by remember { mutableStateOf(screen.mouseActive) }
+    var touch by remember { mutableStateOf(TouchMode.TRACKPAD) }
     val full = remember { ScreenRate.load(context) }
     val pad = remember { VirtualPad {} }
     val buttons = remember { CustomButtons {} }
     val fps = FpsReading(60f, null)
     // As the Game view: any change of layer forgets the menu's question, and a closed menu opens on Quick.
     val go = { to: GameLayer ->
-        menuFades = layer == GameLayer.CONTROLS || to == GameLayer.CONTROLS
         layer = to
         asking = false
         if (to != GameLayer.MENU) tab = MenuTab.QUICK
@@ -399,7 +402,8 @@ private fun OverlayPreview(screen: PreviewScreen, onScreenAtStart: Boolean, pref
         Geometry(prefix)
         if (screen.fpsOnly != null) {
             FpsCounter({ screen.fpsOnly }, Modifier.align(Alignment.TopCenter).windowInsetsPadding(WindowInsets.safeDrawing))
-        } else {
+        } else CompositionLocalProvider(LocalIndication provides PressTint) {
+            // As the Game view: a press shows a plain tint, not Material's ripple.
             if (layer.tapCloses) TapToClose { go(GameLayer.NONE) }
             if (layer.padShown(asking) && onScreen && !screen.launcher) {
                 OnScreenControls(layout, controls.onScreenOpacity, pad, buttons, inert = layer.padInert(slower))
@@ -416,7 +420,6 @@ private fun OverlayPreview(screen: PreviewScreen, onScreenAtStart: Boolean, pref
                 },
                 asking = asking,
                 onAsking = { asking = it },
-                fades = menuFades,
                 state = MenuState(
                     launcher = screen.launcher,
                     onScreen = onScreen,
@@ -453,6 +456,8 @@ private fun OverlayPreview(screen: PreviewScreen, onScreenAtStart: Boolean, pref
                 activeMouse = mouseActive,
                 canUseMode = true,
                 save = { controls = it },
+                touch = touch,
+                onTouch = { touch = it },
                 onUseMode = { mouseActive = it },
                 menuHeight = menuHeight,
                 onStop = { stop ->

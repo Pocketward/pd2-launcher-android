@@ -12,9 +12,9 @@ import androidx.compose.ui.unit.sp
 
 /**
  * The native screens' tokens: the desktop launcher's look on a dark handheld panel. Teal marks only the main action (and Play without updating under Update), the current step and focus; amber and red
- * mean warning and error. The brand mark's gold (#E3AA3E, the "II" in ic_brand_mark and the
- * launcher icon) belongs to the brand alone and is no token here. Every text colour reaches
- * 4.5:1 on [Background] and [Surface] (PaletteContrastTest).
+ * mean warning and error. The brand mark's gold ([Gold]) belongs to the brand and to one mark:
+ * the new-version dot. Every text colour reaches 4.5:1 on [Background] and [Surface]
+ * (PaletteContrastTest).
  */
 object Palette {
     val Background = Color(0xFF0E1214)
@@ -36,10 +36,17 @@ object Palette {
     val Muted = Color(0xFF8B979C)
     /** Rows not reached yet and disabled labels: dimmer than [Muted], still 4.9:1 and 4.6:1. */
     val Faint = Color(0xFF788489)
+    /** A pressed control's tint over the game ([PressTint]): [Text] at 10 %, on a panel about as light as [Rule]. */
+    val Pressed = Text.copy(alpha = 0.1f)
     val Teal = Color(0xFF34B8A7)
     val OnTeal = Color(0xFF05201C)
     /** Warnings: an amber-orange between the brand's gold and [Red]. */
     val Amber = Color(0xFFEE8A3A)
+    /**
+     * The brand's gold, the "II" in ic_brand_mark and the launcher icon: only for the dot on Play's
+     * About while a new version of the app is out ([LauncherButton]'s dot). No text and no warning.
+     */
+    val Gold = Color(0xFFE3AA3E)
     val Red = Color(0xFFE5644F)
 }
 

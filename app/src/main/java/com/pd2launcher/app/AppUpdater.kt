@@ -12,9 +12,12 @@ import android.content.pm.PackageInfo
 import android.content.pm.PackageInstaller
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
+import android.os.Build
+import android.os.Process
 import android.os.StatFs
 import android.os.SystemClock
 import android.util.Log
+import androidx.core.content.IntentCompat
 import com.pd2launcher.app.AppUpdate.CheckProblem
 import com.pd2launcher.app.AppUpdate.DownloadProblem
 import com.pd2launcher.app.AppUpdate.InstallOutcome
@@ -43,11 +46,11 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
 /**
- * App updates ([AppUpdate]): looks for a newer release of this app on its GitHub releases (once a
- * day while automatic checks are on, or when the player asks), downloads its APK into the app's own
- * folder when the player asks, checks it, and hands it to Android's installer, which asks the
- * player to confirm. One worker thread does the work; the screens follow [state]. What it does
- * goes to `files/logs/update.log`, which Share logs packs.
+ * App updates ([AppUpdate]): looks for a newer release of this app on its GitHub releases (each
+ * hour while the app is open and automatic checks are on, or when the player asks), downloads its
+ * APK into the app's own folder when the player asks, checks it, and hands it to Android's
+ * installer, which asks the player to confirm. One worker thread does the work; the screens follow
+ * [state]. What it does goes to `files/logs/update.log`, which Share logs packs.
  */
 object AppUpdater {
     private const val TAG = "pd2-update"
@@ -76,7 +79,10 @@ object AppUpdater {
     const val EXTRA_ABOUT = "com.pd2launcher.app.extra.ABOUT"
 
     private val json = Json { ignoreUnknownKeys = true }
-    private val worker = Executors.newSingleThreadExecutor { Thread(it, "pd2-update") }
+    /** The one worker thread, at background priority: a check while the game runs gives the CPU to the game first. */
+    private val worker = Executors.newSingleThreadExecutor { work ->
+        Thread({ Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND); work.run() }, "pd2-update")
+    }
     private val started = AtomicBoolean(false)
     /** An install's copy for Android is queued or runs: a second Install waits for it. */
     private val installRunning = AtomicBoolean(false)
@@ -123,8 +129,11 @@ object AppUpdater {
         }
     }
 
-    /** The app came to the front: a check when one is due. */
-    fun resumed(context: Context) {
+    /**
+     * The app came to the front, and each [AppUpdate.TIMER_MS] while it stays there
+     * ([AppUpdateHost]): a check when one is due, on the worker thread.
+     */
+    fun inFront(context: Context) {
         val app = context.applicationContext
         if (started.get()) worker.execute { checkIfDue(app) }
     }
@@ -205,7 +214,7 @@ object AppUpdater {
         if (id != session) return
         val offer = _state.value.offer ?: return
         if (status == PackageInstaller.STATUS_PENDING_USER_ACTION) {
-            val confirm = intent.getParcelableExtra(Intent.EXTRA_INTENT, Intent::class.java)
+            val confirm = IntentCompat.getParcelableExtra(intent, Intent.EXTRA_INTENT, Intent::class.java)
             when {
                 confirm == null -> finished(offer, InstallProblem.FAILED)
                 wait() != null -> takeBack(app, offer, "something started before Android asked")
@@ -480,7 +489,8 @@ object AppUpdater {
             setAppPackageName(context.packageName)
             setSize(file.length())
             setInstallReason(PackageManager.INSTALL_REASON_USER)
-            setPackageSource(PackageInstaller.PACKAGE_SOURCE_DOWNLOADED_FILE)
+            // Where the APK came from, a label only: Android 13 and later.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) setPackageSource(PackageInstaller.PACKAGE_SOURCE_DOWNLOADED_FILE)
             // The update stays where the app is. A session's default is internal storage only,
             // which Android refuses for an app on adopted storage.
             setInstallLocation(PackageInfo.INSTALL_LOCATION_AUTO)
@@ -603,9 +613,14 @@ object AppUpdater {
     private fun signer(context: Context): String? {
         if (!signerRead) {
             val own = try {
-                val flags = PackageManager.PackageInfoFlags.of(PackageManager.GET_SIGNING_CERTIFICATES.toLong())
-                context.packageManager.getPackageInfo(context.packageName, flags).signingInfo?.apkContentsSigners
-                    ?.singleOrNull()?.let { sha256(it.toByteArray()) }
+                val pm = context.packageManager
+                val info = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    pm.getPackageInfo(context.packageName, PackageManager.PackageInfoFlags.of(PackageManager.GET_SIGNING_CERTIFICATES.toLong()))
+                } else {
+                    @Suppress("DEPRECATION")
+                    pm.getPackageInfo(context.packageName, PackageManager.GET_SIGNING_CERTIFICATES)
+                }
+                info.signingInfo?.apkContentsSigners?.singleOrNull()?.let { sha256(it.toByteArray()) }
             } catch (error: PackageManager.NameNotFoundException) {
                 null
             }
@@ -618,12 +633,19 @@ object AppUpdater {
     /**
      * The downloaded file as Android reads it: its package, version and signers; null when it is no
      * app Android can read. The first Android 13 releases collect an archive's certificates only for
-     * GET_SIGNATURES, so it is asked for too; only signingInfo is read.
+     * GET_SIGNATURES, so it is asked for too; only signingInfo is read. Android 11 and 12 take the
+     * flags as an int.
      */
     @Suppress("DEPRECATION")
     private fun archive(context: Context, file: File): AppUpdate.Archive? {
-        val flags = PackageManager.PackageInfoFlags.of((PackageManager.GET_SIGNING_CERTIFICATES or PackageManager.GET_SIGNATURES).toLong())
-        val info = context.packageManager.getPackageArchiveInfo(file.path, flags) ?: return null
+        val flags = PackageManager.GET_SIGNING_CERTIFICATES or PackageManager.GET_SIGNATURES
+        val pm = context.packageManager
+        val read = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            pm.getPackageArchiveInfo(file.path, PackageManager.PackageInfoFlags.of(flags.toLong()))
+        } else {
+            pm.getPackageArchiveInfo(file.path, flags)
+        }
+        val info = read ?: return null
         val signers = info.signingInfo?.apkContentsSigners?.map { sha256(it.toByteArray()) } ?: return null
         return AppUpdate.Archive(info.packageName, info.longVersionCode, signers)
     }

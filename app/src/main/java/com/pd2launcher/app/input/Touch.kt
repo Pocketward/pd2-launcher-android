@@ -3,8 +3,52 @@ package com.pd2launcher.app.input
 import kotlin.math.hypot
 
 /**
- * Touch on the Game view as the X screen's mouse. Positions are on the X screen already (the
- * view maps them); [slop] is how far, in X screen pixels, a finger may wander and still tap.
+ * How touch on the game moves the X screen's pointer: the player's Touch setting
+ * (`AppSettings.touchMode`), in the order the screens offer them.
+ */
+enum class TouchMode {
+    /** The pointer moves by the finger's moves, as on a laptop's trackpad ([TrackpadGestures]); the default. */
+    TRACKPAD,
+
+    /** The pointer goes to the finger ([TouchGestures]). */
+    DIRECT,
+}
+
+/**
+ * Touch on the Game view as the X screen's mouse, as the view calls it: [TouchGestures] for
+ * [TouchMode.DIRECT], [TrackpadGestures] for [TouchMode.TRACKPAD]. Positions are on the X screen
+ * (the view maps them); times are the events' own.
+ */
+interface TouchMouse {
+    /** The first finger went down. */
+    fun down(pointerId: Int, x: Int, y: Int, timeMs: Long)
+
+    /** Another finger went down while one is already down. */
+    fun secondDown(pointerId: Int, x: Int, y: Int, timeMs: Long)
+
+    /** A tracked finger moved, including samples batched into a later Android event. */
+    fun move(pointerId: Int, x: Int, y: Int, timeMs: Long)
+
+    /** The view's long-press timer ran out ([TouchGestures.LONG_PRESS_MS] after [down]). */
+    fun longPressDue(timeMs: Long)
+
+    /** The last finger went up. */
+    fun up(timeMs: Long)
+
+    /** A finger went up while another stays down. */
+    fun pointerUp(pointerId: Int, timeMs: Long)
+
+    /** The gesture was taken away (`ACTION_CANCEL`): a held button is released, a click still to come dropped. */
+    fun cancel()
+
+    /** The view took a new size under the fingers: their gesture ends there (by default as [cancel]). */
+    fun endTouch() = cancel()
+}
+
+/**
+ * Touch on the Game view as the X screen's mouse, the pointer at the finger ([TouchMode.DIRECT]).
+ * Positions are on the X screen already (the view maps them); [slop] is how far, in X screen
+ * pixels, a finger may wander and still tap.
  *
  * - **tap**: a click of the primary button where the finger was
  * - **long press** (held still for [LONG_PRESS_MS]; the view calls [longPressDue] then): a
@@ -26,22 +70,27 @@ class TouchGestures(
     private val emit: (List<RelayEvent>) -> Unit,
     private val later: (delayMs: Long, send: () -> Unit) -> Unit = { _, send -> send() },
     private val dropLater: () -> Unit = {},
-) {
+) : TouchMouse {
     private enum class Phase { IDLE, PENDING, DRAG, TWO_FINGERS, DONE }
 
     private var phase = Phase.IDLE
+    private var primaryId = -1
     private var startX = 0
     private var startY = 0
     private var startTime = 0L
     private var secondTime = 0L
+    private var secondId = -1
+    private var secondX = 0
+    private var secondY = 0
     /** A tap's click waiting for the hover time ([later]). */
     private var waiting: List<RelayEvent>? = null
 
     /** The first finger went down. */
-    fun down(x: Int, y: Int, timeMs: Long) {
+    override fun down(pointerId: Int, x: Int, y: Int, timeMs: Long) {
         sendWaiting()
         cancel()
         phase = Phase.PENDING
+        primaryId = pointerId
         startX = x
         startY = y
         startTime = timeMs
@@ -49,10 +98,13 @@ class TouchGestures(
     }
 
     /** Another finger went down while one is already down. */
-    fun secondDown(timeMs: Long) {
+    override fun secondDown(pointerId: Int, x: Int, y: Int, timeMs: Long) {
         phase = when {
             phase == Phase.PENDING && timeMs - startTime <= TWO_FINGER_MS -> {
                 secondTime = timeMs
+                secondId = pointerId
+                secondX = x
+                secondY = y
                 Phase.TWO_FINGERS
             }
             phase == Phase.DRAG -> Phase.DRAG
@@ -60,8 +112,14 @@ class TouchGestures(
         }
     }
 
-    /** The first finger moved. */
-    fun move(x: Int, y: Int, timeMs: Long) {
+    /** A tracked finger moved, including samples batched into a later Android event. */
+    override fun move(pointerId: Int, x: Int, y: Int, timeMs: Long) {
+        if (pointerId != primaryId) {
+            if (pointerId == secondId && phase == Phase.TWO_FINGERS &&
+                hypot((x - secondX).toFloat(), (y - secondY).toFloat()) > slop
+            ) phase = Phase.DONE
+            return
+        }
         when (phase) {
             Phase.PENDING -> if (moved(x, y)) {
                 phase = Phase.DRAG
@@ -75,14 +133,14 @@ class TouchGestures(
     }
 
     /** The view's long-press timer ran out ([LONG_PRESS_MS] after [down]). */
-    fun longPressDue(timeMs: Long) {
+    override fun longPressDue(timeMs: Long) {
         if (phase != Phase.PENDING || timeMs - startTime < LONG_PRESS_MS) return
         phase = Phase.DONE
         emit(click(RelayEvent.RIGHT))
     }
 
     /** The last finger went up. */
-    fun up(timeMs: Long) {
+    override fun up(timeMs: Long) {
         when (phase) {
             Phase.PENDING -> clickAfterHover(RelayEvent.LEFT, timeMs)
             Phase.DRAG -> emit(listOf(RelayEvent.Button(RelayEvent.LEFT, false)))
@@ -92,21 +150,19 @@ class TouchGestures(
         phase = Phase.IDLE
     }
 
-    /**
-     * The first finger went up while another is still down: a drag ends there, since the view
-     * follows only the first finger and the button would stay down until the last one lifts; a
-     * two-finger tap still waits for the last finger.
-     */
-    fun primaryUp(timeMs: Long) {
-        if (phase != Phase.TWO_FINGERS) up(timeMs)
+    /** The primary finger lifting ends a drag. A two-finger tap waits for the last finger. */
+    override fun pointerUp(pointerId: Int, timeMs: Long) {
+        if (pointerId == primaryId && phase != Phase.TWO_FINGERS) up(timeMs)
     }
 
     /** The gesture was taken away (`ACTION_CANCEL`): a held button is released, a click still to come dropped. */
-    fun cancel() {
+    override fun cancel() {
         waiting = null
         dropLater()
         if (phase == Phase.DRAG) emit(listOf(RelayEvent.Button(RelayEvent.LEFT, false)))
         phase = Phase.IDLE
+        primaryId = -1
+        secondId = -1
     }
 
     private fun clickAfterHover(button: Int, timeMs: Long) {

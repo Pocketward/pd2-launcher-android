@@ -616,12 +616,15 @@ class LegacyPrefix(
         /**
          * [from]'s folders (owner-only) and regular files copied to [to] (which must not exist),
          * each file with its times, so a copied character is not taken for one saved since; links
-         * are not followed and, as other special files, not copied.
+         * are not followed and, as other special files, not copied. The backups' folder at the top
+         * ([SaveKeeper.BACKUPS]) is not copied: it stays in the player's folder, and the next link
+         * would only bring the copies back as second backups.
          */
         fun copySaves(from: Path, to: Path) {
             val ownerOnly = PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------"))
             Files.walkFileTree(from, object : SimpleFileVisitor<Path>() {
                 override fun preVisitDirectory(dir: Path, attrs: BasicFileAttributes): FileVisitResult {
+                    if (dir.parent == from && dir.fileName.toString() == SaveKeeper.BACKUPS) return FileVisitResult.SKIP_SUBTREE
                     Files.createDirectory(to.resolve(from.relativize(dir).toString()), ownerOnly)
                     return FileVisitResult.CONTINUE
                 }

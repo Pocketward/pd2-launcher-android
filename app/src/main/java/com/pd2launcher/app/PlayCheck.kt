@@ -57,7 +57,7 @@ object PlayCheck {
          * The player chose Update ([seq], sent at [sentAt]); [seen]: its job showed. The game starts
          * when it succeeds.
          */
-        data class Updating(val seq: Long, val sentAt: Long, val seen: Boolean = false) : State
+        data class Updating(val seq: Long, val sentAt: Long, val seen: Boolean = false, val afterSnapshot: Long = -1) : State
 
         /** The game starts now; [note] says why without the check's answer. */
         data class Starting(val note: Note?) : State
@@ -161,12 +161,18 @@ object PlayCheck {
         val snapshot = status.snapshot
         if (status.engine != SessionStatus.Engine.CONNECTED || snapshot == null) return Outcome.Drop
         if (status.refusal?.seq == state.seq) return Outcome.Drop
+        // A job that never showed (nor was refused) holds Play no longer than the check's wait: a
+        // refusal can name another command's seq.
+        val unseenTooLong = !state.seen && now - state.sentAt >= WAIT_MS
+        if (state.afterSnapshot >= 0 && (status.snapshotSeq ?: -1) <= state.afterSnapshot) {
+            return if (unseenTooLong) Outcome.Drop else Outcome.Wait(state)
+        }
         val operation = snapshot.operation?.takeIf { it.job == Job.UPDATE }
         if (snapshot.activeJob == Job.UPDATE || operation?.status in UPDATE_RUNNING) return Outcome.Wait(state.copy(seen = true))
-        // A job that never showed (nor was refused) starts nothing.
-        if (!state.seen) return if (now - state.sentAt >= WAIT_MS) Outcome.Drop else Outcome.Wait(state)
+        // No running snapshot yet: an update can end before one shows, and its end alone counts (below).
+        if (operation == null) return if (state.seen || unseenTooLong) Outcome.Drop else Outcome.Wait(state)
         val ready = snapshot.host == Host.SUPPORTED && snapshot.installation == Installation.READY
-        return if (operation?.status == OperationStatus.SUCCEEDED && ready) Outcome.Play(null) else Outcome.Drop
+        return if (operation.status == OperationStatus.SUCCEEDED && ready) Outcome.Play(null) else Outcome.Drop
     }
 
     /** The game's start after the check ends with the engine: its note goes. */

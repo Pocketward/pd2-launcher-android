@@ -2,6 +2,7 @@ package com.pd2launcher.app
 
 import androidx.annotation.StringRes
 import com.pd2launcher.app.control.Game
+import com.pd2launcher.app.control.Job
 import com.pd2launcher.app.control.Snapshot
 
 /**
@@ -18,11 +19,13 @@ object Refusals {
     /**
      * Whether the refusal of [refused] stops the game environment: it was started for the
      * install start [installStart] (Authorize, Install Project Diablo 2, an import) and that
-     * start was refused, while no install job or game runs in it.
+     * start was refused, while no install job or game runs in it. A key refused while Download
+     * runs counts too, once the engine holds no keys for it ([Snapshot.authorized]): no Install
+     * Diablo II follows that Download.
      */
     fun stopsGameEnvironment(refused: Long, installStart: Long?, snapshot: Snapshot?): Boolean =
-        installStart != null && refused == installStart &&
-            snapshot?.activeJob == null && snapshot?.game != Game.RUNNING
+        installStart != null && refused == installStart && snapshot?.game != Game.RUNNING &&
+            (snapshot?.activeJob == null || (snapshot.activeJob == Job.DOWNLOAD && !snapshot.authorized))
 
     /** The app's words for [reason]; null: the generic line with the code. */
     @StringRes
@@ -33,6 +36,9 @@ object Refusals {
         "update-not-permitted" -> R.string.update_refused
         SAVES_NOT_KEPT -> R.string.refusal_saves_not_kept
         "mutation-already-active", "installer-media-locked-while-installing" -> R.string.refusal_busy
+        "downloads-required" -> R.string.refusal_downloads_required
+        // Also while the removal for a picked folder runs.
+        "download-not-permitted" -> R.string.refusal_download
         "engine-busy" -> R.string.refusal_engine_busy
         "service-unavailable", "engine-failed" -> R.string.refusal_engine_gone
         else -> null

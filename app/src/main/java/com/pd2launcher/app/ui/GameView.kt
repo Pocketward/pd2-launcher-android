@@ -26,6 +26,7 @@ import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -37,6 +38,7 @@ import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -78,6 +80,7 @@ import com.pd2launcher.app.ScreenRate
 import com.pd2launcher.app.ScreenRateWatch
 import com.pd2launcher.app.SessionService
 import com.pd2launcher.app.SessionStatus
+import com.pd2launcher.app.Shown
 import com.pd2launcher.app.XwdHeader
 import com.pd2launcher.app.input.Controls
 import com.pd2launcher.app.input.ControlsStore
@@ -95,9 +98,14 @@ import com.pd2launcher.app.input.PadLayouts
 import com.pd2launcher.app.input.RelayEvent
 import com.pd2launcher.app.input.ScriptedPad
 import com.pd2launcher.app.input.TouchGestures
+import com.pd2launcher.app.input.TouchMode
+import com.pd2launcher.app.input.TouchMouse
+import com.pd2launcher.app.input.TrackpadGestures
 import com.pd2launcher.app.input.VirtualPad
 import com.pd2launcher.app.input.PadState
+import com.pd2launcher.app.input.PointerBounds
 import java.io.File
+import kotlin.math.floor
 import kotlin.math.roundToInt
 import java.io.IOException
 import java.util.concurrent.Executors
@@ -201,15 +209,9 @@ fun GameView(
     val input by GameEnvironment.input.collectAsState()
     var surface by remember { mutableStateOf<GameSurface?>(null) }
     var layer by remember(preview) { mutableStateOf(preview ?: GameLayer.NONE) }
-    // The menu slides in from the game and out to it; to and from the Controls screen, which keeps
-    // the menu's strip in place, it only fades.
-    var menuFades by remember { mutableStateOf(false) }
-    val go = { to: GameLayer ->
-        menuFades = layer == GameLayer.CONTROLS || to == GameLayer.CONTROLS
-        layer = to
-    }
+    val go = { to: GameLayer -> layer = to }
     // The menu opens on Quick, with no question; a change of tab forgets the question. Both change
-    // as the menu opens, not as it leaves, so its look stays while it slides out.
+    // as the menu opens, not as it leaves.
     var menuTab by remember { mutableStateOf(MenuTab.QUICK) }
     var asking by remember { mutableStateOf(false) }
     // The shoulder buttons' steps into a menu tab: each moves the focus into it.
@@ -233,7 +235,7 @@ fun GameView(
             go(GameLayer.MENU)
         }
     }
-    val controller = controllerConnected(onRemoved = { surface?.releaseController() })
+    val controller = controllerConnected(onRemoved = { surface?.releaseController(it) })
     val status by SessionService.status.collectAsState()
     // The launcher's own window; a game it started is the game's ([Play.officialLauncherShown]).
     val launcher = previewLauncher || Play.officialLauncherShown(status)
@@ -244,7 +246,7 @@ fun GameView(
         ?.takeIf { it.editable }?.soundInBackground
     val app by AppSettingsStore.current.collectAsState()
     // The launcher is a mouse/touch window: no menu/world picture to read.
-    val picture = gamePicture(framebuffer, if (running && !launcher) header else null)
+    val (picture, pointerPicture) = gamePicture(framebuffer, if (running && !launcher) header else null)
     // While the official launcher starts: its session's start, until its first window shows.
     val starting = launcherStarting(framebuffer, header.takeIf { running }, status.launcherSince.takeIf { launcher && !previewLauncher })
     // Android's keyboard as it is, closed by its own controls too: here it opens only for the game.
@@ -308,11 +310,11 @@ fun GameView(
                 // screen's own pixels in the middle. A new size keeps both layers (GameSurface.surfaceChanged).
                 val display = app.gameDisplay
                 val xScreen = screen.width to screen.height
-                val geometry = GameResolution.viewGeometry(
-                    display, GameResolution.shownArea(launcher, picture == GamePicture.MENU, xScreen),
-                    xScreen, constraints.maxWidth, constraints.maxHeight,
-                )
+                val shown = GameResolution.shownArea(launcher, picture == GamePicture.MENU, xScreen)
+                val geometry = GameResolution.viewGeometry(display, shown, xScreen, constraints.maxWidth, constraints.maxHeight)
+                val pointerArea = GameResolution.pointerArea(GameResolution.shownArea(launcher, pointerPicture == GamePicture.MENU, xScreen), xScreen)
                 if (BuildConfig.DEBUG) {
+                    LaunchedEffect(pointerArea) { Log.i(GEOMETRY_TAG, "pointer area $pointerArea") }
                     LaunchedEffect(geometry) {
                         val what = if (launcher) "LAUNCHER" else if (picture == GamePicture.MENU) "MENU" else "GAME"
                         Log.i(
@@ -346,6 +348,8 @@ fun GameView(
                         it.controls = controls
                         it.input = input
                         it.tellBackground = app.lowFrameRateInBackground
+                        it.touchMode = app.touchMode
+                        it.pointerArea = pointerArea
                         it.keepsKeyboard = layer.keepsKeyboard
                         it.suspended = layer.suspends
                         it.customButtons = buttons
@@ -355,7 +359,8 @@ fun GameView(
                 )
             }
         }
-        if (live) {
+        // The overlays and the dialogs they open mark a press with a plain tint, not Material's ripple (PressTint).
+        if (live) CompositionLocalProvider(LocalIndication provides PressTint) {
             val onScreen = controls.onScreenOn(controller)
             // Under the on-screen controls and the menu, over the game: what they leave of the screen.
             if (layer.tapCloses) TapToClose { go(GameLayer.NONE) }
@@ -379,7 +384,6 @@ fun GameView(
                 },
                 asking = asking,
                 onAsking = { asking = it },
-                fades = menuFades,
                 state = MenuState(
                     launcher = launcher,
                     onScreen = onScreen,
@@ -394,9 +398,9 @@ fun GameView(
                 actions = MenuActions(
                     onClose = { go(GameLayer.NONE) },
                     onOnScreen = { ControlsStore.save(context, controls.withOnScreen(it)) },
-                    onShowFps = { AppSettingsStore.save(context, app.copy(showFps = it)) },
+                    onShowFps = { value -> AppSettingsStore.update(context) { it.copy(showFps = value) } },
                     // At once, the menu open: the Game view follows the setting.
-                    onDisplay = { AppSettingsStore.save(context, app.copy(gameDisplay = app.gameDisplay.other)) },
+                    onDisplay = { AppSettingsStore.update(context) { it.copy(gameDisplay = it.gameDisplay.other) } },
                     onKeyboard = { on ->
                         // Typing needs the game: the menu closes as the keyboard opens; it stays as the keyboard closes.
                         if (on) go(GameLayer.NONE)
@@ -404,9 +408,9 @@ fun GameView(
                     },
                     onFrameRate = { frameRateInput = true },
                     onControls = { go(GameLayer.CONTROLS) },
-                    onSlowerInBackground = { AppSettingsStore.save(context, app.copy(lowFrameRateInBackground = it)) },
+                    onSlowerInBackground = { value -> AppSettingsStore.update(context) { it.copy(lowFrameRateInBackground = value) } },
                     onSoundInBackground = { SessionService.command(LauncherSettings.soundInBackground(it)) },
-                    onKeepScreenOn = { AppSettingsStore.save(context, app.copy(keepScreenOn = it)) },
+                    onKeepScreenOn = { value -> AppSettingsStore.update(context) { it.copy(keepScreenOn = value) } },
                     onStop = {
                         go(GameLayer.NONE)
                         SessionService.send(context, SessionService.ACTION_GAME_STOP)
@@ -420,6 +424,8 @@ fun GameView(
                 controls = controls,
                 activeMouse = mouseMode,
                 save = { ControlsStore.save(context, it) },
+                touch = app.touchMode,
+                onTouch = { mode -> AppSettingsStore.update(context) { it.copy(touchMode = mode) } },
                 // As the chord: at once, in the running game; a preview has no game, only the screen follows.
                 canUseMode = preview != null || (surface != null && input != null),
                 onUseMode = { on -> if (preview != null) mouseMode = on else surface?.useMouseMode(on) },
@@ -432,7 +438,7 @@ fun GameView(
             // Over the menu, which stays behind it.
             if (frameRateInput) {
                 FrameRateInput(app.frameRate, fullFrameRate, { pick ->
-                    AppSettingsStore.save(context, app.copy(frameRate = pick))
+                    AppSettingsStore.update(context) { it.copy(frameRate = pick) }
                     // At once: the clock and both layers' rate for the display.
                     surface?.applyFrameRate(pick) ?: FrameClock.setRate(FrameRateVote.rate(fullFrameRate, pick))
                 }) { frameRateInput = false }
@@ -447,7 +453,7 @@ fun GameView(
  * device goes, so what it held is let go.
  */
 @Composable
-private fun controllerConnected(onRemoved: () -> Unit): Boolean {
+private fun controllerConnected(onRemoved: (Int) -> Unit): Boolean {
     val context = LocalContext.current
     fun now() = InputDevice.getDeviceIds().any { id ->
         InputDevice.getDevice(id)?.let { isController(it.sources, it.isVirtual) } == true
@@ -460,7 +466,7 @@ private fun controllerConnected(onRemoved: () -> Unit): Boolean {
             override fun onInputDeviceAdded(deviceId: Int) { connected = now() }
             override fun onInputDeviceRemoved(deviceId: Int) {
                 connected = now()
-                removed()
+                removed(deviceId)
             }
             override fun onInputDeviceChanged(deviceId: Int) { connected = now() }
         }
@@ -477,29 +483,45 @@ private fun controllerConnected(onRemoved: () -> Unit): Boolean {
  * own buffer on the screen while it presents there ([PresentServer.readShown]; the X screen then
  * misses its frames), else of the framebuffer, mapped once. A Game view made again for the same X
  * screen (back from Settings) starts from the picture steadied last ([SteadiedPicture]), so its
- * size does not change for a moment.
+ * size does not change for a moment. Second, the picture for the pointer's area
+ * ([GameResolution.pointerArea]): it leaves the menu after one sample of the world, so the pointer
+ * reaches the game's whole picture (the HUD's corners) at once, and comes back to the menu after
+ * as many samples as the first.
  */
 @Composable
-private fun gamePicture(framebuffer: Framebuffer?, screen: XwdHeader?): GamePicture {
+private fun gamePicture(framebuffer: Framebuffer?, screen: XwdHeader?): Pair<GamePicture, GamePicture> {
     var picture by remember { mutableStateOf(SteadiedPicture.of(framebuffer, screen)) }
+    var pointer by remember { mutableStateOf(picture) }
     LaunchedEffect(framebuffer, screen) {
         val start = SteadiedPicture.of(framebuffer, screen)
         picture = start
+        pointer = start
         if (framebuffer == null || screen == null || screen.bitsPerPixel != 32) return@LaunchedEffect
         withContext(Dispatchers.IO) {
             val pixels = framebuffer.map()?.takeIf { it.header == screen } ?: return@withContext
             val steady = PictureDebounce(start)
+            val quick = PictureDebounce(start, leaveMenu = 1)
             while (isActive) {
-                val now = PresentServer.current.value?.readShown { GamePicture.of(it.width, it.height, it::pixel) }
-                    ?: GamePicture.of(screen.width, screen.height, pixels::pixel)
-                val next = steady.sample(now)
-                SteadiedPicture.keep(framebuffer, screen, next)
-                if (next != picture) withContext(Dispatchers.Main) { picture = next }
+                // No sample while the game's buffer shows but is not ready: the X screen misses that frame.
+                val now = Shown.sample(PresentServer.current.value?.readShown { GamePicture.of(it.width, it.height, it::pixel) }) {
+                    GamePicture.of(screen.width, screen.height, pixels::pixel)
+                }
+                if (now != null) {
+                    val next = steady.sample(now)
+                    val nextPointer = quick.sample(now)
+                    SteadiedPicture.keep(framebuffer, screen, next)
+                    if (next != picture || nextPointer != pointer) {
+                        withContext(Dispatchers.Main) {
+                            picture = next
+                            pointer = nextPointer
+                        }
+                    }
+                }
                 delay(PICTURE_MS)
             }
         }
     }
-    return picture
+    return picture to pointer
 }
 
 /** The picture [gamePicture] steadied last, for the X screen of one framebuffer and header. */
@@ -687,8 +709,29 @@ private class GameSurface(
     /** The token of a tap's click still to come on [handler] ([TouchGestures.later]). */
     private val pendingClick = Any()
     private var pad: PadInput? = null
-    private var touch: TouchGestures? = null
-    private var touchId = -1
+    private var touch: TouchMouse? = null
+
+    /**
+     * Touch ([AppSettings.touchMode]; the Controls screen and Settings → Controller), followed live:
+     * the next touch goes through [TrackpadGestures] (Trackpad) or [TouchGestures] (Direct); a
+     * gesture under way is let go.
+     */
+    var touchMode = AppSettings().touchMode
+        set(value) {
+            if (value == field) return
+            field = value
+            handler.removeCallbacks(longPress)
+            touch?.cancel()
+            touch = null
+        }
+
+    /**
+     * Where the pointer may go, in X screen pixels: the game's picture ([GameResolution.pointerArea];
+     * the whole game picture from the first sample of the world, `gamePicture`); moves by a distance
+     * stop at its edges ([send]).
+     */
+    var pointerArea = GameResolution.PictureRect(0, 0, screen.width, screen.height)
+
     private val mouse = Mouse()
     /** A mouse is over the game, not over an overlay ([onResolvePointerIcon]). */
     private var mouseOver = false
@@ -755,6 +798,7 @@ private class GameSurface(
             }
             // A new pad starts in pad mode.
             onMouseMode(pad?.mouseMode ?: false)
+            // New gestures for the new relay.
             touch = null
             // An overlay that took the focus before the relay came ([overlayFocus]): the relay hears it now.
             if (value != null && overlayAway && copy != null) send(listOf(RelayEvent.Focus(false)))
@@ -792,8 +836,8 @@ private class GameSurface(
     }
 
     /** A device went: what the controller held is let go (Android sends no release for it). */
-    fun releaseController() {
-        pad?.releaseAll()
+    fun releaseController(deviceId: Int) {
+        pad?.removeDevice(deviceId)
     }
 
     /**
@@ -1058,16 +1102,17 @@ private class GameSurface(
             // must neither act as a release (a cancelled Select + Start would switch mouse
             // mode) nor leave anything held.
             if (event.isCanceled) {
-                pad?.releaseAll()
+                pad?.removeDevice(event.deviceId)
                 return true
             }
             if (event.repeatCount == 0) {
                 // A Microsoft pad's Back is its Select here, for the game only (PadLayouts.gameKeyCode).
-                pad?.onKey(PadLayouts.gameKeyCode(event), down)
+                pad?.onKey(event.deviceId, PadLayouts.gameKeyCode(event), down)
                 clock()
             }
             return true
         }
+        if (Keys.isSoftKeyboardShift(code, event.flags)) return true
         val sym = Keys.keysym(code) ?: return false
         if (event.repeatCount == 0) {
             if (down) keysDown += sym else keysDown -= sym
@@ -1081,14 +1126,27 @@ private class GameSurface(
         if (suspended || !event.isFromSource(InputDevice.SOURCE_JOYSTICK)) return false
         if (event.action == MotionEvent.ACTION_CANCEL) {
             // Android ends the motion (focus lost, the device reset or removed): the sticks,
-            // triggers and hat rest, or the game would keep the last values.
-            pad?.onAxes(PadAxes())
+            // triggers and hat rest, or the game would keep the last values. The device's buttons
+            // stay: a cancelled key or the device's removal lets go of them.
+            pad?.resetAxes(event.deviceId)
             return true
         }
         if (event.action != MotionEvent.ACTION_MOVE) return false
-        pad?.onAxes(PadLayouts.axes(event))
+        pad?.onAxes(event.deviceId, PadLayouts.axes(event))
         clock()
         return true
+    }
+
+    /**
+     * A new size of the view (Display; Fit to screen between PD2's 4:3 menu and its 16:9 game on a
+     * nearly 4:3 screen) maps a finger to other X screen pixels: a Trackpad gesture under way would
+     * move the pointer by the difference, so it ends there (the next touch starts afresh; a click
+     * still to come stays, [TouchMouse.endTouch]). Direct maps each finger anew.
+     */
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        if (touchMode != TouchMode.TRACKPAD || (oldw == 0 && oldh == 0)) return
+        touch?.endTouch()
     }
 
     /** Touch, mapped from this view (the whole X screen, as Display places it) to X screen pixels; a mouse's events go to [onMouse]. */
@@ -1100,30 +1158,42 @@ private class GameSurface(
         // A finger may wander this far, in X screen pixels, and still tap.
         val slop = ViewConfiguration.get(context).scaledTouchSlop.toFloat() * screen.width / width.coerceAtLeast(1)
         val gestures = touch ?: input?.let {
-            TouchGestures(
-                slop, ::send,
-                later = { delayMs, click -> handler.postDelayed({ click() }, pendingClick, delayMs) },
-                dropLater = { handler.removeCallbacksAndMessages(pendingClick) },
-            )
+            val later: (Long, () -> Unit) -> Unit = { delayMs, click -> handler.postDelayed({ click() }, pendingClick, delayMs) }
+            val dropLater = { handler.removeCallbacksAndMessages(pendingClick) }
+            when (touchMode) {
+                TouchMode.DIRECT -> TouchGestures(slop, ::send, later, dropLater)
+                // Pointer speed, as the player changes it.
+                TouchMode.TRACKPAD -> TrackpadGestures(slop, { controls.pointerSpeed }, ::send, later, dropLater)
+            }
         }?.also { touch = it } ?: return true
         val time = event.eventTime
+        if (event.actionMasked != MotionEvent.ACTION_DOWN && event.actionMasked != MotionEvent.ACTION_CANCEL) {
+            for (sample in 0 until event.historySize) {
+                for (index in 0 until event.pointerCount) {
+                    gestures.move(
+                        event.getPointerId(index), touchX(event.getHistoricalX(index, sample)),
+                        touchY(event.getHistoricalY(index, sample)), event.getHistoricalEventTime(sample),
+                    )
+                }
+            }
+            for (index in 0 until event.pointerCount) {
+                gestures.move(event.getPointerId(index), touchX(event.getX(index)), touchY(event.getY(index)), time)
+            }
+        }
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                touchId = event.getPointerId(0)
                 handler.removeCallbacks(longPress)
-                gestures.down(screenX(event.x), screenY(event.y), time)
-                handler.postDelayed(longPress, TouchGestures.LONG_PRESS_MS)
+                gestures.down(event.getPointerId(0), touchX(event.x), touchY(event.y), time)
+                // Trackpad has no long press.
+                if (touchMode == TouchMode.DIRECT) handler.postDelayed(longPress, TouchGestures.LONG_PRESS_MS)
             }
-            MotionEvent.ACTION_POINTER_DOWN -> gestures.secondDown(time)
-            // The followed finger lifts while another stays: its gesture ends (the other
-            // finger's moves are not followed).
-            MotionEvent.ACTION_POINTER_UP -> if (event.getPointerId(event.actionIndex) == touchId) {
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                val index = event.actionIndex
+                gestures.secondDown(event.getPointerId(index), touchX(event.getX(index)), touchY(event.getY(index)), time)
+            }
+            MotionEvent.ACTION_POINTER_UP -> {
                 handler.removeCallbacks(longPress)
-                gestures.primaryUp(time)
-            }
-            MotionEvent.ACTION_MOVE -> {
-                val index = event.findPointerIndex(touchId)
-                if (index >= 0) gestures.move(screenX(event.getX(index)), screenY(event.getY(index)), time)
+                gestures.pointerUp(event.getPointerId(event.actionIndex), time)
             }
             MotionEvent.ACTION_UP -> {
                 handler.removeCallbacks(longPress)
@@ -1209,13 +1279,19 @@ private class GameSurface(
         pad?.onVirtual(state)
     }
 
-    /** Events into X through the relay, in order, off the main thread. */
+    /**
+     * Events into X through the relay, in order, off the main thread; the pointer's moves by a
+     * distance (Trackpad, mouse mode) kept inside [pointerArea] ([PointerBounds]).
+     */
     fun send(events: List<RelayEvent>) {
-        val relay = input?.relay ?: return
+        val game = input ?: return
         if (events.isEmpty() || sends.isShutdown) return
+        val placed = game.pointer.place(events, pointerArea)
+        if (placed.isEmpty()) return
+        val relay = game.relay
         sends.execute {
             try {
-                relay.send(events)
+                relay.send(placed)
             } catch (_: IOException) {
                 // The relay is gone with the game environment.
             }
@@ -1225,6 +1301,11 @@ private class GameSurface(
     private fun screenX(x: Float) = (x * screen.width / width.coerceAtLeast(1)).toInt().coerceIn(0, screen.width - 1)
 
     private fun screenY(y: Float) = (y * screen.height / height.coerceAtLeast(1)).toInt().coerceIn(0, screen.height - 1)
+
+    // Trackpad counts a finger's moves past the view's edges too; PointerBounds keeps the pointer on the game's picture.
+    private fun touchX(x: Float) = if (touchMode == TouchMode.TRACKPAD) floor(x * screen.width / width.coerceAtLeast(1)).toInt() else screenX(x)
+
+    private fun touchY(y: Float) = if (touchMode == TouchMode.TRACKPAD) floor(y * screen.height / height.coerceAtLeast(1)).toInt() else screenY(y)
 }
 
 private fun Context.activity(): Activity? = when (this) {
