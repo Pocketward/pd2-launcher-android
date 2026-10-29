@@ -156,8 +156,10 @@ fun KeysScreen(
         val lodKey = fields[1]?.takeKey() ?: CharArray(0)
         onAuthorize(d2Key, lodKey)
     }
-    // The fields' Done key, set once, installs with the caller's current onAuthorize.
+    // The fields' Done key, set once, installs with the caller's current onAuthorize, and reads
+    // [ready] as it is now, not as it was when the field was made.
     val latestInstall by rememberUpdatedState(install)
+    val latestReady by rememberUpdatedState(ready)
     // The key field with focus, -1 for none.
     var focused by remember { mutableIntStateOf(-1) }
     // As InitialFocus, except that a key field keeps the focus when a key typed into it (a
@@ -232,7 +234,7 @@ fun KeysScreen(
                                 // An Enter key reports its press and its release: the release acts, else the
                                 // next field would take the release and move focus on past itself.
                                 if (event == null || event.action == KeyEvent.ACTION_UP) {
-                                    when (keyFieldAction(index, labels.size, ready)) {
+                                    when (keyFieldAction(index, labels.size, latestReady)) {
                                         KeyFieldAction.NEXT_FIELD -> fields[index + 1]?.requestFocus()
                                         KeyFieldAction.INSTALL -> latestInstall()
                                         KeyFieldAction.CLOSE_KEYBOARD -> hideKeyboard(field)
