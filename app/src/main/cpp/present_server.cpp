@@ -6,12 +6,12 @@
 // a time, a frame that comes meanwhile waits, and a newer one replaces it (the replaced one goes
 // back to Mesa at once), so the game has a free buffer always (the one more) and never waits here
 // for the display. How many frames it draws is the app's clock's business (frame_clock.c, Mesa
-// patch 0008: a game with vsync on waits for its tick). A game with vsync off (Mesa sends the
-// present mode with each PRESENT) is not held to the clock, but the screen shows at most one of
-// its frames a tick: a frame that comes before the next tick waits as the newest, and the tick
-// shows it (present_server_tick wakes this server's thread); at Full (no lower cap) they go as
-// they come. Frames with vsync on go as they come. The layer sits where the game's window is on
-// the X screen (x-input-relay says where): the whole view for a full-screen game, a windowed
+// patch 0008: the game waits for its tick in every present mode). For a game with vsync off (Mesa
+// sends the present mode with each PRESENT) the screen also shows at most one of its frames a
+// tick, a second guard behind Mesa's wait: a frame that comes before the next tick waits as the
+// newest, and the tick shows it (present_server_tick wakes this server's thread); at Full (no
+// lower cap) they go as they come. Frames with vsync on go as they come. The layer sits where the
+// game's window is on the X screen (x-input-relay says where): the whole view for a full-screen game, a windowed
 // game's place otherwise, the copy showing the X screen around it. A buffer goes back to Mesa once the compositor has replaced it, with its release
 // fence. While the game's window is not alone on the X screen (a window over or beside it), or
 // while the Game view has no layer (one could not be made), the frames go to the X screen: the
@@ -938,6 +938,11 @@ extern "C" void present_server_tick(void) {
 
 extern "C" int present_server_showing(void) {
     return showing.load(std::memory_order_relaxed);
+}
+
+// The same for the Game view, which draws the X screen's pointer only over the game's buffers.
+extern "C" JNIEXPORT jint JNICALL Java_com_pd2launcher_app_PresentServer_nativeShowing(JNIEnv *, jclass) {
+    return present_server_showing();
 }
 
 extern "C" JNIEXPORT jlong JNICALL Java_com_pd2launcher_app_PresentServer_nativeStart(

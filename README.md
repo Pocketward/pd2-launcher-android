@@ -40,7 +40,7 @@ https://github.com/user-attachments/assets/f294dbf7-d77c-46bf-a42d-584854420aa3
   <img src="docs/media/settings.gif" width="49%" alt="The Settings: the game resolution (the game's own size or Custom), the display (Fit to screen or Center), the frame rate, then the App and Controller tabs">
   <img src="docs/media/logs.gif" width="49%" alt="Share logs and Save logs in the App tab of the Settings">
 </p>
-<p align="center"><b>Left:</b> <b>Settings</b>: the game resolution, the display, the frame rate, the graphics profile, and the options for the app and the controller. <b>Right:</b> for a problem report, <b>Share logs</b> sends the app's logs as one file, and <b>Save logs</b> saves that file on your device.</p>
+<p align="center"><b>Left:</b> <b>Settings</b>: the game resolution, the display, the graphics profile, the frame rate, and the options for the app and the controller. <b>Right:</b> for a problem report, <b>Share logs</b> sends the app's logs as one file, and <b>Save logs</b> saves that file on your device.</p>
 
 ## What your device needs
 

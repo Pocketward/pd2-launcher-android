@@ -63,6 +63,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import com.pd2launcher.app.AppSettings
 import com.pd2launcher.app.FrameRateVote
 import com.pd2launcher.app.R
+import com.pd2launcher.app.ScreenRateProbe
 import com.pd2launcher.app.input.Controls
 import com.pd2launcher.app.input.PadLayouts
 import com.pd2launcher.app.input.PointerSpeed
@@ -76,7 +77,9 @@ import java.util.Locale
  * number from [FrameRateVote.MIN] to the screen's most ([full], its full rate,
  * [com.pd2launcher.app.ScreenRate]; the display's highest mode is stored as Full, a held screen's
  * most as its number, [FrameRateVote.typed]) and gives [onSet] the value to store; any other
- * number turns the help line into what to type, and the dialog stays.
+ * number turns the help line into what to type, and the dialog stays. While it shows it measures
+ * the full rate again ([ScreenRateProbe]): the caller gives the live [full], so the limit and the
+ * help line follow that measurement.
  */
 @Composable
 internal fun FrameRateInput(current: Int, full: Float, onSet: (Int) -> Unit, onClose: () -> Unit) {
@@ -98,6 +101,7 @@ internal fun FrameRateInput(current: Int, full: Float, onSet: (Int) -> Unit, onC
         // OK on the number as it came keeps the stored pick (Full shown as a held screen's 60 stays Full).
         accept = { text -> text.trim() == opened.toString() || FrameRateVote.typed(text, full, highest)?.also(onSet) != null },
         onClose = onClose,
+        measuresScreen = true,
     )
 }
 
@@ -144,7 +148,8 @@ internal fun speedText(value: Float): String = String.format(Locale.ROOT, "%.2f"
  * the keyboard, whose Done is OK. OK gives the text to [accept], which keeps it and says so, and
  * then the dialog closes. With the keyboard up the dialog keeps above it: where the room is short,
  * Cancel and OK move up beside the title, so they always show. A controller's A selects and B is
- * Back, as on the native screens.
+ * Back, as on the native screens. [measuresScreen]: its window measures the screen's full rate
+ * while it shows ([ScreenRateProbe], the Frame rate input).
  */
 @Composable
 private fun NumberInput(
@@ -158,6 +163,7 @@ private fun NumberInput(
     step: (String, Int) -> String,
     accept: (String) -> Boolean,
     onClose: () -> Unit,
+    measuresScreen: Boolean = false,
 ) {
     var refused by remember { mutableStateOf(false) }
     var field by remember { mutableStateOf<EditText?>(null) }
@@ -171,7 +177,8 @@ private fun NumberInput(
     val latestAccept by rememberUpdatedState(tryAccept)
     val latestStep by rememberUpdatedState(step)
     Dialog(onClose, DialogProperties(usePlatformDefaultWidth = false)) {
-        val window = (LocalView.current.parent as? DialogWindowProvider)?.window
+        val view = LocalView.current
+        val window = (view.parent as? DialogWindowProvider)?.window
         DisposableEffect(window) {
             // The keyboard as the dialog opens only after a tap; after a controller's press only on a tap.
             val keyboard = if (byTouch) WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE else WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN
@@ -187,7 +194,11 @@ private fun NumberInput(
                 }
             }
             val base = window?.let(::withNavigationKeys)
-            onDispose { if (window != null && base != null) window.callback = base }
+            val probe = if (measuresScreen) window?.let { ScreenRateProbe(it, view) }?.also { it.start() } else null
+            onDispose {
+                probe?.stop()
+                if (window != null && base != null) window.callback = base
+            }
         }
         // The height the dialog needs with its buttons under the field, at its width, whatever room it has now.
         var tall by remember { mutableIntStateOf(0) }

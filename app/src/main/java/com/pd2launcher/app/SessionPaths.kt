@@ -161,12 +161,15 @@ class SessionPaths(val data: String) {
      * [presentSocket]; and the [receivedBytes] file for the engine itself.
      * The GPU values are the Adreno's (Turnip) unless [mali] (a Mali GPU, PanVK: [maliValues]);
      * [devDriver] lets a hand-placed Mali driver build replace the bundled one (debug builds only,
-     * [devDriverValues]).
+     * [devDriverValues]). On an Adreno, [ubwcFlagHint] (0 or 1, [UbwcFlagHint]) adds Turnip's TP
+     * UBWC flag hint as [FD_DEV_FEATURES], which the engine keeps for the standard and the
+     * Compatibility driver; null adds nothing (Mesa's own value).
      */
     fun engineEnvironment(
         mali: Boolean = false,
         devDriver: Boolean = BuildConfig.DEBUG,
         noconform: Boolean = false,
+        ubwcFlagHint: Int? = null,
     ): List<String> {
         val values = userlandEnvironment()
         val own = values.filter { (key, _) ->
@@ -182,6 +185,7 @@ class SessionPaths(val data: String) {
             maliValues(values, wine, devDriver)
         } else {
             (if (noconform) withNoconform(wine, TU_DEBUG) else wine) + compatibility +
+                listOfNotNull(ubwcFlagHint?.let { FD_DEV_FEATURES to ubwcFlagHintFeature(it) }) +
                 if (devDriver) debugHostValues() else emptyList()
         }
         return base() + "XDG_RUNTIME_DIR=${runtimeDir.path}" + "PD2_ANDROID_APP=1" +

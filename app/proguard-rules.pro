@@ -12,10 +12,10 @@
 -keepattributes SourceFile,LineNumberTable
 
 # JNI: the app's native libraries (src/main/cpp: libspawner; libframecopy for FrameCopy,
-# PresentServer and FrameClock; libinputfence; libkgslprobe; libmaliprobe; libseccompprobe)
-# bind each native method by its Java_<class>_<method> name, so the classes and the native
-# methods stay as they are. R8 can still remove what the build does not use (SeccompProbe is for
-# debug builds only). The default rules have the same rule for all classes.
+# PresentServer and FrameClock; libinputfence; libkgslprobe; libmaliprobe; libvulkandriverprobe;
+# libseccompprobe) bind each native method by its Java_<class>_<method> name, so the classes and
+# the native methods stay as they are. R8 can still remove what the build does not use
+# (SeccompProbe is for debug builds only). The default rules have the same rule for all classes.
 -keepclasseswithmembernames,includedescriptorclasses class com.pd2launcher.app.** {
     native <methods>;
 }

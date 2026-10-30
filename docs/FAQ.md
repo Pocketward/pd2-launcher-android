@@ -6,6 +6,7 @@ Short answers to questions that players often ask. For a different problem, open
 
 - [The game or the official PD2 launcher closes by itself in the background](#the-game-or-the-official-pd2-launcher-closes-by-itself-in-the-background)
 - [Why does the game not fill my screen?](#why-does-the-game-not-fill-my-screen)
+- [Why does the game miss 120 fps at a high Custom game resolution?](#why-does-the-game-miss-120-fps-at-a-high-custom-game-resolution)
 - [Which devices and graphics chips work?](#which-devices-and-graphics-chips-work)
 - [How do I use a controller?](#how-do-i-use-a-controller)
 - [Can I use a mouse and a keyboard?](#can-i-use-a-mouse-and-a-keyboard)
@@ -108,6 +109,16 @@ For single player, some mods let the game use other resolutions, for example 4:3
 3. In **Settings → Game → Game resolution**, select **Custom…** and type the size for the mod.
 
 For online play, use **Game's own size** and keep **Check for game updates** on.
+
+### Why does the game miss 120 fps at a high Custom game resolution?
+
+At a high **Custom…** game resolution, with heavy D2GL shader settings, the game can miss some frames at 120 Hz. We measured this on one phone at 120 Hz: **Custom…** 1920 × 1080 with one player's heavy D2GL shader settings missed about 7 % of the frames. At **Game's own size**, the game held about 120 fps.
+
+To get the frame rate back, do one of these:
+
+- In **Settings → Game → Game resolution**, select **Game's own size**.
+- In the game, use lighter D2GL shader settings.
+- In **Settings → Game → Graphics, start and sound**, or in the in-game menu's **Quick** tab, set a lower **Frame rate**.
 
 ### Which devices and graphics chips work?
 

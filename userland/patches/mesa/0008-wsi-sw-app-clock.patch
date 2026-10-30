@@ -23,7 +23,7 @@
     xcb_gc_t                                     gc;
     uint32_t                                     depth;
     VkExtent2D                                   extent;
-@@ -2030,6 +2039,48 @@ sw_present_paced(void)
+@@ -2030,6 +2039,49 @@ sw_present_paced(void)
     }
  #endif
  }
@@ -31,18 +31,20 @@
 +/* The app's clock: the virtual display's vertical blank. The app counts its ticks in the 32-bit
 + * word at byte 256 of the present counter's page (and wakes its futex waiters) at the rate the
 + * player picked (Settings, Frame rate; Full: the panel's highest rate), and keeps the word at
-+ * byte 320 non-zero while it ticks. A FIFO or FIFO_RELAXED present (vsync on) waits until a tick
-+ * has come since this swapchain's present before, so the game draws at most one frame a tick,
-+ * whatever rate the phone's screen runs at, and a late frame goes at once; an IMMEDIATE or
-+ * MAILBOX present (vsync off) never waits. A clock that has not ticked for SW_PACING_TIMEOUT_NS
-+ * is not waited for again until it ticks: a stalled app never holds the game up. Every software
-+ * present waits here, the app's buffers' and the X screen's alike.
++ * byte 320 non-zero while it ticks. A present of every mode (FIFO and FIFO_RELAXED: vsync on;
++ * IMMEDIATE and MAILBOX: vsync off) waits until a tick has come since this swapchain's present
++ * before, so the game shows at most one frame a tick, whatever rate the phone's screen runs at,
++ * and a late frame goes at once. The game is held as with FIFO: its presented images wait in the
++ * present queue, and its acquire waits while none is free (this present replaces no queued image,
++ * for MAILBOX too). A clock that has not ticked for SW_PACING_TIMEOUT_NS is not waited for again
++ * until it ticks: a stalled app never holds the game up. Every software present waits here, the
++ * app's buffers' and the X screen's alike.
 + */
 +#define SW_TICK_WORD (256 / sizeof(uint32_t))
 +#define SW_CLOCK_WORD (320 / sizeof(uint32_t))
 +
 +static void
-+sw_present_clock(struct sw_clock_seen *seen, VkPresentModeKHR present_mode)
++sw_present_clock(struct sw_clock_seen *seen)
 +{
 +#if UTIL_FUTEX_SUPPORTED
 +   call_once(&sw_present_counter_once, sw_present_counter_open);
@@ -53,8 +55,7 @@
 +   uint32_t now = __atomic_load_n(tick, __ATOMIC_ACQUIRE);
 +   if (now != seen->tick)
 +      seen->stalled = false;
-+   bool vsync = present_mode == VK_PRESENT_MODE_FIFO_KHR || present_mode == VK_PRESENT_MODE_FIFO_RELAXED_KHR;
-+   if (vsync && !seen->stalled && now == seen->tick) {
++   if (!seen->stalled && now == seen->tick) {
 +      struct timespec deadline;
 +      clock_gettime(CLOCK_MONOTONIC, &deadline);
 +      timespec_add_nsec(&deadline, &deadline, SW_PACING_TIMEOUT_NS);
@@ -72,16 +73,15 @@
  #else
  static void
  sw_present_counted(void)
-@@ -2040,6 +2091,13 @@ static void
+@@ -2040,6 +2092,12 @@ static void
  sw_present_paced(void)
  {
  }
 +
 +static void
-+sw_present_clock(struct sw_clock_seen *seen, VkPresentModeKHR present_mode)
++sw_present_clock(struct sw_clock_seen *seen)
 +{
 +   (void)seen;
-+   (void)present_mode;
 +}
  #endif
  
@@ -101,8 +101,8 @@
     d->sock = -1;
 -   d->count = MIN2(chain->base.image_count, SW_DIRECT_MAX_BUFFERS);
 +   /* One buffer more than the images: with one on the screen, one going there and one waiting in
-+    * the app (the newest frame wins there), the game always has a free buffer to blit into, so a
-+    * vsync-off game never waits for the app. */
++    * the app (the newest frame wins there), the game always has a free buffer to blit into: it
++    * waits for the app's clock (sw_present_clock), never for the app. */
 +   d->count = MIN2(chain->base.image_count + 1, SW_DIRECT_MAX_BUFFERS);
     d->cmd_buffer_count = wsi->queue_family_count;
     for (uint32_t i = 0; i < SW_DIRECT_MAX_IMAGES; i++)
@@ -114,12 +114,12 @@
 -      /* A frame for the app's buffer is paced by the app giving buffers back. A frame for the
 -       * back pixmap waits for the Game view's take later, once the image is the game's again
 -       * (x11_sw_back_prepare). */
-+      /* Every frame waits for the app's clock as its present mode says (sw_present_clock). A
++      /* Every frame waits for the app's clock, whatever its present mode (sw_present_clock). A
 +       * frame for the app's buffer goes then; a frame for the back pixmap waits for the Game
 +       * view's take later, once the image is the game's again (x11_sw_back_prepare). */
        chain->sw_frame_to_back = false;
 +      if (chain->base.wsi->sw && !chain->has_mit_shm)
-+         sw_present_clock(&chain->sw_clock, present_mode);
++         sw_present_clock(&chain->sw_clock);
        if (chain->base.wsi->sw && !chain->has_mit_shm && !sw_direct_chosen(chain, image_index)) {
           chain->sw_frame_to_back = x11_sw_back_wanted(chain);
           if (!chain->sw_frame_to_back)

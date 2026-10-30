@@ -119,6 +119,21 @@ class PresentServer private constructor(private val handle: Long) {
             server.stop()
         }
 
+        /** The Game view shows the game's own buffers over the whole view. */
+        const val SHOWING_WHOLE = 1
+
+        /** The Game view shows the game's own buffers over the game's window only (a windowed game's); the X screen's copy around it. */
+        const val SHOWING_WINDOW = 2
+
+        /**
+         * Whether the Game view shows the game's own buffers now (present_server.h): 0 no (the X
+         * screen's copy shows the game, with Xvfb's own pointer), [SHOWING_WHOLE] or [SHOWING_WINDOW].
+         */
+        fun showing(): Int = nativeShowing()
+
+        @JvmStatic
+        private external fun nativeShowing(): Int
+
         @JvmStatic
         private external fun nativeStart(socket: String, counter: String?): Long
 

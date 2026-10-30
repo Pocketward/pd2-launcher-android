@@ -3,12 +3,18 @@
 # check (lintVitalRelease). Checks needs no engine, userland or runtime.
 # release.yml builds the full APK and also requires lint before APK export.
 # The build image is cached by its Containerfile, as in release.yml.
+# A push or pull request that changes only Markdown files and docs/ is not checked
+# (owner, 2026-10-29: "if we are just changing markdown files never rebuild"; "make it
+# so CI skips docs only commits"): nothing that builds changed. The publish of a
+# candidate then takes the Checks run of the commit its APK was built from.
 name: Checks
 
 on:
   push:
     branches: [main]
+    paths-ignore: ['**.md', 'docs/**']
   pull_request:
+    paths-ignore: ['**.md', 'docs/**']
   workflow_dispatch:
 
 permissions:

@@ -446,10 +446,14 @@ class SessionService : Service() {
      * Holds (and renews) or releases [workLocks] on the worker, never once the service stops, and
      * says so in the service log when that changes.
      */
-    /** The engine's environment for this GPU (a Mali's values; `noconform` on an Adreno that needs it). */
+    /**
+     * The engine's environment for this GPU (a Mali's values; `noconform` on an Adreno that needs it;
+     * Turnip's UBWC flag hint on an Adreno 740, [UbwcFlagHint]).
+     */
     private fun engineEnvironment(): List<String> = paths.engineEnvironment(
         mali = gpu is MaliGpu,
         noconform = (gpu as? KgslGpu)?.let { adrenoWithoutMultiview(it.chipId) } ?: false,
+        ubwcFlagHint = UbwcFlagHint.choice(gpu).hint,
     )
 
     private fun holdWorkLocks(wanted: Boolean) {
@@ -936,6 +940,7 @@ class SessionService : Service() {
         val enginePath = File(applicationInfo.nativeLibraryDir, ENGINE_LIBRARY)
         if (!enginePath.isFile) throw IOException("the engine is not in the APK ($enginePath)")
         val loader = paths.loader.path
+        log("UBWC flag hint: ${UbwcFlagHint.choice(gpu).describe()}")
         val pair = Spawner.socketPair()
         val process = try {
             // Started through the userland's loader.

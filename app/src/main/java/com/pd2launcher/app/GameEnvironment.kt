@@ -3,10 +3,13 @@ package com.pd2launcher.app
 import android.content.Context
 import android.os.ParcelFileDescriptor
 import android.os.SystemClock
+import com.pd2launcher.app.input.GameWindow
 import com.pd2launcher.app.input.GamepadFile
 import com.pd2launcher.app.input.PointerBounds
+import com.pd2launcher.app.input.PointerImage
 import com.pd2launcher.app.input.RelaySender
-import com.pd2launcher.app.input.RelayWindows
+import com.pd2launcher.app.input.RelayWord
+import com.pd2launcher.app.input.RelayWords
 import java.io.File
 import java.io.FileInputStream
 import java.io.IOException
@@ -14,7 +17,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-/** What the Game view drives: the X screen (its pointer as the app placed it, [pointer]) and the game's pad. */
+/** What the Game view drives: the X screen (and the pointer area its relay has, [pointer]) and the game's pad. */
 class GameInput(val relay: RelaySender, val gamepad: GamepadFile, val pointer: PointerBounds)
 
 /**
@@ -79,7 +82,7 @@ class GameEnvironment(
         // The virtual display's vertical blank at the player's frame rate (Settings, Game) on the
         // screen's full rate ([ScreenRate]); the Game view sets it again for its screen.
         val clockRate = FrameRateVote.rate(ScreenRate.read(context), AppSettingsStore.load(context).frameRate)
-        if (!FrameClock.start(paths.presentCounter, clockRate)) log("no frame clock: a game with vsync on draws as fast as it can")
+        if (!FrameClock.start(paths.presentCounter, clockRate)) log("no frame clock: the game draws as fast as it can")
         val env = paths.userlandProgramEnvironment()
         val bin = File(paths.userland, "usr/bin")
         try {
@@ -108,7 +111,7 @@ class GameEnvironment(
                 it.setBackground(inBackground, soundInBackground, gameRunning)
                 it.start()
             }
-            val r = startInput(bin, env, width, height)
+            val r = startInput(bin, env)
             log(
                 "game environment started: Xvfb pid ${x.pid} at ${width}x$height (framebuffer ${if (memory != null) "in memory" else "in a file"}), " +
                     "x-input-relay pid ${r.pid}",
@@ -123,9 +126,9 @@ class GameEnvironment(
     /**
      * The gamepad file (a connected, neutral pad) and x-input-relay on the X display, its
      * standard input the child end of a socket pair whose app end the Game view writes to; the
-     * [width] x [height] X screen's pointer starts in its middle ([PointerBounds]).
+     * relay has no pointer area until the Game view's first events give it one ([PointerBounds]).
      */
-    private fun startInput(bin: File, env: List<String>, width: Int, height: Int): OwnedProcess {
+    private fun startInput(bin: File, env: List<String>): OwnedProcess {
         val gamepad = GamepadFile.open(gamepadFile(paths))
         val pair = try {
             Spawner.socketPair()
@@ -147,28 +150,46 @@ class GameEnvironment(
         }
         relay = r
         relaySocket = pair.app
-        _input.value = GameInput(RelaySender(ParcelFileDescriptor.AutoCloseOutputStream(pair.app)), gamepad, PointerBounds(width, height))
+        _input.value = GameInput(RelaySender(ParcelFileDescriptor.AutoCloseOutputStream(pair.app)), gamepad, PointerBounds())
         watchWindows(pair.app)
         return r
     }
 
     /**
-     * x-input-relay's word on the X screen's windows, each time it changes, on the same socket
-     * ([RelayWindows]): the game's window alone and where it is, or not alone. The game's own
-     * buffers show only while it is alone, where it is ([PresentServer.setGameWindow]). Ends with
-     * the socket, leaving the X screen to show.
+     * x-input-relay's words on the same socket ([RelayWords]), each time one changes: on the X
+     * screen's windows, the game's window alone and where it is, or not alone (the game's own
+     * buffers show only while it is alone, where it is: [PresentServer.setGameWindow], [gameWindow]);
+     * on the X screen's pointer, its image while it shows ([pointer]) and where it is ([pointerAt]),
+     * which the Game view draws over the game's own buffers. Ends with the socket, leaving the X
+     * screen to show and no pointer.
      */
     private fun watchWindows(socket: ParcelFileDescriptor) {
         val input = FileInputStream(socket.fileDescriptor)
+        _gameWindow.value = null
+        _pointer.value = null
+        _pointerAt.value = null
         Thread({
             try {
                 while (true) {
-                    val window = RelayWindows.read(input)
-                    PresentServer.current.value?.setGameWindow(window)
+                    when (val word = RelayWords.read(input)) {
+                        is RelayWord.Windows -> {
+                            _gameWindow.value = word.window
+                            PresentServer.current.value?.setGameWindow(word.window)
+                        }
+                        is RelayWord.Pointer -> _pointer.value = word.image
+                        RelayWord.PointerHidden -> {
+                            _pointer.value = null
+                            _pointerAt.value = null
+                        }
+                        is RelayWord.PointerAt -> _pointerAt.value = word
+                    }
                 }
             } catch (_: IOException) {
                 // The relay and its socket are gone with the game environment.
                 PresentServer.current.value?.setGameWindow(null)
+                _gameWindow.value = null
+                _pointer.value = null
+                _pointerAt.value = null
             }
         }, "pd2-windows").apply { isDaemon = true }.start()
     }
@@ -259,6 +280,18 @@ class GameEnvironment(
         private val _framebuffer = MutableStateFlow<Framebuffer?>(null)
         /** The running game environment's X screen, for the Game view and the Live progress window; null while it is stopped. */
         val framebuffer: StateFlow<Framebuffer?> = _framebuffer.asStateFlow()
+
+        private val _gameWindow = MutableStateFlow<GameWindow?>(null)
+        /** The game's window while it is alone on the X screen (x-input-relay's 'F'); null while not, or while stopped. */
+        val gameWindow: StateFlow<GameWindow?> = _gameWindow.asStateFlow()
+
+        private val _pointer = MutableStateFlow<PointerImage?>(null)
+        /** The X screen's pointer image while it shows (x-input-relay's 'I'), for the Game view; null while it shows nothing, or while stopped. */
+        val pointer: StateFlow<PointerImage?> = _pointer.asStateFlow()
+
+        private val _pointerAt = MutableStateFlow<RelayWord.PointerAt?>(null)
+        /** Where the X screen's pointer is while it shows (x-input-relay's 'P'); null before the first place, or while it shows nothing. */
+        val pointerAt: StateFlow<RelayWord.PointerAt?> = _pointerAt.asStateFlow()
 
         /** The gamepad file, named to the game's XInput bridge in `PD2_GAMEPAD_FILE`. */
         fun gamepadFile(paths: SessionPaths) = File(paths.files, "gamepad.bin")

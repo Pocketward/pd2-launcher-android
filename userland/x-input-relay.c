@@ -18,7 +18,21 @@
  * Windows one pixel wide or high (Wine's 1x1 helpers) and windows inside the game's own count as
  * nothing.
  *
- * This file is the one place both formats are defined; the app's encoder and decoder
+ * It also tells the app, on the same socket, about the X screen's pointer: the game's own buffers
+ * on the app's screen do not show the pointer that Xvfb draws into the X screen, so the app draws
+ * it over them (D2GL's menu shows the Windows pointer there). XFixes tells each change of the
+ * pointer's image (XFixesDisplayCursorNotify):
+ *   'I'  the pointer's image changed, and it shows: then four little-endian i32, its width and
+ *        height (1 to POINTER_MAX each) and its hot spot's x and y in it, then width x height
+ *        little-endian u32 pixels, rows from the top, each 0xAARRGGBB with premultiplied alpha
+ *        (XFixes' form). Only when the image is not the one told last.
+ *   'H'  the pointer shows no pixel (Wine's empty pointer while the game draws its own), or its
+ *        image is wider or higher than POINTER_MAX; told only after an 'I'
+ *   'P'  where the pointer is while it shows: two little-endian i32, its hot spot's x and y on the
+ *        X screen (XQueryPointer); after each 'I', and each time the pointer moved after a move the
+ *        relay injected
+ *
+ * This file is the one place these formats are defined; the app's encoder and decoder
  * (app/src/main/java/com/pd2launcher/app/input/RelayEvents.kt) mirror them and its unit test
  * pins the bytes.
  *
@@ -26,10 +40,21 @@
  *     0 u32 type    4 i32 a    8 i32 b
  *
  *   RELAY_MOTION   a, b = x, y        absolute pointer position on the X screen
- *   RELAY_RELATIVE a, b = dx, dy      relative pointer motion
+ *   RELAY_RELATIVE a, b = dx, dy      relative pointer motion (inside the pointer area, if set)
  *   RELAY_BUTTON   a = X button (1 left, 2 middle, 3 right, 4/5 wheel up/down), b = 1 down, 0 up
  *   RELAY_KEY      a = X keysym, b = 1 down, 0 up
  *   RELAY_FOCUS    a = 1 the game is on the app's screen again, 0 it is not (b unused)
+ *   RELAY_AREA     a = left | top << 16, b = width | height << 16 (each a u16): the pointer area
+ *                  on the X screen; a width or height of 0 removes it
+ *
+ * RELAY_AREA gives the pointer area: the game's picture on the X screen (the app's
+ * GameResolution.pointerArea), where the game draws its cursor. While an area is set, each
+ * RELAY_RELATIVE starts from where the pointer really is (XQueryPointer) and stops at the area's
+ * edges (pointer_target()); a pointer outside the area (a RELAY_MOTION can put it there) comes in
+ * at the nearest edge. The real place is necessary because the game and Wine move the pointer
+ * too: PD2 puts it on the character when the controller's stick walks. With no area (before the
+ * first RELAY_AREA, or after one that removes it), a RELAY_RELATIVE moves the pointer by its
+ * distance. A RELAY_MOTION is never limited.
  *
  * A keysym on no key of the current keymap (text from Android's keyboard, such as an accented
  * letter) is put on a spare keycode first; a keysym on a key's shifted level is sent with Shift.
@@ -74,6 +99,7 @@
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/extensions/XTest.h>
+#include <X11/extensions/Xfixes.h>
 #include <X11/keysym.h>
 
 struct relay_event {
@@ -89,6 +115,7 @@ enum {
     RELAY_BUTTON = 3,
     RELAY_KEY = 4,
     RELAY_FOCUS = 5,
+    RELAY_AREA = 6,
 };
 
 static Display *display;
@@ -98,6 +125,18 @@ static Atom wm_protocols, wm_take_focus, wm_state; /* WM_PROTOCOLS, WM_TAKE_FOCU
 static int away; /* RELAY_FOCUS: the game is off the screen */
 /* What was last told: 'C', or 'F' and where; told[0] 0 before the first word. */
 static int32_t told[7];
+
+/* The largest pointer image the relay sends ('I'), each way: Windows pointers are 32 x 32 at
+ * Wine's 96 DPI. A larger one is told as showing nothing ('H'). */
+#define POINTER_MAX 128
+static int fixes_event = -1; /* XFixes' first event code; -1: no XFixes, no pointer words */
+/* The 'I' word last told, pointer_length bytes; 0 while the pointer shows nothing. */
+static unsigned char pointer_word[1 + 4 * sizeof(int32_t) + POINTER_MAX * POINTER_MAX * sizeof(uint32_t)];
+static unsigned char pointer_next[sizeof pointer_word];
+static size_t pointer_length;
+static int32_t pointer_at[2]; /* where the last 'P' put it */
+static int pointer_placed; /* a 'P' since the last 'I' */
+static int pointer_large_told; /* a pointer larger than POINTER_MAX was logged */
 
 /* The official PD2 launcher's main window: its program's name and its fixed size (the app's
  * GameResolution.LAUNCHER_WINDOW, app/src/main/java/com/pd2launcher/app/GameResolution.kt, is the
@@ -317,6 +356,20 @@ static int alone(Window top, struct box box, int width, int height) {
     return result && over;
 }
 
+/* [length] bytes of one word to the app; a failure is logged as one about [what]. */
+static void tell(const unsigned char *bytes, size_t length, const char *what) {
+    size_t sent = 0;
+    while (sent < length) {
+        ssize_t n = write(0, bytes + sent, length - sent);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) {
+            fprintf(stderr, "x-input-relay: cannot tell the app %s\n", what);
+            return;
+        }
+        sent += (size_t)n;
+    }
+}
+
 /* Tells the app 'C', or 'F' and where (above), when it changed. */
 static void tell_cover(void) {
     Window root = DefaultRootWindow(display);
@@ -342,22 +395,80 @@ static void tell_cover(void) {
     unsigned char bytes[1 + 6 * sizeof(int32_t)];
     bytes[0] = (unsigned char)word[0];
     memcpy(bytes + 1, word + 1, 6 * sizeof(int32_t));
-    size_t length = word[0] == 'F' ? sizeof bytes : 1, sent = 0;
-    while (sent < length) {
-        ssize_t n = write(0, bytes + sent, length - sent);
-        if (n < 0 && errno == EINTR) continue;
-        if (n <= 0) {
-            fprintf(stderr, "x-input-relay: cannot tell the app the windows' state\n");
-            break;
-        }
-        sent += (size_t)n;
-    }
+    tell(bytes, word[0] == 'F' ? sizeof bytes : 1, "the windows' state");
     if (word[0] == 'F') {
         fprintf(stderr, "x-input-relay: the game's window alone: %dx%d at %d,%d on the %dx%d X screen\n", word[3], word[4],
                 word[1], word[2], word[5], word[6]);
     } else {
         fprintf(stderr, "x-input-relay: not the game's window alone (another window shows, or none is named or mapped)\n");
     }
+}
+
+/* Tells the app 'P', where the pointer is, while it shows (an 'I' told) and when it is not where
+ * the last 'P' put it. */
+static void tell_place(void) {
+    if (pointer_length == 0) return;
+    Window root_return, child;
+    int x, y, window_x, window_y;
+    unsigned int buttons;
+    if (!XQueryPointer(display, DefaultRootWindow(display), &root_return, &child, &x, &y, &window_x, &window_y, &buttons)) {
+        return;
+    }
+    if (pointer_placed && pointer_at[0] == x && pointer_at[1] == y) return;
+    pointer_placed = 1;
+    pointer_at[0] = x;
+    pointer_at[1] = y;
+    unsigned char bytes[1 + sizeof pointer_at];
+    bytes[0] = 'P';
+    memcpy(bytes + 1, pointer_at, sizeof pointer_at);
+    tell(bytes, sizeof bytes, "where the pointer is");
+}
+
+/* Tells the app the pointer's image ('I') or that it shows nothing ('H'), where that changed,
+ * then where it is ('P'). */
+static void tell_pointer(void) {
+    XFixesCursorImage *image = XFixesGetCursorImage(display);
+    if (image == NULL) return;
+    size_t count = (size_t)image->width * image->height;
+    int shows = 0;
+    /* Xlib hands the 32-bit pixels over as longs. */
+    for (size_t i = 0; i < count && !shows; i++) shows = ((uint32_t)image->pixels[i] >> 24) != 0;
+    if (shows && (image->width > POINTER_MAX || image->height > POINTER_MAX)) {
+        if (!pointer_large_told) {
+            pointer_large_told = 1;
+            fprintf(stderr, "x-input-relay: a pointer of %ux%u, larger than %dx%d: told as showing nothing\n", image->width,
+                    image->height, POINTER_MAX, POINTER_MAX);
+        }
+        shows = 0;
+    }
+    if (!shows) {
+        XFree(image);
+        if (pointer_length == 0) return;
+        pointer_length = 0;
+        unsigned char hidden = 'H';
+        tell(&hidden, 1, "that the pointer shows nothing");
+        fprintf(stderr, "x-input-relay: the pointer shows nothing\n");
+        return;
+    }
+    int32_t head[4] = {image->width, image->height, image->xhot, image->yhot};
+    pointer_next[0] = 'I';
+    memcpy(pointer_next + 1, head, sizeof head);
+    for (size_t i = 0; i < count; i++) {
+        uint32_t pixel = (uint32_t)image->pixels[i];
+        memcpy(pointer_next + 1 + sizeof head + i * sizeof pixel, &pixel, sizeof pixel);
+    }
+    size_t length = 1 + sizeof head + count * sizeof(uint32_t);
+    XFree(image);
+    if (length != pointer_length || memcmp(pointer_next, pointer_word, length) != 0) {
+        if (pointer_length == 0) {
+            fprintf(stderr, "x-input-relay: the pointer shows: %dx%d, hot spot %d,%d\n", head[0], head[1], head[2], head[3]);
+        }
+        memcpy(pointer_word, pointer_next, length);
+        pointer_length = length;
+        pointer_placed = 0;
+        tell(pointer_word, length, "the pointer's image");
+    }
+    tell_place();
 }
 
 /* The game's top-level window, mapped and viewable: the one Mesa's named window is in, else the
@@ -540,13 +651,59 @@ static void focus(int on) {
     fprintf(stderr, "x-input-relay: the game is back on the screen: WM_TAKE_FOCUS to window 0x%lx\n", (unsigned long)game);
 }
 
+/* RELAY_AREA: where moves by a distance stop, in X screen pixels; empty while there is none. */
+static struct box area;
+
+/* One way of a move by a distance: where a move by [by] from [from] puts the pointer, kept from
+ * [low] to [high] - 1, the pointer area's edges that way (see the top of this file). */
+static int pointer_target(int from, int by, int low, int high) {
+    int64_t to = (int64_t)from + by;
+    return to < low ? low : to >= high ? high - 1 : (int)to;
+}
+
+/* RELAY_AREA: [a] = left | top << 16, [b] = width | height << 16. */
+static void set_area(uint32_t a, uint32_t b) {
+    int left = (int)(a & 0xffff), top = (int)(a >> 16);
+    struct box next = {left, top, left + (int)(b & 0xffff), top + (int)(b >> 16)};
+    struct box none = {0, 0, 0, 0};
+    if (empty(next)) next = none;
+    if (memcmp(&next, &area, sizeof next) == 0) return;
+    area = next;
+    if (empty(area)) {
+        fprintf(stderr, "x-input-relay: no pointer area: moves by a distance are not limited\n");
+    } else {
+        fprintf(stderr, "x-input-relay: the pointer area: %dx%d at %d,%d\n", area.right - area.left, area.bottom - area.top,
+                area.left, area.top);
+    }
+}
+
+/* RELAY_RELATIVE by [dx], [dy]: while a pointer area is set, from where the pointer really is to
+ * the nearest place in the area (nothing when that is where it is); else by that distance. */
+static void move_by(int dx, int dy) {
+    Window root_return, child;
+    int x, y, window_x, window_y;
+    unsigned int buttons;
+    if (empty(area) ||
+        !XQueryPointer(display, DefaultRootWindow(display), &root_return, &child, &x, &y, &window_x, &window_y, &buttons)) {
+        XTestFakeRelativeMotionEvent(display, dx, dy, CurrentTime);
+        return;
+    }
+    int to_x = pointer_target(x, dx, area.left, area.right), to_y = pointer_target(y, dy, area.top, area.bottom);
+    if (to_x != x || to_y != y) XTestFakeMotionEvent(display, -1, to_x, to_y, CurrentTime);
+}
+
 static void inject(const struct relay_event *event) {
     switch (event->type) {
     case RELAY_MOTION:
         XTestFakeMotionEvent(display, -1, event->a, event->b, CurrentTime);
+        tell_place();
         break;
     case RELAY_RELATIVE:
-        XTestFakeRelativeMotionEvent(display, event->a, event->b, CurrentTime);
+        move_by(event->a, event->b);
+        tell_place();
+        break;
+    case RELAY_AREA:
+        set_area((uint32_t)event->a, (uint32_t)event->b);
         break;
     case RELAY_BUTTON:
         if (event->a >= 1 && event->a <= 9) {
@@ -600,20 +757,39 @@ int main(int argc, char **argv) {
     wm_state = XInternAtom(display, "WM_STATE", False);
     /* The top-level windows coming, going, moving and restacking, and Mesa naming the game's. */
     XSelectInput(display, DefaultRootWindow(display), SubstructureNotifyMask | PropertyChangeMask);
+    /* Each change of the pointer's image. */
+    int fixes_error;
+    if (XFixesQueryExtension(display, &fixes_event, &fixes_error)) {
+        XFixesSelectCursorInput(display, DefaultRootWindow(display), XFixesDisplayCursorNotifyMask);
+    } else {
+        fixes_event = -1;
+        fprintf(stderr, "x-input-relay: the X screen has no XFIXES: the app does not draw its pointer\n");
+    }
     tell_cover();
+    if (fixes_event >= 0) tell_pointer();
     XFlush(display);
 
     struct relay_event event;
     int got = 1;
     while (got > 0) {
         if (XPending(display)) {
+            int windows = 0, pointer = 0;
             while (XPending(display)) {
                 XEvent x;
                 XNextEvent(display, &x);
+                if (fixes_event >= 0 && x.type == fixes_event + XFixesCursorNotify) {
+                    pointer = 1;
+                } else {
+                    windows = 1;
+                }
             }
             /* A window mapped or moved: the launcher's goes to the middle, then the game's word. */
-            centre_launcher();
-            tell_cover();
+            if (windows) {
+                centre_launcher();
+                tell_cover();
+            }
+            /* The pointer's image changed: its word, then where it is. */
+            if (pointer) tell_pointer();
         }
         XFlush(display);
         /* Input is read every round; events read while answering are looked at next round. */

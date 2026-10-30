@@ -8,12 +8,12 @@
 // outside Mesa's presentation). It does not copy on each present: a display frame shows one
 // present at most whichever way they are taken, and the game often presents the same picture
 // again, which the hash skips.
-// The app's clock paces a game with vsync on (frame_clock.c, Mesa patch 0008). The copy's take
-// holds every present mode to one frame a display frame on this path: it says in the same file the
-// last present it has taken off the X screen (patch 0003), and Mesa copies the X screen's next
-// frame from its back pixmap into the window only then (patch 0007), so the X server never writes
-// a frame over one the copy is reading. The copy does not cap a game with vsync off at the Frame
-// rate (the direct present does, present_server.cpp).
+// The app's clock paces the game in every present mode (frame_clock.c, Mesa patch 0008). The
+// copy's take holds every present mode to one frame a display frame on this path: it says in the
+// same file the last present it has taken off the X screen (patch 0003), and Mesa copies the X
+// screen's next frame from its back pixmap into the window only then (patch 0007), so the X server
+// never writes a frame over one the copy is reading. The copy itself does not cap the game at the
+// Frame rate (the clock's wait in Mesa does).
 // While the game's own buffers are on the screen (present_server.cpp, Mesa patch 0004) the copy
 // rests: its layer is under theirs and the X screen does not get the game's frames. After 5 s of
 // rest its layer's buffers that are not on the screen go (frame_layer_rest), and the first display

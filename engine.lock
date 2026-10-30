@@ -4,6 +4,6 @@
 # the lines that sha256sum prints for every file of the commit, sorted by path; a build checks it
 # first. `engine/build.sh --pin <tag>` sets tag, commit and source_sha256 from the repository.
 url=https://github.com/Pocketward/pd2-launcher.git
-tag=v0.1.10
-commit=a077edcea01b9f26cef24499ad82c905ac416977
-source_sha256=2acd55448100afea4dde0e047d053ebc771148e3ab92822b86ec3bce23c25a0c
+tag=v0.1.11
+commit=a1d4d82ba47a4e908a7ff60f686ba68ff6843dff
+source_sha256=f657239a4850ecce5a212d8eb347a452d97b68626c61b85a75650d27d9958194

@@ -117,4 +117,17 @@ object HardwareFacts {
         val abs = kotlin.math.abs(minutes)
         return "UTC$sign${String.format(Locale.ROOT, "%02d:%02d", abs / 60, abs % 60)}"
     }
+
+    /**
+     * The screen for `device.txt`: the whole [panel] (width, height in pixels, the bounds of
+     * Android's maximum window metrics, turned as the screen is now), the app's [window] inside it
+     * (without the bars of the system, so it can be shorter: 1920 x 1025 in a 1920 x 1080 panel),
+     * the density, the rate now ([hertzNow], null when unknown) and the full rate that the app
+     * measured ([fullHertz], 0 or less when not measured).
+     */
+    fun screen(panel: Pair<Int, Int>, window: Pair<Int, Int>, densityDpi: Int, hertzNow: Float?, fullHertz: Float): String {
+        val now = hertzNow?.let { String.format(Locale.ROOT, "%.0f Hz now", it) } ?: "rate unknown"
+        val full = fullHertz.takeIf { it > 0f }?.let { String.format(Locale.ROOT, ", full rate %.0f Hz", it) } ?: ""
+        return "panel ${panel.first} x ${panel.second}, window ${window.first} x ${window.second}, $densityDpi dpi, $now$full"
+    }
 }

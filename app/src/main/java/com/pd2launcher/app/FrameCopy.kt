@@ -167,8 +167,8 @@ class FrameCopy private constructor(private var handle: Long) {
  * rate where the screen is faster. The full rate is the rate the screen really shows when the
  * Game view asks it for its highest mode ([ScreenRate]); a phone's settings can hold it below the
  * highest mode (for example, Smooth Display off: 120 Hz modes, 60 frames a second shown). It
- * is the rate of the app's clock ([rate], [FrameClock]), which holds a game with vsync on to it
- * whatever rate the display runs at. The Game view asks the display for the same rate
+ * is the rate of the app's clock ([rate], [FrameClock]), which holds the game to it, with vsync on
+ * or off, whatever rate the display runs at. The Game view asks the display for the same rate
  * (`ASurfaceTransaction_setFrameRate`, [vote]), and for the highest mode at the full rate: the
  * vote lets a 90 or 120 Hz phone leave 60 Hz, where the display's own heuristic would keep a layer
  * that posts 60 times a second, and lets a display run slower at a reduced rate. Only a hint to
@@ -184,10 +184,15 @@ object FrameRateVote {
      */
     fun highest(display: Display?): Float {
         display ?: return 0f
+        return highestMode(display)?.refreshRate ?: display.refreshRate
+    }
+
+    /** The mode of [highest]: [display]'s mode with the highest refresh rate at its current resolution. */
+    fun highestMode(display: Display): Display.Mode? {
         val mode = display.mode
         return display.supportedModes
             .filter { it.physicalWidth == mode.physicalWidth && it.physicalHeight == mode.physicalHeight }
-            .maxOfOrNull { it.refreshRate } ?: display.refreshRate
+            .maxByOrNull { it.refreshRate }
     }
 
     /** The built-in display's highest mode ([highest]). */
@@ -286,7 +291,7 @@ class FrameRate(private val windowNanos: Long = 1_000_000_000L) {
  * to its first 32-bit word for each frame the game sends to the X screen, and only opens a file
  * that exists with at least 4 bytes, so the app makes it before the game starts. A page long, it
  * also carries the app's clock ([FrameClock], patch 0008: its ticks at byte 256, non-zero at byte
- * 320 while it ticks; a game with vsync on waits for a tick before each frame, at most 100 ms) and
+ * 320 while it ticks; the game waits for a tick before each frame, at most 100 ms) and
  * the copy's takes of the X screen's frames (patches 0003 and 0007: the last one taken at byte 64,
  * non-zero at byte 128 while a copy runs).
  */

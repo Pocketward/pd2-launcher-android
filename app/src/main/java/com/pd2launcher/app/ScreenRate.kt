@@ -5,7 +5,11 @@ import android.hardware.display.DisplayManager
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.view.Choreographer
 import android.view.Display
+import android.view.View
+import android.view.ViewTreeObserver
+import android.view.Window
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -20,10 +24,11 @@ import java.util.Locale
  * default (Full on a screen not faster than 60) and the rate Settings and the in-game menu show
  * all follow it ([FrameRateVote]).
  *
- * The Game view measures it ([ScreenRateWatch]); the app keeps the last measurement with the
- * highest mode of then, for Settings, which ask the display for nothing. Before a measurement, and
- * on a display whose highest mode is another, the full rate is the highest mode. The player's
- * pick stays as it is: only what Full and a pick at or above the full rate mean follows the screen.
+ * The Game view measures it ([ScreenRateWatch]), and so does the Frame rate input each time it
+ * opens ([ScreenRateProbe]); the app keeps the last measurement with the highest mode of then, for
+ * Settings and the start of the clock. Before a measurement, and on a display whose highest mode
+ * is another, the full rate is the highest mode. The player's pick stays as it is: only what Full
+ * and a pick at or above the full rate mean follows the screen.
  */
 object ScreenRate {
     private const val PREFERENCES = "screen_rate"
@@ -144,13 +149,15 @@ class RateWatch {
 /**
  * The Game view's watch of its display's rate ([ScreenRate], [RateWatch]) while its surface shows
  * ([start] to [stop]), on the main thread; only on the built-in display, the one [ScreenRate]
- * keeps. It reads the rate when Android tells of a change (`DisplayManager.DisplayListener`, as
- * Android's guide to frame rates says, and again [RateWatch.RAISE_NANOS] later) and, while the
- * layers ask for the highest mode, every [CHECK_MS], when it also counts the buffers that went to
- * the compositor ([frames]). From the first [start] until that measurement is done ([measuring],
- * at most [MEASURE_LIMIT_MS]) the Game view asks for the highest mode whatever the player's rate,
- * so a reduced rate does not hide a change of the phone's settings from the next Play. [onChange]
- * runs when the full rate or [measuring] changed: the Game view sets the clock and its vote again.
+ * keeps. The Frame rate input's probe uses one too ([ScreenRateProbe]), with the input's window as
+ * the layers and its frames as the buffers. It reads the rate when Android tells of a change
+ * (`DisplayManager.DisplayListener`, as Android's guide to frame rates says, and again
+ * [RateWatch.RAISE_NANOS] later) and, while the layers ask for the highest mode, every
+ * [CHECK_MS], when it also counts the buffers that went to the compositor ([frames]). From the
+ * first [start] until that measurement is done ([measuring], at most [MEASURE_LIMIT_MS]) the Game
+ * view asks for the highest mode whatever the player's rate, so a reduced rate does not hide a
+ * change of the phone's settings from the next Play. [onChange] runs when the full rate or
+ * [measuring] changed: the Game view sets the clock and its vote again.
  */
 class ScreenRateWatch(
     private val context: Context,
@@ -302,5 +309,61 @@ class ScreenRateWatch(
         const val MEASURE_LIMIT_MS = 60_000L
 
         private const val TAG = "pd2-screen-rate"
+    }
+}
+
+/**
+ * The Frame rate input's measurement of the screen's full rate ([start] to [stop]: while the input
+ * shows; the owner, 2026-10-29: "re-prob when player opens the fps setting"). The input's [window]
+ * asks the display for its highest mode (`preferredDisplayModeId`; Android's display policy lets
+ * it run only as fast as the phone lets the app) and a [ScreenRateWatch] measures the rate it runs
+ * at, with the rules of the Game view's. Until that measurement is done [view] draws a frame on
+ * each display frame: with no new frames Android lowers the display's rate, and a lower rate counts
+ * only while frames come. So a full rate kept from a time the phone held the screen lower goes up
+ * once the player opens the input, and a phone held at 60 Hz measures 60 again; the input's limit
+ * follows ([ScreenRate.full]). Only on the built-in display. Main thread.
+ */
+class ScreenRateProbe(private val window: Window, private val view: View) {
+    private var running = false
+    private var drawn = 0L
+    private var observer: ViewTreeObserver? = null
+    private val counter = ViewTreeObserver.OnDrawListener { drawn++ }
+    private val watch = ScreenRateWatch(view.context, { view.display }, { drawn }) {}
+    private val frame = Choreographer.FrameCallback { draw() }
+
+    fun start() {
+        if (running) return
+        val display = view.display ?: return
+        if (display.displayId != Display.DEFAULT_DISPLAY) return
+        val mode = FrameRateVote.highestMode(display) ?: return
+        running = true
+        window.attributes = window.attributes.also { it.preferredDisplayModeId = mode.modeId }
+        Log.i(TAG, String.format(Locale.ROOT, "frame rate input: asks for the highest mode (%.1f Hz), full rate %.1f", mode.refreshRate, ScreenRate.full.value))
+        observer = view.viewTreeObserver.also { it.addOnDrawListener(counter) }
+        watch.start()
+        watch.vote(true)
+        draw()
+    }
+
+    fun stop() {
+        if (!running) return
+        running = false
+        watch.stop()
+        Choreographer.getInstance().removeFrameCallback(frame)
+        observer?.takeIf { it.isAlive }?.removeOnDrawListener(counter)
+        observer = null
+        window.attributes = window.attributes.also { it.preferredDisplayModeId = 0 }
+        Log.i(TAG, String.format(Locale.ROOT, "frame rate input closed: no request for the highest mode, full rate %.1f", ScreenRate.full.value))
+    }
+
+    /** One frame now and on each display frame after it, until the measurement is done. */
+    private fun draw() {
+        if (!running || !watch.measuring) return
+        view.invalidate()
+        Choreographer.getInstance().postFrameCallback(frame)
+    }
+
+    private companion object {
+        const val TAG = "pd2-screen-rate"
     }
 }

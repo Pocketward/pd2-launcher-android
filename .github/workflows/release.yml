@@ -58,7 +58,8 @@
 # SHA-256 and the SHA-256 of its mapping.txt; a build writes that block again and
 # keeps any text outside it.
 # A candidate whose tree differs from the commit its draft's APK was built from
-# only in README.md and docs/ (an export of the documents alone), or that the
+# only in Markdown files and docs/ (an export of the documents alone; owner,
+# 2026-10-29: "if we are just changing markdown files never rebuild"), or that the
 # draft's APK was built from, builds nothing: the draft job moves the draft to
 # this commit with the APK that was tested and keeps its notes (workflow_dispatch
 # with rebuild set builds it anyway). keep-caches.yml reads the caches below
@@ -84,7 +85,7 @@ on:
         type: boolean
         default: false
       rebuild:
-        description: With candidate, build even when the draft holds the APK built for main's head (or for an earlier commit that differs only in README.md and docs/)
+        description: With candidate, build even when the draft holds the APK built for main's head (or for an earlier commit that differs only in Markdown files and docs/)
         type: boolean
         default: false
 
@@ -255,9 +256,9 @@ jobs:
           # A command that fails inside $(...) stops the step too.
           set -o pipefail
           shopt -s inherit_errexit
-          echo "userland=userland-${{ hashFiles('userland/**', '!userland/**/out*/**', '!userland/README.md', '!userland/glibc/README.md', '!userland/mesa-update.sh') }}" |
+          echo "userland=userland-${{ hashFiles('userland/**', '!userland/**/out*/**', '!**/*.md', '!userland/mesa-update.sh') }}" |
             tee -a "$GITHUB_OUTPUT"
-          echo "runtime=runtime-${{ hashFiles('runtime/**', 'userland/**', '!userland/**/out*/**', '!userland/README.md', '!userland/glibc/README.md') }}" |
+          echo "runtime=runtime-${{ hashFiles('runtime/**', 'userland/**', '!userland/**/out*/**', '!**/*.md') }}" |
             tee -a "$GITHUB_OUTPUT"
           echo "engine=engine-${{ hashFiles('engine.lock', 'engine/**', 'userland/config.sh') }}" |
             tee -a "$GITHUB_OUTPUT"
@@ -297,7 +298,7 @@ jobs:
           ) | tee -a "$GITHUB_OUTPUT"
 
   # A candidate keeps its draft's APK, which was tested, when the APK was built from this commit
-  # or from an earlier commit of main that differs from it only in README.md and docs/: the draft
+  # or from an earlier commit of main that differs from it only in Markdown files and docs/: the draft
   # then targets this commit (its files and notes stay) and the build jobs are skipped. The
   # notes' block that the build wrote records that commit, the APK's SHA-256 and its mapping's,
   # and the APK, its .sha256 file and the mapping must all match it: files that a build uploaded
@@ -365,8 +366,8 @@ jobs:
                 echo "the draft's APK was built from $build, which is not an earlier commit of main"
                 return
               fi
-              git diff --quiet "$build" "$COMMIT" -- . ':(exclude)README.md' ':(exclude)docs' ||
-                { echo "this candidate changes more than README.md and docs/ since $build, which the draft's APK was built from"; return; }
+              git diff --quiet "$build" "$COMMIT" -- . ':(exclude)*.md' ':(exclude)docs' ||
+                { echo "this candidate changes more than Markdown files and docs/ since $build, which the draft's APK was built from"; return; }
             fi
             digest=$(jq -r --arg name "$APK" '.assets[] | select(.name == $name) | .digest // empty' <<<"$release")
             [[ $digest == "sha256:$sum" ]] || { echo "the draft's $APK is not the APK its notes record"; return; }
@@ -401,7 +402,7 @@ jobs:
                   echo "::notice title=Tested draft kept::the draft $TAG targets $COMMIT already, with its tested $APK: nothing to do"
                 else
                   gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --target "$COMMIT" >/dev/null
-                  echo "::notice title=Tested draft reused::$COMMIT changes only README.md and docs/ since the commit the draft's $APK was built from: the draft $TAG keeps that tested APK and its notes and targets $COMMIT now (before: $target); nothing is built"
+                  echo "::notice title=Tested draft reused::$COMMIT changes only Markdown files and docs/ since the commit the draft's $APK was built from: the draft $TAG keeps that tested APK and its notes and targets $COMMIT now (before: $target); nothing is built"
                 fi
                 reuse=true
               fi

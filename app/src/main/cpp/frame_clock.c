@@ -2,9 +2,9 @@
 // the player picked (Settings, Game, Frame rate: 60 or 30 frames a second; Full: the panel's
 // highest rate) for the game environment's lifetime, on the screen and off it, whatever rate the
 // phone's screen runs at. Each tick counts up the word at byte 256 of the present counter's page
-// and wakes Mesa's waiters; the word at byte 320 is non-zero while it ticks. A game with vsync on
-// (a FIFO or FIFO_RELAXED swapchain: D2GL's default) waits in Mesa for a tick before each present,
-// so it draws at most that many frames a second; a game with vsync off is never held. While the
+// and wakes Mesa's waiters; the word at byte 320 is non-zero while it ticks. The game waits in Mesa
+// for a tick before each present, in every present mode (vsync on, D2GL's default, or off), so it
+// draws at most that many frames a second. While the
 // game is not on the screen it uses its own background frame rate (x-input-relay's RELAY_FOCUS,
 // GameView.kt). FrameClock.kt starts it; the Game view sets its rate. Logs under pd2-clock every
 // 10 s: its ticks and the game's presents a second.

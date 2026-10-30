@@ -26,6 +26,12 @@ target_compile_options(kgslprobe PRIVATE -Wall -Wextra -Werror)
 add_library(maliprobe SHARED mali_probe.c)
 target_compile_options(maliprobe PRIVATE -Wall -Wextra -Werror)
 
+# The version of the phone's own Vulkan driver, for Turnip's UBWC flag hint on an Adreno 740
+# (UbwcFlagHint.kt).
+add_library(vulkandriverprobe SHARED vulkan_driver_probe.c)
+target_compile_options(vulkandriverprobe PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(vulkandriverprobe dl)
+
 # The Game view: the copy of the X screen (frame_copy.c, frame_layer.cpp), the game's direct present (present_server.cpp),
 # and the app's clock, the virtual display's vertical blank (frame_clock.c); the rules of the clock and of the direct
 # present's newest frame (frame_pacing.c). Host programs check frame_pacing.c and the copy's layer (app/build.gradle.kts).

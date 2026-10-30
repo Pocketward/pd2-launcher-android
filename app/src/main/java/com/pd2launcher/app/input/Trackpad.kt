@@ -8,8 +8,9 @@ import kotlin.math.hypot
  * Pointer speed, [Controls.pointerSpeed]: at 1.00× the pointer goes as far on the game's picture
  * as the finger on the screen). Positions are on the X screen (the view maps them, past its edges
  * too); [slop] is how far, in X screen pixels, a finger may wander and still tap. The pointer
- * moves by [RelayEvent.Relative] (the Game view keeps it inside the game's picture,
- * [PointerBounds]), and it goes on from where a mouse or the controller's mouse mode left it.
+ * moves by [RelayEvent.Relative] (x-input-relay keeps it inside the game's picture,
+ * [PointerBounds]), and it goes on from where the pointer is: where a mouse, the controller's mouse
+ * mode or the game left it.
  *
  * - **move**: one finger moves the pointer, no button held; a second finger that stays down when
  *   the first lifts goes on moving it

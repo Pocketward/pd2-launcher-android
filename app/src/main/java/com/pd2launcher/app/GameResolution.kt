@@ -190,6 +190,20 @@ object GameResolution {
         override fun toString() = "${width}x$height at $left,$top"
     }
 
+    /** A rectangle in the Game view's pixels, its edges at [left], [top], [right] and [bottom]. */
+    data class ViewRect(val left: Float, val top: Float, val right: Float, val bottom: Float)
+
+    /**
+     * Where the Game view, [viewWidth] x [viewHeight] pixels for the whole [screen] (the X screen;
+     * [viewGeometry]), shows the X screen's [rect]: scaled as the game's picture, each way as the
+     * game's own buffers are (present_server.cpp, place()). Parts may lie off the view.
+     */
+    fun onView(rect: PictureRect, screen: Pair<Int, Int>, viewWidth: Float, viewHeight: Float): ViewRect {
+        val x = viewWidth / screen.first
+        val y = viewHeight / screen.second
+        return ViewRect(rect.left * x, rect.top * y, (rect.left + rect.width) * x, (rect.top + rect.height) * y)
+    }
+
     /**
      * The Game view's place in its area: the view's size, [view] (centred in the area, its sides
      * past the area's edges where larger), and the rectangle of the area in which the game's

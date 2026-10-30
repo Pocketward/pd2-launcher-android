@@ -3,6 +3,7 @@ package com.pd2launcher.app.ui
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import android.graphics.Bitmap
 import android.hardware.input.InputManager
 import android.os.Handler
 import android.os.Looper
@@ -26,6 +27,7 @@ import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -52,9 +54,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -357,6 +363,8 @@ fun GameView(
                         it.frameRate = app.frameRate
                     },
                 )
+                // Over the game's own buffers, the X screen's pointer where they leave it out; under the overlays.
+                GamePointer(xScreen, with(density) { Modifier.requiredSize(viewWidth.toDp(), viewHeight.toDp()) })
             }
         }
         // The overlays and the dialogs they open mark a press with a plain tint, not Material's ripple (PressTint).
@@ -441,7 +449,11 @@ fun GameView(
                     AppSettingsStore.update(context) { it.copy(frameRate = pick) }
                     // At once: the clock and both layers' rate for the display.
                     surface?.applyFrameRate(pick) ?: FrameClock.setRate(FrameRateVote.rate(fullFrameRate, pick))
-                }) { frameRateInput = false }
+                }) {
+                    frameRateInput = false
+                    // The input measured the full rate again ([com.pd2launcher.app.ScreenRateProbe]): the clock and the vote follow it.
+                    surface?.let { it.applyFrameRate(it.frameRate) }
+                }
             }
         }
     }
@@ -575,6 +587,73 @@ private object LauncherShown {
         this.since = since
     }
 }
+
+/**
+ * The X screen's pointer over the game's own buffers ([PresentServer]), which leave out the
+ * pointer Xvfb draws into the X screen: x-input-relay's image of it ([GameEnvironment.pointer];
+ * D2GL's menu shows the Windows pointer) with its hot spot where the pointer is
+ * ([GameEnvironment.pointerAt]), scaled as the game's picture ([GameResolution.onView]) in the
+ * Game view's place ([modifier]) for the whole X [screen]. Only where the game's buffers show
+ * ([PresentServer.showing], looked at every [POINTER_SHOWING_MS] while the pointer shows): over a
+ * windowed game's window only, the X screen's copy around it showing Xvfb's own pointer, and
+ * nowhere while the copy shows the game (the official launcher, a Wine dialog). Nothing while the
+ * pointer shows nothing (the game draws its own). It takes no touch and no focus, and the game's
+ * frames do not wait for it.
+ */
+@Composable
+private fun GamePointer(screen: Pair<Int, Int>, modifier: Modifier) {
+    val image by GameEnvironment.pointer.collectAsState()
+    val shape = image ?: return
+    val bitmap = remember(shape) { Bitmap.createBitmap(shape.colors(), shape.width, shape.height, Bitmap.Config.ARGB_8888).asImageBitmap() }
+    // Read only while drawing: a move draws again, with no new composition.
+    val at = GameEnvironment.pointerAt.collectAsState()
+    val window = GameEnvironment.gameWindow.collectAsState()
+    var showing by remember { mutableIntStateOf(PresentServer.showing()) }
+    LaunchedEffect(Unit) {
+        while (isActive) {
+            showing = PresentServer.showing()
+            delay(POINTER_SHOWING_MS)
+        }
+    }
+    if (BuildConfig.DEBUG) {
+        LaunchedEffect(shape, showing != 0) {
+            Log.i(
+                POINTER_TAG,
+                "X pointer ${shape.width}x${shape.height}, hot spot ${shape.hotX},${shape.hotY}: " +
+                    if (showing != 0) "drawn over the game's buffers" else "not drawn (the X screen's copy shows it)",
+            )
+        }
+        DisposableEffect(Unit) { onDispose { Log.i(POINTER_TAG, "X pointer not drawn: it shows nothing, or the Game view closed") } }
+    }
+    Canvas(modifier) {
+        val place = at.value ?: return@Canvas
+        val clip = when (showing) {
+            PresentServer.SHOWING_WHOLE -> null
+            PresentServer.SHOWING_WINDOW -> window.value?.let { GameResolution.PictureRect(it.x, it.y, it.width, it.height) } ?: return@Canvas
+            else -> return@Canvas
+        }
+        val to = GameResolution.onView(shape.rect(place.x, place.y), screen, size.width, size.height)
+        val draw = {
+            drawImage(
+                bitmap,
+                dstOffset = IntOffset(to.left.roundToInt(), to.top.roundToInt()),
+                dstSize = IntSize((to.right - to.left).roundToInt().coerceAtLeast(1), (to.bottom - to.top).roundToInt().coerceAtLeast(1)),
+            )
+        }
+        if (clip == null) {
+            draw()
+        } else {
+            val c = GameResolution.onView(clip, screen, size.width, size.height)
+            clipRect(c.left, c.top, c.right, c.bottom) { draw() }
+        }
+    }
+}
+
+/** How often [GamePointer] looks whether the game's own buffers show. */
+private const val POINTER_SHOWING_MS = 100L
+
+/** Debug builds: [GamePointer]'s pointer drawn or not, one line per change. */
+private const val POINTER_TAG = "pd2-pointer"
 
 /** How often the Game view looks at the shape of PD2's picture. */
 private const val PICTURE_MS = 250L
@@ -727,8 +806,8 @@ private class GameSurface(
 
     /**
      * Where the pointer may go, in X screen pixels: the game's picture ([GameResolution.pointerArea];
-     * the whole game picture from the first sample of the world, `gamePicture`); moves by a distance
-     * stop at its edges ([send]).
+     * the whole game picture from the first sample of the world, `gamePicture`); x-input-relay stops
+     * moves by a distance at its edges ([send], [PointerBounds]).
      */
     var pointerArea = GameResolution.PictureRect(0, 0, screen.width, screen.height)
 
@@ -1280,18 +1359,18 @@ private class GameSurface(
     }
 
     /**
-     * Events into X through the relay, in order, off the main thread; the pointer's moves by a
-     * distance (Trackpad, mouse mode) kept inside [pointerArea] ([PointerBounds]).
+     * Events into X through the relay, in order, off the main thread; first [pointerArea] where the
+     * relay does not have it yet, so that it keeps the pointer's moves by a distance (Trackpad, mouse
+     * mode) inside it ([PointerBounds]).
      */
     fun send(events: List<RelayEvent>) {
         val game = input ?: return
         if (events.isEmpty() || sends.isShutdown) return
-        val placed = game.pointer.place(events, pointerArea)
-        if (placed.isEmpty()) return
+        val bounded = game.pointer.withArea(events, pointerArea)
         val relay = game.relay
         sends.execute {
             try {
-                relay.send(placed)
+                relay.send(bounded)
             } catch (_: IOException) {
                 // The relay is gone with the game environment.
             }
@@ -1302,7 +1381,7 @@ private class GameSurface(
 
     private fun screenY(y: Float) = (y * screen.height / height.coerceAtLeast(1)).toInt().coerceIn(0, screen.height - 1)
 
-    // Trackpad counts a finger's moves past the view's edges too; PointerBounds keeps the pointer on the game's picture.
+    // Trackpad counts a finger's moves past the view's edges too; x-input-relay keeps the pointer on the game's picture.
     private fun touchX(x: Float) = if (touchMode == TouchMode.TRACKPAD) floor(x * screen.width / width.coerceAtLeast(1)).toInt() else screenX(x)
 
     private fun touchY(y: Float) = if (touchMode == TouchMode.TRACKPAD) floor(y * screen.height / height.coerceAtLeast(1)).toInt() else screenY(y)

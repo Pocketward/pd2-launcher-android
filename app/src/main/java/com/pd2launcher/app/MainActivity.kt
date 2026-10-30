@@ -449,11 +449,14 @@ class MainActivity : ComponentActivity() {
             GameView(framebuffer, status.gameEnvironment, presentCounter = paths.presentCounter, preview = gamePreview, previewLauncher = DebugPreview.gameLauncher(previewName))
         } else if (settingsOpen.value) {
             val app by AppSettingsStore.current.collectAsState()
+            // Live: the Frame rate input measures it again while it shows ([ScreenRateProbe]).
+            remember { ScreenRate.load(this) }
+            val fullFrameRate by ScreenRate.full.collectAsState()
             SettingsScreen(
                 launcher = LauncherSettings.view(status.snapshot?.settings, status.engine == SessionStatus.Engine.CONNECTED),
                 app = app,
                 display = remember { GameResolution.display(this) },
-                fullFrameRate = remember { ScreenRate.load(this) },
+                fullFrameRate = fullFrameRate,
                 // The device check's probe, not another on the main thread (its ioctls) each time.
                 gpu = (device as? DeviceCheckState.Done)?.facts?.gpu,
                 system = SystemState(batteryRestricted.value, notificationsOff.value),
@@ -985,6 +988,8 @@ class MainActivity : ComponentActivity() {
                 "Chip" to if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) "${Build.SOC_MANUFACTURER} ${Build.SOC_MODEL}" else "hardware ${Build.HARDWARE}",
                 "Android" to "${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT}), ${Build.SUPPORTED_ABIS.joinToString(" ")}",
                 "GPU" to (facts?.gpu?.name ?: "not found"),
+                // Turnip's TP UBWC flag hint: on an Adreno 740, from the phone's Vulkan driver.
+                "UBWC flag hint" to UbwcFlagHint.choice(facts?.gpu).describe(),
                 "Page size" to (facts?.pageSize?.toString() ?: "unknown"),
                 "Free space" to "${StatFs(paths.data).availableBytes shr 20} MB",
                 "Device check" to when (device) {
@@ -1019,12 +1024,17 @@ class MainActivity : ComponentActivity() {
         )
     }
 
-    /** The screen for device.txt: its size and density, its rate now and the full rate the app measured. */
+    /** The screen for device.txt: the whole panel, the app's window, the density, the rate now and the full rate the app measured. */
     private fun screenFacts(): String {
-        val metrics = resources.displayMetrics
-        val now = display?.refreshRate?.let { String.format(java.util.Locale.ROOT, "%.0f Hz now", it) } ?: "rate unknown"
-        val full = ScreenRate.full.value.takeIf { it > 0f }?.let { String.format(java.util.Locale.ROOT, ", full rate %.0f Hz", it) } ?: ""
-        return "${metrics.widthPixels} x ${metrics.heightPixels}, ${metrics.densityDpi} dpi, $now$full"
+        val panel = windowManager.maximumWindowMetrics.bounds
+        val window = resources.displayMetrics
+        return HardwareFacts.screen(
+            panel = panel.width() to panel.height(),
+            window = window.widthPixels to window.heightPixels,
+            densityDpi = window.densityDpi,
+            hertzNow = display?.refreshRate,
+            fullHertz = ScreenRate.full.value,
+        )
     }
 
     /** Android's thermal status (a throttled CPU is slower) and power saving, for device.txt. */
