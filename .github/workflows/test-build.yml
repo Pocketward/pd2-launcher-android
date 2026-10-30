@@ -1,0 +1,837 @@
+# The test build: the debug APK of a test branch, as an artifact of the workflow run (owner,
+# 2026-10-30: "just do a branch build and attach the apk artifact"). It publishes nothing (no
+# release, no tag and no draft) and uses no release key. The APK is the development build
+# (build.sh app), package com.pd2launcher.app.dev3, signed with the debug key that the build makes
+# in each run. The run keeps one artifact for 14 days: pd2-launcher-<versionName>-<commit>-dev.apk
+# (the first 12 hex digits of the commit) and its .sha256 file.
+#
+# To start it, push a branch whose name starts with test/: the branch carries this file. When this
+# file is on main too, `gh workflow run test-build.yml --ref <branch>` starts it on a branch that
+# has this file (workflow_dispatch).
+#
+# The engine, userland, wine and runtime jobs are release.yml's. The apk job is release.yml's
+# without the release key and the release. The cache keys and paths are the same, so a branch
+# restores the caches of main's newest release build (a branch can read the caches of the
+# default branch). The tag job keeps its name from release.yml, so that the steps stay the same,
+# but here it only names the caches. When a cache has no entry for these inputs, its job builds
+# that part (the userland can take hours) and saves it in a cache of this branch. When you change
+# the jobs, keys or paths in release.yml, make the same change here.
+#
+# While the engine's repository is private, the secret ENGINE_REPO_TOKEN (read access to its
+# contents) lets Git and the GitHub CLI fetch from it; a public one needs none.
+name: Test build
+
+on:
+  push:
+    branches: ['test/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # The runtime's parts that the wine job builds (in parts/: Wine, wowbox64.dll and the sound
+  # plugin) and the runtime's downloads, as the wine and runtime jobs cache and restore them.
+  WINE_PARTS: |
+    ~/.cache/pd2-android/runtime/parts
+    ~/.cache/pd2-android/runtime/dl
+
+concurrency:
+  group: test-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # The names of the caches, as release.yml's tag job gives them, for the commit that the run
+  # builds. There is no tag here.
+  tag:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      userland: ${{ steps.keys.outputs.userland }}
+      runtime: ${{ steps.keys.outputs.runtime }}
+      engine: ${{ steps.keys.outputs.engine }}
+      wine: ${{ steps.keys.outputs.wine }}
+      image_tools: ${{ steps.keys.outputs.image_tools }}
+      image_mesa: ${{ steps.keys.outputs.image_mesa }}
+      image_panvk: ${{ steps.keys.outputs.image_panvk }}
+      image_glibc: ${{ steps.keys.outputs.image_glibc }}
+      image_wine: ${{ steps.keys.outputs.image_wine }}
+      image_runtime_tools: ${{ steps.keys.outputs.image_runtime_tools }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The userland's cache key, from the commit's tree before any build writes into it: it
+      # covers every input of its version (userland/pack.sh) and more, leaving out only the
+      # build's out/ folders and the READMEs. The runtime's covers its own folder and the
+      # userland's (its prefix template is made with the userland); the XInput bridge that the
+      # template takes from the engine's sources is pinned by its size and SHA-256 in
+      # runtime/config.sh. The engine's covers its pin, engine/ (the build script and the build
+      # image's Containerfile) and userland/config.sh (the image's Debian pins).
+      # The wine job's parts are named by their inputs: the identities that wine.sh, wowbox64.sh
+      # and pd2audio.sh write into each part's BUILDINFO, and the .NET pins.
+      # Each build image's archive by the name the scripts give it (image_archive in
+      # userland/config.sh), without .tar.zst, which names its cache too: the image's tag hashes
+      # its Containerfile and pins.
+      - name: Name the caches
+        id: keys
+        run: |
+          # A command that fails inside $(...) stops the step too.
+          set -o pipefail
+          shopt -s inherit_errexit
+          echo "userland=userland-${{ hashFiles('userland/**', '!userland/**/out*/**', '!**/*.md', '!userland/mesa-update.sh') }}" |
+            tee -a "$GITHUB_OUTPUT"
+          echo "runtime=runtime-${{ hashFiles('runtime/**', 'userland/**', '!userland/**/out*/**', '!**/*.md') }}" |
+            tee -a "$GITHUB_OUTPUT"
+          echo "engine=engine-${{ hashFiles('engine.lock', 'engine/**', 'userland/config.sh') }}" |
+            tee -a "$GITHUB_OUTPUT"
+          wine=$({
+            runtime/wine.sh --identity
+            runtime/wowbox64.sh --identity
+            runtime/pd2audio.sh --identity
+            (. runtime/config.sh && echo "dotnet=$DOTNET_RUNTIME_URL $DOTNET_RUNTIME_SHA512 $DOTNET_DESKTOP_URL $DOTNET_DESKTOP_SHA512")
+          } | sha256sum | cut -d' ' -f1)
+          [[ $wine =~ ^[0-9a-f]{64}$ ]]
+          echo "wine=runtime-parts-$wine" | tee -a "$GITHUB_OUTPUT"
+          (
+            . runtime/config.sh
+            # shellcheck disable=SC2034 # read by image_archive (userland/config.sh)
+            PD2_IMAGE_ARCHIVE=.
+            # The image of a Containerfile that build-mesa.sh or runtime_image (runtime/config.sh)
+            # builds, under the tag they give it.
+            tagged() { echo "localhost/$1:$( (cat "$2"; echo "$DEBIAN_IMAGE $DEBIAN_SNAPSHOT") | sha256sum | cut -c1-16)"; }
+            name() { # output image
+              local stem
+              stem=$(basename "$(image_archive "$2")" .tar.zst)
+              [[ $stem =~ ^localhost_[a-z0-9-]+_[0-9a-f]{16}$ ]] || { echo "no archive name for $1: $stem" >&2; return 1; }
+              echo "$1=$stem"
+            }
+            image=$(tools_image_name)
+            name image_tools "$image"
+            image=$(tagged pd2-userland-mesa userland/containers/Containerfile.mesa)
+            name image_mesa "$image"
+            image=$(panvk_image_name)
+            name image_panvk "$image"
+            image=$(glibc_image_name)
+            name image_glibc "$image"
+            image=$(tagged pd2-runtime-wine runtime/containers/Containerfile.wine)
+            name image_wine "$image"
+            image=$(tagged pd2-runtime-tools runtime/containers/Containerfile.tools)
+            name image_runtime_tools "$image"
+          ) | tee -a "$GITHUB_OUTPUT"
+
+  # The engine, built from the sources that engine.lock pins, unless the cache holds the build for
+  # these inputs (the tag job names it). The build image is kept as an archive in a cache of its
+  # own, named by the image's tag, which hashes its Containerfile and the Debian pins.
+  engine:
+    needs: tag
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    # A test branch may come from a candidate, whose engine may be a draft release without its tag
+    # yet: engine/build.sh then fetches the pinned commit by its SHA.
+    env:
+      PD2_ENGINE_UNRELEASED: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Restore the engine
+        id: engine
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pd2-android/engine-release-out
+          key: ${{ needs.tag.outputs.engine }}
+
+      - name: Name the engine's build image
+        id: image
+        if: steps.engine.outputs.cache-hit != 'true'
+        run: |
+          image=$(engine/build.sh --image)
+          echo "key=engine-image-${image##*:}" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Restore the engine's build image
+        id: image-cache
+        if: steps.engine.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pd2-android/images/engine
+          key: ${{ steps.image.outputs.key }}
+
+      # The built engine attests its identity once, under qemu-user.
+      - name: Install a static qemu-aarch64 binfmt_misc handler
+        if: steps.engine.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --yes --no-install-recommends qemu-user-static
+          grep -q '^flags: .*F' /proc/sys/fs/binfmt_misc/qemu-aarch64
+
+      - name: Build the engine
+        if: steps.engine.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.ENGINE_REPO_TOKEN }}
+          GIT_CONFIG_COUNT: 1
+          GIT_CONFIG_KEY_0: credential.https://github.com.helper
+          GIT_CONFIG_VALUE_0: '!gh auth git-credential'
+          PD2_RELEASE_BUILD: 1
+        run: |
+          url=$(sed -n 's/^url=//p' engine.lock)
+          git ls-remote "$url" HEAD >/dev/null || {
+            echo "::error::cannot read $url; while it is private, the secret ENGINE_REPO_TOKEN must give read access to it"
+            exit 1
+          }
+          PD2_IMAGE_ARCHIVE=~/.cache/pd2-android/images/engine engine/build.sh
+
+      # Only an image this run built; also when a later step failed.
+      - name: Save the engine's build image
+        if: ${{ !cancelled() && steps.engine.outputs.cache-hit != 'true' && steps.image-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pd2-android/images/engine
+          key: ${{ steps.image.outputs.key }}
+
+      - name: Save the engine
+        if: steps.engine.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pd2-android/engine-release-out
+          key: ${{ needs.tag.outputs.engine }}
+
+  # The userland, unless the cache holds it for these inputs (the tag job names it). Its build
+  # images: the tools, Mesa and PanVK images, and glibc's, which only its build needs.
+  userland:
+    needs: tag
+    runs-on: ubuntu-24.04
+    timeout-minutes: 340
+    env:
+      PARTS: |
+        userland/glibc/out
+        ~/.cache/pd2-android/userland/debs
+        ~/.cache/pd2-android/userland/sources
+        ~/.cache/pd2-android/userland/mesa-out
+        ~/.cache/pd2-android/userland/xvfb-out
+        ~/.cache/pd2-android/kbase/sources
+        ~/.cache/pd2-android/kbase/out
+        ~/.cache/pd2-android/kbase/work/host-tools-*
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Restore the userland
+        id: userland
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: app/src/main/assets/userland
+          key: ${{ needs.tag.outputs.userland }}
+
+      # In the background: deleting is slow, and the room is needed only later.
+      - name: Make room on the disk
+        if: steps.userland.outputs.cache-hit != 'true'
+        run: |
+          df -h / "$GITHUB_WORKSPACE"
+          nproc
+          free -g
+          sudo nohup rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/powershell /usr/share/swift >/dev/null 2>&1 &
+
+      - name: Install a static qemu-aarch64 binfmt_misc handler
+        if: steps.userland.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --yes --no-install-recommends qemu-user-static
+          grep -q '^flags: .*F' /proc/sys/fs/binfmt_misc/qemu-aarch64
+          cat /proc/sys/fs/binfmt_misc/qemu-aarch64
+
+      # Each into the folder the scripts load a missing image from and add an image they build to
+      # (PD2_IMAGE_ARCHIVE, userland/config.sh).
+      - name: Restore the tools image
+        id: image-tools
+        if: steps.userland.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pd2-android/images/userland/${{ needs.tag.outputs.image_tools }}.tar.zst
+          key: image-${{ needs.tag.outputs.image_tools }}
+
+      - name: Restore the Mesa image
+        id: image-mesa
+        if: steps.userland.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pd2-android/images/userland/${{ needs.tag.outputs.image_mesa }}.tar.zst
+          key: image-${{ needs.tag.outputs.image_mesa }}
+
+      - name: Restore the PanVK image
+        id: image-panvk
+        if: steps.userland.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pd2-android/images/userland/${{ needs.tag.outputs.image_panvk }}.tar.zst
+          key: image-${{ needs.tag.outputs.image_panvk }}
+
+      - name: Restore glibc's image
+        id: image-glibc
+        if: steps.userland.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pd2-android/images/userland/${{ needs.tag.outputs.image_glibc }}.tar.zst
+          key: image-${{ needs.tag.outputs.image_glibc }}
+
+      # The newest parts are safe to restore: build-glibc.sh, build-xvfb.sh, build-mesa.sh and
+      # build-panvk.sh reuse a build only while its BUILDINFO names the current inputs, and every
+      # download is checked by SHA-256.
+      - name: Restore the userland's parts
+        id: parts
+        if: steps.userland.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.PARTS }}
+          key: userland-parts-${{ needs.tag.outputs.userland }}
+          restore-keys: userland-parts-
+
+      - name: Build the userland
+        if: steps.userland.outputs.cache-hit != 'true'
+        env:
+          PD2_USERLAND_WITH_GLIBC: 1
+        run: PD2_IMAGE_ARCHIVE=~/.cache/pd2-android/images/userland userland/build.sh
+
+      # Named by what they hold, so the cache takes them again only when a part changed. Kept
+      # also when a later step failed: a part's BUILDINFO is written only once it is built.
+      - name: Name the userland's parts
+        id: parts-key
+        if: ${{ !cancelled() && steps.userland.outputs.cache-hit != 'true' }}
+        run: |
+          . userland/config.sh
+          # Host tools of another Mesa commit are of no further use.
+          for d in "$PANVK_CACHE"/work/host-tools-*; do
+            if [[ -d $d && $d != */host-tools-$PANVK_MESA_COMMIT ]]; then rm -rf "$d"; fi
+          done
+          # Nor Mesa archives of another pin (mesa-update.sh moves it; each is about 130 MB), nor any
+          # in PanVK's cache: build-panvk.sh takes the userland cache's archive. Nor a download that
+          # stopped part way (*.part).
+          for f in "$USERLAND_CACHE"/sources/mesa-[0-9a-f]*.tar.gz "$USERLAND_CACHE"/sources/mesa-[0-9]*.tar.xz; do
+            if [[ -f $f && $(basename "$f") != "$(basename "$MESA_URL")" ]]; then rm -f "$f"; fi
+          done
+          rm -f "$PANVK_CACHE"/sources/mesa-* "$USERLAND_CACHE"/sources/*.part
+          key=$({
+            cat userland/glibc/out/BUILDINFO \
+              "$USERLAND_CACHE"/mesa-out/BUILDINFO "$USERLAND_CACHE"/xvfb-out/BUILDINFO \
+              "$PANVK_CACHE"/out/BUILDINFO "$PANVK_CACHE"/work/host-tools-*/IMAGE 2>/dev/null || true
+            find "$USERLAND_CACHE"/debs "$USERLAND_CACHE"/sources "$PANVK_CACHE"/sources \
+              -type f -printf '%P %s\n' 2>/dev/null | sort
+          } | sha256sum | cut -c1-16)
+          echo "key=userland-parts-$key" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Save the userland's parts
+        if: ${{ !cancelled() && steps.parts-key.outputs.key != '' && steps.parts-key.outputs.key != steps.parts.outputs.cache-matched-key }}
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.PARTS }}
+          key: ${{ steps.parts-key.outputs.key }}
+
+      # An image is saved only when this job built it: its archive is there and its cache had
+      # none. Also when a later step failed.
+      - name: Find the build images built here
+        id: built
+        if: ${{ !cancelled() && steps.userland.outputs.cache-hit != 'true' }}
+        env:
+          TOOLS: ${{ steps.image-tools.outputs.cache-hit != 'true' && needs.tag.outputs.image_tools || '' }}
+          MESA: ${{ steps.image-mesa.outputs.cache-hit != 'true' && needs.tag.outputs.image_mesa || '' }}
+          PANVK: ${{ steps.image-panvk.outputs.cache-hit != 'true' && needs.tag.outputs.image_panvk || '' }}
+          GLIBC: ${{ steps.image-glibc.outputs.cache-hit != 'true' && needs.tag.outputs.image_glibc || '' }}
+        run: |
+          archive=~/.cache/pd2-android/images/userland
+          for image in TOOLS MESA PANVK GLIBC; do
+            if [[ -n ${!image} && -f $archive/${!image}.tar.zst ]]; then echo "${image,,}=true"; fi
+          done | tee -a "$GITHUB_OUTPUT"
+
+      - name: Save the tools image
+        if: ${{ !cancelled() && steps.built.outputs.tools == 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pd2-android/images/userland/${{ needs.tag.outputs.image_tools }}.tar.zst
+          key: image-${{ needs.tag.outputs.image_tools }}
+
+      - name: Save the Mesa image
+        if: ${{ !cancelled() && steps.built.outputs.mesa == 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pd2-android/images/userland/${{ needs.tag.outputs.image_mesa }}.tar.zst
+          key: image-${{ needs.tag.outputs.image_mesa }}
+
+      - name: Save the PanVK image
+        if: ${{ !cancelled() && steps.built.outputs.panvk == 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pd2-android/images/userland/${{ needs.tag.outputs.image_panvk }}.tar.zst
+          key: image-${{ needs.tag.outputs.image_panvk }}
+
+      - name: Save glibc's image
+        if: ${{ !cancelled() && steps.built.outputs.glibc == 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pd2-android/images/userland/${{ needs.tag.outputs.image_glibc }}.tar.zst
+          key: image-${{ needs.tag.outputs.image_glibc }}
+
+      - name: Save the userland
+        if: steps.userland.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: app/src/main/assets/userland
+          key: ${{ needs.tag.outputs.userland }}
+
+  # Beside the userland job: the runtime's parts that do not need the userland, Wine, Box64's
+  # wowbox64.dll and the game's sound plugin (runtime/wine.sh, wowbox64.sh and pd2audio.sh, all in
+  # the Wine image), and the .NET downloads, which the runtime job unpacks. Their cache holds only
+  # them, under the name the tag job gives it from their inputs. Nothing is built when that cache
+  # holds them, or when the cache holds the runtime that needs them. Otherwise the newest earlier
+  # parts are restored first: each script reuses a part while its BUILDINFO names the current
+  # inputs, and every download is checked by its SHA-256 or SHA-512.
+  wine:
+    needs: tag
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    # A test branch may come from a candidate, whose engine may be a draft release without its tag
+    # yet: engine/build.sh --source then fetches the pinned commit by its SHA.
+    env:
+      PD2_ENGINE_UNRELEASED: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The prefix template carries the engine's XInput bridge, which runtime/config.sh pins by its
+      # size and SHA-256; prefix.sh checks it when it makes the template. The runtime's cache key
+      # does not name the engine pin, so the pinned engine's bridge is checked in every run, also
+      # when the runtime comes from the cache.
+      - name: Check the engine's XInput bridge
+        env:
+          GH_TOKEN: ${{ secrets.ENGINE_REPO_TOKEN }}
+          GIT_CONFIG_COUNT: 1
+          GIT_CONFIG_KEY_0: credential.https://github.com.helper
+          GIT_CONFIG_VALUE_0: '!gh auth git-credential'
+        run: |
+          set -o pipefail
+          . runtime/config.sh
+          src=$(engine/build.sh --source)
+          xxd -r -p "$src/src/install/xinput_bridge.hex" | xz -dc > "$RUNNER_TEMP/xinput1_4.dll"
+          size=$(stat -c %s "$RUNNER_TEMP/xinput1_4.dll")
+          sum=$(sha256sum < "$RUNNER_TEMP/xinput1_4.dll" | cut -d' ' -f1)
+          [[ $size == "$XINPUT_BRIDGE_SIZE" && $sum == "$XINPUT_BRIDGE_SHA256" ]] ||
+            { echo "::error::the engine's XInput bridge ($size bytes, $sum) is not the one runtime/config.sh pins"; exit 1; }
+          echo "the engine's XInput bridge is the pinned one: $size bytes, $sum"
+
+      - name: Look for the runtime
+        id: runtime
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: app/src/main/assets/runtime
+          key: ${{ needs.tag.outputs.runtime }}
+          lookup-only: true
+
+      - name: Look for the parts
+        id: parts
+        if: steps.runtime.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.WINE_PARTS }}
+          key: ${{ needs.tag.outputs.wine }}
+          lookup-only: true
+
+      # In the background: deleting is slow, and the room is needed only later.
+      - name: Make room on the disk
+        if: steps.runtime.outputs.cache-hit != 'true' && steps.parts.outputs.cache-hit != 'true'
+        run: |
+          df -h /
+          sudo nohup rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/powershell /usr/share/swift >/dev/null 2>&1 &
+
+      - name: Restore the Wine image
+        id: image-wine
+        if: steps.runtime.outputs.cache-hit != 'true' && steps.parts.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pd2-android/images/userland/${{ needs.tag.outputs.image_wine }}.tar.zst
+          key: image-${{ needs.tag.outputs.image_wine }}
+
+      - name: Restore the newest earlier parts
+        if: steps.runtime.outputs.cache-hit != 'true' && steps.parts.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.WINE_PARTS }}
+          key: ${{ needs.tag.outputs.wine }}
+          restore-keys: runtime-parts-
+
+      - name: Build the parts
+        id: build
+        if: steps.runtime.outputs.cache-hit != 'true' && steps.parts.outputs.cache-hit != 'true'
+        run: |
+          export PD2_IMAGE_ARCHIVE=~/.cache/pd2-android/images/userland
+          runtime/wine.sh
+          runtime/wowbox64.sh
+          runtime/pd2audio.sh
+          . runtime/config.sh
+          fetch "$DOTNET_RUNTIME_URL" "$DOTNET_RUNTIME_SHA512" >/dev/null
+          fetch "$DOTNET_DESKTOP_URL" "$DOTNET_DESKTOP_SHA512" >/dev/null
+          # The cache keeps only these parts (the runtime job makes the prefix template and the
+          # runtime) and the downloads of the current pins.
+          for d in "$RUNTIME_PARTS"/*; do
+            case ${d##*/} in
+              wine | wowbox64 | pd2audio) ;;
+              *) rm -rf "$d" ;;
+            esac
+          done
+          keep=" $(basename "$WINE_URL") $(basename "$LLVM_MINGW_URL") box64-$BOX64_COMMIT.tar.gz"
+          keep+=" $(basename "$DOTNET_RUNTIME_URL") $(basename "$DOTNET_DESKTOP_URL") "
+          for f in "$RUNTIME_DL"/*; do
+            if [[ $keep != *" ${f##*/} "* ]]; then rm -rf "$f"; fi
+          done
+          du -sh "$RUNTIME_PARTS"/* "$RUNTIME_DL"/*
+
+      # Under the name the tag job gives them only when all were built, as the runtime job and a
+      # later run take that name for a whole set. A part's BUILDINFO is written only once it is
+      # built, so a failed build keeps what it built under a name of its own, which a later run
+      # restores as the newest earlier parts.
+      - name: Save the parts
+        if: ${{ !cancelled() && (steps.build.outcome == 'success' || steps.build.outcome == 'failure') }}
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.WINE_PARTS }}
+          key: ${{ steps.build.outcome == 'success' && needs.tag.outputs.wine || format('{0}-partial-{1}-{2}', needs.tag.outputs.wine, github.run_id, github.run_attempt) }}
+
+      # The runtime job restores the parts by that name: when the save did not happen (it only
+      # warns), this job fails, so that a re-run of the failed jobs runs it again.
+      - name: Look for the saved parts
+        id: saved
+        if: steps.build.outcome == 'success'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.WINE_PARTS }}
+          key: ${{ needs.tag.outputs.wine }}
+          lookup-only: true
+
+      - name: Check the saved parts
+        if: steps.build.outcome == 'success' && steps.saved.outputs.cache-hit != 'true'
+        env:
+          KEY: ${{ needs.tag.outputs.wine }}
+        run: |
+          echo "::error::the cache has no $KEY after the save"
+          exit 1
+
+      - name: Find the build images built here
+        id: built
+        if: ${{ !cancelled() && steps.build.outcome != 'skipped' }}
+        env:
+          WINE: ${{ steps.image-wine.outputs.cache-hit != 'true' && needs.tag.outputs.image_wine || '' }}
+        run: |
+          archive=~/.cache/pd2-android/images/userland
+          for image in WINE; do
+            if [[ -n ${!image} && -f $archive/${!image}.tar.zst ]]; then echo "${image,,}=true"; fi
+          done | tee -a "$GITHUB_OUTPUT"
+
+      - name: Save the Wine image
+        if: ${{ !cancelled() && steps.built.outputs.wine == 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pd2-android/images/userland/${{ needs.tag.outputs.image_wine }}.tar.zst
+          key: image-${{ needs.tag.outputs.image_wine }}
+
+  # After the userland and wine jobs, unless the cache holds the runtime for its inputs:
+  # runtime/build.sh reuses the wine job's parts by their BUILDINFO, makes the prefix template with
+  # the userland's tree and packs the runtime. The tree comes from the userland's archive, which
+  # userland/pack.sh packs from that tree as it is. The build images: the Wine image (the wine
+  # job saved it when it built one) and the runtime's tools image.
+  runtime:
+    needs: [tag, userland, wine]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    # A test branch may come from a candidate, whose engine may be a draft release without its tag
+    # yet: engine/build.sh --source (which runtime/prefix.sh runs for the XInput bridge) then
+    # fetches the pinned commit by its SHA.
+    env:
+      PD2_ENGINE_UNRELEASED: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Look for the runtime
+        id: runtime
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: app/src/main/assets/runtime
+          key: ${{ needs.tag.outputs.runtime }}
+          lookup-only: true
+
+      - name: Restore the userland
+        if: steps.runtime.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: app/src/main/assets/userland
+          key: ${{ needs.tag.outputs.userland }}
+          fail-on-cache-miss: true
+
+      - name: Restore the wine job's parts
+        id: parts
+        if: steps.runtime.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.WINE_PARTS }}
+          key: ${{ needs.tag.outputs.wine }}
+
+      # Only the whole set: a cache of another name (parts that a failed build kept) would make
+      # runtime/build.sh build the missing parts here, without saving them.
+      - name: Check the wine job's parts
+        if: steps.runtime.outputs.cache-hit != 'true' && steps.parts.outputs.cache-hit != 'true'
+        env:
+          KEY: ${{ needs.tag.outputs.wine }}
+        run: |
+          echo "::error::the cache has no $KEY (the wine job's parts); re-run all jobs"
+          exit 1
+
+      # In the background: deleting is slow, and the room is needed only later.
+      - name: Make room on the disk
+        if: steps.runtime.outputs.cache-hit != 'true'
+        run: |
+          df -h /
+          sudo nohup rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/powershell /usr/share/swift >/dev/null 2>&1 &
+
+      - name: Install a static qemu-aarch64 binfmt_misc handler
+        if: steps.runtime.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --yes --no-install-recommends qemu-user-static
+          grep -q '^flags: .*F' /proc/sys/fs/binfmt_misc/qemu-aarch64
+          cat /proc/sys/fs/binfmt_misc/qemu-aarch64
+
+      - name: Restore the Wine image
+        id: image-wine
+        if: steps.runtime.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pd2-android/images/userland/${{ needs.tag.outputs.image_wine }}.tar.zst
+          key: image-${{ needs.tag.outputs.image_wine }}
+
+      - name: Restore the runtime's tools image
+        id: image-runtime-tools
+        if: steps.runtime.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pd2-android/images/userland/${{ needs.tag.outputs.image_runtime_tools }}.tar.zst
+          key: image-${{ needs.tag.outputs.image_runtime_tools }}
+
+      - name: Build the runtime
+        if: steps.runtime.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.ENGINE_REPO_TOKEN }}
+          GIT_CONFIG_COUNT: 1
+          GIT_CONFIG_KEY_0: credential.https://github.com.helper
+          GIT_CONFIG_VALUE_0: '!gh auth git-credential'
+        run: |
+          set -o pipefail
+          . runtime/config.sh
+          # The userland's tree, where prefix.sh looks for it.
+          mkdir -p "$USERLAND_TREE"
+          zstd -dc app/src/main/assets/userland/userland.tar.zst | tar -x -p -C "$USERLAND_TREE"
+          df -h /
+          PD2_IMAGE_ARCHIVE=~/.cache/pd2-android/images/userland runtime/build.sh
+
+      - name: Find the build images built here
+        id: built
+        if: ${{ !cancelled() && steps.runtime.outputs.cache-hit != 'true' }}
+        env:
+          WINE: ${{ steps.image-wine.outputs.cache-hit != 'true' && needs.tag.outputs.image_wine || '' }}
+          RUNTIME_TOOLS: ${{ steps.image-runtime-tools.outputs.cache-hit != 'true' && needs.tag.outputs.image_runtime_tools || '' }}
+        run: |
+          archive=~/.cache/pd2-android/images/userland
+          for image in WINE RUNTIME_TOOLS; do
+            if [[ -n ${!image} && -f $archive/${!image}.tar.zst ]]; then echo "${image,,}=true"; fi
+          done | tee -a "$GITHUB_OUTPUT"
+
+      - name: Save the Wine image
+        if: ${{ !cancelled() && steps.built.outputs.wine == 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pd2-android/images/userland/${{ needs.tag.outputs.image_wine }}.tar.zst
+          key: image-${{ needs.tag.outputs.image_wine }}
+
+      - name: Save the runtime's tools image
+        if: ${{ !cancelled() && steps.built.outputs.runtime_tools == 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pd2-android/images/userland/${{ needs.tag.outputs.image_runtime_tools }}.tar.zst
+          key: image-${{ needs.tag.outputs.image_runtime_tools }}
+
+      - name: Save the runtime
+        if: steps.runtime.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: app/src/main/assets/runtime
+          key: ${{ needs.tag.outputs.runtime }}
+
+  # release.yml's apk job, with the debug build in place of the signed release build: no
+  # release key, no environment and no release. The APK goes on the run as one artifact.
+  apk:
+    needs: [tag, engine, userland, runtime]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      # Not persisted: no step here uses Git's credentials.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The build image (SDK, NDK) needs more room than a hosted runner leaves free. In the
+      # background: deleting is slow, and the room is needed only later.
+      - name: Make room on the disk
+        run: |
+          df -h /
+          sudo nohup rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/powershell /usr/share/swift >/dev/null 2>&1 &
+
+      # build.sh's image under the name build.sh gives it: its tag hashes the Containerfile.
+      - name: Name the build image
+        id: image
+        run: |
+          tag=$(sha256sum containers/Containerfile | cut -c1-16)
+          echo "name=localhost/pd2-android-build:$tag" >> "$GITHUB_OUTPUT"
+          echo "key=android-image-$tag" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Restore the build image
+        id: image-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pd2-android/images/android.tar.zst
+          key: ${{ steps.image.outputs.key }}
+
+      # In the background, while the other caches are restored; "Wait for the build image" waits
+      # for its exit status.
+      - name: Load the build image
+        if: steps.image-cache.outputs.cache-hit == 'true'
+        run: |
+          # shellcheck disable=SC2016 # the inner bash expands them
+          nohup bash -c 'set -o pipefail
+            zstd -dc ~/.cache/pd2-android/images/android.tar.zst | podman load
+            echo "$?" > "$RUNNER_TEMP/image-load.status"' > "$RUNNER_TEMP/image-load.log" 2>&1 < /dev/null &
+          echo "$!" > "$RUNNER_TEMP/image-load.pid"
+
+      - name: Restore the userland
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: app/src/main/assets/userland
+          key: ${{ needs.tag.outputs.userland }}
+          fail-on-cache-miss: true
+
+      - name: Restore the runtime
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: app/src/main/assets/runtime
+          key: ${{ needs.tag.outputs.runtime }}
+          fail-on-cache-miss: true
+
+      # Named by the files that decide what Gradle downloads: verification-metadata.xml lists every
+      # artifact (Gradle refuses any other), so a new dependency changes the name, and a new
+      # versionName does not. The release build's cache: a run on a branch saves only into the
+      # caches of its branch, so this debug build does not fill the cache of main.
+      - name: Restore the Gradle cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/pd2-android/gradle/caches
+            ~/.cache/pd2-android/gradle/wrapper
+          key: gradle-release-${{ hashFiles('gradle/verification-metadata.xml', 'gradle/wrapper/gradle-wrapper.properties', 'gradle.properties', 'build.gradle.kts', 'settings.gradle.kts') }}
+          restore-keys: |
+            gradle-release-
+            gradle-
+
+      # The engine job's build, which its cache key names by engine.lock.
+      - name: Restore the engine
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pd2-android/engine-release-out
+          key: ${{ needs.tag.outputs.engine }}
+          fail-on-cache-miss: true
+
+      # Until the load wrote its exit status, or stopped without one, for 15 minutes at most.
+      - name: Wait for the build image
+        if: steps.image-cache.outputs.cache-hit == 'true'
+        run: |
+          for ((i = 0; i < 900; i++)); do
+            if [[ -s $RUNNER_TEMP/image-load.status ]] || ! kill -0 "$(<"$RUNNER_TEMP/image-load.pid")" 2>/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/image-load.log"
+          [[ $(cat "$RUNNER_TEMP/image-load.status" 2>/dev/null) == 0 ]] ||
+            { echo "::error::the build image did not load"; exit 1; }
+
+      # The engine job's build: the release build of the engine, as in a release APK. build.sh app
+      # takes it from PD2_ENGINE_BINARY (without it, the newest build in engine-out). Without an
+      # engine, build.sh app only gives a warning, so this step stops first when the cache has none.
+      - name: Build the debug APK
+        run: |
+          engine=~/.cache/pd2-android/engine-release-out
+          binary=$(ls -t "$engine"/pd2-launcher-*-aarch64 2>/dev/null | head -n 1 || true)
+          [[ -n $binary ]] || { echo "::error::the engine job's cache has no engine in $engine"; exit 1; }
+          PD2_ENGINE_BINARY=$binary ./build.sh app
+
+      - name: Keep the build image
+        id: image-kept
+        if: ${{ !cancelled() && steps.image-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+        run: |
+          mkdir -p ~/.cache/pd2-android/images
+          podman save "$IMAGE" | zstd -T0 -q -o ~/.cache/pd2-android/images/android.tar.zst
+
+      - name: Save the build image
+        if: ${{ !cancelled() && steps.image-kept.outcome == 'success' }}
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pd2-android/images/android.tar.zst
+          key: ${{ steps.image.outputs.key }}
+
+      # pd2-launcher-<versionName>-<the first 12 hex digits of the commit>-dev.apk and its .sha256
+      # file, in one folder that the upload takes. The package must be the development build's.
+      - name: Name the APK
+        id: apk
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+        run: |
+          tools() { podman run --rm -v "$PWD/build/outputs:/apk:ro" "$IMAGE" "$@"; }
+          badging=$(tools aapt2 dump badging /apk/app-debug.apk | head -n 1)
+          version_name=$(sed -n "s/.* versionName='\([^']*\)'.*/\1/p" <<<"$badging")
+          package=$(sed -n "s/^package: name='\([^']*\)'.*/\1/p" <<<"$badging")
+          [[ -n $version_name ]] || { echo "::error::the APK has no versionName: $badging"; exit 1; }
+          [[ $package == com.pd2launcher.app.dev3 ]] ||
+            { echo "::error::the APK's package is ${package:-unknown}, not com.pd2launcher.app.dev3"; exit 1; }
+          apk=pd2-launcher-$version_name-${GITHUB_SHA::12}-dev.apk
+          mkdir -p test-build
+          cp build/outputs/app-debug.apk "test-build/$apk"
+          (cd test-build && sha256sum "$apk" > "$apk.sha256")
+          cat "test-build/$apk.sha256"
+          echo "name=${apk%.apk}" >> "$GITHUB_OUTPUT"
+
+      # One artifact, named as the APK without .apk, which holds the APK and its .sha256 file.
+      - name: Upload the APK
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.apk.outputs.name }}
+          path: test-build/
+          if-no-files-found: error
+          retention-days: 14

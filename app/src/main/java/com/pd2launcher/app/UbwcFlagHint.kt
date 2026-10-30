@@ -81,7 +81,7 @@ object UbwcFlagHint {
             driverVersion = VulkanDriverProbe.driverVersion()
             read = true
         }
-        return UbwcChoice(gpu.name, model, driverVersion, ubwcFlagHint(model, driverVersion))
+        return UbwcChoice(gpu.name, model, driverVersion, ubwcFlagHint(model, driverVersion)?.let { 1 })
     }
 }
 
