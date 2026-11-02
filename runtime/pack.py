@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""pack.py <wine tree> <prefix template> <dotnet tree> <cut list> <out dir>: the app's runtime asset.
+"""pack.py <wine tree> <PLAIN template> <GOLDEN template> <dotnet tree> <cut list> <out dir>: the app's
+runtime asset.
 
 Writes <out>/runtime.tar.zst (GNU tar, zstd -19) and <out>/runtime.info (line 1: the version, the
 first 16 hex digits of a SHA-256 over the contents; line 2: the tar's size in bytes, for the
@@ -12,7 +13,10 @@ unpack's progress). The paths are the Launcher's managed root's, as the engine n
                                    opens bin/wine and follows no link), with links to the
                                    loader's ntdll.so and wine-preloader beside it (the loader
                                    looks for them in its own folder)
-  runner/wine-11.0-arm64-prefix/   the prefix template
+  runner/wine-11.0-arm64-prefix/   the PLAIN prefix template (for the source Blizzard's installers)
+  runner/wine-11.0-arm64-prefix-golden/
+                                   the GOLDEN prefix template (PLAIN with the golden layer, for
+                                   Fast download and imports)
   runner/dotnet-6.0.36-x86/        the official PD2 launcher's x86 .NET runtime
 without what the cut list names (wine/... and dotnet/... paths, a folder with all it holds).
 Prints the sizes."""
@@ -23,9 +27,10 @@ import subprocess
 import sys
 import tarfile
 
-wine, prefix, dotnet, cut_list, out = sys.argv[1:6]
+wine, prefix, golden, dotnet, cut_list, out = sys.argv[1:7]
 WINE = "runner/wine-11.0-arm64"
 PREFIX = "runner/wine-11.0-arm64-prefix"
+GOLDEN = "runner/wine-11.0-arm64-prefix-golden"
 DOTNET = "runner/dotnet-6.0.36-x86"
 PLACEHOLDER = b"/pd2launcher-data-placeholder-" + b"0" * 170
 cuts = [l.strip() for l in open(cut_list) if l.strip() and not l.startswith("#")]
@@ -93,7 +98,7 @@ with tarfile.open(tar_path, "w", format=tarfile.GNU_FORMAT) as tar:
     ti.mode = 0o644
     tar.addfile(ti, io.BytesIO(listing))
     for name, root, arc_root, cut_root in (("wine", wine, WINE, "wine"), ("prefix", prefix, PREFIX, ""),
-                                          ("dotnet", dotnet, DOTNET, "dotnet")):
+                                          ("golden", golden, GOLDEN, ""), ("dotnet", dotnet, DOTNET, "dotnet")):
         total = entry(tar, root, arc_root)
         for p, rel in walk(root, cut_root):
             arc = f"{arc_root}/{rel}"

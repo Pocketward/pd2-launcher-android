@@ -1,0 +1,55 @@
+# The files of the golden layer (golden.py), one per line, tab-separated: the source, the size, the
+# SHA-256 and the path in the prefix. They are the files that the Visual C++ 14.28.29325 redist and
+# the Project Diablo 2 installer put down in the golden install (capture of 2026-10-30, RP Mini V2,
+# prefix generation 2). The sources:
+#   x64:<payload>         a payload of VC_redist.x64.exe's attached container (a8 to a11), as it is
+#   x64:<payload>:<name>  a file of that payload, which is a CAB (a10, a11)
+#   x86:...               the same for VC_redist.x86.exe
+#   patch:<arch>          the cached VC_redist.<arch>.exe of the Package Cache: the official file cut
+#                         and with a few bytes changed by Burn (golden/cached-exe.txt)
+#   data:<name>           a small file made on the device, kept in golden/<name>.hex
+# Blizzard's own files are not here.
+data:project-diablo-2.lnk	638	df212b34902fa1902faf6c87c346316fa92459e55c52822d39e02cdad1ec8e7e	drive_c/ProgramData/Microsoft/Windows/Start Menu/Programs/(Default)/Project Diablo 2.lnk
+x64:a11	5611970	68253dd6d25a806bf44648a9cb5ebdfb317821453ca1a51304bd6b89bb94b2af	drive_c/ProgramData/Package Cache/{26AF0C35-55EC-4025-8D83-349E8FB1419F}v14.28.29325/packages/vcRuntimeAdditional_amd64/cab1.cab
+x64:a9	184320	45111bd849a804f7794d061b0072e4655aaff7da0bf78b8ccf3cca23e2fa6bdf	drive_c/ProgramData/Package Cache/{26AF0C35-55EC-4025-8D83-349E8FB1419F}v14.28.29325/packages/vcRuntimeAdditional_amd64/vc_runtimeAdditional_x64.msi
+patch:x64	647688	68ae62ac88f4974b09729f6b78cea6e1c478af8a93341a3b4e4b03fd723e828b	drive_c/ProgramData/Package Cache/{33628a12-6787-4b9f-95a1-92449f69fae0}/VC_redist.x64.exe
+data:state-x64.rsm	956	628119efa190d9d0acb97f717a1f1befc5ebbd6131640bbdc77c2c4bb382d4d9	drive_c/ProgramData/Package Cache/{33628a12-6787-4b9f-95a1-92449f69fae0}/state.rsm
+x64:a10	1440502	904d1e417319fb2baa9123b87e8393b7589c61e11a616e37cd08d89bb2f8832d	drive_c/ProgramData/Package Cache/{7D0362D5-C699-4403-BC09-0C1DAD1D93AB}v14.28.29325/packages/vcRuntimeMinimum_amd64/cab1.cab
+x64:a8	192512	b8c096172fb1268ac5c40a3e33be970c11af0111b329b657877fb555a2c42fec	drive_c/ProgramData/Package Cache/{7D0362D5-C699-4403-BC09-0C1DAD1D93AB}v14.28.29325/packages/vcRuntimeMinimum_amd64/vc_runtimeMinimum_x64.msi
+x86:a11	5199256	dc154add0cbb47513e313ee21cf56069785234899322589c3bcc4ca63f5e3c5f	drive_c/ProgramData/Package Cache/{B40FC85D-2B12-46E0-B950-E5B27E348793}v14.28.29325/packages/vcRuntimeAdditional_x86/cab1.cab
+x86:a9	184320	70c875f576ed9bc245438adb708f7bc6d3ccec2da701261bdfb69153aa2e6f78	drive_c/ProgramData/Package Cache/{B40FC85D-2B12-46E0-B950-E5B27E348793}v14.28.29325/packages/vcRuntimeAdditional_x86/vc_runtimeAdditional_x86.msi
+x86:a10	1303060	9fed933fbff0d0c4b82a2e74806257a032f67ff0ecd4e2643b541cf5c4f707f0	drive_c/ProgramData/Package Cache/{EE2E15BB-54C8-4DB0-B1F3-026E3C166991}v14.28.29325/packages/vcRuntimeMinimum_x86/cab1.cab
+x86:a8	192512	3488b2cba495fbc74bbd67e507a9748238cbf80cdd27282542b749eba1414ce1	drive_c/ProgramData/Package Cache/{EE2E15BB-54C8-4DB0-B1F3-026E3C166991}v14.28.29325/packages/vcRuntimeMinimum_x86/vc_runtimeMinimum_x86.msi
+patch:x86	647672	e5c0020e115c77403570a0ac0a71607bffaf26b7ca2a33b07ac447429820874b	drive_c/ProgramData/Package Cache/{d7a6435f-ac9a-4af6-8fdc-ca130d13fac9}/VC_redist.x86.exe
+data:state-x86.rsm	956	e4c8a1af80f494c09a36c7a10e5924ff4454c7fa1d39c904fce8a43880978c58	drive_c/ProgramData/Package Cache/{d7a6435f-ac9a-4af6-8fdc-ca130d13fac9}/state.rsm
+x64:a11:mfc140.dll	5606776	6123af79818374c71bd8e658e2cb3c0cfe4da264c1bbbdb24d1f3ff65540d5ee	drive_c/windows/system32/mfc140.dll
+x64:a11:mfc140chs.dll	39808	54db7b3d67a0a6d2a2faa870c788884a8d6141c1321988fbe8ba6d9f6be68633	drive_c/windows/system32/mfc140chs.dll
+x64:a11:mfc140cht.dll	39800	1ed2c49766c0fe5d7785cb4fc8e6667a20fd38bef483118a27c2b3b2063fb691	drive_c/windows/system32/mfc140cht.dll
+x64:a11:mfc140deu.dll	68488	795233495173b5990acbf9bcb926c115d7a4ff0c7decd144d99c860aeb5a69a7	drive_c/windows/system32/mfc140deu.dll
+x64:a11:mfc140enu.dll	58760	b36e9a8a98eb5dc7bcbcaaef7ea8ebffd6387c3df2283bce981bfb683e1b63c7	drive_c/windows/system32/mfc140enu.dll
+x64:a11:mfc140esn.dll	67448	223c78ca003e8f70c12375c74c46dbda614977dc56cf3b479bb65bfb83849b4e	drive_c/windows/system32/mfc140esn.dll
+x64:a11:mfc140fra.dll	68488	c832cbbecdff6a5e88a90a88ed5d6ca15a4c87c793af5112d12bc602cf1fadf4	drive_c/windows/system32/mfc140fra.dll
+x64:a11:mfc140ita.dll	66424	d54f42f0c10aeb69604df062409bb21cfc76194fcea655c53757ab54522546ba	drive_c/windows/system32/mfc140ita.dll
+x64:a11:mfc140jpn.dll	48000	1b3b8bef818d7d08e478bda8bd7eeb66d342bcec0cde6d0136f7a5b25fb606c9	drive_c/windows/system32/mfc140jpn.dll
+x64:a11:mfc140kor.dll	46976	9ea8583a90e38bd3dfcb32c9e022146468054545b286cd3155880b52f88458c9	drive_c/windows/system32/mfc140kor.dll
+x64:a11:mfc140rus.dll	64384	99e81eb89efedfc0c14808b7de2986c114af597203ea2ef3583e702b12698c4b	drive_c/windows/system32/mfc140rus.dll
+x64:a11:mfc140u.dll	5639560	980f87e4985be2f371943fcdc1268c8d4195683827e7d2c5019d5cf9a8f6cad5	drive_c/windows/system32/mfc140u.dll
+x64:a11:mfcm140.dll	84864	201bc8d1badaa24f2e6d91722f319c66f784609e2a6af27169d0c0766a884784	drive_c/windows/system32/mfcm140.dll
+x64:a11:mfcm140u.dll	84856	d986b903f0a8fe8619b70bb4a1109cbb52aefd44cd1d93524cf9d04e192cb013	drive_c/windows/system32/mfcm140u.dll
+x64:a10:vcamp140.dll	394120	b97b312aca47df185d9a8a938f83ce7e1e684b5ab6a367bccfb3f9ec4599a5ea	drive_c/windows/system32/vcamp140.dll
+x64:a10:vcruntime140_1.dll	36744	b4289a206c121bc4e036e1077860b24511c7efad8bedb7f26c65d6160ac1f48c	drive_c/windows/system32/vcruntime140_1.dll
+x86:a11:mfc140.dll	4827016	8ab78170792d1da7b840db58b9663229681d4b08b5c7953db1fe9279b8220777	drive_c/windows/syswow64/mfc140.dll
+x86:a11:mfc140chs.dll	39800	22857e342c761ec2af6d749f1c249b0b0ab587b32c8fa6d99b7f84184cabca40	drive_c/windows/syswow64/mfc140chs.dll
+x86:a11:mfc140cht.dll	39816	903adfc979fa3eca9fd8cba30a33cd0efe5ea8818d2ece5c21141ae4791b0e7b	drive_c/windows/syswow64/mfc140cht.dll
+x86:a11:mfc140deu.dll	68488	3539c343b0f832f88833b2084974e311d0391d03e2c0936dc78efeb050b0ae35	drive_c/windows/syswow64/mfc140deu.dll
+x86:a11:mfc140enu.dll	58744	7646153b9ab5122b692e0283a34f7e17dbb48f052e2c1ee2d5abdedd64207ac7	drive_c/windows/syswow64/mfc140enu.dll
+x86:a11:mfc140esn.dll	67448	9895507ffeef5ed093c82bd31dbf0c2d57f7d72b0ecf49159140750536920aa0	drive_c/windows/syswow64/mfc140esn.dll
+x86:a11:mfc140fra.dll	68488	e80ceaefb210de9d7c2b74593dcadf5710e0216775241bd88ed13629ad9d5f49	drive_c/windows/syswow64/mfc140fra.dll
+x86:a11:mfc140ita.dll	66440	1f9a287836cb9c4fe044c6cadc27dd455321c884bb830b720342db2ab7e454ea	drive_c/windows/syswow64/mfc140ita.dll
+x86:a11:mfc140jpn.dll	48008	ec18f6c98cbb5a0d98a503af4477e476f39d80c8c47e90d25510c7637a434760	drive_c/windows/syswow64/mfc140jpn.dll
+x86:a11:mfc140kor.dll	46976	509765fd338ca83cd76e604af28faa6a3e5a09e683a134a80cd2a943fe8eaddd	drive_c/windows/syswow64/mfc140kor.dll
+x86:a11:mfc140rus.dll	64392	f71240e57e60e2b4d9f8f7f7d6530728fbae729bb3d6e6cd88d8929c2355040e	drive_c/windows/syswow64/mfc140rus.dll
+x86:a11:mfc140u.dll	5125000	e71a02b251a13b4311e475a7903af4e586318788e120e47ec8445a7ba513a539	drive_c/windows/syswow64/mfc140u.dll
+x86:a11:mfcm140.dll	75144	19f34b226292ecb4657c812f1c80a022fcb4731b9e49c525076ba812e3280870	drive_c/windows/syswow64/mfcm140.dll
+x86:a11:mfcm140u.dll	75128	2a5ac129dbb498b02ea87d426bdf49bfb272e7e451ff657f344001ea514d0f47	drive_c/windows/syswow64/mfcm140u.dll
+x86:a10:vcamp140.dll	355208	371b86aa25d5a6c7436b4bd49291b4442c10c815859c19c7bfbe6b860bbf9581	drive_c/windows/syswow64/vcamp140.dll

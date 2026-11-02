@@ -12,10 +12,10 @@ import java.util.Locale
  * Keeps the player's characters in one folder of their own, [SessionPaths.userSave]
  * (`files/userdata/Save`), apart from any Diablo II folder. The game keeps characters in
  * `<InstallPath>\Save` (the engine writes no `Save Path`), so the app makes the `Save` of the
- * game folder in use, the Managed prefix's ([SessionPaths.managedGame]) or a folder copy's below
+ * game folder in use, the Managed one outside the prefix ([SessionPaths.managedGame]) or a folder copy's below
  * [SessionPaths.imports], a symbolic link to it ([link]) before a launch; Wine follows it like a
- * folder. Start over removes the Managed prefix without following links (the engine's
- * `remove_owned_tree`), so it takes only the link. A folder copy gets no link before Start over
+ * folder. Start over removes the Managed game folder and the prefix without following links (the
+ * engine's `remove_owned_tree`), so it takes only the link. A folder copy gets no link before Start over
  * or a new folder copy ([moveImported]): the engine refuses an existing folder holding any link
  * (its `tree_bytes`), and after Start over the same copy can be imported again; its Save only has
  * its saves moved out and goes. The launch, after the import, links it again.
@@ -44,6 +44,9 @@ import java.util.Locale
  * `Backups` folder (in any case) is never merged as saves and nothing in it is ever backed up
  * again: what it holds moves as it is into `Save/Backups` ([moveBackups]), each entry under a name
  * not taken there yet, so every spelling of Save brings one `Backups` folder only.
+ *
+ * Its log lines name no character: a character's name is written as [NAME_MASK], as the engine
+ * masks the names in the game's own logs ([maskCharacters]), because players share these logs.
  */
 object SaveKeeper {
     /** How deep a folder inside a Save is kept, as on the desktop. */
@@ -51,6 +54,9 @@ object SaveKeeper {
 
     /** The backups' folder at the top of the player's Save ([SessionPaths.saveBackups]). */
     const val BACKUPS = "Backups"
+
+    /** What the logs write in place of a character's name: the engine's mask (`redact.rs`, `NAME_MASK`). */
+    const val NAME_MASK = "<name>"
 
     /**
      * Makes [save] a link to [userSave] once its saves, and those of every other spelling of it
@@ -85,7 +91,10 @@ object SaveKeeper {
             // A folder too deep fails the keep before anything moves.
             checkDepth(save, 0)
             val moved = Moved()
-            mergeFolder(save, userSave, "", backups, now, log, moved)
+            // Its lines name no character ([maskCharacters]).
+            val names = characterNames((regularFiles(save) + regularFiles(userSave)).map { it.name })
+            val masked: (String) -> Unit = { log(maskCharacters(it, names)) }
+            mergeFolder(save, userSave, "", backups, now, masked, moved)
             if (moved.characters + moved.files > 0) {
                 log("moved ${moved.characters} characters and ${moved.files} other saved files from ${save.path} into ${userSave.path}")
             }
@@ -107,8 +116,9 @@ object SaveKeeper {
     }
 
     /**
-     * Before Start over: the Managed prefix's Save [link]s to the player's folder (Start over
-     * removes the prefix) and every folder copy's has its saves moved there ([moveImported]).
+     * Before Start over: the Managed game folder's Save [link]s to the player's folder (Start over
+     * removes the game folder and the prefix) and every folder copy's has its saves moved there
+     * ([moveImported]).
      */
     fun keepAll(paths: SessionPaths, now: Long = System.currentTimeMillis(), log: (String) -> Unit = {}) {
         val managed = File(paths.managedGame, "Save")
@@ -125,7 +135,7 @@ object SaveKeeper {
         for (save in importedSaves(paths)) moveOut(save, paths.userSave, paths.saveBackups, now, log)
     }
 
-    /** The Save folder of the game folder a snapshot names ([gameFolder]; null: the Managed prefix's). */
+    /** The Save folder of the game folder a snapshot names ([gameFolder]; null: the Managed one). */
     fun liveSave(paths: SessionPaths, gameFolder: String?): File = File(gameFolder?.let(::File) ?: paths.managedGame, "Save")
 
     /** The Saves of the folder copies below [SessionPaths.imports], every spelling of each ([spellings]). */
@@ -243,11 +253,11 @@ object SaveKeeper {
             val backup = backupFolder(backups, now, (files + existing).map { it.name })
             if (bySavedAt.compare(savedAt(name, existing), savedAt(name, files)) >= 0) {
                 move(files, backup)
-                log("character $name: the one saved last stays, the other is in ${backup.name}")
+                log("character $NAME_MASK: the one saved last stays, the other is in ${backup.name}")
                 return
             }
             move(existing, backup)
-            log("character $name: the one saved earlier moved to ${backup.name}")
+            log("character $NAME_MASK: the one saved earlier moved to ${backup.name}")
         }
         move(files, into)
     }
@@ -335,6 +345,24 @@ object SaveKeeper {
 
     /** Whether the file [name] makes the files of its [characterName] a character's: a `.d2s`. */
     internal fun isCharacterFile(name: String): Boolean = name.lowercase(Locale.ROOT).endsWith(".d2s")
+
+    /**
+     * The names of the characters among [paths] (in a Save, `/` between the parts): the name up to
+     * the first dot of each `.d2s`, wherever it is (also in a backup or a folder inside the Save).
+     */
+    internal fun characterNames(paths: Collection<String>): Set<String> =
+        paths.map { it.substringAfterLast('/') }.filter(::isCharacterFile).map(::characterName).filter { it.isNotEmpty() }.toSet()
+
+    /**
+     * [text] with each file name that starts with one of the character [names] and a dot
+     * (`Hero.d2s`, `ProjectD2/Hero.key`, a path's `/Save/Hero.ma0`), in any case, as
+     * `<name>.d2s`: the save lines that players share name no character ([NAME_MASK]).
+     */
+    internal fun maskCharacters(text: String, names: Collection<String>): String =
+        names.fold(text) { masked, name ->
+            Regex("(^|[\\s/\\\\\"'(\\[:=])" + Regex.escape(name) + "(?=\\.)", RegexOption.IGNORE_CASE)
+                .replace(masked) { "${it.groupValues[1]}$NAME_MASK" }
+        }
 
     /**
      * When the character [name] ([files]) was saved last: by its own `<name>.d2s`, which the game

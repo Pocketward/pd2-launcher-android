@@ -7,6 +7,7 @@ import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
+import android.hardware.display.DisplayManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -50,6 +51,7 @@ import com.pd2launcher.app.control.Installation
 import com.pd2launcher.app.control.Installer
 import com.pd2launcher.app.control.Step
 import com.pd2launcher.app.input.ControllerLog
+import com.pd2launcher.app.input.ControlsStore
 import com.pd2launcher.app.input.PadButton
 import com.pd2launcher.app.input.PadLayouts
 import com.pd2launcher.app.ui.AboutScreen
@@ -153,6 +155,19 @@ class MainActivity : ComponentActivity() {
             log.line(line)
         }
     }
+    /**
+     * The displays that come and go while the app is started, in game-view.log ([GameViewLog]):
+     * a phone with a second screen, a cast display. Ids, sizes and rates only, never a name.
+     */
+    private val displayLog = object : DisplayManager.DisplayListener {
+        override fun onDisplayAdded(displayId: Int) {
+            getSystemService(DisplayManager::class.java)?.getDisplay(displayId)?.let { GameViewLog.line(GameViewLines.displayAdded(DisplayFacts.of(it))) }
+        }
+
+        override fun onDisplayRemoved(displayId: Int) = GameViewLog.line(GameViewLines.displayRemoved(displayId))
+
+        override fun onDisplayChanged(displayId: Int) {}
+    }
     /** Save logs: Android's "Save as" screen for the zip; [saveChosen] copies it where the player chose. */
     private val saveLogsTo = registerForActivityResult(SaveInDownload(), ::saveChosen)
     /**
@@ -183,6 +198,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         // Each controller's layout is read as it connects, for the life of the process.
         PadLayouts.watch(this)
+        // The Game view's logs, beside the app's other logs (Share logs packs them).
+        GameViewLog.open(paths.logs)
         if (debuggable) {
             // `am start -n com.pd2launcher.app.dev/com.pd2launcher.app.MainActivity --ez probe true`.
             if (intent.getBooleanExtra("probe", false)) {
@@ -987,9 +1004,14 @@ class MainActivity : ComponentActivity() {
                 // Android 11 names no chip: its hardware name (Build.HARDWARE) instead.
                 "Chip" to if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) "${Build.SOC_MANUFACTURER} ${Build.SOC_MODEL}" else "hardware ${Build.HARDWARE}",
                 "Android" to "${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT}), ${Build.SUPPORTED_ABIS.joinToString(" ")}",
+                "Android build" to HardwareFacts.androidBuild(
+                    Build.MANUFACTURER, Build.BRAND, Build.FINGERPRINT, Build.DISPLAY, Build.VERSION.INCREMENTAL, Build.VERSION.SECURITY_PATCH,
+                ),
                 "GPU" to (facts?.gpu?.name ?: "not found"),
                 // Turnip's TP UBWC flag hint: on an Adreno 740, from the phone's Vulkan driver.
-                "UBWC flag hint" to UbwcFlagHint.choice(facts?.gpu).describe(),
+                "UBWC flag hint" to UbwcFlagHint.choice(facts?.gpu, read = { VulkanDriverProbe.read(paths.vulkanProbeMarker) }).describe(),
+                // The phone's own Vulkan driver, on every GPU; the probe is guarded by a marker file.
+                "Vulkan driver" to VulkanDriverProbe.read(paths.vulkanProbeMarker).describe(),
                 "Page size" to (facts?.pageSize?.toString() ?: "unknown"),
                 "Free space" to "${StatFs(paths.data).availableBytes shr 20} MB",
                 "Device check" to when (device) {
@@ -1017,6 +1039,7 @@ class MainActivity : ComponentActivity() {
                 "Thermal state" to thermalState(),
                 "Settings" to SettingsLog.line(
                     AppSettingsStore.load(this),
+                    ControlsStore.load(this),
                     LauncherSettings.view(snapshot?.settings, status.engine == SessionStatus.Engine.CONNECTED),
                 ),
                 "Detailed logging" to if (AppSettingsStore.current.value.detailedLogging) "on" else "off",
@@ -1076,6 +1099,7 @@ class MainActivity : ComponentActivity() {
         super.onStart()
         closing = false
         controllerLog.start()
+        getSystemService(DisplayManager::class.java)?.registerDisplayListener(displayLog, null)
         SessionService.appForeground(true)
         // The session ends by itself while nothing runs and the app is closed; back in front, it starts again.
         if (sessionStarted) SessionService.resume(this)
@@ -1084,8 +1108,19 @@ class MainActivity : ComponentActivity() {
     override fun onStop() {
         super.onStop()
         controllerLog.stop()
+        getSystemService(DisplayManager::class.java)?.unregisterDisplayListener(displayLog)
         // Closed (Back on the first screen, or the activity ends), or only left (Home, the lock, another app).
         SessionService.appForeground(false, closed = closing || isFinishing)
+    }
+
+    /**
+     * The activity became the top resumed one, or no longer is ([top]): on a phone with two
+     * displays, or with another app's window over it, the input goes elsewhere. In game-view.log.
+     */
+    override fun onTopResumedActivityChanged(top: Boolean) {
+        super.onTopResumedActivityChanged(top)
+        GameViewLog.topResumed = top
+        GameViewLog.line(GameViewLines.topResumed(top))
     }
 
     override fun onDestroy() {

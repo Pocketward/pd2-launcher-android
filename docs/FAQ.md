@@ -124,6 +124,10 @@ To get the frame rate back, do one of these:
 
 The app needs an ARM64 device with Android 11 or later, 4 KB memory pages and a supported graphics chip (GPU). Android does not install the app on Android 10 or earlier. See [What your device needs](../README.md#what-your-device-needs) and [Supported graphics chips](../README.md#supported-graphics-chips) in the README. When the app starts for the first time, it checks your device and tells you what is missing.
 
+### The app says that my device is not supported
+
+The app runs the game only on the graphics chips (GPUs) in [Supported graphics chips](../README.md#supported-graphics-chips). [Open an issue](https://github.com/Pocketward/pd2-launcher-android/issues/new?template=bug_report.yml) and give your device's name and its Android version. If the app shows a GPU name, add it under **What is the problem?**.
+
 ### How do I use a controller?
 
 Connect a Bluetooth or USB controller. In pad mode, the game sees an Xbox controller. The app selects a button layout for each controller when it connects.
@@ -215,7 +219,7 @@ Android 17 can show a message about 16 KB memory pages. The app still works.
 
 ### How do I send logs?
 
-1. In **Settings → App → Help**, turn on **Detailed logging**. It applies at the next **Play** or official PD2 launcher.
+1. In **Settings → App → Help**, turn on **Detailed logging**. The app records its own details at once, and the game's details from the next **Play** or official PD2 launcher.
 2. Make the problem occur again.
 3. In **Settings → App → Help**, tap **Share logs** to send the file, or **Save logs** to save it on the device, for example in Downloads.
 4. Attach the file to an [issue](https://github.com/Pocketward/pd2-launcher-android/issues). Write your device's model, its Android version and its GPU (the **Check** screen shows them), and what occurred.

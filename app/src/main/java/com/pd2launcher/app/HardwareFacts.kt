@@ -119,6 +119,14 @@ object HardwareFacts {
     }
 
     /**
+     * Android's build for `device.txt`, from public build values only (no serial number, account
+     * or identity): the firmware's [display] name and [incremental] number, the [fingerprint],
+     * the [securityPatch] date (null below Android 6) and the maker with its [brand].
+     */
+    fun androidBuild(maker: String, brand: String, fingerprint: String, display: String, incremental: String, securityPatch: String?): String =
+        "maker $maker, brand $brand; firmware $display (incremental $incremental); security patch ${securityPatch ?: "unknown"}; fingerprint $fingerprint"
+
+    /**
      * The screen for `device.txt`: the whole [panel] (width, height in pixels, the bounds of
      * Android's maximum window metrics, turned as the screen is now), the app's [window] inside it
      * (without the bars of the system, so it can be shorter: 1920 x 1025 in a 1920 x 1080 panel),

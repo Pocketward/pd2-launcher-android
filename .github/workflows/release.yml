@@ -15,8 +15,9 @@
 #             its BUILDINFO names the current inputs), PanVK's host tools, the
 #             Debian packages and the source archives
 #   wine      beside the userland job: the runtime's parts that do not need the
-#             userland (runtime/wine.sh, wowbox64.sh and pd2audio.sh) and the .NET
-#             downloads, cached under a key made from their inputs, unless that
+#             userland (runtime/wine.sh, wowbox64.sh and pd2audio.sh), the .NET
+#             downloads and the Visual C++ redist's (the GOLDEN prefix template's
+#             files), cached under a key made from their inputs, unless that
 #             cache holds them or the cache holds the runtime for its inputs; in
 #             every run, it checks the pinned engine's XInput bridge against
 #             runtime/config.sh
@@ -267,6 +268,7 @@ jobs:
             runtime/wowbox64.sh --identity
             runtime/pd2audio.sh --identity
             (. runtime/config.sh && echo "dotnet=$DOTNET_RUNTIME_URL $DOTNET_RUNTIME_SHA512 $DOTNET_DESKTOP_URL $DOTNET_DESKTOP_SHA512")
+            (. runtime/config.sh && echo "vcredist=$VCREDIST_X64_URL $VCREDIST_X64_SHA256 $VCREDIST_X86_URL $VCREDIST_X86_SHA256")
           } | sha256sum | cut -d' ' -f1)
           [[ $wine =~ ^[0-9a-f]{64}$ ]]
           echo "wine=runtime-parts-$wine" | tee -a "$GITHUB_OUTPUT"
@@ -775,6 +777,10 @@ jobs:
           . runtime/config.sh
           fetch "$DOTNET_RUNTIME_URL" "$DOTNET_RUNTIME_SHA512" >/dev/null
           fetch "$DOTNET_DESKTOP_URL" "$DOTNET_DESKTOP_SHA512" >/dev/null
+          # The Visual C++ redist that the GOLDEN prefix template's files come from (prefix.sh):
+          # cached here, so a build does not depend on Microsoft's server each time.
+          fetch "$VCREDIST_X64_URL" "$VCREDIST_X64_SHA256" >/dev/null
+          fetch "$VCREDIST_X86_URL" "$VCREDIST_X86_SHA256" >/dev/null
           # The cache keeps only these parts (the runtime job makes the prefix template and the
           # runtime) and the downloads of the current pins.
           for d in "$RUNTIME_PARTS"/*; do
@@ -785,6 +791,7 @@ jobs:
           done
           keep=" $(basename "$WINE_URL") $(basename "$LLVM_MINGW_URL") box64-$BOX64_COMMIT.tar.gz"
           keep+=" $(basename "$DOTNET_RUNTIME_URL") $(basename "$DOTNET_DESKTOP_URL") "
+          keep+="$(basename "$VCREDIST_X64_URL") $(basename "$VCREDIST_X86_URL") "
           for f in "$RUNTIME_DL"/*; do
             if [[ $keep != *" ${f##*/} "* ]]; then rm -rf "$f"; fi
           done

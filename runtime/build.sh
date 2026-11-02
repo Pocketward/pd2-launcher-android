@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds the runtime the app provides and copies it into the APK's assets
 # (../app/src/main/assets/runtime/, gitignored): the ARM64 Wine 11.0 with Box64's wowbox64.dll for
-# its 32-bit x86 code, its prefix template and the x86 .NET 6 runtime of the official PD2 launcher,
+# its 32-bit x86 code, its two prefix templates and the x86 .NET 6 runtime of the official PD2 launcher,
 # laid out under the Launcher's managed root as the engine names them (pack.py). Every part is
 # built in a container (Podman, or rootless Docker) and kept in the cache (PD2_RUNTIME_CACHE,
 # default ~/.cache/pd2-android/runtime) with the identity of its inputs, so a part whose inputs did
@@ -10,8 +10,9 @@
 #   wowbox64.sh   Box64's wowbox64.dll (config.sh pins the commit), with patches/box64
 #   pd2audio.sh   the game's sound output: our ALSA plugin and Debian's alsa-lib, which go beside
 #                 winealsa.so (its run path is $ORIGIN, so it finds that alsa-lib)
-#   prefix.sh    the prefix template, made by that Wine (needs the App userland, userland/build.sh,
-#                 and qemu-user for aarch64 in binfmt_misc)
+#   prefix.sh     the PLAIN prefix template, made by that Wine (needs the App userland,
+#                 userland/build.sh, and qemu-user for aarch64 in binfmt_misc), and the GOLDEN one
+#                 (golden.py: the golden layer from golden.reg and the Visual C++ redist's files)
 #   dotnet.sh     the .NET runtime and Windows Desktop runtime, x86
 #   then          trim.py with wine-keep.txt (the modules the game, the official launcher and the
 #                 install chain load), stage-wineb.py (the interpreter of Wine's programs is the
@@ -47,8 +48,8 @@ case "${1:-}" in
         ;;
     --pack) # in the tools image
         rm -rf /cache/work/runtime/assets
-        python3 /src/pack.py /cache/work/runtime/wine /cache/parts/prefix/prefix /cache/work/runtime/dotnet \
-            /src/runtime-cut.txt /cache/work/runtime/assets
+        python3 /src/pack.py /cache/work/runtime/wine /cache/parts/prefix/prefix /cache/parts/prefix/golden \
+            /cache/work/runtime/dotnet /src/runtime-cut.txt /cache/work/runtime/assets
         exit 0
         ;;
     --version)

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Cross-builds x-input-relay (x-input-relay.c, our own code) against the staged sysroot and
-# installs it as usr/bin/x-input-relay in the staging tree: the app's touch and keyboard input
-# into the X screen through XTEST. relocate.sh then sets its
+# Cross-builds x-input-relay (x-input-relay.c and its x-input-relay-counts.h, our own code)
+# against the staged sysroot and installs it as usr/bin/x-input-relay in the staging tree: the
+# app's touch and keyboard input into the X screen through XTEST. relocate.sh then sets its
 # interpreter like every other ELF; libXtst, libXext, libXfixes and libX11 come from packages.txt.
 set -euo pipefail
 

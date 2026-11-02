@@ -18,8 +18,11 @@ import kotlinx.serialization.json.JsonClassDiscriminator
 // `Option` is a nullable field without a default, so it is always written (as
 // null when absent), as serde writes it. Integers: u32 and u64 are Long, u8 Int.
 
-/** The protocol version this app speaks (the engine's `PROTOCOL`). */
-const val PROTOCOL: Int = 6
+/**
+ * The protocol version this app speaks (the engine's `PROTOCOL`). 7: the game folder is outside the
+ * disposable prefix, so an engine of an earlier protocol, which looks for it in the prefix, is refused.
+ */
+const val PROTOCOL: Int = 7
 
 /** The JSON settings both directions use: internally tagged by `type`, strict. */
 val ControlJson: Json = Json { classDiscriminator = "type" }
@@ -165,10 +168,12 @@ sealed class Command {
      * driver, the D2GL graphics profile (Automatic resolved; null: the game's graphics stay),
      * whether the game gets Box64's strict x86 memory order (the app always sends false: the game
      * runs with Box64's defaults) and Detailed logging ([com.pd2launcher.app.AppSettings.detailedLogging]).
+     * The engine's type has no `display`: the engine accepts it and does not use it. Thus `display`
+     * has a default and is not written when it is null, as in the engine's fixture.
      */
     @Serializable @SerialName("launch_game")
     data class LaunchGame(
-        val display: DisplaySize?,
+        val display: DisplaySize? = null,
         @SerialName("graphics_driver") val graphicsDriver: GraphicsDriver,
         @SerialName("graphics_profile") val graphicsProfile: GraphicsProfile?,
         @SerialName("strict_memory_order") val strictMemoryOrder: Boolean,

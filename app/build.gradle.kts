@@ -58,7 +58,7 @@ android {
         // "not compatible" refusal at install. abiFilters limits our own CMake libraries and the
         // libraries inside dependencies (zstd-jni, androidx.graphics.path) alike.
         ndk { abiFilters += "arm64-v8a" }
-        versionName = "0.3.6"
+        versionName = "0.3.7"
         versionCode = versionCodeOf(versionName!!)
         // App updates (AppUpdater): the public releases the app looks at (the newest 10; it takes
         // the highest version that is not a pre-release), where their files must be, the name its
@@ -162,6 +162,12 @@ android {
         // targetSdk 28 is deliberate; the lint checks for old targets do not apply.
         disable += "ExpiredTargetSdkVersion"
         disable += "OldTargetApi"
+        // A call of an API that Android has only above minSdk (Path.of is API 34, the app's
+        // minSdk is 30) crashes there with NoSuchMethodError. NewApi is an error, not fatal, so the
+        // release lint check (lintVitalRelease, which build.sh check and release run) skipped it;
+        // fatal, it stops the check. The same for a class, method or field of a newer API used
+        // without a version check (InlinedApi for constants stays a warning).
+        fatal += "NewApi"
     }
 }
 
@@ -182,18 +188,23 @@ tasks.matching { it.name == "preReleaseBuild" }.configureEach {
 // src/test/cpp/frame_pacing_test.c, with Mesa patch 0008's rule written out), and its copy layer's
 // buffers (src/main/cpp/frame_layer.cpp and the copy that uses it, frame_copy.c) and the direct
 // present's newest frame (src/main/cpp/present_server.cpp), against stub Android APIs, by
-// src/test/cpp/frame_layer_test.cpp; and the game's sound path: the ring between Wine's ALSA plugin
+// src/test/cpp/frame_layer_test.cpp; Detailed logging's pointer split (src/main/cpp/pointer_split.c,
+// by src/test/cpp/pointer_split_test.c, with Mesa patch 0008's ring writer written out); and the
+// game's sound path: the ring between Wine's ALSA plugin
 // and the app (../runtime/pd2-audio/pd2_audio_ring.h) and the resampler
-// (src/main/cpp/game_audio_resampler.c, by src/test/cpp/game_audio_test.c). The NDK's clang builds
-// each as a static x86_64 program, which the build image (linux/amd64) runs. Skipped where a test,
-// the NDK's Linux x86_64 clang or a Linux x86_64 host to run the program is not.
+// (src/main/cpp/game_audio_resampler.c, by src/test/cpp/game_audio_test.c); and x-input-relay's log
+// counts (../userland/x-input-relay-counts.h, by src/test/cpp/relay_counts_test.c). The NDK's clang
+// builds each as a static x86_64 program, which the build image (linux/amd64) runs. Skipped where a
+// test, the NDK's Linux x86_64 clang or a Linux x86_64 host to run the program is not.
 val nativeHostTestPrograms = mapOf(
     "frame_pacing_test" to listOf("src/test/cpp/frame_pacing_test.c", "src/main/cpp/frame_pacing.c"),
     "frame_layer_test" to listOf(
         "src/test/cpp/frame_layer_test.cpp", "src/test/cpp/frame_copy_harness.c", "src/main/cpp/frame_layer.cpp",
-        "src/main/cpp/frame_pacing.c", "src/test/cpp/present_server_harness.cpp",
+        "src/main/cpp/frame_pacing.c", "src/main/cpp/pointer_split.c", "src/test/cpp/present_server_harness.cpp",
     ),
+    "pointer_split_test" to listOf("src/test/cpp/pointer_split_test.c", "src/main/cpp/pointer_split.c"),
     "game_audio_test" to listOf("src/test/cpp/game_audio_test.c", "src/main/cpp/game_audio_resampler.c"),
+    "relay_counts_test" to listOf("src/test/cpp/relay_counts_test.c"),
 )
 // Read only when a host-test task is configured: not on every Gradle run.
 val nativeHostClang by lazy { android.ndkDirectory.resolve("toolchains/llvm/prebuilt/linux-x86_64/bin/clang") }
@@ -205,7 +216,7 @@ for ((name, paths) in nativeHostTestPrograms) {
     val build = tasks.register<Exec>("build_$name") {
         onlyIf { sources[0].isFile && nativeHostClang.canExecute() && nativeHostIsLinuxX64 }
         // With every header and C file they read: frame_copy_harness.c includes frame_copy.c.
-        inputs.files(sources + fileTree("src/main/cpp") + fileTree("../runtime/pd2-audio"))
+        inputs.files(sources + fileTree("src/main/cpp") + fileTree("../runtime/pd2-audio") + file("../userland/x-input-relay-counts.h"))
         outputs.file(program)
         doFirst { program.parentFile.mkdirs() }
         commandLine(
@@ -213,7 +224,7 @@ for ((name, paths) in nativeHostTestPrograms) {
                 nativeHostClang.path,
                 "--target=x86_64-linux-android33", "-static", "-O2", "-Wall", "-Wextra", "-Werror",
                 "-fno-exceptions", "-fno-rtti", "-I", file("src/main/cpp").path,
-                "-I", file("../runtime/pd2-audio").path, "-o", program.path,
+                "-I", file("../runtime/pd2-audio").path, "-I", file("../userland").path, "-o", program.path,
             ) + sources.map { it.path } + "-lm",
         )
     }

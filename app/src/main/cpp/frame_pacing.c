@@ -1,4 +1,5 @@
-// The rules of the app's clock and of the direct present's newest frame (frame_pacing.h).
+// The rules of the app's clock, of the direct present's newest frame and of its count of the frames'
+// time on the screen (frame_pacing.h).
 #include "frame_pacing.h"
 
 int64_t clock_next(int64_t due, int64_t now, int64_t interval) {
@@ -23,4 +24,10 @@ int take_newest(struct newest_frame *n, struct sent_frame *frame) {
     *frame = n->frame;
     n->kept = 0;
     return 1;
+}
+
+int refreshes_on_screen(int64_t on_screen_ns, int64_t refresh_ns) {
+    if (refresh_ns <= 0 || on_screen_ns <= 0) return 0;
+    int64_t n = (on_screen_ns + refresh_ns / 2) / refresh_ns;
+    return n < 1 ? 1 : n > ON_SCREEN_GROUPS ? ON_SCREEN_GROUPS : (int)n;
 }

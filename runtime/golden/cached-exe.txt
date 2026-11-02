@@ -1,0 +1,34 @@
+# The two cached VC_redist.<arch>.exe of the golden layer's Package Cache (golden.py): the first
+# <length> bytes of Microsoft's official file (config.sh pins it), with these bytes changed as Burn
+# changed them when it cached the file (the PE checksum, the certificate table entry and Burn's
+# container count). One block per file: "file <arch> <length>", then "<offset> <byte>" in hex.
+file x64 647688
+170 91
+171 f1
+172 09
+1b0 08
+1b1 be
+1b2 09
+1b4 00
+1b5 24
+6921c 00
+6921d 00
+6921e 00
+69220 00
+69221 00
+69222 00
+69225 00
+file x86 647672
+170 49
+171 34
+172 0a
+1b0 f8
+1b1 bd
+1b2 09
+6921c 00
+6921d 00
+6921e 00
+69220 00
+69221 00
+69222 00
+69225 00

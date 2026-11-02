@@ -17,9 +17,9 @@
 #             those need, directly or through another library, as the loader finds it
 #   absent    paths that must not exist: glibc reads etc/ld.so.cache from its sysconfdir
 #   version   the first 16 hex digits of a SHA-256 over this directory's inputs (scripts except
-#             mesa-update.sh, pins, package lock, patches, our PanVK backend's files in mesa-kbase/,
-#             the opt-in switch, and with glibc its patches and build files), so equal inputs give
-#             an equal version
+#             mesa-update.sh, pins, package lock, x-input-relay's source and header, patches, our
+#             PanVK backend's files in mesa-kbase/, the opt-in switch, and with glibc its patches and
+#             build files), so equal inputs give an equal version
 #   glibc     with PD2_USERLAND_WITH_GLIBC=1, the manifest's "glibc" key is build-glibc.sh's record
 #             (BUILDINFO fields, patch SHA-256s, SHA-256 of every installed file)
 set -euo pipefail
@@ -46,7 +46,7 @@ version="$(
     cd /src
     {
         # mesa-update.sh only moves the pin (config.sh and the patches, which count); it builds nothing.
-        find . -maxdepth 1 -type f \( -name '*.sh' -o -name '*.in' -o -name '*.c' -o -name 'packages.*' \) \
+        find . -maxdepth 1 -type f \( -name '*.sh' -o -name '*.in' -o -name '*.c' -o -name '*.h' -o -name 'packages.*' \) \
             ! -name mesa-update.sh
         find ./containers ./patches ./mesa-kbase -type f
         if [[ "${PD2_USERLAND_WITH_GLIBC:-0}" == 1 ]]; then

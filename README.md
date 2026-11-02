@@ -52,6 +52,8 @@ https://github.com/user-attachments/assets/f294dbf7-d77c-46bf-a42d-584854420aa3
 
 The app checks all of this when it first starts and says what is missing. A GPU of a supported family that the bundled graphics driver does not know gets a warning instead: the game may still run. The check does not look at the kernel version.
 
+If the app says that your device is not supported, [open an issue](https://github.com/Pocketward/pd2-launcher-android/issues/new?template=bug_report.yml). Give your device's name and its Android version. If the app shows a GPU name, add it under **What is the problem?**.
+
 ## Supported graphics chips
 
 ### Built-in driver
@@ -123,7 +125,7 @@ The game runs in Wine 11.0 built for ARM64. Wine runs natively on your device's 
 
 ## Building from source
 
-This repository holds the Android app (`app/`), the Linux programs and patches it carries (`userland/`) and the game's runtime (`runtime/`: Wine, Box64's WowBox64, the prefix template and .NET). The build runs in pinned containers (Podman or Docker); the prefix template and the engine's identity check also need qemu-user for ARM64 on the host. The build compiles the engine, the [desktop PD2 Launcher](https://github.com/Pocketward/pd2-launcher) without its window, from the sources that [`engine.lock`](engine.lock) pins, and fetches Wine, Box64, glibc, Mesa, the X server, the Debian packages and .NET at pinned versions, with the patches in `userland/` and `runtime/` applied on top. See [`docs/BUILDING.md`](docs/BUILDING.md) for the steps and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for how the pieces fit together.
+This repository holds the Android app (`app/`), the Linux programs and patches it carries (`userland/`) and the game's runtime (`runtime/`: Wine, Box64's WowBox64, the two prefix templates and .NET). The build runs in pinned containers (Podman or Docker); the prefix templates and the engine's identity check also need qemu-user for ARM64 on the host. The build compiles the engine, the [desktop PD2 Launcher](https://github.com/Pocketward/pd2-launcher) without its window, from the sources that [`engine.lock`](engine.lock) pins, and fetches Wine, Box64, glibc, Mesa, the X server, the Debian packages, .NET and the Visual C++ redist at pinned versions, with the patches in `userland/` and `runtime/` applied on top. See [`docs/BUILDING.md`](docs/BUILDING.md) for the steps and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for how the pieces fit together.
 
 ## Disclaimer
 

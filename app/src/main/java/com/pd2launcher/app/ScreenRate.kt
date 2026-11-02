@@ -71,9 +71,42 @@ object ScreenRate {
         if (!same) kept.edit().putFloat(HIGHEST, highest).putFloat(RATE, rate).apply()
         val full = full(highest, highest, rate)
         if (FrameRateVote.most(full) == FrameRateVote.most(_full.value)) return false
-        Log.i(TAG, String.format(Locale.ROOT, "full rate %.1f (modes up to %.1f)", full, highest))
+        val line = ScreenRateLines.fullRate(_full.value, full, highest)
+        Log.i(TAG, line)
+        GameViewLog.line(line)
         _full.value = full
         return true
+    }
+}
+
+/**
+ * The screen's lines, in logcat and in `game-view.log` ([GameViewLog]): the display's rate as the
+ * app reads it with its mode's, the highest mode, the full rate and what the layers ask for
+ * ([reading]: only when it says something new), a new full rate, and the Frame rate input's
+ * request for the highest mode ([ScreenRateProbe]).
+ */
+class ScreenRateLines {
+    private var last = ""
+
+    /** The line for a reading of display [displayId]; null when it says what the last one said. */
+    fun reading(displayId: Int, rate: Float, mode: Float, highest: Float, full: Float, asks: String): String? {
+        val line = String.format(
+            Locale.ROOT, "screen: display %d at %.1f Hz (mode %.1f, modes up to %.1f), full rate %.1f, %s", displayId, rate, mode, highest, full, asks,
+        )
+        if (line == last) return null
+        last = line
+        return line
+    }
+
+    companion object {
+        fun fullRate(before: Float, after: Float, highest: Float): String =
+            String.format(Locale.ROOT, "screen: full rate %.1f -> %.1f Hz (measured; modes up to %.1f)", before, after, highest)
+
+        fun probeStarts(highest: Float, full: Float): String =
+            String.format(Locale.ROOT, "screen: the Frame rate input asks for the highest mode (%.1f Hz), full rate %.1f", highest, full)
+
+        fun probeEnds(full: Float): String =
+            String.format(Locale.ROOT, "screen: the Frame rate input closed: no request for the highest mode, full rate %.1f", full)
     }
 }
 
@@ -157,12 +190,15 @@ class RateWatch {
  * first [start] until that measurement is done ([measuring], at most [MEASURE_LIMIT_MS]) the Game
  * view asks for the highest mode whatever the player's rate, so a reduced rate does not hide a
  * change of the phone's settings from the next Play. [onChange] runs when the full rate or
- * [measuring] changed: the Game view sets the clock and its vote again.
+ * [measuring] changed: the Game view sets the clock and its vote again. [onRate] hears the rate
+ * the app reads each time its line changes ([ScreenRateLines]): the game's direct present counts
+ * its frames' time on the screen in refreshes of that rate.
  */
 class ScreenRateWatch(
     private val context: Context,
     private val display: () -> Display?,
     private val frames: () -> Long?,
+    private val onRate: (Float) -> Unit = {},
     private val onChange: () -> Unit,
 ) {
     private val displays = context.getSystemService(DisplayManager::class.java)
@@ -173,7 +209,7 @@ class ScreenRateWatch(
     private var top = false
     private var lastFrames: Long? = null
     private var lastFramesNanos = 0L
-    private var logged = ""
+    private val lines = ScreenRateLines()
 
     /** The measurement of the first [start] is not done: the Game view asks for the highest mode meanwhile. */
     var measuring = false
@@ -279,20 +315,22 @@ class ScreenRateWatch(
             measuring = false
             changed = true
         }
-        log(rate, display.mode.refreshRate, highest)
+        log(display.displayId, rate, display.mode.refreshRate, highest)
         if (changed) onChange()
     }
 
-    /** One line when what it reads changes: the rate the app reads, its mode's, the highest mode, the full rate, the vote. */
-    private fun log(rate: Float, mode: Float, highest: Float) {
-        val line = String.format(
-            Locale.ROOT, "display %.1f (mode %.1f, modes up to %.1f), full rate %.1f, %s",
-            rate, mode, highest, ScreenRate.full.value,
+    /**
+     * One line when what it reads changes ([ScreenRateLines.reading]): the rate the app reads, its
+     * mode's, the highest mode, the full rate, the vote; [onRate] hears the rate then.
+     */
+    private fun log(displayId: Int, rate: Float, mode: Float, highest: Float) {
+        val line = lines.reading(
+            displayId, rate, mode, highest, ScreenRate.full.value,
             if (measuring) "measuring" else if (top) "asks for the highest mode" else "asks for the player's rate",
-        )
-        if (line == logged) return
-        logged = line
+        ) ?: return
         Log.i(TAG, line)
+        GameViewLog.line(line)
+        onRate(rate)
     }
 
     companion object {
@@ -328,7 +366,7 @@ class ScreenRateProbe(private val window: Window, private val view: View) {
     private var drawn = 0L
     private var observer: ViewTreeObserver? = null
     private val counter = ViewTreeObserver.OnDrawListener { drawn++ }
-    private val watch = ScreenRateWatch(view.context, { view.display }, { drawn }) {}
+    private val watch = ScreenRateWatch(view.context, { view.display }, { drawn }, onChange = {})
     private val frame = Choreographer.FrameCallback { draw() }
 
     fun start() {
@@ -338,7 +376,9 @@ class ScreenRateProbe(private val window: Window, private val view: View) {
         val mode = FrameRateVote.highestMode(display) ?: return
         running = true
         window.attributes = window.attributes.also { it.preferredDisplayModeId = mode.modeId }
-        Log.i(TAG, String.format(Locale.ROOT, "frame rate input: asks for the highest mode (%.1f Hz), full rate %.1f", mode.refreshRate, ScreenRate.full.value))
+        val line = ScreenRateLines.probeStarts(mode.refreshRate, ScreenRate.full.value)
+        Log.i(TAG, line)
+        GameViewLog.line(line)
         observer = view.viewTreeObserver.also { it.addOnDrawListener(counter) }
         watch.start()
         watch.vote(true)
@@ -353,7 +393,9 @@ class ScreenRateProbe(private val window: Window, private val view: View) {
         observer?.takeIf { it.isAlive }?.removeOnDrawListener(counter)
         observer = null
         window.attributes = window.attributes.also { it.preferredDisplayModeId = 0 }
-        Log.i(TAG, String.format(Locale.ROOT, "frame rate input closed: no request for the highest mode, full rate %.1f", ScreenRate.full.value))
+        val line = ScreenRateLines.probeEnds(ScreenRate.full.value)
+        Log.i(TAG, line)
+        GameViewLog.line(line)
     }
 
     /** One frame now and on each display frame after it, until the measurement is done. */

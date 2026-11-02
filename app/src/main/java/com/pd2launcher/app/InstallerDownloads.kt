@@ -55,10 +55,11 @@ object InstallerDownloads {
     }
 
     /**
-     * The engine's record that the installation was imported, below the managed root
-     * (the engine's `IMPORT_RECEIPT_NAME`): written as the import ends, gone with Start over.
+     * The engine's record that the installation was imported, in the managed root, outside the
+     * disposable prefix (the engine's `IMPORT_RECORD_NAME`): written as the import ends, gone with
+     * Start over.
      */
-    const val IMPORT_RECORD = "prefix/.pd2launcher-imported-game.json"
+    const val IMPORT_RECORD = LegacyPrefix.IMPORT_RECEIPT
 
     enum class Refusal {
         /** The game is not installed yet: the downloads are still needed. */

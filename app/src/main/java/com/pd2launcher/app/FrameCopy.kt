@@ -248,12 +248,42 @@ object FrameRateVote {
     /** The clock's rate on a screen whose full rate is [full]: the [pick] where it applies, else the full rate. */
     fun rate(full: Float, pick: Int?): Float = cap(full, pick)?.toFloat() ?: full
 
+    /** The refresh rates of [display]'s modes at its current resolution; empty without a display. */
+    fun modeRates(display: Display?): List<Float> {
+        display ?: return emptyList()
+        val mode = display.mode
+        return display.supportedModes
+            .filter { it.physicalWidth == mode.physicalWidth && it.physicalHeight == mode.physicalHeight }
+            .map { it.refreshRate }
+    }
+
     /**
-     * The rate the Game view's layers ask the display for: the [pick] where it applies on a screen
-     * whose full rate is [full], else the highest mode ([highest]), so that the display runs as
-     * fast as the phone lets it and [ScreenRate] sees how fast that is.
+     * The highest of [modes] that is not above the full rate ([full], within [RATE_SLACK]) and is a
+     * whole multiple of the [pick] (within [MULTIPLE_SLACK] of the multiple, for 59.94 and 119.88
+     * modes); null when no mode fits.
      */
-    fun vote(highest: Float, full: Float, pick: Int?): Float = cap(full, pick)?.toFloat() ?: highest
+    fun multiple(full: Float, pick: Int, modes: List<Float>): Float? =
+        modes.filter { rate ->
+            val ratio = rate / pick
+            rate <= full + RATE_SLACK && Math.round(ratio) >= 1 && Math.abs(ratio - Math.round(ratio)) <= MULTIPLE_SLACK
+        }.maxOrNull()
+
+    private const val RATE_SLACK = 0.5f
+    private const val MULTIPLE_SLACK = 0.01f
+
+    /**
+     * The rate the Game view's layers ask the display for: for a [pick] that applies on a screen
+     * whose full rate is [full], the highest of the display's [modes] that is a whole multiple of
+     * the pick and not above the full rate ([multiple]), else the pick itself; with no pick that
+     * applies, the highest mode ([highest]), so that the display runs as fast as the phone lets it
+     * and [ScreenRate] sees how fast that is. The game stays capped by the app's clock at the pick
+     * ([rate]); the display's rate is only a hint, and a whole multiple of the pick shows every
+     * frame for the same number of display frames.
+     */
+    fun vote(highest: Float, full: Float, pick: Int?, modes: List<Float> = emptyList()): Float {
+        val capped = cap(full, pick) ?: return highest
+        return multiple(full, capped, modes) ?: capped.toFloat()
+    }
 
     /** The time between two of the clock's ticks at [fps] ticks a second ([FrameClock]); 60 a second without a rate. */
     fun intervalNanos(fps: Float): Long = (1_000_000_000.0 / (if (fps > 0f) fps else 60f)).toLong()
@@ -303,16 +333,24 @@ object PresentCounter {
         RandomAccessFile(file, "rw").use { if (it.length() < SIZE) it.setLength(SIZE) }
     }
 
-    /** The count in [file] as it changes, through a mapping of its first word; null when it cannot be mapped. */
+    /** The tick word of the app's clock (frame_pacing.h, TICK_WORD): byte 256 of the page. */
+    private const val TICKS = 256
+
+    /** The counts in [file] as they change, through a mapping of its words up to the clock's; null when it cannot be mapped. */
     fun reader(file: File): Reader? = try {
-        RandomAccessFile(file, "r").use { Reader(it.channel.map(java.nio.channels.FileChannel.MapMode.READ_ONLY, 0, 4).order(ByteOrder.LITTLE_ENDIAN)) }
+        RandomAccessFile(file, "r").use { Reader(it.channel.map(java.nio.channels.FileChannel.MapMode.READ_ONLY, 0, TICKS + 4L).order(ByteOrder.LITTLE_ENDIAN)) }
     } catch (_: java.io.IOException) {
         null
     }
 
-    /** The game's presents so far ([presents]: the first word, unsigned, so it wraps at 2^32). */
+    /**
+     * The game's presents so far ([presents]: the first word) and the app's clock's ticks so far
+     * ([ticks]: the word at byte 256, frame_clock.c), both unsigned, so they wrap at 2^32.
+     */
     class Reader(private val word: ByteBuffer) {
         fun presents(): Long = word.getInt(0).toLong() and 0xFFFFFFFFL
+
+        fun ticks(): Long = word.getInt(TICKS).toLong() and 0xFFFFFFFFL
     }
 }
 

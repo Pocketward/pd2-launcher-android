@@ -14,23 +14,34 @@ import java.nio.file.StandardOpenOption
 import java.nio.file.attribute.BasicFileAttributes
 import java.nio.file.attribute.PosixFilePermissions
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 /**
- * The update in place of a prefix that an older runtime or another template made: an older app's,
+ * The rebuild of a disposable prefix that an older runtime or another template made: an older app's,
  * whose runtime was Wine-GE under FEX (Wine-GE's x86-64 system folders, which the ARM64 Wine cannot
- * use), or one of another generation of this runtime's template ([GENERATION]: another Wine, other
- * registry values). That prefix in the managed root [root] becomes a copy of
- * the new runtime's prefix [template], with what the player keeps moved over from the old one: the
- * managed game folder (`C:\Program Files (x86)\Diablo II`, with its link to the characters),
+ * use), or one of another generation of this runtime's templates ([GENERATION]: another Wine, other
+ * registry values, the game folder outside the prefix). That prefix in the managed root [root]
+ * becomes a new copy of the template of its kind ([PrefixState.kindOf]: [template], PLAIN, or
+ * [goldenTemplate]), with what the player keeps outside it. First what an older layout keeps in the
+ * prefix goes out ([moveOut]): the managed game folder (`C:\Program Files (x86)\Diablo II`, with its
+ * link to the characters) or an imported copy below `files/import` moves to the game folder outside
+ * the prefix ([PrefixState.GAME_LOCATION]) by a rename, and the Launcher's records of an import move
+ * to the managed root (the `G:` drive of an import goes with the old prefix). Then the player's
+ * registry values, and for the source Blizzard's installers what those installers wrote, are kept
+ * ([PrefixState]); the new copy gets them back with the link to the game folder ([PrefixState.apply]).
  * Blizzard's download that has not finished (`C:\pd2launcher-downloads`, which the downloader
- * continues), the Launcher's records of the game folder and an imported game, the `G:` drive of a
- * game folder used in place, and the game's registry keys (Blizzard Entertainment's: the install
- * path the Launcher checks, and the game's own settings). Then the old prefix goes: its links go as
- * links, never what they lead to. No Wine prefix update runs on the phone: most files of the
- * prefix are links into the runtime's Wine, and `wineboot -u` would write through them.
+ * continues) moves into the new prefix by a rename. Then the old prefix goes: its links go as links,
+ * never what they lead to. No Wine prefix update runs on the phone: most files of the prefix are
+ * links into the runtime's Wine, and `wineboot -u` would write through them. A prefix that is not
+ * whole ([broken]: without a hive or `drive_c/windows`, or gone while the game folder outside it
+ * holds a game) is made again in the same way, from the template of the kind the prefix state
+ * names ([kindFor]), but only for an installation that was Ready once: its prefix state has
+ * `player.reg`. Any other one is the engine's to set up (a fresh install, or a Start over that a
+ * stop left part way: Start over removes the prefix state first).
  *
  * A prefix made from the current template carries `.update-timestamp` "disable" and the
  * template's generation ([ours]); any other one moves. Each step can stop and run again: the
@@ -53,11 +64,18 @@ class LegacyPrefix(
     private val failLateForTest: Boolean = false,
     /** Makes a folder's entries durable (fsync on the folder); the JVM tests pass their own. */
     private val syncDirectory: (Path) -> Unit = ::fsyncDirectory,
+    /** The GOLDEN template, beside the PLAIN [template] (`runtime/pack.py`). */
+    private val goldenTemplate: File = File(template.parentFile, "${template.name}-golden"),
 ) {
     private val prefix = File(root, "prefix")
     private val old = File(root, OLD)
     private val migrating = File(root, MIGRATING)
     private val partial = File(root, PARTIAL)
+    /** The game folder outside the prefix. */
+    private val location = File(root, PrefixState.GAME_LOCATION)
+    /** The app's folder copies of an import (`files/import`), beside the player's own files. */
+    private val imports = File(userSave.parentFile!!.parentFile, "import")
+    val state = PrefixState(root, log, syncDirectory)
 
     /**
      * The update in place (see the class). [kept] is where [setAside] puts the older game folder:
@@ -67,41 +85,77 @@ class LegacyPrefix(
     fun migrate(kept: File? = null) {
         // An older prefix [setAside] kept only waits for Ready ([removeOld]): nothing in it moves.
         if (File(old, SET_ASIDE).exists()) return
+        // Whether this run made the new prefix ([MIGRATING]) itself: then no stop left it.
+        var madeHere = false
         if (!old.exists()) {
-            if (!prefix.isDirectory || ours(prefix, template)) return
-            val made = if (stamp(prefix) == "disable") "template generation ${generation(prefix)}" else "an older runtime's"
-            log("update in place: the prefix ($made) becomes a copy of the template (generation ${generation(template)})")
-            makeNew(prefix)
-            Files.move(prefix.toPath(), old.toPath(), StandardCopyOption.ATOMIC_MOVE)
-            syncDirectory(root.toPath())
+            if (!Files.exists(prefix.toPath(), LinkOption.NOFOLLOW_LINKS)) {
+                // Made again only as [broken] says; else (no game, an installation that was never
+                // Ready) the engine sets the prefix up.
+                if (!broken()) return
+                // No older prefix to move out of the way: the steps below make the new one from the
+                // prefix state alone.
+                log(
+                    "update in place: no prefix, and the game folder outside it holds a game: a new prefix from the " +
+                        "${kindFor(prefix).mark} template (generation ${generation(template)}), ${stateReason()}",
+                )
+                log("update in place: storage before: ${storage()}")
+            } else {
+                val missing = missingPart(prefix)
+                // A copy of a current template is made again only when it is not whole, as [broken]
+                // says (an installation that was Ready once, a whole template).
+                if (!prefix.isDirectory || isOurs(prefix) && (missing == null || !broken())) return
+                val made = if (stamp(prefix) == "disable") "template generation ${generation(prefix)}" else "an older runtime's"
+                val again = "made again from the ${kindFor(prefix).mark} template (generation ${generation(template)})"
+                log(
+                    missing?.let { "update in place: the prefix ($made) has no $it: it is $again, ${stateReason()}" }
+                        ?: "update in place: the prefix ($made) is $again",
+                )
+                log("update in place: storage before: ${storage()}")
+                // Until Ready: should the engine reject the moved game, Repair offers Import of it first.
+                // Before the game moves, so a stop part way leaves the mark too.
+                if (holdsGame(prefix)) writeDurably(File(root, UPDATED), "${System.currentTimeMillis() / 1000}\n")
+                moveOut(prefix)
+                makeNew(prefix)
+                madeHere = true
+                Files.move(prefix.toPath(), old.toPath(), StandardCopyOption.ATOMIC_MOVE)
+                syncDirectory(root.toPath())
+            }
+        } else if (Files.exists(prefix.toPath(), LinkOption.NOFOLLOW_LINKS)) {
+            log("update in place: a stop left the new prefix in place and the older prefix ($OLD) to remove; it goes on")
+        } else {
+            log("update in place: a stop left the older prefix out of the way ($OLD) and no prefix in place; it goes on")
         }
-        if (failForTest) throw IOException("the update in place failed on purpose (debug builds' test switch)")
+        if (failForTest && moved()) throw IOException("the update in place failed on purpose (debug builds' test switch)")
+        // What a stop of an earlier app version left in the older prefix goes out too.
+        if (holdsGame(old)) writeDurably(File(root, UPDATED), "${System.currentTimeMillis() / 1000}\n")
+        moveOut(old)
         if (!prefix.exists()) {
-            // A copy a stop left from another template generation is made again.
-            if (!migrating.isDirectory || !ours(migrating, template)) makeNew(old)
+            // A copy a stop left from another template generation is made again (with no older
+            // prefix, from the prefix state alone).
+            if (migrating.isDirectory && isOurs(migrating)) {
+                if (!madeHere) log("update in place: a stop left the new prefix whole ($MIGRATING); it takes the prefix's place")
+            } else {
+                makeNew(old)
+            }
             Files.move(migrating.toPath(), prefix.toPath(), StandardCopyOption.ATOMIC_MOVE)
             syncDirectory(root.toPath())
+        }
+        // A copy that an earlier app version made has no link to the game folder outside it, and
+        // may hold the game itself (a stop after it moved over).
+        moveOut(prefix)
+        if (prefix.isDirectory) {
+            PrefixState.linkGame(prefix)
+            syncDirectory(File(prefix, PrefixState.GAME_LINK).parentFile!!.toPath())
         }
         if (failLateForTest) {
             throw IOException("the update in place failed on purpose after the new prefix took its place (debug builds' test switch)")
         }
-        if (kept != null && Files.isDirectory(kept.toPath(), LinkOption.NOFOLLOW_LINKS) && !holdsGame(old) && !holdsGame(prefix)) {
+        if (kept != null && Files.isDirectory(kept.toPath(), LinkOption.NOFOLLOW_LINKS) && !holdsGame(old) && !holdsGame(prefix) &&
+            !gameInLocation()
+        ) {
             throw IOException("the older game folder already waits for Import at $kept")
         }
-        // Until Ready: should the engine reject the moved game, Repair offers Import of it first.
-        // Before the game moves, so a stop part way leaves the mark too.
-        if (holdsGame(old) || holdsGame(prefix)) writeDurably(File(root, UPDATED), "${System.currentTimeMillis() / 1000}\n")
-        moveOver(GAME)
         moveOver(DOWNLOADS)
-        old.listFiles()?.filter { it.name.startsWith(".pd2launcher-") && it.name.endsWith(".json") }?.forEach {
-            moveOver(it.name)
-        }
-        // The G: drive of a game folder used in place, only with its record.
-        if (driveToCopy()) {
-            val link = File(prefix, "dosdevices/g:").toPath()
-            Files.createSymbolicLink(link, Files.readSymbolicLink(File(old, "dosdevices/g:").toPath()))
-            syncDirectory(link.parent)
-        }
         syncDirectory(root.toPath())
         try {
             removeOld()
@@ -109,11 +163,128 @@ class LegacyPrefix(
             // The update is done; what is left of the older prefix goes at Ready (UpgradeImport.cleanUp).
             log("update in place: the older prefix was not removed ($error); it goes at Ready")
         }
-        log("update in place: the game, its records and its registry keys are in the new prefix")
+        // Only now, with the new prefix in place: until the swap the older prefix, which the engine
+        // uses should the move fail, links to what the state keeps.
+        try {
+            state.cleanUp(prefix)
+        } catch (error: Exception) {
+            log("prefix state: not cleaned up ($error); the next capture or rebuild does it")
+        }
+        log("update in place: the game folder is outside the prefix, and the new prefix has the player's values")
+        log("update in place: storage after: ${storage()}")
         if (stale()) {
             log("update in place: the prefix in place is a copy of an older template; it moves once more")
             migrate(kept)
         }
+    }
+
+    /**
+     * What an older layout keeps in the prefix [from] goes out of it, each part by a rename that a
+     * stop leaves whole: the managed game folder, or an imported copy below `files/import` that the
+     * engine's record names, becomes the game folder outside the prefix ([location]); the records
+     * of an import move to the managed root (the record's `G:` path becomes the `C:` one); the
+     * record of a folder used in place goes once the game is in [location]. Nothing is merged: when
+     * [location] holds files already, the older game folder stays and this fails.
+     */
+    private fun moveOut(from: File) {
+        if (!Files.isDirectory(from.toPath(), LinkOption.NOFOLLOW_LINKS)) return
+        val own = File(from, GAME).toPath()
+        val pointer = File(from, POINTER)
+        // The game in use: the copy that the engine's record names, else the prefix's own folder.
+        val copy = recordedPath(pointer)?.let(::File)?.takeIf {
+            Files.isDirectory(it.toPath(), LinkOption.NOFOLLOW_LINKS) && it.canonicalFile.parentFile?.parentFile == imports.canonicalFile
+        }
+        if (copy != null) {
+            takeLocation(copy)
+            // The copy's own token folder, empty now.
+            runCatching { Files.delete(copy.parentFile!!.toPath()) }
+            log("update in place: the imported copy moved into the game folder")
+        } else if (Files.isDirectory(own, LinkOption.NOFOLLOW_LINKS)) {
+            takeLocation(File(from, GAME))
+            log("update in place: the game folder moved out of the prefix")
+        }
+        // The prefix in place reaches it at once, should the rest of the move not pass.
+        if (gameInLocation() && !Files.exists(own, LinkOption.NOFOLLOW_LINKS)) {
+            PrefixState.linkGame(from)
+            syncDirectory(own.parent)
+        }
+        val receipt = File(from, IMPORT_RECEIPT)
+        if (receipt.isFile) {
+            writeDurably(File(root, IMPORT_RECEIPT), receiptOnC(receipt.readText()))
+            Files.delete(receipt.toPath())
+            syncDirectory(from.toPath())
+        }
+        val mark = File(from, COPIED_CLIENT)
+        if (Files.exists(mark.toPath(), LinkOption.NOFOLLOW_LINKS)) {
+            Files.move(mark.toPath(), File(root, COPIED_CLIENT).toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+            syncDirectory(root.toPath())
+            syncDirectory(from.toPath())
+        }
+        if (pointer.exists() && gameInLocation()) {
+            Files.delete(pointer.toPath())
+            syncDirectory(from.toPath())
+        }
+    }
+
+    /** [game] renamed to the game folder outside the prefix ([location]); an empty one there gives way. */
+    private fun takeLocation(game: File) {
+        val there = location.toPath()
+        if (Files.isDirectory(there, LinkOption.NOFOLLOW_LINKS) && location.list()?.isEmpty() == true) Files.delete(there)
+        if (Files.exists(there, LinkOption.NOFOLLOW_LINKS)) {
+            throw IOException("the game folder outside the prefix holds files already; the older game folder stays in place")
+        }
+        moveDurably(game, location)
+    }
+
+    /**
+     * Whether the game folder outside the prefix ([location]) holds a game: an entry other than
+     * its link to the player's characters (`Save`). Only that the entry is there, not what it is.
+     */
+    fun gameInLocation(): Boolean =
+        Files.isDirectory(location.toPath(), LinkOption.NOFOLLOW_LINKS) &&
+            location.list()?.any { it != "Save" || !Files.isSymbolicLink(File(location, it).toPath()) } == true
+
+    /**
+     * What [dir] does not have of a whole prefix: a hive ([PrefixState.HIVES]) or `drive_c/windows`
+     * (the engine's audit names both); null when it has them all.
+     */
+    private fun missingPart(dir: File): String? = PrefixState.HIVES.firstOrNull { !File(dir, it).isFile }
+        ?: WINDOWS.takeUnless { Files.isDirectory(File(dir, it).toPath(), LinkOption.NOFOLLOW_LINKS) }
+
+    /**
+     * The kind of the prefix made in place of [from] (which can be gone): [from]'s own
+     * ([PrefixState.kindOf]) while it is whole ([missingPart]); else the one the prefix state names
+     * ([stateKind]).
+     */
+    private fun kindFor(from: File): PrefixState.Companion.Kind = if (missingPart(from) == null) PrefixState.kindOf(from) else stateKind()
+
+    /**
+     * The kind that the prefix state names: PLAIN when it holds the installers' state
+     * ([PrefixState.holdsInstallers]: Blizzard's installers made the game), else GOLDEN (its golden
+     * layer is what the official installers write).
+     */
+    private fun stateKind(): PrefixState.Companion.Kind =
+        if (state.holdsInstallers()) PrefixState.Companion.Kind.PLAIN else PrefixState.Companion.Kind.GOLDEN
+
+    /** Why [kindFor] takes the kind of the prefix state, for the log. */
+    private fun stateReason(): String =
+        if (state.holdsInstallers()) "as the prefix state holds the installers' state" else "as the prefix state holds no installers' state"
+
+    /** The template of [kind]: [goldenTemplate], or [template] for PLAIN and when no GOLDEN one is unpacked. */
+    private fun templateFor(kind: PrefixState.Companion.Kind): File =
+        if (kind == PrefixState.Companion.Kind.GOLDEN && File(goldenTemplate, "system.reg").isFile) goldenTemplate else template
+
+    /**
+     * Whether [dir] was made from a current template: [ours] by its stamp and generation, and with a
+     * kind mark when the templates carry one.
+     */
+    private fun isOurs(dir: File): Boolean =
+        ours(dir, template) && (PrefixState.markedKind(template) == null || PrefixState.markedKind(dir) != null)
+
+    /** The sizes of the managed root, the folder copies and the player's own files, for the log. */
+    private fun storage(): String {
+        fun mb(dir: File) = "%.1f MB".format(java.util.Locale.ROOT, treeBytes(dir.toPath()) / 1e6)
+        return "managed root ${mb(root)}, folder copies ${mb(imports)}, the player's files ${mb(userSave.parentFile!!)}"
     }
 
     /**
@@ -123,9 +294,36 @@ class LegacyPrefix(
      * once the older prefix is gone, and only with a template whose copies are [ours] (else the
      * move would run again and again). [migrate] checks it at its end; the app checks it at each
      * start, before the engine starts ([AppRuntime.updatePrefix]), for a copy left in place when
-     * the older prefix went at Ready ([removeOld]).
+     * the older prefix went at Ready ([removeOld]). Never while a stage of the engine is under way
+     * ([StageMarker.underWay]): a Start over that a stop left inside the prefix's removal can have
+     * taken the prefix's generation, stamp or kind mark first, and only Start over goes on.
      */
-    fun stale(): Boolean = !moved() && prefix.isDirectory && !ours(prefix, template) && ours(template, template)
+    fun stale(): Boolean =
+        !moved() && prefix.isDirectory && !isOurs(prefix) && isOurs(template) && !StageMarker.underWay(root)
+
+    /**
+     * Whether the prefix is not whole, and [migrate] makes it again: it has no hive (`system.reg` or
+     * `user.reg`) or no `drive_c/windows` ([missingPart]), or it is gone while the game folder
+     * outside it holds a game ([gameInLocation]). Only for an installation that was Ready once: its
+     * prefix state has [PrefixState.playerReg] (the session service keeps it at each Ready). With
+     * none (a fresh install, or a Start over that a stop left part way, which removes the prefix
+     * state first), the engine sets the prefix up. Only with no move begun ([moved]), a template
+     * whose copies are [ours], and a whole template of the kind the new prefix takes ([stateKind]):
+     * else its copy would not be whole either, and each start would make it again. The app checks
+     * it at each start, before the engine starts ([AppRuntime.updatePrefixAtStart]). Never while a
+     * stage of the engine is under way ([StageMarker.underWay]), as [stale].
+     */
+    fun broken(): Boolean {
+        if (moved() || !isOurs(template) || !state.playerReg.isFile || missingPart(templateFor(stateKind())) != null) return false
+        // A stage of the engine under way (a Start over that a stop left part way, an install step):
+        // the engine's audit shows it as interrupted, and only Start over resolves it.
+        if (StageMarker.underWay(root)) return false
+        return if (Files.exists(prefix.toPath(), LinkOption.NOFOLLOW_LINKS)) {
+            prefix.isDirectory && missingPart(prefix) != null
+        } else {
+            gameInLocation()
+        }
+    }
 
     /**
      * Whether a move that a stop left part way waits to be finished ([migrate] runs again): the
@@ -138,22 +336,14 @@ class LegacyPrefix(
     fun unfinished(): Boolean {
         if (!moved() || File(old, SET_ASIDE).exists()) return false
         if (!prefix.isDirectory) return true
-        if (Files.exists(File(old, GAME).toPath(), LinkOption.NOFOLLOW_LINKS) ||
-            Files.exists(File(old, DOWNLOADS).toPath(), LinkOption.NOFOLLOW_LINKS)
+        if (Files.isDirectory(File(old, GAME).toPath(), LinkOption.NOFOLLOW_LINKS) ||
+            Files.exists(File(old, DOWNLOADS).toPath(), LinkOption.NOFOLLOW_LINKS) ||
+            Files.exists(File(old, COPIED_CLIENT).toPath(), LinkOption.NOFOLLOW_LINKS)
         ) {
             return true
         }
-        return old.listFiles()?.any { it.name.startsWith(".pd2launcher-") && it.name.endsWith(".json") } == true || driveToCopy()
+        return old.listFiles()?.any { it.name.startsWith(".pd2launcher-") && it.name.endsWith(".json") } == true
     }
-
-    /**
-     * Whether the older prefix's G: drive (a game folder used in place, with its record) is still
-     * to be made in the new prefix: only where the new prefix has no G: at all, so a drive the
-     * engine set since stays, and is no move left to finish.
-     */
-    private fun driveToCopy(): Boolean =
-        File(prefix, POINTER).isFile && Files.isSymbolicLink(File(old, "dosdevices/g:").toPath()) &&
-            !Files.exists(File(prefix, "dosdevices/g:").toPath(), LinkOption.NOFOLLOW_LINKS)
 
     /** Whether a set-aside ([setAside]) that a stop left part way waits to be finished: its mark is there. */
     fun settingAside(): Boolean = File(root, SETTING_ASIDE).exists()
@@ -206,8 +396,10 @@ class LegacyPrefix(
         val found = kept.takeIf { Files.isDirectory(it.toPath(), LinkOption.NOFOLLOW_LINKS) }
         if (found != null) unlinkSave(found)
         if (prefix.isDirectory) {
+            // A game outside the prefix is no game to forget: the prefix keeps its keys.
+            val forget = !gameInLocation()
             when {
-                ours(prefix, template) -> forgetRecords()
+                ours(prefix, template) -> if (forget) forgetRecords()
                 !old.exists() -> {
                     Files.move(prefix.toPath(), old.toPath(), StandardCopyOption.ATOMIC_MOVE)
                     syncDirectory(root.toPath())
@@ -215,7 +407,7 @@ class LegacyPrefix(
                 // A copy of another template generation in place while the older prefix waits (a
                 // stop, then a newer runtime): it forgets the game as well, so the engine offers
                 // Import, not a damaged installation.
-                stamp(prefix) == "disable" -> forgetRecords()
+                stamp(prefix) == "disable" -> if (forget) forgetRecords()
             }
         }
         UserlandInstaller.deleteTree(partial.toPath())
@@ -272,8 +464,9 @@ class LegacyPrefix(
         val mark = File(root, TAKING_OUT)
         if (!mark.exists()) writeDurably(mark, "${System.currentTimeMillis() / 1000}\n")
         forgetGame()
-        val game = File(prefix, GAME)
-        if (Files.isDirectory(game.toPath(), LinkOption.NOFOLLOW_LINKS) && !kept.exists()) moveDurably(game, kept)
+        // The game folder outside the prefix; a prefix of an older layout holds its own.
+        val game = listOf(location, File(prefix, GAME)).firstOrNull { Files.isDirectory(it.toPath(), LinkOption.NOFOLLOW_LINKS) }
+        if (game != null && !kept.exists()) moveDurably(game, kept)
         if (!Files.isDirectory(kept.toPath(), LinkOption.NOFOLLOW_LINKS)) return null
         unlinkSave(kept)
         log("the engine rejected the updated game: it waits for Import at $kept")
@@ -320,11 +513,10 @@ class LegacyPrefix(
     }
 
     /**
-     * The new prefix without the game's registry keys (Blizzard Entertainment's, which [makeNew]
-     * moved over), once the game folder is to leave it: keys that name a game folder no longer
-     * there are a damaged installation to the engine, not a missing one, so it would not start
-     * the Import. Import writes the keys of the folder it takes. Each hive is replaced whole
-     * ([writeDurably]).
+     * The prefix without the game's registry keys (Blizzard Entertainment's), once the game folder
+     * is to leave it for Import: they name a game folder that is no longer there. The engine's audit
+     * reads no registry value; the game writes its own `InstallPath` when the value is missing.
+     * Each hive is replaced whole ([writeDurably]).
      */
     private fun forgetGame() {
         for (hive in listOf("system.reg", "user.reg")) {
@@ -454,22 +646,41 @@ class LegacyPrefix(
     }
 
     /**
-     * [MIGRATING]: a copy of the template with the game's registry keys of [from], every file and
-     * folder of it on the disk before it can take the older prefix's place. It is made as
-     * [PARTIAL] and gets its name only when whole, so a stop part way never leaves a copy that
-     * [ours] would take (as the engine makes a prefix, `.prefix.partial`).
+     * [MIGRATING]: a copy of the template of [from]'s kind ([kindFor]) with the player's
+     * registry values of [from] and, for the source Blizzard's installers, what those installers
+     * wrote ([PrefixState]), the link to the game folder outside it and the links to what the
+     * installers' state keeps; every file and folder of it on the disk before it can take the older
+     * prefix's place. It is made as [PARTIAL] and gets its name only when whole, so a stop part way
+     * never leaves a copy that [ours] would take (as the engine makes a prefix, `.prefix.partial`).
+     * The installers' state is taken from [from] only when none is kept yet (the update from a
+     * prefix of generation 2, whose PLAIN template equals generation 3's but for the marks): later a
+     * new generation's template must not take an older template's values back. [from] can be gone
+     * or not whole ([broken]): the copy then has what the prefix state keeps. A capture of the
+     * installers' state that a stop left part way is finished in [from] first
+     * ([PrefixState.finishCapture]), so the copy gets all that it listed.
      */
     private fun makeNew(from: File) {
-        if (!File(template, "system.reg").isFile) throw CorruptUserland("no prefix template at $template")
+        val kind = kindFor(from)
+        val source = templateFor(kind)
+        if (kind == PrefixState.Companion.Kind.GOLDEN && source == template) log("update in place: no GOLDEN template; the PLAIN one is used")
+        // Both hives, else the copy would not be whole ([broken]).
+        if (PrefixState.HIVES.any { !File(source, it).isFile }) throw CorruptUserland("no prefix template at $source")
+        if (Files.isDirectory(from.toPath(), LinkOption.NOFOLLOW_LINKS)) state.finishCapture(from)
+        state.capturePlayer(from)
+        // A prefix that is not whole gives no registry difference.
+        if (kind == PrefixState.Companion.Kind.PLAIN && stamp(from) == "disable" && missingPart(from) == null && !state.installersReg.isFile) {
+            state.captureInstallers(from, template)
+        }
+        if (Files.exists(partial.toPath(), LinkOption.NOFOLLOW_LINKS)) {
+            log("update in place: a stop left a new prefix part way ($PARTIAL); it is made again")
+        }
+        if (Files.exists(migrating.toPath(), LinkOption.NOFOLLOW_LINKS)) {
+            log("update in place: a stop left a new prefix ($MIGRATING) that is not taken; it is made again")
+        }
         UserlandInstaller.deleteTree(partial.toPath())
         UserlandInstaller.deleteTree(migrating.toPath())
-        copyTree(template.toPath(), partial.toPath())
-        for (hive in listOf("system.reg", "user.reg")) {
-            val source = File(from, hive)
-            if (!source.isFile) continue
-            val target = File(partial, hive)
-            target.writeText(mergeKeys(target.readText(), source.readText()))
-        }
+        copyTree(source.toPath(), partial.toPath())
+        state.apply(partial)
         // GLX for OpenGL, which the engine sets only in a prefix it makes itself.
         val user = File(partial, "user.reg")
         if (user.isFile) user.writeText(withGlx(user.readText(), System.currentTimeMillis() / 1000))
@@ -498,6 +709,8 @@ class LegacyPrefix(
         /** In [OLD]: [setAside] kept it after a failed update; it waits for Ready, and [migrate] leaves it. */
         const val SET_ASIDE = ".pd2-set-aside"
         private const val GAME = "drive_c/Program Files (x86)/Diablo II"
+        /** Wine's Windows folder: a prefix without it is not whole ([missingPart]). */
+        private const val WINDOWS = "drive_c/windows"
         /** Where Blizzard's downloader writes (the engine's `WRAPPER_DOWNLOADS`). */
         private const val DOWNLOADS = "drive_c/pd2launcher-downloads"
         /** The engine's record of a game folder used in place (`game_folder.rs` `POINTER_NAME`). */
@@ -506,8 +719,10 @@ class LegacyPrefix(
         const val TAKING_OUT = ".pd2-taking-out"
         /** In the managed root: a [setAside] that is not finished yet ([settingAside]). */
         const val SETTING_ASIDE = ".pd2-setting-aside"
-        /** The engine's record of an imported game (`game_folder.rs` `IMPORT_RECEIPT_NAME`). */
-        private const val IMPORT_RECEIPT = ".pd2launcher-imported-game.json"
+        /** The engine's record of an imported game (`game_folder.rs` `IMPORT_RECORD_NAME`). */
+        const val IMPORT_RECEIPT = ".pd2launcher-imported-game.json"
+        /** The engine's mark of an import's copied client (`install.rs` `COPIED_CLIENT_MARK`). */
+        const val COPIED_CLIENT = ".pd2launcher-copied-client"
         /**
          * In the managed root: an update in place moved the game over and the installation was not
          * Ready since ([UpgradeImport.offersImport]); it goes at Ready ([UpgradeImport.cleanUp]).
@@ -568,6 +783,30 @@ class LegacyPrefix(
             val mark = File(dir, GENERATION)
             if (!mark.exists()) return 1
             return runCatching { mark.takeIf { it.isFile && it.length() < 64 }?.readText() }.getOrNull()?.trim()?.toIntOrNull()
+        }
+
+        /**
+         * The import record [text] (the engine's form) with the game folder's `C:` path in place of an
+         * older import's (`G:\Diablo II`); the text as it is when it cannot be read.
+         */
+        fun receiptOnC(text: String): String = runCatching {
+            val record = Json.parseToJsonElement(text).jsonObject
+            JsonObject(record + ("install_path" to JsonPrimitive("C:\\Program Files (x86)\\Diablo II"))).toString()
+        }.getOrDefault(text)
+
+        /** The bytes of the regular files below [dir], links not followed; 0 when it is not there. */
+        fun treeBytes(dir: Path): Long {
+            if (!Files.isDirectory(dir, LinkOption.NOFOLLOW_LINKS)) return 0
+            var total = 0L
+            Files.walkFileTree(dir, object : SimpleFileVisitor<Path>() {
+                override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
+                    if (attrs.isRegularFile) total += attrs.size()
+                    return FileVisitResult.CONTINUE
+                }
+
+                override fun visitFileFailed(file: Path, exc: IOException): FileVisitResult = FileVisitResult.CONTINUE
+            })
+            return total
         }
 
         /** The folder the engine's game folder record [record] ([POINTER]) names; null: none, or it cannot be read. */

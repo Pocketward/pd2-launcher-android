@@ -365,6 +365,13 @@ object SaveSyncFolder {
     private const val EXTERNAL_STORAGE = "com.android.externalstorage.documents"
     private val lock = Any()
     private val _state = MutableStateFlow(SaveSyncState())
+    /**
+     * The stored state's own lock ([load], [store]): held only to read or write the state and its
+     * preferences, never for a sync, a launch, a capture of the prefix state or a rebuild.
+     */
+    private val stateLock = Any()
+    /** Set once the stored state is in [_state] (last, so a reader that sees it sees the state). */
+    @Volatile
     private var loaded = false
 
     /** Settings' view of the sync; [load] first. */
@@ -372,11 +379,15 @@ object SaveSyncFolder {
 
     fun recordFile(paths: SessionPaths) = File(paths.userData, "sync-record")
 
-    /** Reads the last sync's state once per process. */
+    /**
+     * Reads the last sync's state once per process. Settings calls it on the main thread, so it
+     * takes only [stateLock], never [locked]'s lock: it never waits for a sync, a launch, a capture
+     * of the prefix state, or a rebuild that a capture waits for.
+     */
     fun load(context: Context) {
-        synchronized(lock) {
+        if (loaded) return
+        synchronized(stateLock) {
             if (loaded) return
-            loaded = true
             val prefs = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
             _state.value = SaveSyncState(
                 at = prefs.getLong(AT, 0).takeIf { it > 0 },
@@ -384,14 +395,19 @@ object SaveSyncFolder {
                 toFolder = prefs.getInt(TO_FOLDER, 0),
                 problem = SaveSyncState.Problem.entries.firstOrNull { it.name == prefs.getString(PROBLEM, null) },
             )
+            loaded = true
         }
     }
 
     private fun store(context: Context, state: SaveSyncState) {
-        _state.value = state
-        context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).edit()
-            .putLong(AT, state.at ?: 0).putInt(TO_APP, state.toApp).putInt(TO_FOLDER, state.toFolder)
-            .putString(PROBLEM, state.problem?.name).apply()
+        // Not between a [load]'s read of the preferences and its state: that load would put the
+        // older state back.
+        synchronized(stateLock) {
+            _state.value = state
+            context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).edit()
+                .putLong(AT, state.at ?: 0).putInt(TO_APP, state.toApp).putInt(TO_FOLDER, state.toFolder)
+                .putString(PROBLEM, state.problem?.name).apply()
+        }
     }
 
     /** The picker's starting place: the folder in use, else Documents in the device's shared storage. */
@@ -487,7 +503,9 @@ object SaveSyncFolder {
     /**
      * [block] while no sync runs and none starts: a launch holds it from the Save's link through
      * its sync to the engine's command, so a sync that waited for it then sees the launch
-     * ([run]'s busy). Blocking; the same thread may sync inside it.
+     * ([run]'s busy), and a capture of the prefix state holds it, with the prefix lock
+     * ([PrefixState.locked]) inside it, never the other way round. The rebuild of the prefix and
+     * the runtime's unpack do not take it. Blocking; the same thread may sync inside it.
      */
     fun <T> locked(block: () -> T): T = synchronized(lock) { block() }
 

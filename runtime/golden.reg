@@ -1,0 +1,3212 @@
+WINE REGISTRY Version 2
+;; PD2 Launcher golden layer: keys and values that the official installers ADDED or CHANGED against the template.
+;; Source: RP Mini V2 golden install (prefix generation 2), 2026-10-30. Wine hive text form, relative key names.
+;; Each ";; @hive" line starts the part for one hive file. A changed key lists only the changed values.
+
+;; @hive system.reg  HKEY_LOCAL_MACHINE (system.reg)
+#arch=win64
+
+[Software\\Classes\\Installer\\Dependencies\\Microsoft.VS.VC_RuntimeAdditionalVSU_amd64,v14] 1793392521
+#time=1dd68ae2f02e20a
+@="{26AF0C35-55EC-4025-8D83-349E8FB1419F}"
+"DisplayName"="Microsoft Visual C++ 2019 X64 Additional Runtime - 14.28.29325"
+"Version"="14.28.29325"
+
+[Software\\Classes\\Installer\\Dependencies\\Microsoft.VS.VC_RuntimeAdditionalVSU_amd64,v14\\Dependents\\{33628a12-6787-4b9f-95a1-92449f69fae0}] 1793392521
+#time=1dd68ae2f02e2c8
+
+[Software\\Classes\\Installer\\Dependencies\\Microsoft.VS.VC_RuntimeAdditionalVSU_x86,v14] 1793392518
+#time=1dd68ae2d437222
+@="{B40FC85D-2B12-46E0-B950-E5B27E348793}"
+"DisplayName"="Microsoft Visual C++ 2019 X86 Additional Runtime - 14.28.29325"
+"Version"="14.28.29325"
+
+[Software\\Classes\\Installer\\Dependencies\\Microsoft.VS.VC_RuntimeAdditionalVSU_x86,v14\\Dependents\\{d7a6435f-ac9a-4af6-8fdc-ca130d13fac9}] 1793392518
+#time=1dd68ae2d43731c
+
+[Software\\Classes\\Installer\\Dependencies\\Microsoft.VS.VC_RuntimeMinimumVSU_amd64,v14] 1793392520
+#time=1dd68ae2ec2cf1c
+@="{7D0362D5-C699-4403-BC09-0C1DAD1D93AB}"
+"DisplayName"="Microsoft Visual C++ 2019 X64 Minimum Runtime - 14.28.29325"
+"Version"="14.28.29325"
+
+[Software\\Classes\\Installer\\Dependencies\\Microsoft.VS.VC_RuntimeMinimumVSU_amd64,v14\\Dependents\\{33628a12-6787-4b9f-95a1-92449f69fae0}] 1793392520
+#time=1dd68ae2ec2cfd0
+
+[Software\\Classes\\Installer\\Dependencies\\Microsoft.VS.VC_RuntimeMinimumVSU_x86,v14] 1793392518
+#time=1dd68ae2d0cc510
+@="{EE2E15BB-54C8-4DB0-B1F3-026E3C166991}"
+"DisplayName"="Microsoft Visual C++ 2019 X86 Minimum Runtime - 14.28.29325"
+"Version"="14.28.29325"
+
+[Software\\Classes\\Installer\\Dependencies\\Microsoft.VS.VC_RuntimeMinimumVSU_x86,v14\\Dependents\\{d7a6435f-ac9a-4af6-8fdc-ca130d13fac9}] 1793392518
+#time=1dd68ae2d0cc5ba
+
+[Software\\Classes\\Installer\\Dependencies\\VC,redist.x64,amd64,14.28,bundle] 1793392520
+#time=1dd68ae2e586334
+@="{33628a12-6787-4b9f-95a1-92449f69fae0}"
+"DisplayName"="Microsoft Visual C++ 2015-2019 Redistributable (x64) - 14.28.29325"
+"Version"="14.28.29325.2"
+
+[Software\\Classes\\Installer\\Dependencies\\VC,redist.x64,amd64,14.28,bundle\\Dependents\\{33628a12-6787-4b9f-95a1-92449f69fae0}] 1793392520
+#time=1dd68ae2e58674e
+
+[Software\\Classes\\Installer\\Dependencies\\VC,redist.x86,x86,14.28,bundle] 1793392517
+#time=1dd68ae2ca9ccc6
+@="{d7a6435f-ac9a-4af6-8fdc-ca130d13fac9}"
+"DisplayName"="Microsoft Visual C++ 2015-2019 Redistributable (x86) - 14.28.29325"
+"Version"="14.28.29325.2"
+
+[Software\\Classes\\Installer\\Dependencies\\VC,redist.x86,x86,14.28,bundle\\Dependents\\{d7a6435f-ac9a-4af6-8fdc-ca130d13fac9}] 1793392517
+#time=1dd68ae2ca9cd84
+
+[Software\\Classes\\Installer\\Features\\53C0FA62CE555204D83843E9F81B14F9] 1793392521
+#time=1dd68ae2f00f1d4
+"Provider"=""
+"Servicing_Key"=""
+"VC_Runtime_Additional"=""
+
+[Software\\Classes\\Installer\\Features\\5D2630D7996C3044CB90C0D1DAD139BA] 1793392520
+#time=1dd68ae2ebfd014
+"Provider"=""
+"Servicing_Key"=""
+"VC_Runtime_Minimum"=""
+
+[Software\\Classes\\Installer\\Features\\BB51E2EE8C450BD41B3F20E6C3619619] 1793392518
+#time=1dd68ae2d09fc72
+"Provider"=""
+"Servicing_Key"=""
+"VC_Runtime_Minimum"=""
+
+[Software\\Classes\\Installer\\Features\\D58CF04B21B20E649B055E2BE7437839] 1793392518
+#time=1dd68ae2d410b5e
+"Provider"=""
+"Servicing_Key"=""
+"VC_Runtime_Additional"=""
+
+[Software\\Classes\\Installer\\Products\\53C0FA62CE555204D83843E9F81B14F9] 1793392521
+#time=1dd68ae2f0151d8
+"AdvertiseFlags"=dword:00000184
+"Assignment"=dword:00000000
+"AuthorizedLUAApp"=dword:00000000
+"Clients"=str(7):":\0"
+"InstanceType"=dword:00000000
+"Language"=dword:00000409
+"PackageCode"="DA742AE34C841E1498C2E6DFD01B391A"
+"ProductName"="Microsoft Visual C++ 2019 X64 Additional Runtime - 14.28.29325"
+"Version"=dword:0e1c728d
+
+[Software\\Classes\\Installer\\Products\\53C0FA62CE555204D83843E9F81B14F9\\SourceList] 1793392521
+#time=1dd68ae2f01d13a
+"LastUsedSource"="n;1;C:\\ProgramData\\Package Cache\\{26AF0C35-55EC-4025-8D83-349E8FB1419F}v14.28.29325\\packages\\vcRuntimeAdditional_amd64\\"
+"PackageName"="vc_runtimeAdditional_x64.msi"
+
+[Software\\Classes\\Installer\\Products\\53C0FA62CE555204D83843E9F81B14F9\\SourceList\\Media] 1793392521
+#time=1dd68ae2f01d680
+"1"=";"
+"DiskPrompt"=""
+"MediaPackage"=""
+
+[Software\\Classes\\Installer\\Products\\53C0FA62CE555204D83843E9F81B14F9\\SourceList\\Net] 1793392521
+#time=1dd68ae2f0166e6
+"1"=str(2):"C:\\ProgramData\\Package Cache\\{26AF0C35-55EC-4025-8D83-349E8FB1419F}v14.28.29325\\packages\\vcRuntimeAdditional_amd64\\"
+
+[Software\\Classes\\Installer\\Products\\5D2630D7996C3044CB90C0D1DAD139BA] 1793392520
+#time=1dd68ae2ec05854
+"AdvertiseFlags"=dword:00000184
+"Assignment"=dword:00000000
+"AuthorizedLUAApp"=dword:00000000
+"Clients"=str(7):":\0"
+"InstanceType"=dword:00000000
+"Language"=dword:00000409
+"PackageCode"="0AE3EB6CBF02A9849B6E8AC61F7FED9D"
+"ProductName"="Microsoft Visual C++ 2019 X64 Minimum Runtime - 14.28.29325"
+"Version"=dword:0e1c728d
+
+[Software\\Classes\\Installer\\Products\\5D2630D7996C3044CB90C0D1DAD139BA\\SourceList] 1793392520
+#time=1dd68ae2ec0bed4
+"LastUsedSource"="n;1;C:\\ProgramData\\Package Cache\\{7D0362D5-C699-4403-BC09-0C1DAD1D93AB}v14.28.29325\\packages\\vcRuntimeMinimum_amd64\\"
+"PackageName"="vc_runtimeMinimum_x64.msi"
+
+[Software\\Classes\\Installer\\Products\\5D2630D7996C3044CB90C0D1DAD139BA\\SourceList\\Media] 1793392520
+#time=1dd68ae2ec0cbf4
+"1"=";"
+"DiskPrompt"=""
+"MediaPackage"=""
+
+[Software\\Classes\\Installer\\Products\\5D2630D7996C3044CB90C0D1DAD139BA\\SourceList\\Net] 1793392520
+#time=1dd68ae2ec09b3e
+"1"=str(2):"C:\\ProgramData\\Package Cache\\{7D0362D5-C699-4403-BC09-0C1DAD1D93AB}v14.28.29325\\packages\\vcRuntimeMinimum_amd64\\"
+
+[Software\\Classes\\Installer\\Products\\BB51E2EE8C450BD41B3F20E6C3619619] 1793392518
+#time=1dd68ae2d0adac0
+"AdvertiseFlags"=dword:00000184
+"Assignment"=dword:00000000
+"AuthorizedLUAApp"=dword:00000000
+"Clients"=str(7):":\0"
+"InstanceType"=dword:00000000
+"Language"=dword:00000409
+"PackageCode"="C163DDC3187377349B6DEA50857030FB"
+"ProductName"="Microsoft Visual C++ 2019 X86 Minimum Runtime - 14.28.29325"
+"Version"=dword:0e1c728d
+
+[Software\\Classes\\Installer\\Products\\BB51E2EE8C450BD41B3F20E6C3619619\\SourceList] 1793392518
+#time=1dd68ae2d0b38f8
+"LastUsedSource"="n;1;C:\\ProgramData\\Package Cache\\{EE2E15BB-54C8-4DB0-B1F3-026E3C166991}v14.28.29325\\packages\\vcRuntimeMinimum_x86\\"
+"PackageName"="vc_runtimeMinimum_x86.msi"
+
+[Software\\Classes\\Installer\\Products\\BB51E2EE8C450BD41B3F20E6C3619619\\SourceList\\Media] 1793392518
+#time=1dd68ae2d0b44ba
+"1"=";"
+"DiskPrompt"=""
+"MediaPackage"=""
+
+[Software\\Classes\\Installer\\Products\\BB51E2EE8C450BD41B3F20E6C3619619\\SourceList\\Net] 1793392518
+#time=1dd68ae2d0b19e0
+"1"=str(2):"C:\\ProgramData\\Package Cache\\{EE2E15BB-54C8-4DB0-B1F3-026E3C166991}v14.28.29325\\packages\\vcRuntimeMinimum_x86\\"
+
+[Software\\Classes\\Installer\\Products\\D58CF04B21B20E649B055E2BE7437839] 1793392518
+#time=1dd68ae2d41780a
+"AdvertiseFlags"=dword:00000184
+"Assignment"=dword:00000000
+"AuthorizedLUAApp"=dword:00000000
+"Clients"=str(7):":\0"
+"InstanceType"=dword:00000000
+"Language"=dword:00000409
+"PackageCode"="F7FF0F1E398236A4A887D230F6978D61"
+"ProductName"="Microsoft Visual C++ 2019 X86 Additional Runtime - 14.28.29325"
+"Version"=dword:0e1c728d
+
+[Software\\Classes\\Installer\\Products\\D58CF04B21B20E649B055E2BE7437839\\SourceList] 1793392518
+#time=1dd68ae2d41a8a2
+"LastUsedSource"="n;1;C:\\ProgramData\\Package Cache\\{B40FC85D-2B12-46E0-B950-E5B27E348793}v14.28.29325\\packages\\vcRuntimeAdditional_x86\\"
+"PackageName"="vc_runtimeAdditional_x86.msi"
+
+[Software\\Classes\\Installer\\Products\\D58CF04B21B20E649B055E2BE7437839\\SourceList\\Media] 1793392518
+#time=1dd68ae2d41af50
+"1"=";"
+"DiskPrompt"=""
+"MediaPackage"=""
+
+[Software\\Classes\\Installer\\Products\\D58CF04B21B20E649B055E2BE7437839\\SourceList\\Net] 1793392518
+#time=1dd68ae2d419380
+"1"=str(2):"C:\\ProgramData\\Package Cache\\{B40FC85D-2B12-46E0-B950-E5B27E348793}v14.28.29325\\packages\\vcRuntimeAdditional_x86\\"
+
+[Software\\Classes\\Installer\\UpgradeCodes\\09A86F63C932FD435BC8463B1035EC53] 1793392520
+#time=1dd68ae2ec033c4
+"5D2630D7996C3044CB90C0D1DAD139BA"=""
+
+[Software\\Classes\\Installer\\UpgradeCodes\\15E8B87C56C0E773581D82F286F95E50] 1793392518
+#time=1dd68ae2d415c26
+"D58CF04B21B20E649B055E2BE7437839"=""
+
+[Software\\Classes\\Installer\\UpgradeCodes\\60DB5E5629367203C8625813703DFCA1] 1793392518
+#time=1dd68ae2d0a521c
+"BB51E2EE8C450BD41B3F20E6C3619619"=""
+
+[Software\\Classes\\Installer\\UpgradeCodes\\88AAB0B9F51EF1A3CA0C2B609EDD7FC1] 1793392521
+#time=1dd68ae2f012e60
+"53C0FA62CE555204D83843E9F81B14F9"=""
+
+[Software\\Classes\\Interface\\{1EFB6594-857C-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9a518a
+@="ITabStrip"
+
+[Software\\Classes\\Interface\\{1EFB6594-857C-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9a4de8
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{1EFB6594-857C-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9a5022
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{1EFB6594-857C-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9a5392
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Interface\\{1EFB6595-857C-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9a679c
+@="ITabStripEvents"
+
+[Software\\Classes\\Interface\\{1EFB6595-857C-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9a63f0
+@="{00020420-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{1EFB6595-857C-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9a6634
+@="{00020420-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{1EFB6595-857C-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9a69b8
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Interface\\{1EFB6597-857C-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9a7fe8
+@="ITabs"
+
+[Software\\Classes\\Interface\\{1EFB6597-857C-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9a7c28
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{1EFB6597-857C-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9a7e6c
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{1EFB6597-857C-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9a8236
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Interface\\{1EFB6599-857C-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9a95f0
+@="ITab"
+
+[Software\\Classes\\Interface\\{1EFB6599-857C-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9a924e
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{1EFB6599-857C-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9a9492
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{1EFB6599-857C-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9a9802
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Interface\\{2334D2B1-713E-11CF-8AE5-00AA00C00905}] 1793392522
+#time=1dd68ae2f9a21c4
+@="IVBDataObject"
+
+[Software\\Classes\\Interface\\{2334D2B1-713E-11CF-8AE5-00AA00C00905}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9a1e40
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{2334D2B1-713E-11CF-8AE5-00AA00C00905}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9a2066
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{2334D2B1-713E-11CF-8AE5-00AA00C00905}\\TypeLib] 1793392522
+#time=1dd68ae2f9a23d6
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Interface\\{2334D2B3-713E-11CF-8AE5-00AA00C00905}] 1793392522
+#time=1dd68ae2f9a3ac4
+@="IVBDataObjectFiles"
+
+[Software\\Classes\\Interface\\{2334D2B3-713E-11CF-8AE5-00AA00C00905}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9a3722
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{2334D2B3-713E-11CF-8AE5-00AA00C00905}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9a393e
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{2334D2B3-713E-11CF-8AE5-00AA00C00905}\\TypeLib] 1793392522
+#time=1dd68ae2f9a3ccc
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Interface\\{2C247F21-8591-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9f6404
+@="IImageList"
+
+[Software\\Classes\\Interface\\{2C247F21-8591-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9f60c6
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{2C247F21-8591-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9f62b0
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{2C247F21-8591-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9f65d0
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Interface\\{2C247F22-8591-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9f77dc
+@="ImageListEvents"
+
+[Software\\Classes\\Interface\\{2C247F22-8591-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9f749e
+@="{00020420-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{2C247F22-8591-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9f7692
+@="{00020420-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{2C247F22-8591-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9f799e
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Interface\\{2C247F24-8591-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9f8baa
+@="IImages"
+
+[Software\\Classes\\Interface\\{2C247F24-8591-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9f8862
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{2C247F24-8591-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9f8a60
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{2C247F24-8591-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9f8d6c
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Interface\\{2C247F26-8591-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9fb198
+@="IImage"
+
+[Software\\Classes\\Interface\\{2C247F26-8591-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9facf2
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{2C247F26-8591-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9fafe0
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{2C247F26-8591-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9fb440
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Interface\\{35053A20-8589-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9b8a3c
+@="IProgressBar"
+
+[Software\\Classes\\Interface\\{35053A20-8589-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9b869a
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{35053A20-8589-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9b88ca
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{35053A20-8589-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9b8c3a
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Interface\\{35053A21-8589-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9ba03a
+@="IProgressBarEvents"
+
+[Software\\Classes\\Interface\\{35053A21-8589-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9b9c84
+@="{00020420-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{35053A21-8589-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9b9ec8
+@="{00020420-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{35053A21-8589-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9ba242
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Interface\\{66833FE4-8583-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9aabee
+@="IToolbar"
+
+[Software\\Classes\\Interface\\{66833FE4-8583-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9aa860
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{66833FE4-8583-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9aaa90
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{66833FE4-8583-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9aadf6
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Interface\\{66833FE5-8583-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9ac1ec
+@="IToolbarEvents"
+
+[Software\\Classes\\Interface\\{66833FE5-8583-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9abe22
+@="{00020420-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{66833FE5-8583-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9ac070
+@="{00020420-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{66833FE5-8583-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9ac3fe
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Interface\\{66833FE7-8583-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9ad7b8
+@="IButtons"
+
+[Software\\Classes\\Interface\\{66833FE7-8583-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9ad434
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{66833FE7-8583-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9ad650
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{66833FE7-8583-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9ad9e8
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Interface\\{66833FE9-8583-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9aee7e
+@="IButton"
+
+[Software\\Classes\\Interface\\{66833FE9-8583-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9aeab4
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{66833FE9-8583-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9aed02
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{66833FE9-8583-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9af090
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Interface\\{66833FEB-8583-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9b0468
+@="IButtonMenus"
+
+[Software\\Classes\\Interface\\{66833FEB-8583-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9b00bc
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{66833FEB-8583-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9b02f6
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{66833FEB-8583-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9b0666
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Interface\\{66833FED-8583-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9b1b38
+@="IButtonMenu"
+
+[Software\\Classes\\Interface\\{66833FED-8583-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9b178c
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{66833FED-8583-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9b19d0
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{66833FED-8583-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9b1d4a
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Interface\\{8E3867A1-8586-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9b3168
+@="IStatusBar"
+
+[Software\\Classes\\Interface\\{8E3867A1-8586-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9b2d94
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{8E3867A1-8586-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9b2fe2
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{8E3867A1-8586-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9b337a
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Interface\\{8E3867A2-8586-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9b478e
+@="IStatusBarEvents"
+
+[Software\\Classes\\Interface\\{8E3867A2-8586-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9b4414
+@="{00020420-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{8E3867A2-8586-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9b4630
+@="{00020420-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{8E3867A2-8586-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9b49a0
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Interface\\{8E3867A4-8586-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9b5d82
+@="IPanels"
+
+[Software\\Classes\\Interface\\{8E3867A4-8586-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9b59cc
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{8E3867A4-8586-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9b5c10
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{8E3867A4-8586-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9b5f9e
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Interface\\{8E3867AA-8586-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9b73f8
+@="IPanel"
+
+[Software\\Classes\\Interface\\{8E3867AA-8586-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9b7056
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{8E3867AA-8586-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9b729a
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{8E3867AA-8586-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9b7632
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Interface\\{BDD1F049-858B-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9c1024
+@="IListView"
+
+[Software\\Classes\\Interface\\{BDD1F049-858B-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9c0c50
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{BDD1F049-858B-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9c0e9e
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{BDD1F049-858B-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9c1236
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Interface\\{BDD1F04A-858B-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9c2622
+@="ListViewEvents"
+
+[Software\\Classes\\Interface\\{BDD1F04A-858B-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9c228a
+@="{00020420-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{BDD1F04A-858B-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9c24c4
+@="{00020420-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{BDD1F04A-858B-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9cb1be
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Interface\\{BDD1F04C-858B-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9cc910
+@="IListItems"
+
+[Software\\Classes\\Interface\\{BDD1F04C-858B-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9cc578
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{BDD1F04C-858B-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9cc7a8
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{BDD1F04C-858B-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9ccb18
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Interface\\{BDD1F04E-858B-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9cdf0e
+@="IListItem"
+
+[Software\\Classes\\Interface\\{BDD1F04E-858B-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9cdb58
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{BDD1F04E-858B-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9cdd9c
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{BDD1F04E-858B-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9ce12a
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Interface\\{BDD1F050-858B-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9cf5b6
+@="IColumnHeaders"
+
+[Software\\Classes\\Interface\\{BDD1F050-858B-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9cf20a
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{BDD1F050-858B-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9cf444
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{BDD1F050-858B-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9cf7f0
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Interface\\{BDD1F051-858B-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9d0c22
+@="IColumnHeader"
+
+[Software\\Classes\\Interface\\{BDD1F051-858B-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9d086c
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{BDD1F051-858B-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9d0aba
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{BDD1F051-858B-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9d0e2a
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Interface\\{BDD1F053-858B-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9d220c
+@="IListSubItems"
+
+[Software\\Classes\\Interface\\{BDD1F053-858B-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9d1e88
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{BDD1F053-858B-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9d20a4
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{BDD1F053-858B-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9d241e
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Interface\\{BDD1F055-858B-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9f4d84
+@="IListSubItem"
+
+[Software\\Classes\\Interface\\{BDD1F055-858B-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9f4a46
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{BDD1F055-858B-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9f4c3a
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{BDD1F055-858B-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9f4f64
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Interface\\{C74190B4-8589-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9bb6ec
+@="ITreeView"
+
+[Software\\Classes\\Interface\\{C74190B4-8589-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9bb354
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{C74190B4-8589-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9bb58e
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{C74190B4-8589-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9bb8fe
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Interface\\{C74190B5-8589-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9bcd1c
+@="ITreeViewEvents"
+
+[Software\\Classes\\Interface\\{C74190B5-8589-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9bc98e
+@="{00020420-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{C74190B5-8589-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9bcbaa
+@="{00020420-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{C74190B5-8589-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9bcf1a
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Interface\\{C74190B7-8589-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9be338
+@="INodes"
+
+[Software\\Classes\\Interface\\{C74190B7-8589-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9bdf64
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{C74190B7-8589-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9be1b2
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{C74190B7-8589-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9be55e
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Interface\\{C74190B8-8589-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9bf940
+@="INode"
+
+[Software\\Classes\\Interface\\{C74190B8-8589-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9bf5b2
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{C74190B8-8589-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9bf7d8
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{C74190B8-8589-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9bfb34
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Interface\\{C8A3DC00-8593-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2fa00058
+@="IControls"
+
+[Software\\Classes\\Interface\\{C8A3DC00-8593-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9ffc84
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{C8A3DC00-8593-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9ffed2
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{C8A3DC00-8593-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2fa002b0
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Interface\\{DD9DA660-8594-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2fa018ea
+@="IComboItem"
+
+[Software\\Classes\\Interface\\{DD9DA660-8594-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2fa0153e
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{DD9DA660-8594-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2fa01778
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{DD9DA660-8594-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2fa01b2e
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Interface\\{DD9DA662-8594-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2fa02ff6
+@="IComboItems"
+
+[Software\\Classes\\Interface\\{DD9DA662-8594-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2fa02c2c
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{DD9DA662-8594-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2fa02e84
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{DD9DA662-8594-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2fa0321c
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Interface\\{DD9DA664-8594-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2fa04694
+@="IImageCombo"
+
+[Software\\Classes\\Interface\\{DD9DA664-8594-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2fa042ca
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{DD9DA664-8594-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2fa04522
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{DD9DA664-8594-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2fa048ce
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Interface\\{DD9DA665-8594-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2fa05dc8
+@="DImageComboEvents"
+
+[Software\\Classes\\Interface\\{DD9DA665-8594-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2fa059f4
+@="{00020420-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{DD9DA665-8594-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2fa05c4c
+@="{00020420-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{DD9DA665-8594-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2fa05ff8
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Interface\\{F08DF952-8592-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9fcc1e
+@="ISlider"
+
+[Software\\Classes\\Interface\\{F08DF952-8592-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9fc7dc
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{F08DF952-8592-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9fca7a
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{F08DF952-8592-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9fce9e
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Interface\\{F08DF953-8592-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9fe604
+@="ISliderEvents"
+
+[Software\\Classes\\Interface\\{F08DF953-8592-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9fe1a4
+@="{00020420-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{F08DF953-8592-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9fe44c
+@="{00020420-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Interface\\{F08DF953-8592-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9fe8a2
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\MSComctlLib.ImageComboCtl] 1793392522
+#time=1dd68ae2f970034
+@="Microsoft ImageComboBox Control 6.0 (SP6)"
+
+[Software\\Classes\\MSComctlLib.ImageComboCtl\\CLSID] 1793392522
+#time=1dd68ae2f96feb8
+@="{DD9DA666-8594-11D1-B16A-00C0F0283628}"
+
+[Software\\Classes\\MSComctlLib.ImageComboCtl\\CurVer] 1793392522
+#time=1dd68ae2f970142
+@="MSComctlLib.ImageComboCtl.2"
+
+[Software\\Classes\\MSComctlLib.ImageComboCtl.2] 1793392522
+#time=1dd68ae2f97057a
+@="Microsoft ImageComboBox Control 6.0 (SP6)"
+
+[Software\\Classes\\MSComctlLib.ImageComboCtl.2\\CLSID] 1793392522
+#time=1dd68ae2f97066a
+@="{DD9DA666-8594-11D1-B16A-00C0F0283628}"
+
+[Software\\Classes\\MSComctlLib.ImageListCtrl] 1793392522
+#time=1dd68ae2f9587a4
+@="Microsoft ImageList Control 6.0 (SP6)"
+
+[Software\\Classes\\MSComctlLib.ImageListCtrl\\CLSID] 1793392522
+#time=1dd68ae2f95860a
+@="{2C247F23-8591-11D1-B16A-00C0F0283628}"
+
+[Software\\Classes\\MSComctlLib.ImageListCtrl\\CurVer] 1793392522
+#time=1dd68ae2f95889e
+@="MSComctlLib.ImageListCtrl.2"
+
+[Software\\Classes\\MSComctlLib.ImageListCtrl.2] 1793392522
+#time=1dd68ae2f958c90
+@="Microsoft ImageList Control 6.0 (SP6)"
+
+[Software\\Classes\\MSComctlLib.ImageListCtrl.2\\CLSID] 1793392522
+#time=1dd68ae2f958d6c
+@="{2C247F23-8591-11D1-B16A-00C0F0283628}"
+
+[Software\\Classes\\MSComctlLib.ListViewCtrl] 1793392522
+#time=1dd68ae2f939d86
+@="Microsoft ListView Control 6.0 (SP6)"
+
+[Software\\Classes\\MSComctlLib.ListViewCtrl\\CLSID] 1793392522
+#time=1dd68ae2f939b24
+@="{BDD1F04B-858B-11D1-B16A-00C0F0283628}"
+
+[Software\\Classes\\MSComctlLib.ListViewCtrl\\CurVer] 1793392522
+#time=1dd68ae2f93a0ba
+@="MSComctlLib.ListViewCtrl.2"
+
+[Software\\Classes\\MSComctlLib.ListViewCtrl.2] 1793392522
+#time=1dd68ae2f93a772
+@="Microsoft ListView Control 6.0 (SP6)"
+
+[Software\\Classes\\MSComctlLib.ListViewCtrl.2\\CLSID] 1793392522
+#time=1dd68ae2f93a8ee
+@="{BDD1F04B-858B-11D1-B16A-00C0F0283628}"
+
+[Software\\Classes\\MSComctlLib.ProgCtrl] 1793392522
+#time=1dd68ae2f969c98
+@="Microsoft ProgressBar Control 6.0 (SP6)"
+
+[Software\\Classes\\MSComctlLib.ProgCtrl\\CLSID] 1793392522
+#time=1dd68ae2f969b08
+@="{35053A22-8589-11D1-B16A-00C0F0283628}"
+
+[Software\\Classes\\MSComctlLib.ProgCtrl\\CurVer] 1793392522
+#time=1dd68ae2f969da6
+@="MSComctlLib.ProgCtrl.2"
+
+[Software\\Classes\\MSComctlLib.ProgCtrl.2] 1793392522
+#time=1dd68ae2f96a1c0
+@="Microsoft ProgressBar Control 6.0 (SP6)"
+
+[Software\\Classes\\MSComctlLib.ProgCtrl.2\\CLSID] 1793392522
+#time=1dd68ae2f96a2a6
+@="{35053A22-8589-11D1-B16A-00C0F0283628}"
+
+[Software\\Classes\\MSComctlLib.SBarCtrl] 1793392522
+#time=1dd68ae2f95e1f4
+@="Microsoft StatusBar Control 6.0 (SP6)"
+
+[Software\\Classes\\MSComctlLib.SBarCtrl\\CLSID] 1793392522
+#time=1dd68ae2f95e064
+@="{8E3867A3-8586-11D1-B16A-00C0F0283628}"
+
+[Software\\Classes\\MSComctlLib.SBarCtrl\\CurVer] 1793392522
+#time=1dd68ae2f95e2f8
+@="MSComctlLib.SBarCtrl.2"
+
+[Software\\Classes\\MSComctlLib.SBarCtrl.2] 1793392522
+#time=1dd68ae2f95e708
+@="Microsoft StatusBar Control 6.0 (SP6)"
+
+[Software\\Classes\\MSComctlLib.SBarCtrl.2\\CLSID] 1793392522
+#time=1dd68ae2f95e7ee
+@="{8E3867A3-8586-11D1-B16A-00C0F0283628}"
+
+[Software\\Classes\\MSComctlLib.Slider] 1793392522
+#time=1dd68ae2f963e9c
+@="Microsoft Slider Control 6.0 (SP6)"
+
+[Software\\Classes\\MSComctlLib.Slider\\CLSID] 1793392522
+#time=1dd68ae2f963d0c
+@="{F08DF954-8592-11D1-B16A-00C0F0283628}"
+
+[Software\\Classes\\MSComctlLib.Slider\\CurVer] 1793392522
+#time=1dd68ae2f963faa
+@="MSComctlLib.Slider.2"
+
+[Software\\Classes\\MSComctlLib.Slider.2] 1793392522
+#time=1dd68ae2f9643e2
+@="Microsoft Slider Control 6.0 (SP6)"
+
+[Software\\Classes\\MSComctlLib.Slider.2\\CLSID] 1793392522
+#time=1dd68ae2f9644d2
+@="{F08DF954-8592-11D1-B16A-00C0F0283628}"
+
+[Software\\Classes\\MSComctlLib.TabStrip] 1793392522
+#time=1dd68ae2f94c936
+@="Microsoft TabStrip Control 6.0 (SP6)"
+
+[Software\\Classes\\MSComctlLib.TabStrip\\CLSID] 1793392522
+#time=1dd68ae2f94c7a6
+@="{1EFB6596-857C-11D1-B16A-00C0F0283628}"
+
+[Software\\Classes\\MSComctlLib.TabStrip\\CurVer] 1793392522
+#time=1dd68ae2f94ca30
+@="MSComctlLib.TabStrip.2"
+
+[Software\\Classes\\MSComctlLib.TabStrip.2] 1793392522
+#time=1dd68ae2f94d35e
+@="Microsoft TabStrip Control 6.0 (SP6)"
+
+[Software\\Classes\\MSComctlLib.TabStrip.2\\CLSID] 1793392522
+#time=1dd68ae2f94d444
+@="{1EFB6596-857C-11D1-B16A-00C0F0283628}"
+
+[Software\\Classes\\MSComctlLib.Toolbar] 1793392522
+#time=1dd68ae2f952dfe
+@="Microsoft Toolbar Control 6.0 (SP6)"
+
+[Software\\Classes\\MSComctlLib.Toolbar\\CLSID] 1793392522
+#time=1dd68ae2f952c78
+@="{66833FE6-8583-11D1-B16A-00C0F0283628}"
+
+[Software\\Classes\\MSComctlLib.Toolbar\\CurVer] 1793392522
+#time=1dd68ae2f952eee
+@="MSComctlLib.Toolbar.2"
+
+[Software\\Classes\\MSComctlLib.Toolbar.2] 1793392522
+#time=1dd68ae2f9532ea
+@="Microsoft Toolbar Control 6.0 (SP6)"
+
+[Software\\Classes\\MSComctlLib.Toolbar.2\\CLSID] 1793392522
+#time=1dd68ae2f9533c6
+@="{66833FE6-8583-11D1-B16A-00C0F0283628}"
+
+[Software\\Classes\\MSComctlLib.TreeCtrl] 1793392522
+#time=1dd68ae2f94657c
+@="Microsoft TreeView Control 6.0 (SP6)"
+
+[Software\\Classes\\MSComctlLib.TreeCtrl\\CLSID] 1793392522
+#time=1dd68ae2f9463e2
+@="{C74190B6-8589-11D1-B16A-00C0F0283628}"
+
+[Software\\Classes\\MSComctlLib.TreeCtrl\\CurVer] 1793392522
+#time=1dd68ae2f946676
+@="MSComctlLib.TreeCtrl.2"
+
+[Software\\Classes\\MSComctlLib.TreeCtrl.2] 1793392522
+#time=1dd68ae2f946aa4
+@="Microsoft TreeView Control 6.0 (SP6)"
+
+[Software\\Classes\\MSComctlLib.TreeCtrl.2\\CLSID] 1793392522
+#time=1dd68ae2f946b8a
+@="{C74190B6-8589-11D1-B16A-00C0F0283628}"
+
+[Software\\Classes\\Typelib\\{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}\\2.0] 1793392522
+#time=1dd68ae2f9985de
+@="Microsoft Windows Common Controls 6.0 (SP6)"
+
+[Software\\Classes\\Typelib\\{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}\\2.0\\0\\win32] 1793392522
+#time=1dd68ae2f997ce2
+@="C:\\Program Files (x86)\\Diablo II\\ProjectD2\\MpqFixer\\mscomctl.ocx"
+
+[Software\\Classes\\Typelib\\{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}\\2.0\\FLAGS] 1793392522
+#time=1dd68ae2f9982c8
+@="10"
+
+[Software\\Classes\\Typelib\\{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}\\2.0\\HELPDIR] 1793392522
+#time=1dd68ae2f998890
+@=""
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{1EFB6596-857C-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f94fbb8
+@="Microsoft TabStrip Control 6.0 (SP6)"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{1EFB6596-857C-11D1-B16A-00C0F0283628}\\Control] 1793392522
+#time=1dd68ae2f94f442
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{1EFB6596-857C-11D1-B16A-00C0F0283628}\\Implemented Categories\\{0DE86A52-2BAA-11CF-A229-00AA003D7352}] 1793392522
+#time=1dd68ae2f950cde
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{1EFB6596-857C-11D1-B16A-00C0F0283628}\\Implemented Categories\\{0DE86A53-2BAA-11CF-A229-00AA003D7352}] 1793392522
+#time=1dd68ae2f950b1c
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{1EFB6596-857C-11D1-B16A-00C0F0283628}\\Implemented Categories\\{0DE86A57-2BAA-11CF-A229-00AA003D7352}] 1793392522
+#time=1dd68ae2f950978
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{1EFB6596-857C-11D1-B16A-00C0F0283628}\\Implemented Categories\\{40FC6ED4-2438-11CF-A3DB-080036F12502}] 1793392522
+#time=1dd68ae2f9507c0
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{1EFB6596-857C-11D1-B16A-00C0F0283628}\\Implemented Categories\\{40FC6ED5-2438-11CF-A3DB-080036F12502}] 1793392522
+#time=1dd68ae2f94ef24
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{1EFB6596-857C-11D1-B16A-00C0F0283628}\\Implemented Categories\\{7DD95801-9882-11CF-9FA9-00AA006C42C4}] 1793392522
+#time=1dd68ae2f95104e
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{1EFB6596-857C-11D1-B16A-00C0F0283628}\\Implemented Categories\\{7DD95802-9882-11CF-9FA9-00AA006C42C4}] 1793392522
+#time=1dd68ae2f950e96
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{1EFB6596-857C-11D1-B16A-00C0F0283628}\\InprocServer32] 1793392522
+#time=1dd68ae2f94c2ba
+@="C:\\Program Files (x86)\\Diablo II\\ProjectD2\\MpqFixer\\mscomctl.ocx"
+"ThreadingModel"="Apartment"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{1EFB6596-857C-11D1-B16A-00C0F0283628}\\MiscStatus] 1793392522
+#time=1dd68ae2f94f834
+@="0"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{1EFB6596-857C-11D1-B16A-00C0F0283628}\\MiscStatus\\1] 1793392522
+#time=1dd68ae2f94f92e
+@="131473"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{1EFB6596-857C-11D1-B16A-00C0F0283628}\\ProgID] 1793392522
+#time=1dd68ae2f94dbd8
+@="MSComctlLib.TabStrip.2"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{1EFB6596-857C-11D1-B16A-00C0F0283628}\\ToolboxBitmap32] 1793392522
+#time=1dd68ae2f94fcc6
+@="C:\\Program Files (x86)\\Diablo II\\ProjectD2\\MpqFixer\\mscomctl.ocx, 10"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{1EFB6596-857C-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f94dfc0
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{1EFB6596-857C-11D1-B16A-00C0F0283628}\\Version] 1793392522
+#time=1dd68ae2f94e2b8
+@="2.0"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{1EFB6596-857C-11D1-B16A-00C0F0283628}\\VersionIndependentProgID] 1793392522
+#time=1dd68ae2f94d886
+@="MSComctlLib.TabStrip"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{2C247F23-8591-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f95b09e
+@="Microsoft ImageList Control 6.0 (SP6)"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{2C247F23-8591-11D1-B16A-00C0F0283628}\\Control] 1793392522
+#time=1dd68ae2f95aa0e
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{2C247F23-8591-11D1-B16A-00C0F0283628}\\Implemented Categories\\{0DE86A52-2BAA-11CF-A229-00AA003D7352}] 1793392522
+#time=1dd68ae2f95c1c4
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{2C247F23-8591-11D1-B16A-00C0F0283628}\\Implemented Categories\\{0DE86A53-2BAA-11CF-A229-00AA003D7352}] 1793392522
+#time=1dd68ae2f95c00c
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{2C247F23-8591-11D1-B16A-00C0F0283628}\\Implemented Categories\\{0DE86A57-2BAA-11CF-A229-00AA003D7352}] 1793392522
+#time=1dd68ae2f95be5e
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{2C247F23-8591-11D1-B16A-00C0F0283628}\\Implemented Categories\\{40FC6ED4-2438-11CF-A3DB-080036F12502}] 1793392522
+#time=1dd68ae2f95bc92
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{2C247F23-8591-11D1-B16A-00C0F0283628}\\Implemented Categories\\{40FC6ED5-2438-11CF-A3DB-080036F12502}] 1793392522
+#time=1dd68ae2f95a518
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{2C247F23-8591-11D1-B16A-00C0F0283628}\\Implemented Categories\\{7DD95801-9882-11CF-9FA9-00AA006C42C4}] 1793392522
+#time=1dd68ae2f95c552
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{2C247F23-8591-11D1-B16A-00C0F0283628}\\Implemented Categories\\{7DD95802-9882-11CF-9FA9-00AA006C42C4}] 1793392522
+#time=1dd68ae2f95c390
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{2C247F23-8591-11D1-B16A-00C0F0283628}\\InprocServer32] 1793392522
+#time=1dd68ae2f95810a
+@="C:\\Program Files (x86)\\Diablo II\\ProjectD2\\MpqFixer\\mscomctl.ocx"
+"ThreadingModel"="Apartment"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{2C247F23-8591-11D1-B16A-00C0F0283628}\\MiscStatus] 1793392522
+#time=1dd68ae2f95ad38
+@="0"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{2C247F23-8591-11D1-B16A-00C0F0283628}\\MiscStatus\\1] 1793392522
+#time=1dd68ae2f95ae32
+@="165265"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{2C247F23-8591-11D1-B16A-00C0F0283628}\\ProgID] 1793392522
+#time=1dd68ae2f959488
+@="MSComctlLib.ImageListCtrl.2"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{2C247F23-8591-11D1-B16A-00C0F0283628}\\ToolboxBitmap32] 1793392522
+#time=1dd68ae2f95b198
+@="C:\\Program Files (x86)\\Diablo II\\ProjectD2\\MpqFixer\\mscomctl.ocx, 3"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{2C247F23-8591-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f95973a
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{2C247F23-8591-11D1-B16A-00C0F0283628}\\Version] 1793392522
+#time=1dd68ae2f9599c4
+@="2.0"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{2C247F23-8591-11D1-B16A-00C0F0283628}\\VersionIndependentProgID] 1793392522
+#time=1dd68ae2f9591fe
+@="MSComctlLib.ImageListCtrl"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{35053A22-8589-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f96cd08
+@="Microsoft ProgressBar Control 6.0 (SP6)"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{35053A22-8589-11D1-B16A-00C0F0283628}\\Control] 1793392522
+#time=1dd68ae2f96c510
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{35053A22-8589-11D1-B16A-00C0F0283628}\\Implemented Categories\\{0DE86A52-2BAA-11CF-A229-00AA003D7352}] 1793392522
+#time=1dd68ae2f96df3c
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{35053A22-8589-11D1-B16A-00C0F0283628}\\Implemented Categories\\{0DE86A53-2BAA-11CF-A229-00AA003D7352}] 1793392522
+#time=1dd68ae2f96dd70
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{35053A22-8589-11D1-B16A-00C0F0283628}\\Implemented Categories\\{0DE86A57-2BAA-11CF-A229-00AA003D7352}] 1793392522
+#time=1dd68ae2f96dba4
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{35053A22-8589-11D1-B16A-00C0F0283628}\\Implemented Categories\\{40FC6ED4-2438-11CF-A3DB-080036F12502}] 1793392522
+#time=1dd68ae2f96d9d8
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{35053A22-8589-11D1-B16A-00C0F0283628}\\Implemented Categories\\{40FC6ED5-2438-11CF-A3DB-080036F12502}] 1793392522
+#time=1dd68ae2f96bf7a
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{35053A22-8589-11D1-B16A-00C0F0283628}\\Implemented Categories\\{7DD95801-9882-11CF-9FA9-00AA006C42C4}] 1793392522
+#time=1dd68ae2f96e2f2
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{35053A22-8589-11D1-B16A-00C0F0283628}\\Implemented Categories\\{7DD95802-9882-11CF-9FA9-00AA006C42C4}] 1793392522
+#time=1dd68ae2f96e11c
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{35053A22-8589-11D1-B16A-00C0F0283628}\\InprocServer32] 1793392522
+#time=1dd68ae2f9695d6
+@="C:\\Program Files (x86)\\Diablo II\\ProjectD2\\MpqFixer\\mscomctl.ocx"
+"ThreadingModel"="Apartment"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{35053A22-8589-11D1-B16A-00C0F0283628}\\MiscStatus] 1793392522
+#time=1dd68ae2f96c876
+@="0"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{35053A22-8589-11D1-B16A-00C0F0283628}\\MiscStatus\\1] 1793392522
+#time=1dd68ae2f96ca74
+@="172433"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{35053A22-8589-11D1-B16A-00C0F0283628}\\ProgID] 1793392522
+#time=1dd68ae2f96a9e0
+@="MSComctlLib.ProgCtrl.2"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{35053A22-8589-11D1-B16A-00C0F0283628}\\ToolboxBitmap32] 1793392522
+#time=1dd68ae2f96ce0c
+@="C:\\Program Files (x86)\\Diablo II\\ProjectD2\\MpqFixer\\mscomctl.ocx, 17"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{35053A22-8589-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f96ac88
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{35053A22-8589-11D1-B16A-00C0F0283628}\\Version] 1793392522
+#time=1dd68ae2f96af30
+@="2.0"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{35053A22-8589-11D1-B16A-00C0F0283628}\\VersionIndependentProgID] 1793392522
+#time=1dd68ae2f96a71a
+@="MSComctlLib.ProgCtrl"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{66833FE6-8583-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f95569e
+@="Microsoft Toolbar Control 6.0 (SP6)"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{66833FE6-8583-11D1-B16A-00C0F0283628}\\Control] 1793392522
+#time=1dd68ae2f954fe6
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{66833FE6-8583-11D1-B16A-00C0F0283628}\\Implemented Categories\\{0DE86A52-2BAA-11CF-A229-00AA003D7352}] 1793392522
+#time=1dd68ae2f9567ec
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{66833FE6-8583-11D1-B16A-00C0F0283628}\\Implemented Categories\\{0DE86A53-2BAA-11CF-A229-00AA003D7352}] 1793392522
+#time=1dd68ae2f95662a
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{66833FE6-8583-11D1-B16A-00C0F0283628}\\Implemented Categories\\{0DE86A57-2BAA-11CF-A229-00AA003D7352}] 1793392522
+#time=1dd68ae2f956486
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{66833FE6-8583-11D1-B16A-00C0F0283628}\\Implemented Categories\\{40FC6ED4-2438-11CF-A3DB-080036F12502}] 1793392522
+#time=1dd68ae2f9562c4
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{66833FE6-8583-11D1-B16A-00C0F0283628}\\Implemented Categories\\{40FC6ED5-2438-11CF-A3DB-080036F12502}] 1793392522
+#time=1dd68ae2f954ac8
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{66833FE6-8583-11D1-B16A-00C0F0283628}\\Implemented Categories\\{7DD95802-9882-11CF-9FA9-00AA006C42C4}] 1793392522
+#time=1dd68ae2f9569a4
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{66833FE6-8583-11D1-B16A-00C0F0283628}\\InprocServer32] 1793392522
+#time=1dd68ae2f952778
+@="C:\\Program Files (x86)\\Diablo II\\ProjectD2\\MpqFixer\\mscomctl.ocx"
+"ThreadingModel"="Apartment"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{66833FE6-8583-11D1-B16A-00C0F0283628}\\MiscStatus] 1793392522
+#time=1dd68ae2f95534c
+@="0"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{66833FE6-8583-11D1-B16A-00C0F0283628}\\MiscStatus\\1] 1793392522
+#time=1dd68ae2f955446
+@="237969"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{66833FE6-8583-11D1-B16A-00C0F0283628}\\ProgID] 1793392522
+#time=1dd68ae2f953a9c
+@="MSComctlLib.Toolbar.2"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{66833FE6-8583-11D1-B16A-00C0F0283628}\\ToolboxBitmap32] 1793392522
+#time=1dd68ae2f955798
+@="C:\\Program Files (x86)\\Diablo II\\ProjectD2\\MpqFixer\\mscomctl.ocx, 12"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{66833FE6-8583-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f953d30
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{66833FE6-8583-11D1-B16A-00C0F0283628}\\Version] 1793392522
+#time=1dd68ae2f953fba
+@="2.0"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{66833FE6-8583-11D1-B16A-00C0F0283628}\\VersionIndependentProgID] 1793392522
+#time=1dd68ae2f95381c
+@="MSComctlLib.Toolbar"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{8E3867A3-8586-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f960b2a
+@="Microsoft StatusBar Control 6.0 (SP6)"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{8E3867A3-8586-11D1-B16A-00C0F0283628}\\Control] 1793392522
+#time=1dd68ae2f960440
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{8E3867A3-8586-11D1-B16A-00C0F0283628}\\Implemented Categories\\{0DE86A52-2BAA-11CF-A229-00AA003D7352}] 1793392522
+#time=1dd68ae2f961c50
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{8E3867A3-8586-11D1-B16A-00C0F0283628}\\Implemented Categories\\{0DE86A53-2BAA-11CF-A229-00AA003D7352}] 1793392522
+#time=1dd68ae2f961a98
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{8E3867A3-8586-11D1-B16A-00C0F0283628}\\Implemented Categories\\{0DE86A57-2BAA-11CF-A229-00AA003D7352}] 1793392522
+#time=1dd68ae2f9618d6
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{8E3867A3-8586-11D1-B16A-00C0F0283628}\\Implemented Categories\\{40FC6ED4-2438-11CF-A3DB-080036F12502}] 1793392522
+#time=1dd68ae2f961732
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{8E3867A3-8586-11D1-B16A-00C0F0283628}\\Implemented Categories\\{40FC6ED5-2438-11CF-A3DB-080036F12502}] 1793392522
+#time=1dd68ae2f95ff36
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{8E3867A3-8586-11D1-B16A-00C0F0283628}\\Implemented Categories\\{7DD95801-9882-11CF-9FA9-00AA006C42C4}] 1793392522
+#time=1dd68ae2f961fa2
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{8E3867A3-8586-11D1-B16A-00C0F0283628}\\Implemented Categories\\{7DD95802-9882-11CF-9FA9-00AA006C42C4}] 1793392522
+#time=1dd68ae2f961df4
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{8E3867A3-8586-11D1-B16A-00C0F0283628}\\InprocServer32] 1793392522
+#time=1dd68ae2f95db50
+@="C:\\Program Files (x86)\\Diablo II\\ProjectD2\\MpqFixer\\mscomctl.ocx"
+"ThreadingModel"="Apartment"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{8E3867A3-8586-11D1-B16A-00C0F0283628}\\MiscStatus] 1793392522
+#time=1dd68ae2f9607a6
+@="0"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{8E3867A3-8586-11D1-B16A-00C0F0283628}\\MiscStatus\\1] 1793392522
+#time=1dd68ae2f9608a0
+@="172433"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{8E3867A3-8586-11D1-B16A-00C0F0283628}\\ProgID] 1793392522
+#time=1dd68ae2f95eeb0
+@="MSComctlLib.SBarCtrl.2"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{8E3867A3-8586-11D1-B16A-00C0F0283628}\\ToolboxBitmap32] 1793392522
+#time=1dd68ae2f960c24
+@="C:\\Program Files (x86)\\Diablo II\\ProjectD2\\MpqFixer\\mscomctl.ocx, 1"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{8E3867A3-8586-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f95f144
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{8E3867A3-8586-11D1-B16A-00C0F0283628}\\Version] 1793392522
+#time=1dd68ae2f95f3ec
+@="2.0"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{8E3867A3-8586-11D1-B16A-00C0F0283628}\\VersionIndependentProgID] 1793392522
+#time=1dd68ae2f95ec12
+@="MSComctlLib.SBarCtrl"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{A4C4671C-499F-101B-BB78-00AA00383CBB}] 1793392522
+#time=1dd68ae2f843d00
+@="VBA Collection Object"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{A4C4671C-499F-101B-BB78-00AA00383CBB}\\InprocServer32] 1793392522
+#time=1dd68ae2f843db4
+@=""
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{BDD1F04B-858B-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f942a1c
+@="Microsoft ListView Control 6.0 (SP6)"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{BDD1F04B-858B-11D1-B16A-00C0F0283628}\\Control] 1793392522
+#time=1dd68ae2f941dc4
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{BDD1F04B-858B-11D1-B16A-00C0F0283628}\\Implemented Categories\\{0DE86A52-2BAA-11CF-A229-00AA003D7352}] 1793392522
+#time=1dd68ae2f943f70
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{BDD1F04B-858B-11D1-B16A-00C0F0283628}\\Implemented Categories\\{0DE86A53-2BAA-11CF-A229-00AA003D7352}] 1793392522
+#time=1dd68ae2f943db8
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{BDD1F04B-858B-11D1-B16A-00C0F0283628}\\Implemented Categories\\{0DE86A57-2BAA-11CF-A229-00AA003D7352}] 1793392522
+#time=1dd68ae2f943c0a
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{BDD1F04B-858B-11D1-B16A-00C0F0283628}\\Implemented Categories\\{40FC6ED4-2438-11CF-A3DB-080036F12502}] 1793392522
+#time=1dd68ae2f943a48
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{BDD1F04B-858B-11D1-B16A-00C0F0283628}\\Implemented Categories\\{40FC6ED5-2438-11CF-A3DB-080036F12502}] 1793392522
+#time=1dd68ae2f941310
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{BDD1F04B-858B-11D1-B16A-00C0F0283628}\\Implemented Categories\\{7DD95801-9882-11CF-9FA9-00AA006C42C4}] 1793392522
+#time=1dd68ae2f9442d6
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{BDD1F04B-858B-11D1-B16A-00C0F0283628}\\Implemented Categories\\{7DD95802-9882-11CF-9FA9-00AA006C42C4}] 1793392522
+#time=1dd68ae2f944128
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{BDD1F04B-858B-11D1-B16A-00C0F0283628}\\InprocServer32] 1793392522
+#time=1dd68ae2f939034
+@="C:\\Program Files (x86)\\Diablo II\\ProjectD2\\MpqFixer\\mscomctl.ocx"
+"ThreadingModel"="Apartment"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{BDD1F04B-858B-11D1-B16A-00C0F0283628}\\MiscStatus] 1793392522
+#time=1dd68ae2f94233c
+@="0"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{BDD1F04B-858B-11D1-B16A-00C0F0283628}\\MiscStatus\\1] 1793392522
+#time=1dd68ae2f942562
+@="131473"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{BDD1F04B-858B-11D1-B16A-00C0F0283628}\\ProgID] 1793392522
+#time=1dd68ae2f93b50a
+@="MSComctlLib.ListViewCtrl.2"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{BDD1F04B-858B-11D1-B16A-00C0F0283628}\\ToolboxBitmap32] 1793392522
+#time=1dd68ae2f942bca
+@="C:\\Program Files (x86)\\Diablo II\\ProjectD2\\MpqFixer\\mscomctl.ocx, 4"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{BDD1F04B-858B-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f93b974
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{BDD1F04B-858B-11D1-B16A-00C0F0283628}\\Version] 1793392522
+#time=1dd68ae2f93bff0
+@="2.0"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{BDD1F04B-858B-11D1-B16A-00C0F0283628}\\VersionIndependentProgID] 1793392522
+#time=1dd68ae2f93b096
+@="MSComctlLib.ListViewCtrl"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C27CCE32-8596-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f97c00a
+@="TreeView General Property Page Object"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C27CCE32-8596-11D1-B16A-00C0F0283628}\\InprocServer32] 1793392522
+#time=1dd68ae2f97c136
+@="C:\\Program Files (x86)\\Diablo II\\ProjectD2\\MpqFixer\\mscomctl.ocx"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C27CCE33-8596-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f97dde2
+@="TabStrip General Property Page Object"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C27CCE33-8596-11D1-B16A-00C0F0283628}\\InprocServer32] 1793392522
+#time=1dd68ae2f97defa
+@="C:\\Program Files (x86)\\Diablo II\\ProjectD2\\MpqFixer\\mscomctl.ocx"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C27CCE34-8596-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f97f200
+@="Tab Property Page Object"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C27CCE34-8596-11D1-B16A-00C0F0283628}\\InprocServer32] 1793392522
+#time=1dd68ae2f97f30e
+@="C:\\Program Files (x86)\\Diablo II\\ProjectD2\\MpqFixer\\mscomctl.ocx"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C27CCE35-8596-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f983210
+@="ImageList General Property Page Object"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C27CCE35-8596-11D1-B16A-00C0F0283628}\\InprocServer32] 1793392522
+#time=1dd68ae2f983332
+@="C:\\Program Files (x86)\\Diablo II\\ProjectD2\\MpqFixer\\mscomctl.ocx"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C27CCE36-8596-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f984746
+@="Image Property Page Object"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C27CCE36-8596-11D1-B16A-00C0F0283628}\\InprocServer32] 1793392522
+#time=1dd68ae2f98485e
+@="C:\\Program Files (x86)\\Diablo II\\ProjectD2\\MpqFixer\\mscomctl.ocx"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C27CCE37-8596-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9807ea
+@="Toolbar General Property Page Object"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C27CCE37-8596-11D1-B16A-00C0F0283628}\\InprocServer32] 1793392522
+#time=1dd68ae2f980966
+@="C:\\Program Files (x86)\\Diablo II\\ProjectD2\\MpqFixer\\mscomctl.ocx"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C27CCE38-8596-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f981d3e
+@="Button Property Page Object"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C27CCE38-8596-11D1-B16A-00C0F0283628}\\InprocServer32] 1793392522
+#time=1dd68ae2f981e60
+@="C:\\Program Files (x86)\\Diablo II\\ProjectD2\\MpqFixer\\mscomctl.ocx"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C27CCE39-8596-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f985c5e
+@="StatusBar General Property Page Object"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C27CCE39-8596-11D1-B16A-00C0F0283628}\\InprocServer32] 1793392522
+#time=1dd68ae2f985d80
+@="C:\\Program Files (x86)\\Diablo II\\ProjectD2\\MpqFixer\\mscomctl.ocx"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C27CCE3A-8596-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9870e0
+@="Panel Property Page Object"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C27CCE3A-8596-11D1-B16A-00C0F0283628}\\InprocServer32] 1793392522
+#time=1dd68ae2f987202
+@="C:\\Program Files (x86)\\Diablo II\\ProjectD2\\MpqFixer\\mscomctl.ocx"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C27CCE3B-8596-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f98b262
+@="Progress Bar General Property Page Object"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C27CCE3B-8596-11D1-B16A-00C0F0283628}\\InprocServer32] 1793392522
+#time=1dd68ae2f98b3a2
+@="C:\\Program Files (x86)\\Diablo II\\ProjectD2\\MpqFixer\\mscomctl.ocx"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C27CCE3C-8596-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9885ee
+@="Slider General Property Page Object"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C27CCE3C-8596-11D1-B16A-00C0F0283628}\\InprocServer32] 1793392522
+#time=1dd68ae2f988710
+@="C:\\Program Files (x86)\\Diablo II\\ProjectD2\\MpqFixer\\mscomctl.ocx"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C27CCE3D-8596-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f989af2
+@="Slider Appearance Property Page Object"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C27CCE3D-8596-11D1-B16A-00C0F0283628}\\InprocServer32] 1793392522
+#time=1dd68ae2f989c14
+@="C:\\Program Files (x86)\\Diablo II\\ProjectD2\\MpqFixer\\mscomctl.ocx"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C27CCE3E-8596-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f98c892
+@="ListView General Property Page Object"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C27CCE3E-8596-11D1-B16A-00C0F0283628}\\InprocServer32] 1793392522
+#time=1dd68ae2f98c9be
+@="C:\\Program Files (x86)\\Diablo II\\ProjectD2\\MpqFixer\\mscomctl.ocx"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C27CCE3F-8596-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f98deae
+@="ListView Sort Property Page Object"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C27CCE3F-8596-11D1-B16A-00C0F0283628}\\InprocServer32] 1793392522
+#time=1dd68ae2f98dfe4
+@="C:\\Program Files (x86)\\Diablo II\\ProjectD2\\MpqFixer\\mscomctl.ocx"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C27CCE40-8596-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f98f4ca
+@="ListView Images Property Page Object"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C27CCE40-8596-11D1-B16A-00C0F0283628}\\InprocServer32] 1793392522
+#time=1dd68ae2f98f5f6
+@="C:\\Program Files (x86)\\Diablo II\\ProjectD2\\MpqFixer\\mscomctl.ocx"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C27CCE41-8596-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f990b40
+@="ListView Columns Property Page Object"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C27CCE41-8596-11D1-B16A-00C0F0283628}\\InprocServer32] 1793392522
+#time=1dd68ae2f990c76
+@="C:\\Program Files (x86)\\Diablo II\\ProjectD2\\MpqFixer\\mscomctl.ocx"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C27CCE42-8596-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9921a2
+@="ImageComboBox General Property Page Object"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C27CCE42-8596-11D1-B16A-00C0F0283628}\\InprocServer32] 1793392522
+#time=1dd68ae2f9922ce
+@="C:\\Program Files (x86)\\Diablo II\\ProjectD2\\MpqFixer\\mscomctl.ocx"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C74190B6-8589-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f948e80
+@="Microsoft TreeView Control 6.0 (SP6)"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C74190B6-8589-11D1-B16A-00C0F0283628}\\Control] 1793392522
+#time=1dd68ae2f9487be
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C74190B6-8589-11D1-B16A-00C0F0283628}\\Implemented Categories\\{0DE86A52-2BAA-11CF-A229-00AA003D7352}] 1793392522
+#time=1dd68ae2f94a0b4
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C74190B6-8589-11D1-B16A-00C0F0283628}\\Implemented Categories\\{0DE86A53-2BAA-11CF-A229-00AA003D7352}] 1793392522
+#time=1dd68ae2f949f06
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C74190B6-8589-11D1-B16A-00C0F0283628}\\Implemented Categories\\{0DE86A57-2BAA-11CF-A229-00AA003D7352}] 1793392522
+#time=1dd68ae2f949d44
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C74190B6-8589-11D1-B16A-00C0F0283628}\\Implemented Categories\\{40FC6ED4-2438-11CF-A3DB-080036F12502}] 1793392522
+#time=1dd68ae2f949b82
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C74190B6-8589-11D1-B16A-00C0F0283628}\\Implemented Categories\\{40FC6ED5-2438-11CF-A3DB-080036F12502}] 1793392522
+#time=1dd68ae2f9482a0
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C74190B6-8589-11D1-B16A-00C0F0283628}\\Implemented Categories\\{7DD95801-9882-11CF-9FA9-00AA006C42C4}] 1793392522
+#time=1dd68ae2f94a514
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C74190B6-8589-11D1-B16A-00C0F0283628}\\Implemented Categories\\{7DD95802-9882-11CF-9FA9-00AA006C42C4}] 1793392522
+#time=1dd68ae2f94a2d0
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C74190B6-8589-11D1-B16A-00C0F0283628}\\InprocServer32] 1793392522
+#time=1dd68ae2f945e92
+@="C:\\Program Files (x86)\\Diablo II\\ProjectD2\\MpqFixer\\mscomctl.ocx"
+"ThreadingModel"="Apartment"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C74190B6-8589-11D1-B16A-00C0F0283628}\\MiscStatus] 1793392522
+#time=1dd68ae2f948b10
+@="0"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C74190B6-8589-11D1-B16A-00C0F0283628}\\MiscStatus\\1] 1793392522
+#time=1dd68ae2f948c14
+@="131473"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C74190B6-8589-11D1-B16A-00C0F0283628}\\ProgID] 1793392522
+#time=1dd68ae2f94727e
+@="MSComctlLib.TreeCtrl.2"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C74190B6-8589-11D1-B16A-00C0F0283628}\\ToolboxBitmap32] 1793392522
+#time=1dd68ae2f948f84
+@="C:\\Program Files (x86)\\Diablo II\\ProjectD2\\MpqFixer\\mscomctl.ocx, 2"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C74190B6-8589-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f947526
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C74190B6-8589-11D1-B16A-00C0F0283628}\\Version] 1793392522
+#time=1dd68ae2f9477b0
+@="2.0"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{C74190B6-8589-11D1-B16A-00C0F0283628}\\VersionIndependentProgID] 1793392522
+#time=1dd68ae2f946fd6
+@="MSComctlLib.TreeCtrl"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{DD9DA666-8594-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f978e6e
+@="Microsoft ImageComboBox Control 6.0 (SP6)"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{DD9DA666-8594-11D1-B16A-00C0F0283628}\\Control] 1793392522
+#time=1dd68ae2f978676
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{DD9DA666-8594-11D1-B16A-00C0F0283628}\\Implemented Categories\\{0DE86A52-2BAA-11CF-A229-00AA003D7352}] 1793392522
+#time=1dd68ae2f97a0ac
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{DD9DA666-8594-11D1-B16A-00C0F0283628}\\Implemented Categories\\{0DE86A53-2BAA-11CF-A229-00AA003D7352}] 1793392522
+#time=1dd68ae2f979ee0
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{DD9DA666-8594-11D1-B16A-00C0F0283628}\\Implemented Categories\\{0DE86A57-2BAA-11CF-A229-00AA003D7352}] 1793392522
+#time=1dd68ae2f979d14
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{DD9DA666-8594-11D1-B16A-00C0F0283628}\\Implemented Categories\\{40FC6ED4-2438-11CF-A3DB-080036F12502}] 1793392522
+#time=1dd68ae2f979b48
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{DD9DA666-8594-11D1-B16A-00C0F0283628}\\Implemented Categories\\{40FC6ED5-2438-11CF-A3DB-080036F12502}] 1793392522
+#time=1dd68ae2f9780e0
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{DD9DA666-8594-11D1-B16A-00C0F0283628}\\Implemented Categories\\{7DD95801-9882-11CF-9FA9-00AA006C42C4}] 1793392522
+#time=1dd68ae2f97a444
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{DD9DA666-8594-11D1-B16A-00C0F0283628}\\Implemented Categories\\{7DD95802-9882-11CF-9FA9-00AA006C42C4}] 1793392522
+#time=1dd68ae2f97a278
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{DD9DA666-8594-11D1-B16A-00C0F0283628}\\InprocServer32] 1793392522
+#time=1dd68ae2f96f968
+@="C:\\Program Files (x86)\\Diablo II\\ProjectD2\\MpqFixer\\mscomctl.ocx"
+"ThreadingModel"="Apartment"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{DD9DA666-8594-11D1-B16A-00C0F0283628}\\MiscStatus] 1793392522
+#time=1dd68ae2f978a68
+@="0"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{DD9DA666-8594-11D1-B16A-00C0F0283628}\\MiscStatus\\1] 1793392522
+#time=1dd68ae2f978b76
+@="131473"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{DD9DA666-8594-11D1-B16A-00C0F0283628}\\ProgID] 1793392522
+#time=1dd68ae2f970dcc
+@="MSComctlLib.ImageComboCtl.2"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{DD9DA666-8594-11D1-B16A-00C0F0283628}\\ToolboxBitmap32] 1793392522
+#time=1dd68ae2f978f86
+@="C:\\Program Files (x86)\\Diablo II\\ProjectD2\\MpqFixer\\mscomctl.ocx, 1916"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{DD9DA666-8594-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f976efc
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{DD9DA666-8594-11D1-B16A-00C0F0283628}\\Version] 1793392522
+#time=1dd68ae2f9772da
+@="2.0"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{DD9DA666-8594-11D1-B16A-00C0F0283628}\\VersionIndependentProgID] 1793392522
+#time=1dd68ae2f970b1a
+@="MSComctlLib.ImageComboCtl"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{F08DF954-8592-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f96698a
+@="Microsoft Slider Control 6.0 (SP6)"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{F08DF954-8592-11D1-B16A-00C0F0283628}\\Control] 1793392522
+#time=1dd68ae2f96625a
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{F08DF954-8592-11D1-B16A-00C0F0283628}\\Implemented Categories\\{0DE86A52-2BAA-11CF-A229-00AA003D7352}] 1793392522
+#time=1dd68ae2f967b78
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{F08DF954-8592-11D1-B16A-00C0F0283628}\\Implemented Categories\\{0DE86A53-2BAA-11CF-A229-00AA003D7352}] 1793392522
+#time=1dd68ae2f9679a2
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{F08DF954-8592-11D1-B16A-00C0F0283628}\\Implemented Categories\\{0DE86A57-2BAA-11CF-A229-00AA003D7352}] 1793392522
+#time=1dd68ae2f9677cc
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{F08DF954-8592-11D1-B16A-00C0F0283628}\\Implemented Categories\\{40FC6ED4-2438-11CF-A3DB-080036F12502}] 1793392522
+#time=1dd68ae2f96760a
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{F08DF954-8592-11D1-B16A-00C0F0283628}\\Implemented Categories\\{40FC6ED5-2438-11CF-A3DB-080036F12502}] 1793392522
+#time=1dd68ae2f965cf6
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{F08DF954-8592-11D1-B16A-00C0F0283628}\\Implemented Categories\\{7DD95801-9882-11CF-9FA9-00AA006C42C4}] 1793392522
+#time=1dd68ae2f967f24
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{F08DF954-8592-11D1-B16A-00C0F0283628}\\Implemented Categories\\{7DD95802-9882-11CF-9FA9-00AA006C42C4}] 1793392522
+#time=1dd68ae2f967d58
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{F08DF954-8592-11D1-B16A-00C0F0283628}\\InprocServer32] 1793392522
+#time=1dd68ae2f9637bc
+@="C:\\Program Files (x86)\\Diablo II\\ProjectD2\\MpqFixer\\mscomctl.ocx"
+"ThreadingModel"="Apartment"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{F08DF954-8592-11D1-B16A-00C0F0283628}\\MiscStatus] 1793392522
+#time=1dd68ae2f9665f2
+@="0"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{F08DF954-8592-11D1-B16A-00C0F0283628}\\MiscStatus\\1] 1793392522
+#time=1dd68ae2f9666f6
+@="131473"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{F08DF954-8592-11D1-B16A-00C0F0283628}\\ProgID] 1793392522
+#time=1dd68ae2f964c16
+@="MSComctlLib.Slider.2"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{F08DF954-8592-11D1-B16A-00C0F0283628}\\ToolboxBitmap32] 1793392522
+#time=1dd68ae2f966a8e
+@="C:\\Program Files (x86)\\Diablo II\\ProjectD2\\MpqFixer\\mscomctl.ocx, 16"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{F08DF954-8592-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f964ec8
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{F08DF954-8592-11D1-B16A-00C0F0283628}\\Version] 1793392522
+#time=1dd68ae2f96515c
+@="2.0"
+
+[Software\\Classes\\Wow6432Node\\CLSID\\{F08DF954-8592-11D1-B16A-00C0F0283628}\\VersionIndependentProgID] 1793392522
+#time=1dd68ae2f964978
+@="MSComctlLib.Slider"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{1EFB6594-857C-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9a4668
+@="ITabStrip"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{1EFB6594-857C-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9a42c6
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{1EFB6594-857C-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9a44f6
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{1EFB6594-857C-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9a4884
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{1EFB6595-857C-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9a5ca2
+@="ITabStripEvents"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{1EFB6595-857C-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9a5900
+@="{00020420-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{1EFB6595-857C-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9a5b3a
+@="{00020420-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{1EFB6595-857C-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9a5edc
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{1EFB6597-857C-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9a74d0
+@="ITabs"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{1EFB6597-857C-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9a70ca
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{1EFB6597-857C-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9a734a
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{1EFB6597-857C-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9a76f6
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{1EFB6599-857C-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9a8af6
+@="ITab"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{1EFB6599-857C-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9a8772
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{1EFB6599-857C-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9a8998
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{1EFB6599-857C-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9a8d12
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{2334D2B1-713E-11CF-8AE5-00AA00C00905}] 1793392522
+#time=1dd68ae2f9a1094
+@="IVBDataObject"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{2334D2B1-713E-11CF-8AE5-00AA00C00905}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9a08ba
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{2334D2B1-713E-11CF-8AE5-00AA00C00905}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9a0e00
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{2334D2B1-713E-11CF-8AE5-00AA00C00905}\\TypeLib] 1793392522
+#time=1dd68ae2f9a162a
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{2334D2B3-713E-11CF-8AE5-00AA00C00905}] 1793392522
+#time=1dd68ae2f9a3006
+@="IVBDataObjectFiles"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{2334D2B3-713E-11CF-8AE5-00AA00C00905}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9a2c82
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{2334D2B3-713E-11CF-8AE5-00AA00C00905}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9a2ea8
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{2334D2B3-713E-11CF-8AE5-00AA00C00905}\\TypeLib] 1793392522
+#time=1dd68ae2f9a3218
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{2C247F21-8591-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9f5a4a
+@="IImageList"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{2C247F21-8591-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9f56e4
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{2C247F21-8591-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9f58f6
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{2C247F21-8591-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9f5c2a
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{2C247F22-8591-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9f6df0
+@="ImageListEvents"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{2C247F22-8591-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9f6ac6
+@="{00020420-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{2C247F22-8591-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9f6cba
+@="{00020420-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{2C247F22-8591-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9f6fd0
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{2C247F24-8591-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9f81dc
+@="IImages"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{2C247F24-8591-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9f7ea8
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{2C247F24-8591-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9f809c
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{2C247F24-8591-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9f83d0
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{2C247F26-8591-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9f99e2
+@="IImage"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{2C247F26-8591-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9f928a
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{2C247F26-8591-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9f962c
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{2C247F26-8591-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9f9fb4
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{35053A20-8589-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9b7f42
+@="IProgressBar"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{35053A20-8589-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9b7bb4
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{35053A20-8589-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9b7de4
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{35053A20-8589-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9b814a
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{35053A21-8589-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9b952c
+@="IProgressBarEvents"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{35053A21-8589-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9b9180
+@="{00020420-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{35053A21-8589-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9b93ba
+@="{00020420-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{35053A21-8589-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9b973e
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{66833FE4-8583-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9aa108
+@="IToolbar"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{66833FE4-8583-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9a9d66
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{66833FE4-8583-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9a9f96
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{66833FE4-8583-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9aa324
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{66833FE5-8583-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9ab6d4
+@="IToolbarEvents"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{66833FE5-8583-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9ab346
+@="{00020420-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{66833FE5-8583-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9ab56c
+@="{00020420-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{66833FE5-8583-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9ab904
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{66833FE7-8583-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9acd04
+@="IButtons"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{66833FE7-8583-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9ac962
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{66833FE7-8583-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9acb9c
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{66833FE7-8583-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9acf2a
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{66833FE9-8583-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9ae2f8
+@="IButton"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{66833FE9-8583-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9adf4c
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{66833FE9-8583-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9ae190
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{66833FE9-8583-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9ae500
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{66833FEB-8583-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9af964
+@="IButtonMenus"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{66833FEB-8583-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9af5e0
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{66833FEB-8583-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9af7fc
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{66833FEB-8583-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9afb9e
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{66833FED-8583-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9b103e
+@="IButtonMenu"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{66833FED-8583-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9b0b98
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{66833FED-8583-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9b0dc8
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{66833FED-8583-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9b126e
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{8E3867A1-8586-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9b2664
+@="IStatusBar"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{8E3867A1-8586-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9b22c2
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{8E3867A1-8586-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9b24fc
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{8E3867A1-8586-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9b2880
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{8E3867A2-8586-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9b3c9e
+@="IStatusBarEvents"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{8E3867A2-8586-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9b38e8
+@="{00020420-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{8E3867A2-8586-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9b3b2c
+@="{00020420-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{8E3867A2-8586-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9b3ec4
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{8E3867A4-8586-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9b5274
+@="IPanels"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{8E3867A4-8586-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9b4ee6
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{8E3867A4-8586-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9b5116
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{8E3867A4-8586-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9b549a
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{8E3867AA-8586-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9b68f4
+@="IPanel"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{8E3867AA-8586-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9b6548
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{8E3867AA-8586-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9b6782
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{8E3867AA-8586-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9b6b10
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{BDD1F049-858B-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9c04c6
+@="IListView"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{BDD1F049-858B-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9c0106
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{BDD1F049-858B-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9c0368
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{BDD1F049-858B-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9c070a
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{BDD1F04A-858B-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9c1b8c
+@="ListViewEvents"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{BDD1F04A-858B-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9c17d6
+@="{00020420-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{BDD1F04A-858B-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9c1a2e
+@="{00020420-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{BDD1F04A-858B-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9c1d9e
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{BDD1F04C-858B-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9cbdbc
+@="IListItems"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{BDD1F04C-858B-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9cba24
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{BDD1F04C-858B-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9cbc54
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{BDD1F04C-858B-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9cbfe2
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{BDD1F04E-858B-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9cd414
+@="IListItem"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{BDD1F04E-858B-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9cd072
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{BDD1F04E-858B-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9cd298
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{BDD1F04E-858B-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9cd630
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{BDD1F050-858B-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9cea8a
+@="IColumnHeaders"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{BDD1F050-858B-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9ce6ca
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{BDD1F050-858B-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9ce90e
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{BDD1F050-858B-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9cecb0
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{BDD1F051-858B-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9d010a
+@="IColumnHeader"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{BDD1F051-858B-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9cfd54
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{BDD1F051-858B-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9cffa2
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{BDD1F051-858B-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9d0326
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{BDD1F053-858B-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9d1708
+@="IListSubItems"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{BDD1F053-858B-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9d1384
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{BDD1F053-858B-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9d15a0
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{BDD1F053-858B-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9d1956
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{BDD1F055-858B-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9ef050
+@="IListSubItem"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{BDD1F055-858B-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9ee7d6
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{BDD1F055-858B-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9eecea
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{BDD1F055-858B-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9f446a
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{C74190B4-8589-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9babf2
+@="ITreeView"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{C74190B4-8589-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9ba7b0
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{C74190B4-8589-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9ba9e0
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{C74190B4-8589-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9bae18
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{C74190B5-8589-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9bc25e
+@="ITreeViewEvents"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{C74190B5-8589-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9bbe8a
+@="{00020420-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{C74190B5-8589-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9bc0d8
+@="{00020420-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{C74190B5-8589-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9bc484
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{C74190B7-8589-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9bd7da
+@="INodes"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{C74190B7-8589-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9bd460
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{C74190B7-8589-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9bd686
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{C74190B7-8589-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9bda00
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{C74190B8-8589-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9bee5a
+@="INode"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{C74190B8-8589-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9beacc
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{C74190B8-8589-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9becfc
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{C74190B8-8589-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9bf09e
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{C8A3DC00-8593-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9ff4aa
+@="IControls"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{C8A3DC00-8593-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9fef00
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{C8A3DC00-8593-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9ff306
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{C8A3DC00-8593-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9ff6f8
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{DD9DA660-8594-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2fa00d64
+@="IComboItem"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{DD9DA660-8594-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2fa00936
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{DD9DA660-8594-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2fa00bd4
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{DD9DA660-8594-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2fa00fbc
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{DD9DA662-8594-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2fa0247a
+@="IComboItems"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{DD9DA662-8594-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2fa020ba
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{DD9DA662-8594-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2fa02308
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{DD9DA662-8594-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2fa026a0
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{DD9DA664-8594-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2fa03b4a
+@="IImageCombo"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{DD9DA664-8594-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2fa0379e
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{DD9DA664-8594-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2fa039d8
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{DD9DA664-8594-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2fa03d98
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{DD9DA665-8594-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2fa0522e
+@="DImageComboEvents"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{DD9DA665-8594-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2fa04e64
+@="{00020420-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{DD9DA665-8594-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2fa050bc
+@="{00020420-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{DD9DA665-8594-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2fa05468
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{F08DF952-8592-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9fbf4e
+@="ISlider"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{F08DF952-8592-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9fbaee
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{F08DF952-8592-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9fbd96
+@="{00020424-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{F08DF952-8592-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9fc1c4
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{F08DF953-8592-11D1-B16A-00C0F0283628}] 1793392522
+#time=1dd68ae2f9fd8a8
+@="ISliderEvents"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{F08DF953-8592-11D1-B16A-00C0F0283628}\\ProxyStubClsid] 1793392522
+#time=1dd68ae2f9fd4b6
+@="{00020420-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{F08DF953-8592-11D1-B16A-00C0F0283628}\\ProxyStubClsid32] 1793392522
+#time=1dd68ae2f9fd722
+@="{00020420-0000-0000-C000-000000000046}"
+
+[Software\\Classes\\Wow6432Node\\Interface\\{F08DF953-8592-11D1-B16A-00C0F0283628}\\TypeLib] 1793392522
+#time=1dd68ae2f9fdb28
+@="{831FDD16-0C5C-11D2-A9FC-0000F8754DA1}"
+"Version"="2.0"
+
+[Software\\Microsoft\\DevDiv\\VC\\Servicing\\14.0] 1793392521
+#time=1dd68ae2ef779e2
+"SP"=dword:00000000
+"SPIndex"=dword:00000000
+
+[Software\\Microsoft\\DevDiv\\VC\\Servicing\\14.0\\RuntimeAdditional] 1793392521
+#time=1dd68ae2efcd766
+"Install"=dword:00000001
+"InstallerType"="MSI"
+"SP"=dword:00000000
+"SPIndex"=dword:00000000
+"SPName"="RTM"
+"UpdateVersion"="14.28.29325"
+"Version"="14.28.29325"
+
+[Software\\Microsoft\\DevDiv\\VC\\Servicing\\14.0\\RuntimeMinimum] 1793392520
+#time=1dd68ae2ebb1b82
+"Install"=dword:00000001
+"InstallerType"="MSI"
+"SP"=dword:00000000
+"SPIndex"=dword:00000000
+"SPName"="RTM"
+"UpdateVersion"="14.28.29325"
+"Version"="14.28.29325"
+
+[Software\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\x64] 1793392520
+#time=1dd68ae2eb90c98
+"Bld"=dword:0000728d
+"Minor"=dword:0000001c
+"Rbld"=dword:00000002
+"Version"="v14.28.29325.02"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UpgradeCodes\\09A86F63C932FD435BC8463B1035EC53] 1793392520
+#time=1dd68ae2ebeed7a
+"5D2630D7996C3044CB90C0D1DAD139BA"=""
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UpgradeCodes\\15E8B87C56C0E773581D82F286F95E50] 1793392518
+#time=1dd68ae2d408486
+"D58CF04B21B20E649B055E2BE7437839"=""
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UpgradeCodes\\60DB5E5629367203C8625813703DFCA1] 1793392518
+#time=1dd68ae2d098756
+"BB51E2EE8C450BD41B3F20E6C3619619"=""
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UpgradeCodes\\88AAB0B9F51EF1A3CA0C2B609EDD7FC1] 1793392521
+#time=1dd68ae2f008618
+"53C0FA62CE555204D83843E9F81B14F9"=""
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\0B76360A9B1D0AC35A81B25B36672275] 1793392518
+#time=1dd68ae2d1b3b0e
+"D58CF04B21B20E649B055E2BE7437839"="C:\\windows\\syswow64\\mfc140deu.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\1352F35FC2724F93C9B513B213B8195E] 1793392520
+#time=1dd68ae2e8cd42a
+"5D2630D7996C3044CB90C0D1DAD139BA"="02:\\SOFTWARE\\Microsoft\\DevDiv\\VC\\Servicing\\14.0\\RuntimeMinimum\\Install"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\141252235EB0EFA389942D18DC59D434] 1793392520
+#time=1dd68ae2ed0649c
+"53C0FA62CE555204D83843E9F81B14F9"="C:\\windows\\system32\\mfcm140.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\18E39E9B8AC8A5A3EA358562C997478C] 1793392518
+#time=1dd68ae2d1bf2e2
+"D58CF04B21B20E649B055E2BE7437839"="C:\\windows\\syswow64\\mfc140ita.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\1EA31416F42045848B8DD1E28F10CE12] 1793392520
+#time=1dd68ae2e8acd42
+"5D2630D7996C3044CB90C0D1DAD139BA"="C:\\windows\\system32\\msvcp140_codecvt_ids.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\1F33968699A98DC30A17B21EC1AEE599] 1793392521
+#time=1dd68ae2ed2069e
+"53C0FA62CE555204D83843E9F81B14F9"="C:\\windows\\system32\\mfc140enu.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\1F6CD69CA4980E338A1CE3E93749AF82] 1793392518
+#time=1dd68ae2d1d081c
+"BB51E2EE8C450BD41B3F20E6C3619619"="02:\\SOFTWARE\\Microsoft\\DevDiv\\VC\\Servicing\\14.0\\SP"
+"D58CF04B21B20E649B055E2BE7437839"="02:\\SOFTWARE\\Microsoft\\DevDiv\\VC\\Servicing\\14.0\\SP"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\2085E0429CDB18632976C73AF592EEFB] 1793392517
+#time=1dd68ae2ce40364
+"BB51E2EE8C450BD41B3F20E6C3619619"="C:\\windows\\syswow64\\vcamp140.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\22D9592D7BD4FA231A0B48504C227194] 1793392520
+#time=1dd68ae2ecfd7a2
+"53C0FA62CE555204D83843E9F81B14F9"="02:\\SOFTWARE\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\X64\\Version"
+"5D2630D7996C3044CB90C0D1DAD139BA"="02:\\SOFTWARE\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\X64\\Version"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\27942822A4C04B13EAFEF97C95F63150] 1793392520
+#time=1dd68ae2e896326
+"5D2630D7996C3044CB90C0D1DAD139BA"="C:\\windows\\system32\\msvcp140.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\2D1C5B53B5BE965338BE873EF4C52345] 1793392520
+#time=1dd68ae2e8aff24
+"5D2630D7996C3044CB90C0D1DAD139BA"="C:\\windows\\system32\\concrt140.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\303E1D40F0E81D63CBF12EE72E9091A8] 1793392521
+#time=1dd68ae2ed40930
+"53C0FA62CE555204D83843E9F81B14F9"="02:\\SOFTWARE\\Microsoft\\DevDiv\\VC\\Servicing\\14.0\\SP"
+"5D2630D7996C3044CB90C0D1DAD139BA"="02:\\SOFTWARE\\Microsoft\\DevDiv\\VC\\Servicing\\14.0\\SP"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\321B7242231FB0F49A85057FDCCFAA65] 1793392520
+#time=1dd68ae2e8934f0
+"5D2630D7996C3044CB90C0D1DAD139BA"="C:\\windows\\system32\\vcruntime140_1.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\3A1C53B88CB3F7C33B57D6B5E272B8FF] 1793392518
+#time=1dd68ae2d1b0c88
+"D58CF04B21B20E649B055E2BE7437839"="C:\\windows\\syswow64\\mfc140cht.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\3E229A99F84673C3A86E8732F213B7E1] 1793392520
+#time=1dd68ae2ed00786
+"53C0FA62CE555204D83843E9F81B14F9"="C:\\windows\\system32\\mfc140.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\46B9183E65C37DD329D1000B11DA13ED] 1793392518
+#time=1dd68ae2d197332
+"BB51E2EE8C450BD41B3F20E6C3619619"="02:\\SOFTWARE\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\X86\\Version"
+"D58CF04B21B20E649B055E2BE7437839"="02:\\SOFTWARE\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\X86\\Version"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\51AD4298368ED8830AB67E3A39A17DB7] 1793392520
+#time=1dd68ae2ed03706
+"53C0FA62CE555204D83843E9F81B14F9"="C:\\windows\\system32\\mfc140u.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\52FCE2A887EC8E939BD4BAB1A128F53C] 1793392518
+#time=1dd68ae2d1ca9d0
+"D58CF04B21B20E649B055E2BE7437839"="C:\\windows\\syswow64\\mfc140kor.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\585B296F66C15DB3CA1344E22412DE08] 1793392521
+#time=1dd68ae2ed198e4
+"53C0FA62CE555204D83843E9F81B14F9"="C:\\windows\\system32\\mfc140cht.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\5CE4A476237FD6C30ABF82D916696356] 1793392521
+#time=1dd68ae2ed238ee
+"53C0FA62CE555204D83843E9F81B14F9"="C:\\windows\\system32\\mfc140esn.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\67A3D0AE64EA64F39BD403D905791A52] 1793392521
+#time=1dd68ae2ed35670
+"53C0FA62CE555204D83843E9F81B14F9"="02:\\SOFTWARE\\Microsoft\\DevDiv\\VC\\Servicing\\14.0\\SP"
+"5D2630D7996C3044CB90C0D1DAD139BA"="02:\\SOFTWARE\\Microsoft\\DevDiv\\VC\\Servicing\\14.0\\SP"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\69D89E5FF7C37D7328F14EBB304D83B4] 1793392520
+#time=1dd68ae2e8ba3ca
+"5D2630D7996C3044CB90C0D1DAD139BA"="C:\\windows\\system32\\vcomp140.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\6AF6D649BB945143DAD2D436C434C20F] 1793392518
+#time=1dd68ae2d1a9244
+"D58CF04B21B20E649B055E2BE7437839"="C:\\windows\\syswow64\\mfcm140u.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\6C9340DAD3CDC2A3FA832B02388D36F9] 1793392520
+#time=1dd68ae2e8a674e
+"5D2630D7996C3044CB90C0D1DAD139BA"="C:\\windows\\system32\\msvcp140_2.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\71214F24B8FA4D33C93BFFF596B6CEBB] 1793392517
+#time=1dd68ae2ce19a70
+"BB51E2EE8C450BD41B3F20E6C3619619"=""
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\7863FF1350CEB6A38AECDA8DB11F05E6] 1793392520
+#time=1dd68ae2e8d0756
+"5D2630D7996C3044CB90C0D1DAD139BA"="-1:\\Software\\Classes\\Installer\\Dependencies\\Microsoft.VS.VC_RuntimeMinimumVSU_amd64,v14\\Version"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\7DA003D8A249FDE3AA30D344A29F2980] 1793392521
+#time=1dd68ae2ed29a8c
+"53C0FA62CE555204D83843E9F81B14F9"="C:\\windows\\system32\\mfc140ita.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\7E52BAFB9807F7F32B60B598A4DBB7A7] 1793392518
+#time=1dd68ae2d1c210e
+"D58CF04B21B20E649B055E2BE7437839"="C:\\windows\\syswow64\\mfc140jpn.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\7FD8D5E49CB105931B840901B2EC77A7] 1793392518
+#time=1dd68ae2d1bc57e
+"D58CF04B21B20E649B055E2BE7437839"="C:\\windows\\syswow64\\mfc140fra.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\841B335EA38A88737A36C0C664FCC63C] 1793392518
+#time=1dd68ae2d1add26
+"D58CF04B21B20E649B055E2BE7437839"="C:\\windows\\syswow64\\mfc140chs.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\8888C9AC6EEC6D836AD433AD82762518] 1793392521
+#time=1dd68ae2ed1597e
+"53C0FA62CE555204D83843E9F81B14F9"="C:\\windows\\system32\\mfc140chs.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\88AB88A3087226237A9AA7113DDEA988] 1793392521
+#time=1dd68ae2ed26b98
+"53C0FA62CE555204D83843E9F81B14F9"="C:\\windows\\system32\\mfc140fra.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\8EE841F7F16E26436B4D1E14A1E85C9C] 1793392521
+#time=1dd68ae2ed1d318
+"53C0FA62CE555204D83843E9F81B14F9"="C:\\windows\\system32\\mfc140deu.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\8F139CF91DE936230A1FA8ED33D0E0EC] 1793392517
+#time=1dd68ae2ce38f4c
+"BB51E2EE8C450BD41B3F20E6C3619619"="C:\\windows\\syswow64\\concrt140.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\8FA62F832D375A43B93B38EC91002AEA] 1793392520
+#time=1dd68ae2e8c0ba8
+"5D2630D7996C3044CB90C0D1DAD139BA"="02:\\SOFTWARE\\Microsoft\\DevDiv\\VC\\Servicing\\14.0\\RuntimeMinimum\\Install"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\91EDD49C07CCA9B36AFAC57A43B0B9A9] 1793392518
+#time=1dd68ae2d1a61fc
+"D58CF04B21B20E649B055E2BE7437839"="C:\\windows\\syswow64\\mfcm140.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\92998CBAE1E91F035A6A6C58DBDD7B3E] 1793392521
+#time=1dd68ae2ed434f0
+"53C0FA62CE555204D83843E9F81B14F9"="02:\\SOFTWARE\\Microsoft\\DevDiv\\VC\\Servicing\\14.0\\RuntimeAdditional\\Install"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\9512E90A57FAE634AAD4526B0B1AD106] 1793392517
+#time=1dd68ae2ce36030
+"BB51E2EE8C450BD41B3F20E6C3619619"="C:\\windows\\syswow64\\msvcp140_codecvt_ids.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\97FC00201A9B4EB359A592AFD9B4A1C5] 1793392517
+#time=1dd68ae2ce3bea4
+"BB51E2EE8C450BD41B3F20E6C3619619"="C:\\windows\\syswow64\\vccorlib140.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\AB48ECA76FF4B153EA191E89DD8B25EE] 1793392517
+#time=1dd68ae2ce4f120
+"BB51E2EE8C450BD41B3F20E6C3619619"="02:\\SOFTWARE\\Microsoft\\DevDiv\\VC\\Servicing\\14.0\\RuntimeMinimum\\Install"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\ACCF93639695D613CA810E6C2B5B239E] 1793392520
+#time=1dd68ae2ecfab92
+"53C0FA62CE555204D83843E9F81B14F9"="02:\\SOFTWARE\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\X64\\Version"
+"5D2630D7996C3044CB90C0D1DAD139BA"="02:\\SOFTWARE\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\X64\\Version"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\B3D93E8E53F48D638B29B48233F60E14] 1793392517
+#time=1dd68ae2ce2512c
+"BB51E2EE8C450BD41B3F20E6C3619619"="C:\\windows\\syswow64\\vcruntime140.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\B6AE1A6418D39933981921F7F7A77EA6] 1793392518
+#time=1dd68ae2d1a325e
+"D58CF04B21B20E649B055E2BE7437839"="C:\\windows\\syswow64\\mfc140u.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\BB3240163111F293B8A04300001E0944] 1793392521
+#time=1dd68ae2ed47cbc
+"53C0FA62CE555204D83843E9F81B14F9"="-1:\\Software\\Classes\\Installer\\Dependencies\\Microsoft.VS.VC_RuntimeAdditionalVSU_amd64,v14\\Version"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\BCE00C92AF70C413399B4A50F82E20B5] 1793392518
+#time=1dd68ae2d1b9838
+"D58CF04B21B20E649B055E2BE7437839"="C:\\windows\\syswow64\\mfc140esn.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\BD994C15A7DB9E13AAAFD5803147B134] 1793392521
+#time=1dd68ae2ed2c886
+"53C0FA62CE555204D83843E9F81B14F9"="C:\\windows\\system32\\mfc140jpn.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\BF427A2B66EB00A3182637A36261AA34] 1793392518
+#time=1dd68ae2d1b6aac
+"D58CF04B21B20E649B055E2BE7437839"="C:\\windows\\syswow64\\mfc140enu.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\C069AA2AC3DFD6A3DBF641390311FA3B] 1793392517
+#time=1dd68ae2ce28692
+"BB51E2EE8C450BD41B3F20E6C3619619"="C:\\windows\\syswow64\\msvcp140.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\C2A122DAB65961F3F846CF39C8FB1D9C] 1793392521
+#time=1dd68ae2ed0acfe
+"53C0FA62CE555204D83843E9F81B14F9"="C:\\windows\\system32\\mfcm140u.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\C72BD52213EE8FD34BBBCA55605C76A3] 1793392521
+#time=1dd68ae2ed3a030
+"53C0FA62CE555204D83843E9F81B14F9"="02:\\SOFTWARE\\Microsoft\\DevDiv\\VC\\Servicing\\14.0\\RuntimeAdditional\\Install"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\C8BA4DF4F75C28732903C9AC2251A33D] 1793392518
+#time=1dd68ae2d19ca08
+"D58CF04B21B20E649B055E2BE7437839"="C:\\windows\\syswow64\\mfc140.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\CF1288ED10B63B4328E2F1739AE9A4E2] 1793392518
+#time=1dd68ae2d1cdb62
+"D58CF04B21B20E649B055E2BE7437839"="C:\\windows\\syswow64\\mfc140rus.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\D119A3F71F2F0B13890895B0C76A267C] 1793392518
+#time=1dd68ae2d1d7b3a
+"D58CF04B21B20E649B055E2BE7437839"="-1:\\Software\\Classes\\Installer\\Dependencies\\Microsoft.VS.VC_RuntimeAdditionalVSU_x86,v14\\Version"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\D1620B12191585D3C9929B32B2726D61] 1793392521
+#time=1dd68ae2ed32984
+"53C0FA62CE555204D83843E9F81B14F9"="C:\\windows\\system32\\mfc140rus.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\D2CEC367661A6084E955D760679C2B2C] 1793392517
+#time=1dd68ae2ce32de0
+"BB51E2EE8C450BD41B3F20E6C3619619"="C:\\windows\\syswow64\\msvcp140_atomic_wait.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\D8553176F1EDC3731AD2AB9E0064759F] 1793392520
+#time=1dd68ae2e8992ce
+"5D2630D7996C3044CB90C0D1DAD139BA"="C:\\windows\\system32\\msvcp140_1.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\DF85233BC05724B3B84E35B5849ED74B] 1793392520
+#time=1dd68ae2e8905e8
+"5D2630D7996C3044CB90C0D1DAD139BA"="C:\\windows\\system32\\vcruntime140.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\DFB6ED46C7D3FD634972D26E58F854EC] 1793392517
+#time=1dd68ae2ce4312c
+"BB51E2EE8C450BD41B3F20E6C3619619"="C:\\windows\\syswow64\\vcomp140.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\E9820507FCEB7C2398CD804C84E084B2] 1793392520
+#time=1dd68ae2e8b759e
+"5D2630D7996C3044CB90C0D1DAD139BA"="C:\\windows\\system32\\vcamp140.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\ECAE1C3074E724137A7E3F56800DB21D] 1793392520
+#time=1dd68ae2e88d4d8
+"5D2630D7996C3044CB90C0D1DAD139BA"=""
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\F1F22C6C2BEC6D132A9EF821A42824F8] 1793392521
+#time=1dd68ae2ed2f978
+"53C0FA62CE555204D83843E9F81B14F9"="C:\\windows\\system32\\mfc140kor.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\F2D616F7941B2083EBC4F079B192B3C6] 1793392517
+#time=1dd68ae2ce52136
+"BB51E2EE8C450BD41B3F20E6C3619619"="-1:\\Software\\Classes\\Installer\\Dependencies\\Microsoft.VS.VC_RuntimeMinimumVSU_x86,v14\\Version"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\F3027E2A2C06E7D3A864BDD383A1C26E] 1793392517
+#time=1dd68ae2ce2b95a
+"BB51E2EE8C450BD41B3F20E6C3619619"="C:\\windows\\syswow64\\msvcp140_1.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\FD022AE163B598239B970D86144E8188] 1793392518
+#time=1dd68ae2d1d3350
+"D58CF04B21B20E649B055E2BE7437839"="02:\\SOFTWARE\\Microsoft\\DevDiv\\VC\\Servicing\\14.0\\RuntimeAdditional\\Install"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\FD2EFD8F5E4F5484898282946C589AB1] 1793392520
+#time=1dd68ae2e8a9c8c
+"5D2630D7996C3044CB90C0D1DAD139BA"="C:\\windows\\system32\\msvcp140_atomic_wait.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\FD7D722D8F9DFA339B53B42F4FF7E24A] 1793392520
+#time=1dd68ae2e8b2f08
+"5D2630D7996C3044CB90C0D1DAD139BA"="C:\\windows\\system32\\vccorlib140.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\FE9930CBD9E5C7C3FB5FE5A9599CD6FA] 1793392517
+#time=1dd68ae2ce2e844
+"BB51E2EE8C450BD41B3F20E6C3619619"="C:\\windows\\syswow64\\msvcp140_2.dll"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Products\\53C0FA62CE555204D83843E9F81B14F9\\Features] 1793392521
+#time=1dd68ae2f00f0e4
+"Provider"="moG3G`{4H6G'W(!0G0&="
+"Servicing_Key"="}l%7tMm^D8Rl6TZ'b&+0'Sp&.$N$w7EoUUC@KXj669bV$yUY]5fOBkPchbHT`dx5`]g*g3l!]~R`r!4r"
+"VC_Runtime_Additional"="`eJL50)At3?e'whWbeysPGxbleL`@4Y-ij$pZhQ?rJpHY6n&F71G(J.x]el,ql])T60!36kLbb]$43mO3+v,4RU[z6_.YfQrq_^9=bm_`$UR?8W{mWWfsPriK@--jBJk=6%P~-o2.xWQBp+9xgCW77yMyr2OS-MQ.ycpPpZ.p4'Eo29a?3qiu@IWIr,9W7GwHGq~1w@YCyj4IQorK71IMSZgq%UH)H*n6e^K44ZMS](cguuSsf*HUZZ^58W`4x98!8i%_um?B}HX&4.BYc%d-AX9UHrsh]`V$4VA+{(rMd&V9ACo-KYse7v=wP.hqrD*"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Products\\53C0FA62CE555204D83843E9F81B14F9\\InstallProperties] 1793392521
+#time=1dd68ae2f00879e
+"AuthorizedCDFPrefix"=""
+"Comments"=""
+"Contact"=""
+"DisplayName"="Microsoft Visual C++ 2019 X64 Additional Runtime - 14.28.29325"
+"DisplayVersion"="14.28.29325"
+"EstimatedSize"=dword:00000000
+"HelpLink"=""
+"HelpTelephone"=""
+"InstallDate"="20261030"
+"InstallLocation"=""
+"InstallSource"="C:\\ProgramData\\Package Cache\\{26AF0C35-55EC-4025-8D83-349E8FB1419F}v14.28.29325\\packages\\vcRuntimeAdditional_amd64\\"
+"Language"=dword:00000409
+"LocalPackage"="C:\\windows\\Installer\\e4fc.msi"
+"ModifyPath"=str(2):"MsiExec.exe /I{26AF0C35-55EC-4025-8D83-349E8FB1419F}"
+"Publisher"="Microsoft Corporation"
+"ReadMe"=""
+"Size"=""
+"SystemComponent"=dword:00000001
+"UninstallString"=str(2):"MsiExec.exe /I{26AF0C35-55EC-4025-8D83-349E8FB1419F}"
+"URLInfoAbout"=""
+"URLUpdateInfo"=""
+"Version"=dword:0e1c728d
+"VersionMajor"=dword:0000000e
+"VersionMinor"=dword:0000001c
+"WindowsInstaller"=dword:00000001
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Products\\5D2630D7996C3044CB90C0D1DAD139BA\\Features] 1793392520
+#time=1dd68ae2ebfcf2e
+"Provider"="m1r(4k)$k6}NL_nIreNK"
+"Servicing_Key"="}l%7tMm^D8Rl6TZ'b&+0bpfA6H@8w4uOhGk9vj-a69bV$yUY]5fOBkPchbHT_hrnwTc7^6~=}s1]OWkr"
+"VC_Runtime_Minimum"="`eJL50)At3?e'whWbeysPGxbleL`@4Y-ij$pZhQ?Q@`5$bDfo3g+8jHSXC7leaNZb~(v&7G]{EE34p!cHqe].QdOJAs}DQxI+bqC.Jh*.eFp{3)pT1i_na^$+Av-IDy%i5FP2-tk%f.y*b][`S(@d64~6S--UF7[o+}}x74L7?Z!XS?5Wdt+8{t9Gl`w8?Z[qn2+=eu-R@A=5dH525Iu@,rZe1(C*b6Vl.S%]4Ur4svp2=j]Z{=+L[.=C4[1N!hG1Jv1'P'&xH3Sy5k(}He)L}2@"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Products\\5D2630D7996C3044CB90C0D1DAD139BA\\InstallProperties] 1793392520
+#time=1dd68ae2ebef00e
+"AuthorizedCDFPrefix"=""
+"Comments"=""
+"Contact"=""
+"DisplayName"="Microsoft Visual C++ 2019 X64 Minimum Runtime - 14.28.29325"
+"DisplayVersion"="14.28.29325"
+"EstimatedSize"=dword:00000000
+"HelpLink"=""
+"HelpTelephone"=""
+"InstallDate"="20261030"
+"InstallLocation"=""
+"InstallSource"="C:\\ProgramData\\Package Cache\\{7D0362D5-C699-4403-BC09-0C1DAD1D93AB}v14.28.29325\\packages\\vcRuntimeMinimum_amd64\\"
+"Language"=dword:00000409
+"LocalPackage"="C:\\windows\\Installer\\e312.msi"
+"ModifyPath"=str(2):"MsiExec.exe /I{7D0362D5-C699-4403-BC09-0C1DAD1D93AB}"
+"Publisher"="Microsoft Corporation"
+"ReadMe"=""
+"Size"=""
+"SystemComponent"=dword:00000001
+"UninstallString"=str(2):"MsiExec.exe /I{7D0362D5-C699-4403-BC09-0C1DAD1D93AB}"
+"URLInfoAbout"=""
+"URLUpdateInfo"=""
+"Version"=dword:0e1c728d
+"VersionMajor"=dword:0000000e
+"VersionMinor"=dword:0000001c
+"WindowsInstaller"=dword:00000001
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Products\\BB51E2EE8C450BD41B3F20E6C3619619\\Features] 1793392518
+#time=1dd68ae2d09fba0
+"Provider"="P4uxP^F0!6*lkVXj)ikJ"
+"Servicing_Key"="n(ngif,7b4p~)rZS3R21[5yOOjFn(544V.YUYfZu"
+"VC_Runtime_Minimum"="4d6-r{mKs7.e.XaL.+Kp.u*T9l]z`4(PYqFPCrIey6?qsgmA^58hny0Bbb29nSr?]`o7k6Rz'?Wxzihbh`CF]]mxi7hNqs74L'}rrZDLe-QJM7'c8]YOJTHaJ-.!N$ka0?JS@*%.AyXg3Cu][T+3b9Qa$VcMzjtFgp2F[)xX44zq]TpEA47ktWf_!Nz6978].Jy-?0[E`w!Z.hX(T5Bf9V]`VCcf%.^KHMb&_5M{1}rQm,Ak"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Products\\BB51E2EE8C450BD41B3F20E6C3619619\\InstallProperties] 1793392518
+#time=1dd68ae2d0989b8
+"AuthorizedCDFPrefix"=""
+"Comments"=""
+"Contact"=""
+"DisplayName"="Microsoft Visual C++ 2019 X86 Minimum Runtime - 14.28.29325"
+"DisplayVersion"="14.28.29325"
+"EstimatedSize"=dword:00000000
+"HelpLink"=""
+"HelpTelephone"=""
+"InstallDate"="20261030"
+"InstallLocation"=""
+"InstallSource"="C:\\ProgramData\\Package Cache\\{EE2E15BB-54C8-4DB0-B1F3-026E3C166991}v14.28.29325\\packages\\vcRuntimeMinimum_x86\\"
+"Language"=dword:00000409
+"LocalPackage"="C:\\windows\\Installer\\d826.msi"
+"ModifyPath"=str(2):"MsiExec.exe /I{EE2E15BB-54C8-4DB0-B1F3-026E3C166991}"
+"Publisher"="Microsoft Corporation"
+"ReadMe"=""
+"Size"=""
+"SystemComponent"=dword:00000001
+"UninstallString"=str(2):"MsiExec.exe /I{EE2E15BB-54C8-4DB0-B1F3-026E3C166991}"
+"URLInfoAbout"=""
+"URLUpdateInfo"=""
+"Version"=dword:0e1c728d
+"VersionMajor"=dword:0000000e
+"VersionMinor"=dword:0000001c
+"WindowsInstaller"=dword:00000001
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Products\\D58CF04B21B20E649B055E2BE7437839\\Features] 1793392518
+#time=1dd68ae2d410a3c
+"Provider"="7ehtPD9S{3P$(`&vw})i"
+"Servicing_Key"="n(ngif,7b4p~)rZS3R21=mrp,v6[84?'KcID5%hS"
+"VC_Runtime_Additional"="4d6-r{mKs7.e.XaL.+Kp*Nt`A~$Rp5R2*-jn6Qtlg,[d=_J]Y4%uPpPuvRFJ3^Jdi7ID17(M0l^Hc`cY@FsdWw[qg4_WmvG%y94v72VarvJ-q5VoifJo`lmgNE(hT9OeM7pTdHE_92.{D_^V[7,AQ7r+C7c}nK!DM~ZKb-uX_6ejmk6RvSh9ANXK1Rqgp3ud2n$MnC9EYsq3AAcfK6nNRC(j`cFO2BthdGR1i6S6VC0}e5LiKc2[f2`cJ8q4J0T}D,GO&7!KT8j$]6Kett+9!HlgXFCTp~zfx4*bre5=g^s2"
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Products\\D58CF04B21B20E649B055E2BE7437839\\InstallProperties] 1793392518
+#time=1dd68ae2d408698
+"AuthorizedCDFPrefix"=""
+"Comments"=""
+"Contact"=""
+"DisplayName"="Microsoft Visual C++ 2019 X86 Additional Runtime - 14.28.29325"
+"DisplayVersion"="14.28.29325"
+"EstimatedSize"=dword:00000000
+"HelpLink"=""
+"HelpTelephone"=""
+"InstallDate"="20261030"
+"InstallLocation"=""
+"InstallSource"="C:\\ProgramData\\Package Cache\\{B40FC85D-2B12-46E0-B950-E5B27E348793}v14.28.29325\\packages\\vcRuntimeAdditional_x86\\"
+"Language"=dword:00000409
+"LocalPackage"="C:\\windows\\Installer\\d9cb.msi"
+"ModifyPath"=str(2):"MsiExec.exe /I{B40FC85D-2B12-46E0-B950-E5B27E348793}"
+"Publisher"="Microsoft Corporation"
+"ReadMe"=""
+"Size"=""
+"SystemComponent"=dword:00000001
+"UninstallString"=str(2):"MsiExec.exe /I{B40FC85D-2B12-46E0-B950-E5B27E348793}"
+"URLInfoAbout"=""
+"URLUpdateInfo"=""
+"Version"=dword:0e1c728d
+"VersionMajor"=dword:0000000e
+"VersionMinor"=dword:0000001c
+"WindowsInstaller"=dword:00000001
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{26AF0C35-55EC-4025-8D83-349E8FB1419F}] 1793392521
+#time=1dd68ae2f004040
+"AuthorizedCDFPrefix"=""
+"Comments"=""
+"Contact"=""
+"DisplayName"="Microsoft Visual C++ 2019 X64 Additional Runtime - 14.28.29325"
+"DisplayVersion"="14.28.29325"
+"EstimatedSize"=dword:00000000
+"HelpLink"=""
+"HelpTelephone"=""
+"InstallDate"="20261030"
+"InstallLocation"=""
+"InstallSource"="C:\\ProgramData\\Package Cache\\{26AF0C35-55EC-4025-8D83-349E8FB1419F}v14.28.29325\\packages\\vcRuntimeAdditional_amd64\\"
+"Language"=dword:00000409
+"ModifyPath"=str(2):"MsiExec.exe /I{26AF0C35-55EC-4025-8D83-349E8FB1419F}"
+"Publisher"="Microsoft Corporation"
+"ReadMe"=""
+"Size"=""
+"SystemComponent"=dword:00000001
+"UninstallString"=str(2):"MsiExec.exe /I{26AF0C35-55EC-4025-8D83-349E8FB1419F}"
+"URLInfoAbout"=""
+"URLUpdateInfo"=""
+"Version"=dword:0e1c728d
+"VersionMajor"=dword:0000000e
+"VersionMinor"=dword:0000001c
+"WindowsInstaller"=dword:00000001
+
+[Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{7D0362D5-C699-4403-BC09-0C1DAD1D93AB}] 1793392520
+#time=1dd68ae2ebeac70
+"AuthorizedCDFPrefix"=""
+"Comments"=""
+"Contact"=""
+"DisplayName"="Microsoft Visual C++ 2019 X64 Minimum Runtime - 14.28.29325"
+"DisplayVersion"="14.28.29325"
+"EstimatedSize"=dword:00000000
+"HelpLink"=""
+"HelpTelephone"=""
+"InstallDate"="20261030"
+"InstallLocation"=""
+"InstallSource"="C:\\ProgramData\\Package Cache\\{7D0362D5-C699-4403-BC09-0C1DAD1D93AB}v14.28.29325\\packages\\vcRuntimeMinimum_amd64\\"
+"Language"=dword:00000409
+"ModifyPath"=str(2):"MsiExec.exe /I{7D0362D5-C699-4403-BC09-0C1DAD1D93AB}"
+"Publisher"="Microsoft Corporation"
+"ReadMe"=""
+"Size"=""
+"SystemComponent"=dword:00000001
+"UninstallString"=str(2):"MsiExec.exe /I{7D0362D5-C699-4403-BC09-0C1DAD1D93AB}"
+"URLInfoAbout"=""
+"URLUpdateInfo"=""
+"Version"=dword:0e1c728d
+"VersionMajor"=dword:0000000e
+"VersionMinor"=dword:0000001c
+"WindowsInstaller"=dword:00000001
+
+[Software\\Microsoft\\Windows NT\\CurrentVersion\\AppCompatFlags\\Layers] 1793392515
+#time=1dd68ae2bce4ebc
+"C:\\Program Files (x86)\\Diablo II\\ProjectD2\\PD2Launcher.exe"="RUNASADMIN"
+
+[Software\\Wow6432Node\\Blizzard Entertainment\\Diablo II] 1793392328
+#time=1dd68adbc5d910a
+"GamePath"="C:\\Program Files (x86)\\Diablo II\\Diablo II.exe"
+"InstallPath"="C:\\Program Files (x86)\\Diablo II\\"
+
+[Software\\Wow6432Node\\Microsoft\\DevDiv\\VC\\Servicing\\14.0] 1793392518
+#time=1dd68ae2d394b3a
+"SP"=dword:00000000
+"SPIndex"=dword:00000000
+
+[Software\\Wow6432Node\\Microsoft\\DevDiv\\VC\\Servicing\\14.0\\RuntimeAdditional] 1793392518
+#time=1dd68ae2d3dfd9c
+"Install"=dword:00000001
+"InstallerType"="MSI"
+"SP"=dword:00000000
+"SPIndex"=dword:00000000
+"SPName"="RTM"
+"UpdateVersion"="14.28.29325"
+"Version"="14.28.29325"
+
+[Software\\Wow6432Node\\Microsoft\\DevDiv\\VC\\Servicing\\14.0\\RuntimeMinimum] 1793392518
+#time=1dd68ae2d0783e8
+"Install"=dword:00000001
+"InstallerType"="MSI"
+"SP"=dword:00000000
+"SPIndex"=dword:00000000
+"SPName"="RTM"
+"UpdateVersion"="14.28.29325"
+"Version"="14.28.29325"
+
+[Software\\Wow6432Node\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\x64] 1793392520
+#time=1dd68ae2eb76974
+"Bld"=dword:0000728d
+"Minor"=dword:0000001c
+"Rbld"=dword:00000002
+"Version"="v14.28.29325.02"
+
+[Software\\Wow6432Node\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\x86] 1793392517
+#time=1dd68ae2d06203e
+"Bld"=dword:0000728d
+"Minor"=dword:0000001c
+"Rbld"=dword:00000002
+"Version"="v14.28.29325.02"
+
+[Software\\Wow6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{33628a12-6787-4b9f-95a1-92449f69fae0}] 1793392521
+#time=1dd68ae2f039470
+"BundleAddonCode"=hex(7):
+"BundleCachePath"="C:\\ProgramData\\Package Cache\\{33628a12-6787-4b9f-95a1-92449f69fae0}\\VC_redist.x64.exe"
+"BundleDetectCode"=hex(7):
+"BundlePatchCode"=hex(7):
+"BundleProviderKey"="VC,redist.x64,amd64,14.28,bundle"
+"BundleTag"=hex(1):
+"BundleUpgradeCode"=str(7):"{C146EF48-4D31-3C3D-A2C5-1E91AF8A0A9B}\0"
+"BundleVersion"="14.28.29325.2"
+"DisplayIcon"="C:\\ProgramData\\Package Cache\\{33628a12-6787-4b9f-95a1-92449f69fae0}\\VC_redist.x64.exe,0"
+"DisplayName"="Microsoft Visual C++ 2015-2019 Redistributable (x64) - 14.28.29325"
+"DisplayVersion"="14.28.29325.2"
+"EngineVersion"="3.10.4.4718"
+"EstimatedSize"=dword:00005880
+"Installed"=dword:00000001
+"ModifyPath"="\"C:\\ProgramData\\Package Cache\\{33628a12-6787-4b9f-95a1-92449f69fae0}\\VC_redist.x64.exe\" /modify"
+"NoElevateOnModify"=dword:00000001
+"Publisher"="Microsoft Corporation"
+"QuietUninstallString"="\"C:\\ProgramData\\Package Cache\\{33628a12-6787-4b9f-95a1-92449f69fae0}\\VC_redist.x64.exe\" /uninstall /quiet"
+"Resume"=dword:00000003
+"UninstallString"="\"C:\\ProgramData\\Package Cache\\{33628a12-6787-4b9f-95a1-92449f69fae0}\\VC_redist.x64.exe\"  /uninstall"
+
+[Software\\Wow6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{822B3055-5F16-4934-A1FC-378AB0181A66}_is1] 1793392515
+#time=1dd68ae2bcea164
+"DisplayName"="Project Diablo 2"
+"DisplayVersion"="1.0"
+"EstimatedSize"=dword:000082ce
+"HelpLink"="https://www.projectdiablo2.com/"
+"Inno Setup: App Path"="C:\\Program Files (x86)\\Diablo II"
+"Inno Setup: Icon Group"="(Default)"
+"Inno Setup: Language"="english"
+"Inno Setup: Setup Version"="5.5.9 (a)"
+"Inno Setup: User"="wine"
+"InstallDate"="20261030"
+"InstallLocation"="C:\\Program Files (x86)\\Diablo II\\"
+"MajorVersion"=dword:00000001
+"MinorVersion"=dword:00000000
+"NoModify"=dword:00000001
+"NoRepair"=dword:00000001
+"Publisher"="projectdiablo2.com"
+"QuietUninstallString"="\"C:\\Program Files (x86)\\Diablo II\\ProjectD2\\unins000.exe\" /SILENT"
+"UninstallString"="\"C:\\Program Files (x86)\\Diablo II\\ProjectD2\\unins000.exe\""
+"URLInfoAbout"="https://www.projectdiablo2.com/"
+"URLUpdateInfo"="https://www.projectdiablo2.com/"
+"VersionMajor"=dword:00000001
+"VersionMinor"=dword:00000000
+
+[Software\\Wow6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{B40FC85D-2B12-46E0-B950-E5B27E348793}] 1793392518
+#time=1dd68ae2d3faf34
+"AuthorizedCDFPrefix"=""
+"Comments"=""
+"Contact"=""
+"DisplayName"="Microsoft Visual C++ 2019 X86 Additional Runtime - 14.28.29325"
+"DisplayVersion"="14.28.29325"
+"EstimatedSize"=dword:00000000
+"HelpLink"=""
+"HelpTelephone"=""
+"InstallDate"="20261030"
+"InstallLocation"=""
+"InstallSource"="C:\\ProgramData\\Package Cache\\{B40FC85D-2B12-46E0-B950-E5B27E348793}v14.28.29325\\packages\\vcRuntimeAdditional_x86\\"
+"Language"=dword:00000409
+"ModifyPath"=str(2):"MsiExec.exe /I{B40FC85D-2B12-46E0-B950-E5B27E348793}"
+"Publisher"="Microsoft Corporation"
+"ReadMe"=""
+"Size"=""
+"SystemComponent"=dword:00000001
+"UninstallString"=str(2):"MsiExec.exe /I{B40FC85D-2B12-46E0-B950-E5B27E348793}"
+"URLInfoAbout"=""
+"URLUpdateInfo"=""
+"Version"=dword:0e1c728d
+"VersionMajor"=dword:0000000e
+"VersionMinor"=dword:0000001c
+"WindowsInstaller"=dword:00000001
+
+[Software\\Wow6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{d7a6435f-ac9a-4af6-8fdc-ca130d13fac9}] 1793392518
+#time=1dd68ae2d449544
+"BundleAddonCode"=hex(7):
+"BundleCachePath"="C:\\ProgramData\\Package Cache\\{d7a6435f-ac9a-4af6-8fdc-ca130d13fac9}\\VC_redist.x86.exe"
+"BundleDetectCode"=hex(7):
+"BundlePatchCode"=hex(7):
+"BundleProviderKey"="VC,redist.x86,x86,14.28,bundle"
+"BundleTag"=hex(1):
+"BundleUpgradeCode"=str(7):"{F899BAD3-98ED-308E-A905-56B5338963FF}\0"
+"BundleVersion"="14.28.29325.2"
+"DisplayIcon"="C:\\ProgramData\\Package Cache\\{d7a6435f-ac9a-4af6-8fdc-ca130d13fac9}\\VC_redist.x86.exe,0"
+"DisplayName"="Microsoft Visual C++ 2015-2019 Redistributable (x86) - 14.28.29325"
+"DisplayVersion"="14.28.29325.2"
+"EngineVersion"="3.10.4.4718"
+"EstimatedSize"=dword:00004f93
+"Installed"=dword:00000001
+"ModifyPath"="\"C:\\ProgramData\\Package Cache\\{d7a6435f-ac9a-4af6-8fdc-ca130d13fac9}\\VC_redist.x86.exe\" /modify"
+"NoElevateOnModify"=dword:00000001
+"Publisher"="Microsoft Corporation"
+"QuietUninstallString"="\"C:\\ProgramData\\Package Cache\\{d7a6435f-ac9a-4af6-8fdc-ca130d13fac9}\\VC_redist.x86.exe\" /uninstall /quiet"
+"Resume"=dword:00000003
+"UninstallString"="\"C:\\ProgramData\\Package Cache\\{d7a6435f-ac9a-4af6-8fdc-ca130d13fac9}\\VC_redist.x86.exe\"  /uninstall"
+
+[Software\\Wow6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{EE2E15BB-54C8-4DB0-B1F3-026E3C166991}] 1793392518
+#time=1dd68ae2d094200
+"AuthorizedCDFPrefix"=""
+"Comments"=""
+"Contact"=""
+"DisplayName"="Microsoft Visual C++ 2019 X86 Minimum Runtime - 14.28.29325"
+"DisplayVersion"="14.28.29325"
+"EstimatedSize"=dword:00000000
+"HelpLink"=""
+"HelpTelephone"=""
+"InstallDate"="20261030"
+"InstallLocation"=""
+"InstallSource"="C:\\ProgramData\\Package Cache\\{EE2E15BB-54C8-4DB0-B1F3-026E3C166991}v14.28.29325\\packages\\vcRuntimeMinimum_x86\\"
+"Language"=dword:00000409
+"ModifyPath"=str(2):"MsiExec.exe /I{EE2E15BB-54C8-4DB0-B1F3-026E3C166991}"
+"Publisher"="Microsoft Corporation"
+"ReadMe"=""
+"Size"=""
+"SystemComponent"=dword:00000001
+"UninstallString"=str(2):"MsiExec.exe /I{EE2E15BB-54C8-4DB0-B1F3-026E3C166991}"
+"URLInfoAbout"=""
+"URLUpdateInfo"=""
+"Version"=dword:0e1c728d
+"VersionMajor"=dword:0000000e
+"VersionMinor"=dword:0000001c
+"WindowsInstaller"=dword:00000001
+
+
+;; @hive user.reg  HKEY_CURRENT_USER (user.reg)
+#arch=win64
+
+[Software\\Blizzard Entertainment\\Diablo II] 1793392715
+#time=1dd68aea2f5c632
+"GamePath"="C:\\Program Files (x86)\\Diablo II\\Diablo II.exe"
+"InstallPath"="C:\\Program Files (x86)\\Diablo II"
+
+[Software\\Blizzard Entertainment\\Diablo II\\VideoConfig] 1793392642
+#time=1dd68ae774dee42
+"DeviceDDraw"=dword:00000000
+"DeviceName"=hex(1):
+"DirectDrawDevice0"=dword:00000001
+"dwFlags"=dword:0000029b
+"Render"=dword:00000000
+
+[Software\\ShadowFlare] 1793392522
+#time=1dd68ae2fb4303c
+
+[Software\\ShadowFlare\\WinMPQ] 1793392522
+#time=1dd68ae2fbf525a
+"InstallPath"="C:\\Program Files (x86)\\Diablo II\\ProjectD2\\MpqFixer"
+"ProgramFilename"="C:\\Program Files (x86)\\Diablo II\\ProjectD2\\MpqFixer\\WinMPQ.exe"
+"StartupPath"="C:\\Program Files (x86)\\Diablo II\\ProjectD2\\MpqFixer"
+
+[Software\\ShadowFlare\\WinMPQ\\Status] 1793392522
+#time=1dd68ae2fbf4742
+"WindowHeight"=dword:000010d1
+"WindowLeft"=dword:000004a1
+"WindowState"=dword:00000000
+"WindowTop"=dword:0000041a
+"WindowWidth"=dword:00001a9a
+
+[Software\\Wine\\AppDefaults\\Game.exe\\DllOverrides] 1793392515
+#time=1dd68ae2bce5880
+"ddraw"="native, builtin"

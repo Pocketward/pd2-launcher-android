@@ -1,6 +1,7 @@
-# Tools image for the native userland (amd64): the Debian packages' download and unpacking, the
-# Xvfb and x-input-relay cross-builds, the staging of the native tree and its relocation.
-# Base image pinned by digest; every package pinned by exact version from the snapshot in ../config.sh.
+# Tools image of the runtime (amd64): the .NET archives' unpack (dotnet.sh), the prefix templates'
+# last steps and the golden layer (prefix.sh, golden.py: cabextract opens the Visual C++ redist's
+# cabinets) and the pack (pack.py, zstd). Base image pinned by digest; every package pinned by exact
+# version from the snapshot in ../../userland/config.sh.
 ARG DEBIAN_IMAGE
 FROM ${DEBIAN_IMAGE}
 
@@ -35,6 +36,7 @@ RUN rm -f /etc/apt/sources.list.d/debian.sources \
         patchelf=0.18.0-1.4 \
         patch=2.8-2 \
         zstd=1.5.7+dfsg-1 \
+        cabextract=1.11-2 \
         file=1:5.46-5 \
         curl=8.14.1-2+deb13u5 \
         xz-utils=5.8.1-1+deb13u1 \

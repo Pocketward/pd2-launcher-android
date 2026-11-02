@@ -21,7 +21,7 @@ import java.nio.file.attribute.PosixFilePermissions
 
 /**
  * The runtime the app provides (runtime/build.sh): the ARM64 Wine 11.0 with Box64's
- * wowbox64.dll, its prefix template and the official launcher's x86 .NET runtime, unpacked once
+ * wowbox64.dll, its two prefix templates (PLAIN and GOLDEN) and the official launcher's x86 .NET runtime, unpacked once
  * into the Launcher's managed root [managedRoot] as the engine names them, so the engine finds
  * them installed and downloads none of them. The files that hold the data-folder placeholder
  * (the tar's first entry, `relocate.list`) get [dataDir] in its place as they are unpacked
@@ -61,7 +61,8 @@ class AppRuntime(
      * and only then is the marker written (a temporary name, synced, renamed, the folder synced):
      * after a power cut the marker never names a version whose files did not all reach the disk.
      * A prefix that an older runtime or another template generation made ([LegacyPrefix.ours]) is
-     * moved over to this one's template last, before the marker;
+     * moved over to this one's template last, before the marker, under the prefix lock
+     * ([PrefixState.locked], which the unpack itself does not hold);
      * when that fails, its game folder waits for Import ([LegacyPrefix.setAside]), and that folder
      * is returned (null: the update in place passed, or there was nothing to update).
      */
@@ -139,7 +140,7 @@ class AppRuntime(
             if (!Files.isSymbolicLink(dir.toPath())) syncDirectory(dir.toPath())
         }
         syncDirectory(managedRoot.toPath())
-        val kept = updatePrefix()
+        val kept = PrefixState.locked { updatePrefix() }
         val temporary = File(managedRoot, "$MARKER.tmp")
         FileOutputStream(temporary).use {
             it.write(version.toByteArray())
@@ -160,13 +161,14 @@ class AppRuntime(
      * At a start with this runtime unpacked, before the engine starts: [updatePrefix] when a
      * set-aside ([LegacyPrefix.settingAside]) or a move ([LegacyPrefix.unfinished]) waits to be
      * finished (a stop left it part way: an unpack's move runs again whole, a start's does not),
-     * or a copy of an older template is in place ([LegacyPrefix.stale]); else nothing. The game
-     * folder for Import, as [updatePrefix].
+     * a copy of an older template is in place ([LegacyPrefix.stale]), or the prefix is not whole
+     * ([LegacyPrefix.broken]: no hive, or no prefix with a game in the game folder); else nothing.
+     * The game folder for Import, as [updatePrefix]. Under the prefix lock ([PrefixState.locked]),
+     * so a capture of the state that an earlier session left on the sync thread waits for it.
      */
-    fun updatePrefixAtStart(): File? {
+    fun updatePrefixAtStart(): File? = PrefixState.locked {
         val legacy = legacyPrefix()
-        if (!legacy.settingAside() && !legacy.unfinished() && !legacy.stale()) return null
-        return updatePrefix()
+        if (!legacy.settingAside() && !legacy.unfinished() && !legacy.stale() && !legacy.broken()) null else updatePrefix()
     }
 
     /**
@@ -175,10 +177,13 @@ class AppRuntime(
      * When the move fails after the older prefix was renamed out of the way, its game folder waits
      * for Import ([LegacyPrefix.setAside]), and that folder is returned.
      *
-     * A failure before that rename (no room to copy the template, for example) changes nothing for
-     * a copy of a template: the new prefix it began goes, the prefix stays with its game (playable
-     * on this runtime; from generation 1 to 2 it only lacks the sound), and every start tries
-     * again, with the same log line, until the move passes. A prefix of an older runtime (Wine-GE
+     * A failure before that rename (no room to copy the template, for example) leaves a copy of a
+     * template in place as the engine can use it: the new prefix it began goes, and what the move
+     * did before (the game folder of an older layout out of the prefix, a capture of the prefix
+     * state) the prefix reaches through its links; the prefix state loses nothing that this prefix
+     * links to (only [PrefixState.cleanUp] removes from it, after the swap). Such a prefix is
+     * playable on this runtime (from generation 1 to 2 it only lacks the sound), and every start
+     * tries again, with the same log line, until the move passes. A prefix of an older runtime (Wine-GE
      * under FEX, no "disable" stamp) is set aside at once instead: the engine would run Wine's
      * prefix update on it with this runtime's Wine. Null: the move passed, there was nothing to
      * move, or it waits for the next start.
@@ -197,6 +202,12 @@ class AppRuntime(
             if (!legacy.moved() && !olderRuntime) {
                 log("update in place stopped before it changed the prefix ($error); the next start tries again")
                 runCatching { legacy.discardNew() }.onFailure { log("update in place: the new prefix it began stays: $it") }
+                return null
+            }
+            // The game is safe outside the prefix already: nothing waits for Import, and the next
+            // start finishes the move (LegacyPrefix.unfinished).
+            if (!olderRuntime && legacy.gameInLocation()) {
+                log("update in place stopped after the game left the prefix ($error); the next start goes on")
                 return null
             }
             log("update in place failed: $error")
@@ -263,8 +274,10 @@ class AppRuntime(
         /** The data-folder placeholder the runtime's programs are built for (userland/config.sh). */
         val PLACEHOLDER = "/pd2launcher-data-placeholder-" + "0".repeat(170)
         private const val RELOCATE_LIST = "relocate.list"
-        /** The prefix template (the engine's `APP_PREFIX_TEMPLATE`). */
+        /** The PLAIN prefix template, for the source Blizzard's installers (the engine's `APP_PREFIX_TEMPLATE`). */
         const val PREFIX_TEMPLATE = "runner/wine-11.0-arm64-prefix"
+        /** The GOLDEN prefix template, for Fast download and imports (the engine's `APP_PREFIX_TEMPLATE_GOLDEN`). */
+        const val PREFIX_TEMPLATE_GOLDEN = "runner/wine-11.0-arm64-prefix-golden"
         /** The runtime's Wine (the engine's `APP_RUNTIME_DIRECTORY`). */
         const val WINE = "runner/wine-11.0-arm64"
         /** The official launcher's x86 .NET runtime, which the prefix's `C:\Program Files (x86)\dotnet` links to (runtime/prefix.sh). */
@@ -274,6 +287,7 @@ class AppRuntime(
             DOTNET,
             WINE,
             PREFIX_TEMPLATE,
+            PREFIX_TEMPLATE_GOLDEN,
         )
 
         /**

@@ -14,6 +14,10 @@ class SessionPaths(val data: String) {
     val launcherHome = File(files, "launcher")
     val tmp = File(files, "tmp")
     val logs = File(files, "logs")
+
+    /** The guard file of the Vulkan driver probe ([VulkanDriverProbe]): there while a probe runs, or after one that did not finish. */
+    val vulkanProbeMarker = File(files, "vulkan-driver-probe.marker")
+
     /** The engine's own diagnostics (its activity log and job history), which Share logs and Save logs pack ([LogShare]). */
     val engineDiagnostics = File(launcherHome, "logs/diagnostics")
     val userlandRoot = File(files, "userland")
@@ -96,6 +100,12 @@ class SessionPaths(val data: String) {
     val emptyDnsForTest = File(files, "debug-empty-dns")
 
     /**
+     * Debug builds only: with this file the Game view keeps Android's buffered input dispatch
+     * ([InputDispatch]); it looks each time it opens.
+     */
+    val bufferedInputForTest = File(files, "debug-buffered-input")
+
+    /**
      * Debug builds only: with this file every program the session starts runs under the seccomp
      * test harness [seccompRun] with Android 11's app seccomp policy ([ProcessStarter]). A getter,
      * so that a release build, which never reads it, has neither path.
@@ -105,8 +115,14 @@ class SessionPaths(val data: String) {
     /** The seccomp test harness (userland/glibc/tests/seccomp-run.c), put there by a development tool. */
     val seccompRun: File get() = File(files, "seccomp-run")
 
-    /** The Managed prefix's Diablo II folder (the engine's `GAME_RELATIVE`). */
-    val managedGame = File(managedRoot, "prefix/drive_c/Program Files (x86)/Diablo II")
+    /**
+     * The Managed Diablo II folder, outside the disposable prefix (the engine's `ANDROID_GAME_RELATIVE`),
+     * which the prefix reaches as `C:\Program Files (x86)\Diablo II` through a link ([PrefixState.GAME_LINK]).
+     */
+    val managedGame = File(managedRoot, PrefixState.GAME_LOCATION)
+
+    /** What a new prefix needs back: the player's registry values and the installers' state ([PrefixState]). */
+    val prefixState = File(managedRoot, PrefixState.FOLDER)
 
     /**
      * The player's own files, apart from any install: no install, update, Start over or folder

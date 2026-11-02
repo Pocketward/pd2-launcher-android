@@ -62,22 +62,34 @@ DOTNET_DESKTOP_SHA512=c137de6e19760936986fee027696c824e904b4094d5fc882a22593819c
 XINPUT_BRIDGE_SIZE=4096
 XINPUT_BRIDGE_SHA256=b78963150d55de280266418095e79ebeb4d754571f49076c77f8924b34ee70c7
 
-# The managed-root names the engine gives the app's runtime (src/runtime.rs).
+# The Visual C++ 14.28.29325 redist that the official Project Diablo 2 installer runs: Microsoft's
+# two official installers (file version 14.28.29325.2), from which golden.py takes the golden
+# layer's Visual C++ files without running them. The SHA-256 is part of each URL.
+VCREDIST_X64_URL="https://download.visualstudio.microsoft.com/download/pr/89a3b9df-4a09-492e-8474-8f92c115c51d/B1A32C71A6B7D5978904FB223763263EA5A7EB23B2C44A0D60E90D234AD99178/VC_redist.x64.exe"
+VCREDIST_X64_SHA256=b1a32c71a6b7d5978904fb223763263ea5a7eb23b2c44a0d60e90d234ad99178
+VCREDIST_X86_URL="https://download.visualstudio.microsoft.com/download/pr/8ecb9800-52fd-432d-83ee-d6e037e96cc2/50A3E92ADE4C2D8F310A2812D46322459104039B9DEADBD7FDD483B5C697C0C8/VC_redist.x86.exe"
+VCREDIST_X86_SHA256=50a3e92ade4c2d8f310a2812d46322459104039b9deadbd7fdd483b5c697c0c8
+
+# The managed-root names the engine gives the app's runtime (src/runtime.rs): the PLAIN prefix
+# template (for the source Blizzard's installers) and the GOLDEN one (for Fast download and imports).
 APP_RUNTIME_DIRECTORY=wine-11.0-arm64
 APP_PREFIX_TEMPLATE=wine-11.0-arm64-prefix
+APP_PREFIX_TEMPLATE_GOLDEN=wine-11.0-arm64-prefix-golden
 APP_DOTNET_DIRECTORY=dotnet-6.0.36-x86
 
 # The generation of the prefix template, which prefix.sh writes into it (.pd2-prefix-generation): a
 # whole number from 1 to 999999999. Raise it by hand when existing prefixes must get a change of the
-# template: another Wine version, other registry values, or a Wine module the prefix must carry
+# templates: another Wine version, other registry values, or a Wine module the prefix must carry
 # (Wine loads a builtin module only through its file in the prefix). At a Wine change, raise it,
-# and put the old Wine folder and the old template into AppRuntime.LEGACY. The app moves each
-# prefix of another generation to a copy of the new template, with the game, its records and its
-# registry keys (LegacyPrefix); a prefix without the mark is generation 1. No Wine prefix update
-# runs on the phone: most files of the prefix are links into the runtime's Wine, and wineboot -u
-# would write through them.
+# and put the old Wine folder and the old templates into AppRuntime.LEGACY. The prefix is
+# disposable: the app makes each prefix of another generation again from the new template of its
+# kind (.pd2-prefix-template), with the game folder link, the player's registry values and, for the
+# source Blizzard's installers, what those installers wrote (LegacyPrefix, PrefixState); a prefix
+# without the mark is generation 1. No Wine prefix update runs on the phone: most files of the
+# prefix are links into the runtime's Wine, and wineboot -u would write through them.
 # 2: winealsa.drv, the game's sound output (pd2audio.sh).
-PREFIX_GENERATION=2
+# 3: the game folder outside the prefix (a link), and the GOLDEN template.
+PREFIX_GENERATION=3
 
 # --- helpers --------------------------------------------------------------------------------
 

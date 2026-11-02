@@ -4,12 +4,14 @@ import android.os.ParcelFileDescriptor
 import android.system.ErrnoException
 import android.system.Os
 import android.util.Log
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /** A process the session service started. */
 data class OwnedProcess(val pid: Int, val name: String)
@@ -47,9 +49,13 @@ object OwnedProcesses : UserlandProcesses {
 
 /**
  * Starts owned processes through [Spawner]: standard output and error go through a pipe
- * into the process's own [RotatingLog] in [logs], and
- * every start and exit is logged with pid, name and status or signal, both in that log and
- * in [serviceLog].
+ * into the process's own [RotatingLog] in [logs], each line with the time the app read it
+ * ([StampedOutput]), and every start and exit is logged with pid, name and status or signal in
+ * [serviceLog]. The process's own log gets its start line, with the start's time, only before its
+ * first output, and then its exit line too: a helper that writes nothing (`stop-wine`, say) has
+ * no file of its own, as the service log has both lines. The start lines name the long folders
+ * [folders] by their short names ([shortened]: `<userland>`, `<apk>`, `<data>`; device.txt
+ * names the data folder).
  *
  * Debug builds: when [harness] gives a program (the seccomp test harness, `seccomp-run`), each
  * process starts under it, `seccomp-run --notify <path> <argv after argv[0]>`: the process and
@@ -61,6 +67,7 @@ class ProcessStarter(
     private val logs: File,
     private val serviceLog: RotatingLog,
     private val harness: () -> File? = { null },
+    private val folders: List<Pair<String, String>> = emptyList(),
 ) {
     private val lock = Any()
     /**
@@ -73,7 +80,9 @@ class ProcessStarter(
     /**
      * Starts [path] with [argv] and [env] as [name]; [stdin] (null: /dev/null) and [fd3] (the
      * child's descriptor 3, when given) stay owned by the caller. Each line of its output also
-     * goes to [mirror], when there is one. [onExit] runs on the reaper thread after the exit is logged.
+     * goes to [mirror], when there is one. [rewrite] gives each line as its log writes it (null:
+     * left out): the expected lines of a helper can go in one line. [onExit] runs on the reaper
+     * thread after the exit is logged.
      */
     fun start(
         name: String,
@@ -83,6 +92,7 @@ class ProcessStarter(
         stdin: ParcelFileDescriptor? = null,
         fd3: ParcelFileDescriptor? = null,
         mirror: ((String) -> Unit)? = null,
+        rewrite: (String) -> String? = { it },
         onExit: (OwnedProcess, ExitStatus) -> Unit = { _, _ -> },
     ): OwnedProcess {
         val wrapper = harness()
@@ -96,6 +106,11 @@ class ProcessStarter(
             }
         }
         val log = synchronized(lock) { logsByName.getOrPut(name) { RotatingLog(logs, name) } }
+        // The process's own log has its start line once its first output comes ([drain]).
+        val opened = AtomicBoolean(false)
+        var startLine = ""
+        val startedAt = System.currentTimeMillis()
+        val open = { if (opened.compareAndSet(false, true)) log.line(startLine, startedAt) }
         val pipe = ParcelFileDescriptor.createPipe()
         val devNull = if (stdin == null) ParcelFileDescriptor.open(File("/dev/null"), ParcelFileDescriptor.MODE_READ_ONLY) else null
         val drained = CountDownLatch(1)
@@ -112,7 +127,7 @@ class ProcessStarter(
                         // Most output is in by now; a descendant holding the pipe must not delay the exit line.
                         drained.await(1, TimeUnit.SECONDS)
                         val line = "exit pid=${started?.pid} name=$name ${describe(status)}"
-                        log.line(line)
+                        if (opened.get()) log.line(line)
                         log.close()
                         serviceLog.line(line)
                         Log.i(TAG, line)
@@ -132,27 +147,37 @@ class ProcessStarter(
             pipe[1].close()
             devNull?.close()
         }
-        val line = "start pid=${process.pid} name=$name: ${arguments.joinToString(" ")}"
-        log.line(line)
-        serviceLog.line(line)
+        val line = "start pid=${process.pid} name=$name: ${shortened(arguments.joinToString(" "), folders)}"
+        startLine = line
+        serviceLog.line(line, startedAt)
         Log.i(TAG, line)
-        Thread({ drain(pipe[0], log, drained, lines?.let(::LineSplitter)) }, "pd2-log-$name").apply { isDaemon = true }.start()
+        Thread({ drain(pipe[0], log, drained, open, rewrite, lines) }, "pd2-log-$name").apply { isDaemon = true }.start()
         return process
     }
 
-    private fun drain(read: ParcelFileDescriptor, log: RotatingLog, drained: CountDownLatch, lines: LineSplitter?) {
+    /** The output in [read] into [log] ([StampedOutput]); [open] writes the start line before the first output. */
+    private fun drain(
+        read: ParcelFileDescriptor,
+        log: RotatingLog,
+        drained: CountDownLatch,
+        open: () -> Unit,
+        rewrite: (String) -> String?,
+        mirror: ((String) -> Unit)?,
+    ) {
+        val output = StampedOutput(log, open, rewrite, mirror)
         try {
             ParcelFileDescriptor.AutoCloseInputStream(read).use { input: FileInputStream ->
                 val buffer = ByteArray(8192)
                 while (true) {
                     val n = input.read(buffer)
                     if (n < 0) break
-                    log.append(buffer, n)
-                    lines?.feed(buffer, n)
+                    output.feed(buffer, n)
                 }
-                lines?.flush()
+                output.end()
             }
         } catch (error: IOException) {
+            output.end()
+            open()
             log.line("log pipe failed: ${error.message}")
         } finally {
             drained.countDown()
@@ -167,6 +192,14 @@ class ProcessStarter(
 
         fun describe(status: ExitStatus): String =
             if (status.signal != null) "signal=${status.signal}${signalName(status.signal)}" else "status=${status.code}"
+
+        /**
+         * [text] with each folder of [folders] (its path, then its short name; the more specific
+         * first) as its short name: the userland's and the APK's folders are long, and device.txt
+         * names the data folder.
+         */
+        fun shortened(text: String, folders: List<Pair<String, String>>): String =
+            folders.fold(text) { shorter, (path, short) -> if (path.isEmpty()) shorter else shorter.replace(path, short) }
 
         private fun signalName(signal: Int): String = when (signal) {
             1 -> " (SIGHUP)"
@@ -287,6 +320,49 @@ class UidCleanup(
                 if (close < 0 || stat.getOrNull(close + 2) == 'Z') return@mapNotNull null
                 UidProcess(pid, stat.substring(stat.indexOf('(') + 1, close))
             }.sortedBy { it.pid }
+    }
+}
+
+/**
+ * A process's output into its [log] line by line ([LineSplitter]; a line longer than 4096 bytes in
+ * pieces), each with the time the app read it ([RotatingLog.stamp]), which is when the process
+ * wrote it, give or take the pipe: one stamp and one write of the file for each read ([feed]). A
+ * line with no newline at the end of the output gets its stamp too ([end]). [open] runs before the
+ * first write (the start line, [ProcessStarter]); [rewrite] gives each line as the log writes it
+ * (null: left out); each line also goes to [mirror] as it came.
+ */
+class StampedOutput(
+    private val log: RotatingLog,
+    private val open: () -> Unit = {},
+    private val rewrite: (String) -> String? = { it },
+    private val mirror: ((String) -> Unit)? = null,
+) {
+    private val out = ByteArrayOutputStream()
+    private var stamp = ""
+    private val splitter = LineSplitter { line ->
+        rewrite(line)?.let { out.write("$stamp $it\n".toByteArray()) }
+        mirror?.invoke(line)
+    }
+
+    /** [length] bytes of [bytes], read at [at] (wall clock, ms). */
+    fun feed(bytes: ByteArray, length: Int = bytes.size, at: Long = System.currentTimeMillis()) {
+        stamp = RotatingLog.stamp(at)
+        splitter.feed(bytes, length)
+        write()
+    }
+
+    /** The output ended at [at]: what is left without a newline is a line too. */
+    fun end(at: Long = System.currentTimeMillis()) {
+        stamp = RotatingLog.stamp(at)
+        splitter.flush()
+        write()
+    }
+
+    private fun write() {
+        if (out.size() == 0) return
+        open()
+        log.append(out.toByteArray())
+        out.reset()
     }
 }
 

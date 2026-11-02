@@ -4,8 +4,9 @@ import android.util.Log
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
-import java.text.SimpleDateFormat
-import java.util.Date
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 /**
@@ -57,12 +58,12 @@ class RotatingLog(
     }
 
     /**
-     * Appends one line, prefixed with the wall-clock time and its offset from UTC (`+09:00`, `Z`):
-     * the game's, Battle.net's and the official launcher's own logs are in UTC.
+     * Appends one line, prefixed with the wall-clock time [at] (now, unless given) and its offset
+     * from UTC (`+09:00`, `Z`): the game's, Battle.net's and the official launcher's own logs are
+     * in UTC.
      */
-    fun line(text: String) {
-        val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSSXXX", Locale.ROOT).format(Date())
-        append("$stamp $text\n".toByteArray())
+    fun line(text: String, at: Long = System.currentTimeMillis()) {
+        append("${stamp(at)} $text\n".toByteArray())
     }
 
     fun close() = synchronized(lock) { closeQuietly() }
@@ -101,5 +102,11 @@ class RotatingLog(
         const val LIMIT = 1L shl 20
         const val KEEP = 3
         private const val TAG = "pd2-log"
+
+        /** One formatter for every line of every log: it is immutable, so any thread may use it. */
+        private val STAMP = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSXXX", Locale.ROOT)
+
+        /** The wall-clock time [at] as [line] writes it, in the phone's time zone now. */
+        fun stamp(at: Long): String = STAMP.format(Instant.ofEpochMilli(at).atZone(ZoneId.systemDefault()))
     }
 }

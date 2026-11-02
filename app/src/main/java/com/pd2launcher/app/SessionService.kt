@@ -19,6 +19,7 @@ import android.system.ErrnoException
 import android.system.Os
 import android.system.OsConstants
 import android.util.Log
+import android.view.InputDevice
 import com.pd2launcher.app.control.Command
 import com.pd2launcher.app.control.ControlChannel
 import com.pd2launcher.app.control.DisplaySize
@@ -30,6 +31,7 @@ import com.pd2launcher.app.control.Operation
 import com.pd2launcher.app.control.OperationStatus
 import com.pd2launcher.app.control.Snapshot
 import com.pd2launcher.app.control.collect
+import com.pd2launcher.app.input.ControlsStore
 import com.pd2launcher.app.ui.InstallProgress
 import com.pd2launcher.app.ui.Play
 import java.io.File
@@ -82,6 +84,12 @@ data class SessionStatus(
      */
     val launchRequestedAt: Long? = null,
     /**
+     * When a job command was sent ([PrefixStateKeeper.requestsJob]; elapsed real time), until a
+     * snapshot shows a job, the engine refuses the command or the engine ends: no capture of the
+     * prefix state runs meanwhile ([PrefixStateKeeper.wineRuns]).
+     */
+    val jobRequestedAt: Long? = null,
+    /**
      * The official PD2 launcher's session runs a game it started (Game.exe among the app's
      * processes, [LauncherGame]): the Game view shows the game's menu and controls, not the
      * launcher's.
@@ -132,6 +140,16 @@ class SessionService : Service() {
     private lateinit var paths: SessionPaths
     /** The device's GPU, probed once: Automatic's graphics choices and the engine's host values follow it. */
     private val gpu by lazy { HostGpu.probe() }
+    /** The `seq` of the job command that [SessionStatus.jobRequestedAt] counts (on the worker only). */
+    private var jobRequestSeq: Long? = null
+    /** The capture of the prefix state ([keepPrefixState]); it remembers one that Wine's run put off. */
+    private val prefixStateKeeper by lazy {
+        PrefixStateKeeper(
+            paths.managedRoot, ::log,
+            ready = { _status.value.snapshot?.installation == Installation.READY },
+            wineRuns = { PrefixStateKeeper.wineRuns(_status.value, SystemClock.elapsedRealtime()) },
+        )
+    }
     private lateinit var serviceLog: RotatingLog
     /** `official-launcher.log`, which [launcherLog] writes. */
     private lateinit var launcherRunLog: RotatingLog
@@ -207,6 +225,14 @@ class SessionService : Service() {
     private val snapshotLines = SnapshotLines({ log(it) })
     /** The game's frames in the service log ([FrameWatch]); the frame look only. */
     private val frameWatch = FrameWatch()
+    /** The game's frames as the direct present shows them, in the service log ([PresentWatch]); the frame look only. */
+    private val presentWatch = PresentWatch()
+    /** Detailed logging: D2GL's settings beside the pointer split, in the service log ([D2glWatch]); the frame look only. */
+    private val d2glWatch = D2glWatch()
+    /** The long folders the logs name by short names ([ProcessStarter.shortened]); set in onCreate. */
+    private lateinit var shortFolders: List<Pair<String, String>>
+    /** The graphics, Wine and Box64 environment of each Wine program of the game, once ([ProgramEnvironments]). */
+    private val programEnvironments by lazy { ProgramEnvironments({ pid -> File("/proc/$pid/environ").readBytes() }, shortFolders) }
     /**
      * The notification's Close runs ([close]): nothing new starts, and the session ends once what
      * ran has stopped. Set on the main thread at the tap, read on every thread.
@@ -240,7 +266,9 @@ class SessionService : Service() {
         serviceLog = RotatingLog(paths.logs, "service")
         launcherRunLog = RotatingLog(paths.logs, OfficialLauncherLog.NAME, OfficialLauncherLog.LIMIT, OfficialLauncherLog.KEEP)
         launcherLog = OfficialLauncherLog(launcherRunLog::line, SystemClock::elapsedRealtime)
-        starter = ProcessStarter(paths.logs, serviceLog, ::seccompHarness)
+        // The start lines name the userland's, the APK's and the data folder by short names.
+        shortFolders = listOf(paths.userland.path to "<userland>", applicationInfo.nativeLibraryDir to "<apk>", paths.data to "<data>")
+        starter = ProcessStarter(paths.logs, serviceLog, ::seccompHarness, shortFolders)
         game = GameEnvironment(paths, starter, ::log, this)
         SetupRecordStore.load(this)
         // The first notification channel triggers Android 13's permission prompt at targetSdk 28:
@@ -271,7 +299,8 @@ class SessionService : Service() {
                 post { followMemory() }
             }
         }
-        // While the game runs: its frames (FrameWatch), from its present counter, mapped while it runs.
+        // While the game runs: its frames (FrameWatch, PresentWatch), from its present counter,
+        // mapped while it runs, and from the direct present's counts.
         scope.launch(Dispatchers.IO) {
             var counter: PresentCounter.Reader? = null
             while (true) {
@@ -279,13 +308,29 @@ class SessionService : Service() {
                 val status = _status.value
                 val running = status.snapshot?.game == Game.RUNNING || status.launcherGame
                 if (!running) counter = null
-                if (!running && !frameWatch.active) continue
+                if (!running && !frameWatch.active && !presentWatch.active) continue
                 if (running && counter == null) counter = PresentCounter.reader(paths.presentCounter)
-                val rate = AppSettingsStore.current.value.frameRate
+                val settings = AppSettingsStore.current.value
+                val rate = settings.frameRate
+                val now = SystemClock.elapsedRealtime()
                 frameWatch.next(
-                    SystemClock.elapsedRealtime(), running, counter?.presents(), appForeground,
+                    now, running, counter?.presents(), appForeground,
                     if (rate == AppSettings.FULL_FRAME_RATE) "Full" else rate.toString(), ScreenRate.full.value,
                 )?.let(::log)
+                val server = PresentServer.current.value
+                presentWatch.next(
+                    now, running, server?.counts(), counter?.ticks(), appForeground, settings.detailedLogging,
+                    server?.split(settings.detailedLogging && running),
+                ).forEach(::log)
+                // Detailed logging: D2GL's settings, read only, at the game's start and at each change.
+                if (running && settings.detailedLogging) {
+                    d2glWatch.next {
+                        GameFilesProvider.gameFolder(paths, status.snapshot?.gameFolder?.path)
+                            ?.let { File(it, "${LauncherFiles.FOLDER}/${D2glSettings.FILE}") }
+                    }?.let(::log)
+                } else {
+                    d2glWatch.reset()
+                }
             }
         }
         // While a job downloads or installs: the app's received bytes, for the engine's stall rule.
@@ -453,7 +498,7 @@ class SessionService : Service() {
     private fun engineEnvironment(): List<String> = paths.engineEnvironment(
         mali = gpu is MaliGpu,
         noconform = (gpu as? KgslGpu)?.let { adrenoWithoutMultiview(it.chipId) } ?: false,
-        ubwcFlagHint = UbwcFlagHint.choice(gpu).hint,
+        ubwcFlagHint = UbwcFlagHint.choice(gpu, read = { VulkanDriverProbe.read(paths.vulkanProbeMarker) }).hint,
     )
 
     private fun holdWorkLocks(wanted: Boolean) {
@@ -693,8 +738,10 @@ class SessionService : Service() {
             tookOutUpdatedGame(legacy, legacy.takeOut(paths.upgradeGame))
         }
         if (runtime.isCurrent(version)) {
-            // Before the engine starts: what a stop left part way, or a copy of an older template
-            // in place, moves now (AppRuntime.updatePrefixAtStart).
+            // Before the engine starts: what a stop left part way, a copy of an older template in
+            // place, or a prefix that is not whole, moves now (AppRuntime.updatePrefixAtStart).
+            // Under the prefix lock, which it takes (PrefixState.locked): a capture of the prefix
+            // state that an earlier session left on the sync thread never runs during a rebuild.
             runtime.updatePrefixAtStart()?.let {
                 log("the update in place failed; Install imports the older game folder $it")
                 SetupRecordStore.setUpAgain(this)
@@ -708,6 +755,7 @@ class SessionService : Service() {
         // As unpacking from the start: the older version's trees are removed first, which takes
         // seconds on a phone, and Play says "Updating game files…" through it.
         setUserland(SessionStatus.Userland.Unpacking(0, bytes))
+        // The unpack ends with the rebuild, under the prefix lock (AppRuntime.install).
         val kept = AppRuntime.openTar(this).use { tar ->
             runtime.install(version, tar) { done ->
                 val percent = if (bytes > 0) done * 100 / bytes else 0
@@ -843,7 +891,12 @@ class SessionService : Service() {
             connection.send(command).also {
                 log("command seq $it: $command")
                 if (command is Command.SelectExistingInstall) selectSent = it
-                _status.update { status -> status.copy(refusal = null) }
+                // A job asked for: no capture of the prefix state until a snapshot shows it.
+                val job = PrefixStateKeeper.requestsJob(command)
+                if (job) jobRequestSeq = it
+                _status.update { status ->
+                    status.copy(refusal = null, jobRequestedAt = if (job) SystemClock.elapsedRealtime() else status.jobRequestedAt)
+                }
                 // No paused Install Diablo II goes on after Start over or an import.
                 if (HeldKeys.forgets(command)) heldKeys.clear()
                 noteSourceChoice(command)
@@ -904,6 +957,12 @@ class SessionService : Service() {
      */
     private fun onCommandError(error: EngineMessage.CommandError) {
         if (pendingStart?.clearCommand == error.seq) cancelOperationStart()
+        // The job asked for does not come: a capture of the prefix state that it put off runs now.
+        if (error.seq == jobRequestSeq) {
+            jobRequestSeq = null
+            _status.update { it.copy(jobRequestedAt = null) }
+            keepPutOffPrefixState()
+        }
         log("engine command error: seq ${error.seq}: ${error.reason}")
         launcherLog.refused(error.seq, error.reason)
         // The removal for a picked folder was refused (another job runs): the downloads' files
@@ -940,7 +999,7 @@ class SessionService : Service() {
         val enginePath = File(applicationInfo.nativeLibraryDir, ENGINE_LIBRARY)
         if (!enginePath.isFile) throw IOException("the engine is not in the APK ($enginePath)")
         val loader = paths.loader.path
-        log("UBWC flag hint: ${UbwcFlagHint.choice(gpu).describe()}")
+        log("UBWC flag hint: ${UbwcFlagHint.choice(gpu, read = { VulkanDriverProbe.read(paths.vulkanProbeMarker) }).describe()}")
         val pair = Spawner.socketPair()
         val process = try {
             // Started through the userland's loader.
@@ -948,7 +1007,7 @@ class SessionService : Service() {
                 "engine", loader, listOf(loader, enginePath.path, "--engine"),
                 engineEnvironment() + gameSessionEnvironment(), pair.child,
                 // Each line also to the official PD2 launcher's run while one is open (with its
-                // time, which engine.log does not have); debug builds: the engine's own lines
+                // time, as in engine.log); debug builds: the engine's own lines
                 // (`pd2-launcher: …`) also in logcat.
                 mirror = { line ->
                     if (BuildConfig.DEBUG && line.startsWith(ENGINE_LINE)) Log.i(ENGINE_TAG, line)
@@ -1026,6 +1085,8 @@ class SessionService : Service() {
                     snapshotSeq = message.seq, snapshot = next, updateRecheck = Play.recheck(it.updateRecheck, it.snapshot, next),
                     playCheck = PlayCheck.observe(it.playCheck, next),
                     launcherSince = LauncherStart.since(it.launcherSince, it.snapshot?.activeJob, next.activeJob, now),
+                    // The job asked for shows (in the same update, so no status shows neither).
+                    jobRequestedAt = it.jobRequestedAt.takeUnless { next.activeJob != null },
                 ) }
             },
         )
@@ -1057,7 +1118,15 @@ class SessionService : Service() {
         ) {
             post { followGameFolder() }
         }
-        AppRuntime.sweep(previous, next)?.let { sweep -> post { keepRuntimeArchives(sweep) } }
+        // An install, a Project Diablo 2 install or a repair ran an installer: what it wrote outside
+        // the game folder is kept at the next Ready (PrefixState, the source Blizzard's installers).
+        if (previous?.activeJob in INSTALLER_JOBS && next.activeJob != previous?.activeJob) {
+            onSyncWorker { runCatching { PrefixState(paths.managedRoot, ::log).markCaptureDue() }.onFailure { log("prefix state: $it") } }
+        }
+        AppRuntime.sweep(previous, next)?.let { sweep ->
+            post { keepRuntimeArchives(sweep) }
+            if (sweep == AppRuntime.Sweep.REMOVE) onSyncWorker { keepPrefixState() }
+        }
         // After an update in place that failed: the older game folder, for Install to import;
         // once a session, again at the next start, until the player chooses another source.
         val kept = paths.upgradeGame
@@ -1211,7 +1280,9 @@ class SessionService : Service() {
         installWork.clear()
         launcherSent = null
         launchSent = null
-        _status.update { it.copy(gameEnvironment = false, refusal = null, updateRecheck = null, launchRequestedAt = null) }
+        jobRequestSeq = null
+        _status.update { it.copy(gameEnvironment = false, refusal = null, updateRecheck = null, launchRequestedAt = null, jobRequestedAt = null) }
+        keepPutOffPrefixState()
 
         // Close ends the session: no new engine.
         if (closing) {
@@ -1519,6 +1590,7 @@ class SessionService : Service() {
             linkSaves()
             syncSaves("before Play", forLaunch = true)
             log("Play: settings: ${settingsLine(settings)}")
+            log("Play: ${inputLine(settings)}")
             launchSent = sendCommand(
                 Command.LaunchGame(
                     display = DisplaySize(width.toLong(), height.toLong()),
@@ -1615,6 +1687,7 @@ class SessionService : Service() {
             linkSaves()
             syncSaves("before the official launcher", forLaunch = true)
             log("official launcher: settings: ${settingsLine(settings)}")
+            log("official launcher: ${inputLine(settings)}")
             launcherLog.note("settings: ${settingsLine(settings)}")
             sendCommand(Command.OpenOfficialLauncher(strictMemoryOrder = false, detailedLogging = settings.detailedLogging))
                 ?.also { launchRequested(SystemClock.elapsedRealtime()) }
@@ -1734,6 +1807,39 @@ class SessionService : Service() {
             syncWorker.execute { syncSaves(why) }
         } catch (_: RejectedExecutionException) {
         }
+    }
+
+    /** [work] on the sync's own thread, after what waits there (one at a time: the files it reads stay still). */
+    private fun onSyncWorker(work: () -> Unit) {
+        try {
+            syncWorker.execute(work)
+        } catch (_: RejectedExecutionException) {
+        }
+    }
+
+    /**
+     * What a new prefix needs back ([PrefixState]), kept as the installation stands Ready with
+     * nothing running ([PrefixStateKeeper]), and again once the game environment has stopped when
+     * Wine's run put it off ([keepPutOffPrefixState]).
+     */
+    private fun keepPrefixState() = SaveSyncFolder.locked {
+        // Under the launches' lock: a launch holds it from the Save's link to its command, so no
+        // Wine program starts while the installers' files move. Then the prefix lock inside it
+        // (always in this order): a rebuild at a session start holds that one alone
+        // (AppRuntime.updatePrefixAtStart, AppRuntime.install), so a capture that waits for it
+        // never meets a rebuild.
+        PrefixState.locked { prefixStateKeeper.keep() }
+    }
+
+    /**
+     * A capture of the prefix state that Wine's run put off ([PrefixStateKeeper.takePutOff]) runs
+     * now, once, on the sync thread under the same locks: the game environment has stopped. (The
+     * Ready snapshot after an install can come before its game environment's stop.)
+     */
+    private fun keepPutOffPrefixState() {
+        if (!prefixStateKeeper.takePutOff()) return
+        log("prefix state: the capture that Wine's run put off runs now")
+        onSyncWorker { keepPrefixState() }
     }
 
     /**
@@ -1892,6 +1998,8 @@ class SessionService : Service() {
                 // that ended stays cleared.
                 if (running != _status.value.launcherGame) post { if (launcherGameWatch === watch) launcherGameSeen(running) }
                 launcherLog.processes(processes.filterNot { OwnedProcesses.isRunning(it.pid) })
+                // The launcher's and its game's environment, once for each.
+                programEnvironments.next(processes).forEach { line -> post { log(line) } }
                 if (!running && looks++ % 2 == 0 && launcherLog.running) {
                     val framebuffer = GameEnvironment.framebuffer.value
                     val pixels = framebuffer?.let { current ->
@@ -2003,6 +2111,7 @@ class SessionService : Service() {
         installWork.clear()
         _status.update { it.copy(gameEnvironment = false) }
         log("game environment stopped")
+        keepPutOffPrefixState()
     }
 
     /**
@@ -2163,15 +2272,18 @@ class SessionService : Service() {
     }
 
     /**
-     * On the worker: the line [memoryWatch] gives for now, if any. The game runs while the Game
-     * client or the official PD2 launcher's game runs; while neither runs and none ran at the last
-     * look, nothing is read.
+     * On the worker: the line [memoryWatch] gives for now, if any, and while the game runs the
+     * environment line of each Wine program not seen before ([programEnvironments]). The game runs
+     * while the Game client or the official PD2 launcher's game runs; while neither runs and none
+     * ran at the last look, nothing is read.
      */
     private fun followMemory() {
         val status = _status.value
         val running = status.snapshot?.game == Game.RUNNING || status.launcherGame
         if (!running && !memoryWatch.running) return
         memoryWatch.next(running, MemoryLog.read(), SystemClock.elapsedRealtime())?.let(::log)
+        // The game's environment, once for each Wine program.
+        if (running) programEnvironments.next(UidCleanup.scan(File("/proc"), Os.getuid(), Os.getpid(), ::owner)).forEach(::log)
     }
 
     /**
@@ -2261,9 +2373,18 @@ class SessionService : Service() {
 
     private fun appVersion(): String = packageManager.getPackageInfo(packageName, 0).versionName ?: "unknown"
 
-    /** [SettingsLog.line] for [settings] and the engine's settings in the last snapshot. */
-    private fun settingsLine(settings: AppSettings): String =
-        SettingsLog.line(settings, LauncherSettings.view(_status.value.snapshot?.settings, _status.value.engine == SessionStatus.Engine.CONNECTED))
+    /** [SettingsLog.line] for [settings], the controls and the engine's settings in the last snapshot. */
+    private fun settingsLine(settings: AppSettings): String = SettingsLog.line(
+        settings, ControlsStore.load(this),
+        LauncherSettings.view(_status.value.snapshot?.settings, _status.value.engine == SessionStatus.Engine.CONNECTED),
+    )
+
+    /** [InputSources.line] for the input devices there are now and [settings]' Touch and the chord. */
+    private fun inputLine(settings: AppSettings): String {
+        val devices = ArrayList<InputFacts>()
+        for (id in InputDevice.getDeviceIds()) InputDevice.getDevice(id)?.let { devices += InputFacts.of(it) }
+        return InputSources.line(devices, settings.touchMode, ControlsStore.load(this).chord)
+    }
 
     private fun log(message: String) {
         Log.i(TAG, message)
@@ -2322,6 +2443,12 @@ class SessionService : Service() {
     private data class LauncherSent(val seq: Long, val afterSnapshot: Long, val before: Operation?)
 
     companion object {
+        /** The jobs that run an installer (Blizzard's, the PD2 installer): their end makes a capture due ([PrefixState]). */
+        private val INSTALLER_JOBS = setOf(
+            com.pd2launcher.app.control.Job.INSTALL_BASE_GAME,
+            com.pd2launcher.app.control.Job.INSTALL_PROJECT_DIABLO,
+            com.pd2launcher.app.control.Job.REPAIR,
+        )
         private const val TAG = "pd2-session"
         private const val ENGINE_TAG = "pd2-engine"
         private const val ENGINE_LINE = "pd2-launcher:"

@@ -4,7 +4,9 @@ import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
 import android.graphics.Bitmap
+import android.hardware.display.DisplayManager
 import android.hardware.input.InputManager
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -19,7 +21,9 @@ import android.view.PointerIcon
 import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import android.view.View
 import android.view.ViewConfiguration
+import android.view.ViewTreeObserver
 import android.view.Window
 import android.view.WindowManager
 import android.view.inputmethod.BaseInputConnection
@@ -47,6 +51,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -67,6 +72,8 @@ import androidx.core.view.WindowInsetsCompat
 import com.pd2launcher.app.AppSettings
 import com.pd2launcher.app.AppSettingsStore
 import com.pd2launcher.app.BuildConfig
+import com.pd2launcher.app.DeviceCheck
+import com.pd2launcher.app.DisplayFacts
 import com.pd2launcher.app.FpsReading
 import com.pd2launcher.app.FrameClock
 import com.pd2launcher.app.FrameCopy
@@ -78,14 +85,23 @@ import com.pd2launcher.app.GameFrameRate
 import com.pd2launcher.app.GameDisplay
 import com.pd2launcher.app.GameInput
 import com.pd2launcher.app.GameResolution
+import com.pd2launcher.app.GameViewLines
+import com.pd2launcher.app.GameViewLog
+import com.pd2launcher.app.InputDispatch
 import com.pd2launcher.app.LauncherSettings
 import com.pd2launcher.app.LauncherStart
+import com.pd2launcher.app.MoveDelays
+import com.pd2launcher.app.MoveSource
+import com.pd2launcher.app.PadKeyLines
+import com.pd2launcher.app.PadStateLines
 import com.pd2launcher.app.PresentServer
 import com.pd2launcher.app.R
 import com.pd2launcher.app.ScreenRate
 import com.pd2launcher.app.ScreenRateWatch
+import com.pd2launcher.app.SessionPaths
 import com.pd2launcher.app.SessionService
 import com.pd2launcher.app.SessionStatus
+import com.pd2launcher.app.SettingsLog
 import com.pd2launcher.app.Shown
 import com.pd2launcher.app.XwdHeader
 import com.pd2launcher.app.input.Controls
@@ -162,6 +178,14 @@ enum class GameLayer {
 
     /** The fps counter shows, when [showFps] is on, over the game PD2 draws (never over the official [launcher]) and beside the menu, so its tile shows at once. */
     fun fpsShown(showFps: Boolean, launcher: Boolean): Boolean = showFps && !launcher && (this == NONE || this == MENU)
+
+    /** Its name in `game-view.log` ([GameViewLines.layer]); null for the game itself. */
+    val logName: String? get() = when (this) {
+        NONE -> null
+        MENU -> "in-game menu"
+        CONTROLS -> "Controls screen"
+        EDIT -> "on-screen controls editor"
+    }
 }
 
 /**
@@ -215,7 +239,16 @@ fun GameView(
     val input by GameEnvironment.input.collectAsState()
     var surface by remember { mutableStateOf<GameSurface?>(null) }
     var layer by remember(preview) { mutableStateOf(preview ?: GameLayer.NONE) }
-    val go = { to: GameLayer -> layer = to }
+    // When the layer that shows came, for the line of its change in game-view.log.
+    var layerSince by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
+    // Each change of the layer has a line in game-view.log, with [why] where the caller knows it
+    // and the controller's last key.
+    fun go(to: GameLayer, why: String? = null) {
+        val now = SystemClock.elapsedRealtime()
+        GameViewLines.layer(layer.logName, to.logName, now - layerSince, why, surface?.lastPadKey())?.let(GameViewLog::line)
+        if (to != layer) layerSince = now
+        layer = to
+    }
     // The menu opens on Quick, with no question; a change of tab forgets the question. Both change
     // as the menu opens, not as it leaves.
     var menuTab by remember { mutableStateOf(MenuTab.QUICK) }
@@ -226,10 +259,10 @@ fun GameView(
     var menuHeight by remember { mutableStateOf<Int?>(null) }
     // The Controls screen shows its action picker or the Pointer speed input: no step then.
     var controlsPopup by remember { mutableStateOf(false) }
-    val openMenu = {
+    val openMenu = { why: String ->
         menuTab = MenuTab.QUICK
         asking = false
-        go(GameLayer.MENU)
+        go(GameLayer.MENU, why)
     }
     // The strip's stop shows: a menu tab, or the Controls screen.
     val showStop = { stop: MenuStop ->
@@ -297,8 +330,8 @@ fun GameView(
     }
     BackHandler(enabled = live) {
         when (layer) {
-            GameLayer.NONE, GameLayer.CONTROLS -> openMenu()
-            GameLayer.MENU, GameLayer.EDIT -> go(GameLayer.NONE)
+            GameLayer.NONE, GameLayer.CONTROLS -> openMenu("Back")
+            GameLayer.MENU, GameLayer.EDIT -> go(GameLayer.NONE, "Back")
         }
     }
 
@@ -319,17 +352,21 @@ fun GameView(
                 val shown = GameResolution.shownArea(launcher, picture == GamePicture.MENU, xScreen)
                 val geometry = GameResolution.viewGeometry(display, shown, xScreen, constraints.maxWidth, constraints.maxHeight)
                 val pointerArea = GameResolution.pointerArea(GameResolution.shownArea(launcher, pointerPicture == GamePicture.MENU, xScreen), xScreen)
-                if (BuildConfig.DEBUG) {
-                    LaunchedEffect(pointerArea) { Log.i(GEOMETRY_TAG, "pointer area $pointerArea") }
-                    LaunchedEffect(geometry) {
-                        val what = if (launcher) "LAUNCHER" else if (picture == GamePicture.MENU) "MENU" else "GAME"
-                        Log.i(
-                            GEOMETRY_TAG,
-                            "display $display $what x-screen ${screen.width}x${screen.height} " +
-                                "area ${constraints.maxWidth}x${constraints.maxHeight} " +
-                                "view ${geometry.view.first}x${geometry.view.second} picture ${geometry.picture}",
-                        )
-                    }
+                // Each new pointer area and geometry: a line in game-view.log (and logcat in debug builds).
+                LaunchedEffect(pointerArea, display, app.touchMode) {
+                    viewLine(
+                        GEOMETRY_TAG,
+                        GameViewLines.pointerArea(pointerArea, shownName(launcher, pointerPicture == GamePicture.MENU), display, SettingsLog.touch(app.touchMode)),
+                    )
+                }
+                LaunchedEffect(geometry) {
+                    viewLine(
+                        GEOMETRY_TAG,
+                        GameViewLines.geometry(
+                            display, shownName(launcher, picture == GamePicture.MENU), xScreen,
+                            constraints.maxWidth to constraints.maxHeight, geometry.view, geometry.picture,
+                        ),
+                    )
                 }
                 val (viewWidth, viewHeight) = geometry.view
                 val density = LocalDensity.current
@@ -345,11 +382,8 @@ fun GameView(
                         mouseMode = false
                     },
                     update = {
-                        it.onMenu = openMenu
-                        it.onMouseMode = { on ->
-                            mouseMode = on
-                            if (BuildConfig.DEBUG) Log.i(PAD_MODE_TAG, "mouse mode $on")
-                        }
+                        it.onMenu = { openMenu("the chord ${SettingsLog.chord(controls.chord)} held ${PadInput.MENU_HOLD_MS} ms") }
+                        it.onMouseMode = { on -> mouseMode = on }
                         it.onOverlayKey = shoulder
                         it.controls = controls
                         it.input = input
@@ -371,14 +405,14 @@ fun GameView(
         if (live) CompositionLocalProvider(LocalIndication provides PressTint) {
             val onScreen = controls.onScreenOn(controller)
             // Under the on-screen controls and the menu, over the game: what they leave of the screen.
-            if (layer.tapCloses) TapToClose { go(GameLayer.NONE) }
+            if (layer.tapCloses) TapToClose { go(GameLayer.NONE, "a tap on the game") }
             if (layer.padShown(asking) && controls.onScreenShown(controller, picture, launcher)) {
                 OnScreenControls(layout, controls.onScreenOpacity, virtualPad, buttons, inert = layer.padInert(app.lowFrameRateInBackground))
             }
             // Over the official launcher's window at the top left: its own buttons (minimize, close, and the
             // close of its Options and filters) are at the top right, where Fit to screen can put them.
             val glyphCorner = if (launcher) Alignment.TopStart else Alignment.TopEnd
-            if (layer == GameLayer.NONE) MenuGlyph(Modifier.align(glyphCorner).windowInsetsPadding(WindowInsets.safeDrawing), openMenu)
+            if (layer == GameLayer.NONE) MenuGlyph(Modifier.align(glyphCorner).windowInsetsPadding(WindowInsets.safeDrawing)) { openMenu("the menu button") }
             if (layer == GameLayer.NONE && starting != null) LauncherStartingNotice(starting, Modifier.align(Alignment.Center))
             // Top centre, clear of the default controls and of the menu; it takes no touch.
             if (layer.fpsShown(app.showFps, launcher)) FpsCounter({ fps }, Modifier.align(Alignment.TopCenter).windowInsetsPadding(WindowInsets.safeDrawing))
@@ -404,14 +438,14 @@ fun GameView(
                     keepScreenOn = app.keepScreenOn,
                 ),
                 actions = MenuActions(
-                    onClose = { go(GameLayer.NONE) },
+                    onClose = { go(GameLayer.NONE, "the menu's close button") },
                     onOnScreen = { ControlsStore.save(context, controls.withOnScreen(it)) },
                     onShowFps = { value -> AppSettingsStore.update(context) { it.copy(showFps = value) } },
                     // At once, the menu open: the Game view follows the setting.
                     onDisplay = { AppSettingsStore.update(context) { it.copy(gameDisplay = it.gameDisplay.other) } },
                     onKeyboard = { on ->
                         // Typing needs the game: the menu closes as the keyboard opens; it stays as the keyboard closes.
-                        if (on) go(GameLayer.NONE)
+                        if (on) go(GameLayer.NONE, "the keyboard opens")
                         surface?.showKeyboard(on)
                     },
                     onFrameRate = { frameRateInput = true },
@@ -420,7 +454,7 @@ fun GameView(
                     onSoundInBackground = { SessionService.command(LauncherSettings.soundInBackground(it)) },
                     onKeepScreenOn = { value -> AppSettingsStore.update(context) { it.copy(keepScreenOn = value) } },
                     onStop = {
-                        go(GameLayer.NONE)
+                        go(GameLayer.NONE, "Stop game")
                         SessionService.send(context, SessionService.ACTION_GAME_STOP)
                     },
                 ),
@@ -615,16 +649,11 @@ private fun GamePointer(screen: Pair<Int, Int>, modifier: Modifier) {
             delay(POINTER_SHOWING_MS)
         }
     }
-    if (BuildConfig.DEBUG) {
-        LaunchedEffect(shape, showing != 0) {
-            Log.i(
-                POINTER_TAG,
-                "X pointer ${shape.width}x${shape.height}, hot spot ${shape.hotX},${shape.hotY}: " +
-                    if (showing != 0) "drawn over the game's buffers" else "not drawn (the X screen's copy shows it)",
-            )
-        }
-        DisposableEffect(Unit) { onDispose { Log.i(POINTER_TAG, "X pointer not drawn: it shows nothing, or the Game view closed") } }
+    // Each change: a line in game-view.log (and logcat in debug builds).
+    LaunchedEffect(shape, showing != 0) {
+        viewLine(POINTER_TAG, GameViewLines.pointer(showing != 0, shape.width, shape.height, shape.hotX, shape.hotY, "the X screen's copy shows it"))
     }
+    DisposableEffect(Unit) { onDispose { viewLine(POINTER_TAG, GameViewLines.pointer(false, 0, 0, 0, 0, "it shows nothing, or the Game view closed")) } }
     Canvas(modifier) {
         val place = at.value ?: return@Canvas
         val clip = when (showing) {
@@ -652,17 +681,30 @@ private fun GamePointer(screen: Pair<Int, Int>, modifier: Modifier) {
 /** How often [GamePointer] looks whether the game's own buffers show. */
 private const val POINTER_SHOWING_MS = 100L
 
-/** Debug builds: [GamePointer]'s pointer drawn or not, one line per change. */
+/** Debug builds: [GamePointer]'s lines of game-view.log in logcat too, one line per change. */
 private const val POINTER_TAG = "pd2-pointer"
 
 /** How often the Game view looks at the shape of PD2's picture. */
 private const val PICTURE_MS = 250L
 
-/** Debug builds: one line per new geometry of the Game view, for checks without screen captures. */
+/** Debug builds: the lines of game-view.log for each new pointer area and geometry in logcat too, for checks without screen captures. */
 private const val GEOMETRY_TAG = "pd2-view-geometry"
 
-/** Debug builds: one line per change of the controller's mode, from the chord or the Controls screen. */
+/** Debug builds: the lines of game-view.log for each change of the controller's mode in logcat too. */
 private const val PAD_MODE_TAG = "pd2-pad-mode"
+
+/** [text] in game-view.log ([GameViewLog]), and in debug builds in logcat with [tag]. */
+private fun viewLine(tag: String, text: String) {
+    GameViewLog.line(text)
+    if (BuildConfig.DEBUG) Log.i(tag, text)
+}
+
+/** What the X screen shows in its middle, as game-view.log names it. */
+private fun shownName(launcher: Boolean, menu: Boolean): String = when {
+    launcher -> "the official launcher's window"
+    menu -> "PD2's menu"
+    else -> "the game's picture"
+}
 
 /**
  * Debug builds: each key of a controller (a gamepad or joystick source; no keyboard, so no typed
@@ -724,6 +766,19 @@ private class GameSurface(
         overlayAway = away
         if (copy == null) return
         if (away) releaseHeld()
+        tell(
+            away,
+            when {
+                away -> "an overlay shows, Slower game in the background on"
+                suspended -> "Slower game in the background off"
+                else -> "the overlay closed"
+            },
+        )
+    }
+
+    /** The relay tells the game that it is [away] or back ([RelayEvent.Focus]), and game-view.log says why ([why]). */
+    private fun tell(away: Boolean, why: String) {
+        GameViewLog.line(GameViewLines.told(away, why))
         send(listOf(RelayEvent.Focus(!away)))
     }
 
@@ -749,7 +804,11 @@ private class GameSurface(
      * follows it, and the clock and both layers' vote follow the full rate at once. It counts the
      * buffers that go to the compositor ([FrameCopy.posted]).
      */
-    private val screenRate = ScreenRateWatch(context, { display }, { copy?.posted() }) { applyFrameRate(frameRate) }
+    private val screenRate = ScreenRateWatch(
+        context, { display }, { copy?.posted() },
+        // The direct present counts each frame's time on the screen in refreshes of this rate.
+        onRate = { PresentServer.current.value?.setRefreshRate(it) },
+    ) { applyFrameRate(frameRate) }
 
     /**
      * The player changed the frame rate to [pick] while the game shows, or the screen's full rate
@@ -766,7 +825,7 @@ private class GameSurface(
     /**
      * Sets the clock for [frameRate] on the screen's full rate ([ScreenRate.full]; on a display other
      * than the built-in one its highest mode) and returns the rate the layers ask the display for
-     * (the highest mode while [screenRate] measures, else [FrameRateVote.vote]) and whether the
+     * (the highest mode while [screenRate] measures, else [FrameRateVote.vote]: the highest mode that is a whole multiple of the player's rate) and whether the
      * player's rate is below the full rate ([FrameRateVote.cap]). It tells [screenRate] whether the
      * layers ask for the highest mode, which starts or stops its checks.
      */
@@ -775,16 +834,44 @@ private class GameSurface(
         val highest = FrameRateVote.highest(display)
         val full = if (display == null || display.displayId == Display.DEFAULT_DISPLAY) ScreenRate.full.value else highest
         val capped = FrameRateVote.cap(full, frameRate) != null
-        FrameClock.setRate(FrameRateVote.rate(full, frameRate))
+        val clock = FrameRateVote.rate(full, frameRate)
+        FrameClock.setRate(clock)
         val top = screenRate.measuring || !capped
         screenRate.vote(top)
-        return (if (top) highest else FrameRateVote.vote(highest, full, frameRate)) to capped
+        val vote = if (top) highest else FrameRateVote.vote(highest, full, frameRate, FrameRateVote.modeRates(display))
+        val multiple = if (top || !capped) 1 else Math.round(vote / clock)
+        // One line in game-view.log for each new clock rate or vote.
+        val line = GameViewLines.pacing(clock, vote, frameRate, full, display?.displayId, capped, multiple)
+        if (line != pacingLogged) {
+            pacingLogged = line
+            GameViewLog.line(line)
+        }
+        return vote to capped
     }
+
+    /** The last pacing line in game-view.log ([clockAndVote]). */
+    private var pacingLogged = ""
 
     private val window: Window? = context.activity()?.window
     private var callback: Window.Callback? = null
     private var sends = Executors.newSingleThreadExecutor { Thread(it, "pd2-input") }
     private val handler = Handler(Looper.getMainLooper())
+
+    /**
+     * The window's root view, which asks Android for unbuffered dispatch of [unbuffered] while this
+     * view is in the window ([InputDispatch]); null otherwise.
+     */
+    private var unbufferedRoot: View? = null
+    private var unbuffered = InputDevice.SOURCE_CLASS_NONE
+
+    /**
+     * Android works out the root view's request again from the focused view at each focus change
+     * in the window (after this listener): the request goes in again after it.
+     */
+    private val focusMoved = ViewTreeObserver.OnGlobalFocusChangeListener { _, _ ->
+        post { unbufferedRoot?.requestUnbufferedDispatch(unbuffered) }
+    }
+
     /** The token of a tap's click still to come on [handler] ([TouchGestures.later]). */
     private val pendingClick = Any()
     private var pad: PadInput? = null
@@ -826,6 +913,58 @@ private class GameSurface(
     /** Debug builds: the pad state last logged ([PAD_STATE_TAG]) and when. */
     private var loggedPad: PadState? = null
     private var loggedPadAt = 0L
+    /** The controller's keys for input.log (Detailed logging) and its last key for game-view.log's overlay lines. */
+    private val padKeys = PadKeyLines()
+    /** The game's pad states for input.log (Detailed logging). */
+    private val padStates = PadStateLines()
+    /** The controller whose key came last; null before any. */
+    private var lastPadDevice: Int? = null
+    /** Why the next change of the controller's mode comes ([useMouseMode]); null: the chord. */
+    private var modeWhy: String? = null
+    /**
+     * What moves the pointer in the [send] that comes now ([movingBy]: touch, the mouse, the
+     * controller), and Android's time of its input (System.nanoTime's base; 0: none, as for a
+     * controller's move with no new stick event since the last move).
+     */
+    private var moving: MoveSource? = null
+    private var movingAt = 0L
+    /** The controller's last stick event in mouse mode not yet in a move, Android's time of it (0: none). */
+    private var stickAt = 0L
+    /** The sources that moved the pointer in this Game view: game-view.log has a line for the first move of each. */
+    private val moved = HashSet<MoveSource>()
+    /** Detailed logging: each move's time from its input to the relay's socket, 5 s summaries in input.log. */
+    private val moveDelays = MoveDelays()
+
+    /** [block] sends the moves of [source], whose input Android timed at [at] (0: unknown). */
+    private inline fun <T> movingBy(source: MoveSource, at: Long, block: () -> T): T {
+        moving = source
+        movingAt = at
+        try {
+            return block()
+        } finally {
+            moving = null
+            movingAt = 0L
+        }
+    }
+
+    /** The controller's events into X: a move takes the time of the stick event that it follows ([stickAt]). */
+    private fun padSend(events: List<RelayEvent>) {
+        val at = stickAt
+        if (at != 0L && events.any(::isMove)) stickAt = 0L
+        movingBy(MoveSource.CONTROLLER, at) { send(events) }
+    }
+
+    /** The controller's last key and how long ago it came ([PadKeyLines.last]), for game-view.log. */
+    fun lastPadKey(): String? = padKeys.last(SystemClock.uptimeMillis())
+
+    /** The controller's mode changed to mouse mode ([mouse]) or pad mode: a line in game-view.log (and logcat in debug builds). */
+    private fun modeChanged(mouse: Boolean) {
+        val why = modeWhy
+        val line = GameViewLines.mode(mouse, if (why == null) lastPadDevice else null, why ?: "the chord ${SettingsLog.chord(controls.chord)}")
+        GameViewLog.line(line)
+        if (BuildConfig.DEBUG) Log.i(PAD_MODE_TAG, line)
+        onMouseMode(mouse)
+    }
 
     /** Debug builds: [state] to logcat when a button or trigger changed, or a stick at most every [PAD_STATE_LOG_MS]. */
     private fun logPadState(state: PadState) {
@@ -869,18 +1008,20 @@ private class GameSurface(
                     pad = { state ->
                         game.gamepad.write(state)
                         if (BuildConfig.DEBUG) logPadState(state)
+                        if (AppSettingsStore.current.value.detailedLogging) padStates.next(state, SystemClock.uptimeMillis())?.let(GameViewLog::input)
                     },
-                    relay = ::send, onMenu = { onMenu() }, controls = controls,
+                    relay = ::padSend, onMenu = { onMenu() }, controls = controls,
                     pointerScale = screen.width / GameResolution.OWN_SIZE.first.toFloat(),
-                    onMode = { onMouseMode(it) },
+                    onMode = ::modeChanged,
                 )
             }
             // A new pad starts in pad mode.
+            if (value != null) GameViewLog.line(GameViewLines.mode(false, null, "the game's controller is new"))
             onMouseMode(pad?.mouseMode ?: false)
             // New gestures for the new relay.
             touch = null
             // An overlay that took the focus before the relay came ([overlayFocus]): the relay hears it now.
-            if (value != null && overlayAway && copy != null) send(listOf(RelayEvent.Focus(false)))
+            if (value != null && overlayAway && copy != null) tell(true, "the relay started while an overlay shows")
         }
 
     var suspended = false
@@ -909,9 +1050,14 @@ private class GameSurface(
     /** The controller's mode changed: mouse mode on or off. */
     var onMouseMode: (Boolean) -> Unit = {}
 
-    /** Mouse mode on or off, as the chord switches it ([PadInput.useMouseMode]). */
-    fun useMouseMode(on: Boolean) {
-        pad?.useMouseMode(on)
+    /** Mouse mode on or off, as the chord switches it ([PadInput.useMouseMode]); [why] names it in game-view.log. */
+    fun useMouseMode(on: Boolean, why: String = "the Controls screen") {
+        modeWhy = why
+        try {
+            pad?.useMouseMode(on)
+        } finally {
+            modeWhy = null
+        }
     }
 
     /** A device went: what the controller held is let go (Android sends no release for it). */
@@ -938,7 +1084,7 @@ private class GameSurface(
 
         override fun scriptedMouseMode(on: Boolean): String? {
             if (pad == null) return "the game's controller is not ready"
-            useMouseMode(on)
+            useMouseMode(on, "the debug pad injector")
             // A scripted stick already out now moves the pointer.
             clock()
             return null
@@ -965,6 +1111,7 @@ private class GameSurface(
 
     override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
         super.onWindowFocusChanged(hasWindowFocus)
+        GameViewLog.line(GameViewLines.focus(hasWindowFocus, display?.displayId, GameViewLog.topResumed))
         // The game runs on in the background: nothing stays held there (a running character).
         if (!hasWindowFocus) {
             pad?.releaseAll()
@@ -1041,7 +1188,7 @@ private class GameSurface(
                 // Back on the screen: the game's window has the focus again, also after the
                 // setting was turned off meanwhile (x-input-relay does nothing when it did not take
                 // the focus away); not while an overlay shows that keeps it away ([overlayFocus]).
-                if (returning) send(listOf(RelayEvent.Focus(!overlayAway)))
+                if (returning) tell(overlayAway, if (overlayAway) "the surface is back, an overlay shows" else "the surface is back")
                 // The game's own buffers, when it presents them here, on a layer above the copy's.
                 // On a return first: a frame the game drew while away shows at once, so the copy,
                 // which rests under the layer, never posts the X screen's older picture. On a new
@@ -1050,6 +1197,8 @@ private class GameSurface(
                 if (returning) server?.attach(holder.surface, rate, capped)
                 copy = FrameCopy.start(holder.surface, framebuffer, screen, shape[0], presentCounter, rate)
                 if (!returning) server?.attach(holder.surface, rate, capped)
+                // The display's rate now; the watch tells each change ([screenRate]).
+                display?.let { server?.setRefreshRate(it.refreshRate) }
             }
             override fun surfaceDestroyed(holder: SurfaceHolder) {
                 leaveScreen()
@@ -1061,6 +1210,27 @@ private class GameSurface(
         })
     }
 
+    /**
+     * A key of a controller ([raw], as its layout reads it: [event]): the controller's last key for
+     * game-view.log's overlay lines, and with Detailed logging a line in input.log
+     * ([PadKeyLines]: never a keyboard's key). Repeats count once.
+     */
+    private fun padKey(raw: KeyEvent, event: KeyEvent) {
+        if (raw.repeatCount != 0 || (raw.action != KeyEvent.ACTION_DOWN && raw.action != KeyEvent.ACTION_UP)) return
+        if (!PadKeyLines.controllerKey(raw.source, raw.keyCode)) return
+        lastPadDevice = raw.deviceId
+        val down = raw.action == KeyEvent.ACTION_DOWN
+        val detailed = AppSettingsStore.current.value.detailedLogging
+        val target = when {
+            !detailed -> ""
+            suspended -> "the app's screens (an overlay shows)"
+            else -> PadKeyLines.target(PadButton.of(PadLayouts.gameKeyCode(event)), controls, pad?.mouseMode == true)
+        }
+        val layout = if (detailed && down) raw.device?.let { PadLayouts.entry(it).pick.layout.toString() } else null
+        val line = padKeys.line(raw.source, raw.deviceId, raw.keyCode, event.keyCode, down, SystemClock.uptimeMillis(), layout, target)
+        if (detailed) line?.let(GameViewLog::input)
+    }
+
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         val window = window ?: return
@@ -1070,6 +1240,7 @@ private class GameSurface(
             // overlay and the screens alike.
             override fun dispatchKeyEvent(raw: KeyEvent): Boolean {
                 val event = PadLayouts.keyEvent(raw)
+                padKey(raw, event)
                 if (BuildConfig.DEBUG &&
                     (raw.isFromSource(InputDevice.SOURCE_GAMEPAD) || raw.isFromSource(InputDevice.SOURCE_JOYSTICK))
                 ) {
@@ -1088,6 +1259,18 @@ private class GameSurface(
         window.callback = wrapper
         callback = base
         if (sends.isShutdown) sends = Executors.newSingleThreadExecutor { Thread(it, "pd2-input") }
+        // The display it opens on and every display there is now, in game-view.log.
+        display?.let { shown ->
+            val all = context.getSystemService(DisplayManager::class.java)?.displays.orEmpty().map(DisplayFacts::of)
+            GameViewLog.line(GameViewLines.opens(DisplayFacts.of(shown), all))
+        }
+        // Each move as it comes, not once a display frame; the debug switch keeps the batches.
+        unbuffered = InputDispatch.sources(
+            InputDispatch.buffered(BuildConfig.DEBUG) { SessionPaths(DeviceCheck.dataDir(context)).bufferedInputForTest },
+        )
+        unbufferedRoot = window.decorView.also { it.requestUnbufferedDispatch(unbuffered) }
+        viewTreeObserver.addOnGlobalFocusChangeListener(focusMoved)
+        GameViewLog.line(GameViewLines.inputDispatch(unbuffered))
         if (BuildConfig.DEBUG) ScriptedPad.target = scriptedTarget
     }
 
@@ -1109,7 +1292,7 @@ private class GameSurface(
     private fun leaveScreen() {
         if (copy == null || !tellBackground) return
         releaseHeld()
-        send(listOf(RelayEvent.Focus(false)))
+        tell(true, "the game left the screen")
     }
 
     /**
@@ -1132,6 +1315,10 @@ private class GameSurface(
         clockRunning = false
         callback?.let { window?.callback = it }
         callback = null
+        // The app's other screens get Android's buffered dispatch again.
+        viewTreeObserver.removeOnGlobalFocusChangeListener(focusMoved)
+        unbufferedRoot?.requestUnbufferedDispatch(InputDevice.SOURCE_CLASS_NONE)
+        unbufferedRoot = null
         handler.removeCallbacksAndMessages(null)
         touch?.cancel()
         send(mouse.release())
@@ -1141,6 +1328,8 @@ private class GameSurface(
         customButtons?.releaseAll()
         // Before the sends stop: the surface goes after this.
         leaveScreen()
+        // The input delays of the window that goes on (Detailed logging), after the last move's write.
+        sends.execute { moveDelays.flush().forEach(GameViewLog::input) }
         sends.shutdown()
         super.onDetachedFromWindow()
     }
@@ -1211,6 +1400,8 @@ private class GameSurface(
             return true
         }
         if (event.action != MotionEvent.ACTION_MOVE) return false
+        // In mouse mode the next move of the pointer follows this event (input.log's delays).
+        if (pad?.mouseMode == true) stickAt = eventNanos(event)
         pad?.onAxes(event.deviceId, PadLayouts.axes(event))
         clock()
         return true
@@ -1231,6 +1422,10 @@ private class GameSurface(
     /** Touch, mapped from this view (the whole X screen, as Display places it) to X screen pixels; a mouse's events go to [onMouse]. */
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (event.isFromSource(InputDevice.SOURCE_MOUSE)) return onMouse(event)
+        return movingBy(if (touchMode == TouchMode.TRACKPAD) MoveSource.TRACKPAD else MoveSource.DIRECT, eventNanos(event)) { onTouch(event) }
+    }
+
+    private fun onTouch(event: MotionEvent): Boolean {
         // Compose's own cancel (another device's press, a device gone) has no source: the mouse lets go too.
         if (event.actionMasked == MotionEvent.ACTION_CANCEL) send(mouse.release())
         if (suspended) return true
@@ -1298,7 +1493,9 @@ private class GameSurface(
      * once. Its buttons come with the moves (Android's button state), so `ACTION_BUTTON_PRESS`,
      * which Android sends here even under an overlay, is not used.
      */
-    private fun onMouse(event: MotionEvent): Boolean {
+    private fun onMouse(event: MotionEvent): Boolean = movingBy(MoveSource.MOUSE, eventNanos(event)) { mouseEvent(event) }
+
+    private fun mouseEvent(event: MotionEvent): Boolean {
         mouseOver = event.actionMasked != MotionEvent.ACTION_HOVER_EXIT
         if (suspended) return true
         send(
@@ -1368,9 +1565,21 @@ private class GameSurface(
         if (events.isEmpty() || sends.isShutdown) return
         val bounded = game.pointer.withArea(events, pointerArea)
         val relay = game.relay
+        // A move of the pointer: the first of its source has a line in game-view.log, and with
+        // Detailed logging its time from the input to the socket goes into input.log's summaries,
+        // and the time of its write into the direct present's pointer split (the service log).
+        val source = moving?.takeIf { events.any(::isMove) }
+        if (source != null && moved.add(source)) GameViewLog.line(GameViewLines.firstMove(source))
+        val detailed = source != null && AppSettingsStore.current.value.detailedLogging
+        val at = movingAt.takeIf { detailed && it != 0L }
         sends.execute {
             try {
                 relay.send(bounded)
+                if (source != null && detailed) {
+                    val now = System.nanoTime()
+                    PresentServer.pointerMoved(now)
+                    if (at != null) moveDelays.add(source, now - at, now).forEach(GameViewLog::input)
+                }
             } catch (_: IOException) {
                 // The relay is gone with the game environment.
             }
@@ -1392,3 +1601,10 @@ private fun Context.activity(): Activity? = when (this) {
     is ContextWrapper -> baseContext.activity()
     else -> null
 }
+
+/** Whether [event] moves the pointer. */
+private fun isMove(event: RelayEvent): Boolean = event is RelayEvent.Motion || event is RelayEvent.Relative
+
+/** Android's time of [event] in System.nanoTime's base (both are CLOCK_MONOTONIC); in ms steps before Android 14. */
+private fun eventNanos(event: MotionEvent): Long =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) event.eventTimeNanos else event.eventTime * 1_000_000L

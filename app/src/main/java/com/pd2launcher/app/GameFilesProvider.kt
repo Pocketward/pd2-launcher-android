@@ -385,10 +385,10 @@ class GameFilesProvider : DocumentsProvider() {
 
         /**
          * The game folder in use: the one the engine names ([engineFolder]), else the folder used
-         * in place by the Launcher's record ([recorded], `prefix/.pd2launcher-game-folder.json`),
-         * else the Managed prefix's. An import writes the record, and the engine names that folder
-         * only from its next start, so in the session of the import the record says where the game
-         * is. None when that is not where a game folder can be ([DocumentPaths.gameFolder]).
+         * in place by the Launcher's record ([recorded], `prefix/.pd2launcher-game-folder.json`, of
+         * an installation before the disposable prefix), else the Managed one outside the prefix
+         * ([SessionPaths.managedGame]), where an import moves its copy. None when that is not where
+         * a game folder can be ([DocumentPaths.gameFolder]).
          */
         fun gameFolder(paths: SessionPaths, engineFolder: String?, recorded: () -> String? = { recordedGameFolder(paths) }): File? {
             val folder = SaveKeeper.liveSave(paths, engineFolder ?: recorded()).parentFile!!

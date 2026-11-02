@@ -137,7 +137,7 @@
     <string name="repair_installation_ready">Installed</string>
     <string name="repair_installation_repair">Needs repair: Check again repairs it</string>
     <string name="repair_installation_incomplete">Not completely installed</string>
-    <string name="repair_installation_interrupted">An install step was interrupted: Start over resolves it</string>
+    <string name="repair_installation_interrupted">A step was interrupted: Start over resolves it</string>
     <string name="repair_status_resetting">Starting over…</string>
     <string name="host_missing_short">Something this device needs is missing</string>
     <string name="host_folder_gone_short">Can\'t check until the game is set up again</string>

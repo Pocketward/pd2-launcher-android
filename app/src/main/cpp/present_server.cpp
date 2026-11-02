@@ -22,14 +22,28 @@
 // which makes it the active one; one whose setup fails or that never presents leaves the active
 // one in place. Logs under pd2-present every 5 s while frames come.
 //
+// It also counts, for the service log (nativeCounts, FrameWatch.kt's PresentWatch): the PRESENTs
+// by their present mode; each frame's time on the screen, from its present fence to the next
+// one's, in refreshes of the display (refreshes_on_screen: 1, 2, 3, 4, 5 or more; the Game view
+// gives the display's rate, nativeSetRefreshRate), never across a time the layer was off the
+// screen; how long the layer showed; a number for each swapchain that becomes the active one; and
+// the numbers of the last 5 s line.
+//
+// With Detailed logging it also splits the pointer's delay after the app's write into the relay
+// (pointer_split.h; nativeSplit, nativePointerMoved): Mesa times each frame while the word at byte
+// 384 of the present counter's page is set, and the app adds when it applied the frame's
+// transaction, when the compositor latched it and when its present fence signalled.
+//
 // The protocol (one struct Msg a message, AF_UNIX SOCK_SEQPACKET, a sync_file beside it):
 //   Mesa -> app   HELLO   {width, height, count}
 //   app -> Mesa   BUFFERS {width, height, count, format}, then count AHardwareBuffer messages
-//   Mesa -> app   PRESENT {index, count: the frame's VkPresentModeKHR + 1, 0 unknown}
+//   Mesa -> app   PRESENT {index, count: the frame's VkPresentModeKHR + 1, 0 unknown,
+//                          format: the serial of the frame's times, 0 none}
 //   app -> Mesa   RELEASE {index} + release fence
 #include "present_server.h"
 
 #include "frame_pacing.h"
+#include "pointer_split.h"
 
 #include <android/hardware_buffer.h>
 #include <android/log.h>
@@ -183,6 +197,23 @@ struct Server {
     int fences[MAX_FENCES] = {};
     int nfences = 0;
     int64_t last_present_time = 0, gap_max_ns = 0;
+    // The counts for the service log (nativeCounts), since the server started: the PRESENTs by
+    // their mode (IMMEDIATE, MAILBOX, FIFO, FIFO_RELAXED, none sent); the frames by their time on
+    // the screen in refreshes of [refresh_ns] (1 to 5 or more) and the sum of those times; how long
+    // the layer showed (and since when it shows now), and when it last went off the screen (a gap
+    // across that is no frame's time on the screen); the swapchains that became the active one,
+    // the mode of the active one's last PRESENT and its PRESENTs; the last 5 s line's numbers.
+    uint64_t presents_by_mode[5] = {};
+    uint64_t on_screen[ON_SCREEN_GROUPS] = {};
+    int64_t on_screen_ns = 0, refresh_ns = 0;
+    int64_t visible_ns = 0, visible_since = 0, hidden_at = 0;
+    uint64_t swapchains = 0, swapchain_presents = 0;
+    uint32_t last_mode = 0;
+    struct {
+        uint64_t serial;
+        double presents, shown, gap_ms, back;
+        int where;
+    } last_stats = {};
     // The newest frame Mesa sent that is not shown yet (with its acquire fence and a reference to
     // its set): while a transaction is on its way to the compositor, while no Game view shows, or
     // until the app's clock ticks again.
@@ -199,9 +230,19 @@ struct Server {
     bool capped = true;
     std::atomic<bool> waits_tick{false};
     int tick_fd = -1;
+    // Detailed logging's pointer split (pointer_split.h): the times of the frame of each present
+    // fence in [fences] (acquired 0: none); and under [split_lock], whether it runs (Mesa times its
+    // frames while it does), its moves and window, and the last window's summary and its number.
+    split_frame fence_frames[MAX_FENCES] = {};
+    pthread_mutex_t split_lock = PTHREAD_MUTEX_INITIALIZER;
+    bool split_on = false;
+    pointer_split split = {};
+    uint64_t split_serial = 0;
+    split_summary split_last = {};
 
     ~Server() {
         for (int i = 0; i < nfences; i++) close(fences[i]);
+        pthread_mutex_destroy(&split_lock);
         pthread_cond_destroy(&answered);
         pthread_mutex_destroy(&lock);
     }
@@ -241,7 +282,21 @@ struct Completion {
     BufferSet *set;
     BufferSet *replaced_set;
     int replaced;
+    split_frame frame; // its times for the pointer split (acquired 0: none)
 };
+
+// Under lock: the app showed [frame] (screen 0: no time of its present fence); its moves go into
+// the pointer split.
+void split_done(Server *s, const split_frame &frame) {
+    if (frame.acquired == 0) return;
+    pthread_mutex_lock(&s->split_lock);
+    split_summary ended;
+    if (s->split_on && split_shown(&s->split, &frame, &ended)) {
+        s->split_last = ended;
+        s->split_serial++;
+    }
+    pthread_mutex_unlock(&s->split_lock);
+}
 
 // Under lock: Mesa may send frames here (a client, a layer to show them or no Game view, no window
 // over the game), else to the X screen, which the copy shows and the picture reader reads.
@@ -325,6 +380,15 @@ void give_back_next(Server *s) {
     if (take_newest(&s->next, &frame)) give_back_frame(frame);
 }
 
+// Under lock: the layer, which shows, goes off the screen now: its time on the screen counts, and
+// a gap between two present fences across this moment is no frame's time on the screen.
+void went_off(Server *s) {
+    if (!s->visible) return;
+    int64_t now = now_ns();
+    s->visible_ns += now - s->visible_since;
+    s->hidden_at = now;
+}
+
 // Under lock: the layer off the screen (the X screen's copy shows again); the frame that waits
 // goes back.
 void hide(Server *s) {
@@ -334,11 +398,12 @@ void hide(Server *s) {
     ASurfaceTransaction_setVisibility(t, s->control, ASURFACE_TRANSACTION_VISIBILITY_HIDE);
     ASurfaceTransaction_apply(t);
     ASurfaceTransaction_delete(t);
+    went_off(s);
     s->visible = false;
     showing.store(0);
 }
 
-void show(Server *s, BufferSet *set, int index, int fence, const ARect &source, const ARect &destination);
+void show(Server *s, BufferSet *set, int index, int fence, const ARect &source, const ARect &destination, uint32_t serial);
 void show_next(Server *s);
 
 // Under lock: the present fences that have signalled count as shown frames (their times give the
@@ -348,13 +413,27 @@ void collect_fences(Server *s) {
     for (int i = 0; i < s->nfences; i++) {
         int64_t presented = fence_time(s->fences[i]);
         if (presented == 0) {
+            s->fence_frames[kept] = s->fence_frames[i];
             s->fences[kept++] = s->fences[i];
             continue;
         }
         close(s->fences[i]);
+        split_frame frame = s->fence_frames[i];
+        frame.screen = presented > 0 ? presented : 0;
+        split_done(s, frame);
         if (presented < 0 || presented == s->last_present_time) continue;
         if (s->last_present_time > 0 && presented - s->last_present_time > s->gap_max_ns) {
             s->gap_max_ns = presented - s->last_present_time;
+        }
+        // The frame before stayed on the screen until this one, unless the layer was off the
+        // screen between them.
+        bool across_hide = s->hidden_at > s->last_present_time && s->hidden_at < presented;
+        if (s->last_present_time > 0 && presented > s->last_present_time && !across_hide) {
+            int refreshes = refreshes_on_screen(presented - s->last_present_time, s->refresh_ns);
+            if (refreshes > 0) {
+                s->on_screen[refreshes - 1]++;
+                s->on_screen_ns += presented - s->last_present_time;
+            }
         }
         s->shown_frames++;
         s->last_present_time = presented;
@@ -367,9 +446,18 @@ void on_complete(void *context, ASurfaceTransactionStats *stats) {
     Server *s = done->s;
     pthread_mutex_lock(&s->lock);
     int present_fence = ASurfaceTransactionStats_getPresentFenceFd(stats);
-    if (present_fence >= 0) {
-        if (s->nfences < MAX_FENCES) s->fences[s->nfences++] = present_fence;
-        else close(present_fence);
+    // The compositor's own time of the latch, for the pointer split.
+    if (done->frame.acquired != 0) {
+        int64_t latched = ASurfaceTransactionStats_getLatchTime(stats);
+        done->frame.latched = latched > 0 ? latched : 0;
+    }
+    if (present_fence >= 0 && s->nfences < MAX_FENCES) {
+        s->fence_frames[s->nfences] = done->frame;
+        s->fences[s->nfences++] = present_fence;
+    } else {
+        if (present_fence >= 0) close(present_fence);
+        // No time on the screen for this frame: its moves are not counted.
+        split_done(s, done->frame);
     }
     // Each completion closes the fences that have signalled since, not the next stats line.
     collect_fences(s);
@@ -435,21 +523,22 @@ bool placed(Server *s, const BufferSet *set, ARect *source, ARect *destination) 
     return false;
 }
 
-// Under lock: the frame waits to be shown ([vsync]: it came with vsync on); a newer frame replaces
-// one that waited, which goes back.
-void keep(Server *s, BufferSet *set, int index, int fence, bool vsync = true) {
+// Under lock: the frame (its times' [serial]) waits to be shown ([vsync]: it came with vsync on); a
+// newer frame replaces one that waited, which goes back.
+void keep(Server *s, BufferSet *set, int index, int fence, uint32_t serial, bool vsync = true) {
     sent_frame replaced;
     s->next_vsync = vsync;
     s->waits_tick.store(!vsync && s->view && s->capped);
     set->refs++;
-    if (keep_newest(&s->next, {set, index, fence}, &replaced)) {
+    if (keep_newest(&s->next, {set, index, fence, serial}, &replaced)) {
         s->back_at_once++;
         give_back_frame(replaced);
     }
 }
 
-// Under lock: Mesa presents buffer [index] of [set] (its acquire [fence], taken).
-void present(Server *s, BufferSet *set, int index, int fence, bool vsync) {
+// Under lock: Mesa presents buffer [index] of [set] (its acquire [fence], taken; the [serial] of its
+// times, 0: none).
+void present(Server *s, BufferSet *set, int index, int fence, bool vsync, uint32_t serial = 0) {
     if (index < 0 || index >= set->count || set->at_compositor[index]) {
         if (fence >= 0) close(fence);
         return;
@@ -458,7 +547,7 @@ void present(Server *s, BufferSet *set, int index, int fence, bool vsync) {
     s->presents++;
     // No Game view: the newest frame waits unshown for its return.
     if (!s->view && !s->covered && !s->unplaced) {
-        keep(s, set, index, fence, vsync);
+        keep(s, set, index, fence, serial, vsync);
         return;
     }
     ARect source, destination;
@@ -471,7 +560,7 @@ void present(Server *s, BufferSet *set, int index, int fence, bool vsync) {
     // A transaction on its way: the newest frame waits for its completion (on_complete), or
     // INFLIGHT_WAIT_NS at most.
     if (s->inflight_current > 0 && now_ns() - s->shown_ns < s->inflight_wait_ns) {
-        keep(s, set, index, fence, vsync);
+        keep(s, set, index, fence, serial, vsync);
         return;
     }
     // Vsync off: one frame a tick of the app's clock on the screen; a newer one waits for the next
@@ -479,11 +568,11 @@ void present(Server *s, BufferSet *set, int index, int fence, bool vsync) {
     // read, so a tick between the two still wakes the server.
     if (!vsync) s->waits_tick.store(s->view && s->capped);
     if (!vsync && !tick_allows(s)) {
-        keep(s, set, index, fence, vsync);
+        keep(s, set, index, fence, serial, vsync);
         return;
     }
     give_back_next(s);
-    show(s, set, index, fence, source, destination);
+    show(s, set, index, fence, source, destination, serial);
     s->waits_tick.store(false);
 }
 
@@ -495,7 +584,7 @@ void show_next(Server *s) {
     BufferSet *set = (BufferSet *)frame.set;
     ARect source, destination;
     if (s->control != nullptr && set == s->active && placed(s, set, &source, &destination)) {
-        show(s, set, frame.index, frame.fence, source, destination);
+        show(s, set, frame.index, frame.fence, source, destination, frame.serial);
     } else {
         s->back_at_once++;
         give_back(set, frame.index, frame.fence);
@@ -503,9 +592,9 @@ void show_next(Server *s) {
     unref(set);
 }
 
-// Under lock: buffer [index] of [set] (its acquire [fence], taken) on the layer, at [source] of the
-// buffer and [destination] of the Game view.
-void show(Server *s, BufferSet *set, int index, int fence, const ARect &source, const ARect &destination) {
+// Under lock: buffer [index] of [set] (its acquire [fence], taken; the [serial] of its times) on the
+// layer, at [source] of the buffer and [destination] of the Game view.
+void show(Server *s, BufferSet *set, int index, int fence, const ARect &source, const ARect &destination, uint32_t serial) {
     auto *done = (Completion *)malloc(sizeof(Completion));
     ASurfaceTransaction *t = ASurfaceTransaction_create();
     if (s->shown_fence >= 0) close(s->shown_fence);
@@ -536,6 +625,7 @@ void show(Server *s, BufferSet *set, int index, int fence, const ARect &source, 
     if (!s->visible) {
         ASurfaceTransaction_setVisibility(t, s->control, ASURFACE_TRANSACTION_VISIBILITY_SHOW);
         s->visible = true;
+        s->visible_since = now_ns();
     }
     // 2: the layer leaves part of the view to the copy (a windowed game's window).
     bool whole = destination.left == 0 && destination.top == 0 && destination.right == s->dest_w && destination.bottom == s->dest_h;
@@ -553,11 +643,23 @@ void show(Server *s, BufferSet *set, int index, int fence, const ARect &source, 
     s->inflight++;
     s->inflight_current++;
     s->shown_ns = now_ns();
+    // Mesa's times of this frame for the pointer split, and when its transaction goes.
+    done->frame = {};
+    if (split_read(s->page, serial, &done->frame)) done->frame.applied = s->shown_ns;
     if (s->page != nullptr) s->shown_tick = __atomic_load_n(&s->page[TICK_WORD], __ATOMIC_ACQUIRE);
     s->shown_any = true;
     ASurfaceTransaction_apply(t);
     ASurfaceTransaction_delete(t);
 }
+
+// Under lock: where the frames show now, as the 5 s line says it (WHERE, nativeCounts).
+int where(const Server *s) {
+    return s->visible ? (showing.load() == 2 ? 2 : 1) : s->control != nullptr ? 3 : s->view ? 4 : 5;
+}
+
+// The words of where() for the 5 s line; the service log's copy names them the same (PresentServer.kt).
+const char *const WHERE[] = {"", "showing", "showing in the game's window", "the X screen", "no layer: the X screen",
+                             "no view: the newest frame kept"};
 
 // Under lock.
 void stats(Server *s, int64_t now) {
@@ -566,11 +668,9 @@ void stats(Server *s, int64_t now) {
     if (s->presents > 0) {
         LOG("%ux%u: %.1f presents/s, %.1f shown/s, longest gap %.1f ms, %.1f/s back at once, %s", s->active ? s->active->width : 0,
             s->active ? s->active->height : 0, s->presents / window, s->shown_frames / window, s->gap_max_ns / 1e6,
-            s->back_at_once / window,
-            s->visible                 ? (showing.load() == 2 ? "showing in the game's window" : "showing")
-            : s->control != nullptr    ? "the X screen"
-            : s->view                  ? "no layer: the X screen"
-                                       : "no view: the newest frame kept");
+            s->back_at_once / window, WHERE[where(s)]);
+        s->last_stats = {s->last_stats.serial + 1, s->presents / window, s->shown_frames / window, s->gap_max_ns / 1e6, s->back_at_once / window,
+                         where(s)};
     }
     s->presents = s->back_at_once = s->completes = s->shown_frames = 0;
     s->gap_max_ns = 0;
@@ -676,6 +776,10 @@ BufferSet *welcome(int fd) {
 void activate(Server *s, BufferSet *set) {
     s->active = set;
     s->unplaced = false;
+    if (set != nullptr) {
+        s->swapchains++;
+        s->swapchain_presents = 0;
+    }
     update_wanted(s);
 }
 
@@ -720,7 +824,11 @@ void message(Server *s, BufferSet *set, ssize_t n, const Msg &m, int *fences, in
             close(fence);
             fence = -1;
         }
-        present(s, set, (int)m.index, fence, vsync_mode(m.count));
+        // [count]: the VkPresentModeKHR + 1 (IMMEDIATE, MAILBOX, FIFO, FIFO_RELAXED), 0 when Mesa sends none.
+        s->presents_by_mode[m.count >= 1 && m.count <= 4 ? m.count - 1 : 4]++;
+        s->last_mode = m.count;
+        s->swapchain_presents++;
+        present(s, set, (int)m.index, fence, vsync_mode(m.count), m.format);
     } else {
         for (int i = 0; i < nfences; i++) close(fences[i]);
     }
@@ -840,6 +948,7 @@ void drop_layer(Server *s) {
     ANativeWindow_release(s->window);
     s->window = nullptr;
     s->configured = false;
+    went_off(s);
     s->visible = false;
     showing.store(0);
     update_wanted(s);
@@ -884,6 +993,8 @@ Server *start(JNIEnv *env, jstring socket_path, jstring counter_path) {
         delete s;
         return nullptr;
     }
+    // Mesa times no frame until the pointer split runs (an earlier server's word may remain).
+    __atomic_store_n(&s->page[STAMPS_WORD], 0u, __ATOMIC_RELEASE);
     update_wanted(s);
     unlink(s->path);
     s->listener = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
@@ -958,7 +1069,7 @@ void attach(Server *s, JNIEnv *env, jobject surface, jfloat frame_rate, bool cap
     pthread_mutex_lock(&s->lock);
     // The newest frame the game drew while it was not on the screen shows at once on the new
     // layer: the X screen under the copy has the picture from before.
-    sent_frame newest = {nullptr, -1, -1};
+    sent_frame newest = {nullptr, -1, -1, 0};
     if (!s->view) take_newest(&s->next, &newest);
     drop_layer(s);
     // The surface stays the Game view's until detach, also when no layer can be made on it.
@@ -972,7 +1083,7 @@ void attach(Server *s, JNIEnv *env, jobject surface, jfloat frame_rate, bool cap
     if (s->control == nullptr) LOG("no layer on the Game view: the game's frames go to the X screen");
     update_wanted(s);
     if (newest.set != nullptr) {
-        keep(s, (BufferSet *)newest.set, newest.index, newest.fence);
+        keep(s, (BufferSet *)newest.set, newest.index, newest.fence, newest.serial);
         unref((BufferSet *)newest.set);
         show_next(s);
     }
@@ -1039,6 +1150,59 @@ void set_frame_rate(Server *s, float frame_rate, bool capped) {
     pthread_mutex_unlock(&s->lock);
 }
 
+// The display shows at [hertz] now (the Game view's reading): the frames' time on the screen
+// counts in refreshes of it from now on; 0 while it is not known.
+void set_refresh_rate(Server *s, float hertz) {
+    pthread_mutex_lock(&s->lock);
+    s->refresh_ns = hertz > 0 ? (int64_t)(1e9 / hertz + 0.5) : 0;
+    pthread_mutex_unlock(&s->lock);
+}
+
+// The counts for the service log into [out] (COUNTS numbers; PresentServer.kt reads them in this order).
+constexpr int COUNTS = 24;
+void counts(Server *s, jlong *out) {
+    pthread_mutex_lock(&s->lock);
+    collect_fences(s);
+    int64_t visible = s->visible_ns + (s->visible ? now_ns() - s->visible_since : 0);
+    jlong values[COUNTS] = {
+        (jlong)s->swapchains, s->active ? (jlong)s->active->width : 0, s->active ? (jlong)s->active->height : 0, (jlong)s->last_mode,
+        (jlong)s->swapchain_presents,
+        (jlong)s->presents_by_mode[0], (jlong)s->presents_by_mode[1], (jlong)s->presents_by_mode[2], (jlong)s->presents_by_mode[3],
+        (jlong)s->presents_by_mode[4],
+        (jlong)s->on_screen[0], (jlong)s->on_screen[1], (jlong)s->on_screen[2], (jlong)s->on_screen[3], (jlong)s->on_screen[4],
+        s->on_screen_ns, visible, s->refresh_ns,
+        (jlong)s->last_stats.serial, (jlong)(s->last_stats.presents * 1000 + 0.5), (jlong)(s->last_stats.shown * 1000 + 0.5),
+        (jlong)(s->last_stats.gap_ms * 1000 + 0.5), (jlong)(s->last_stats.back * 1000 + 0.5), s->last_stats.where,
+    };
+    pthread_mutex_unlock(&s->lock);
+    memcpy(out, values, sizeof values);
+}
+
+// The pointer split for the service log into [out] (SPLIT_COUNTS numbers; PresentServer.kt reads
+// them in this order): its last window's number (0: none yet), span, moves, frames and moves not
+// counted, then each part's median and 95th percentile in microseconds. [on]: Detailed logging;
+// a change starts or stops Mesa's times (the word at byte 384) and forgets the moves and window.
+constexpr int SPLIT_COUNTS = 5 + 2 * SPLIT_PARTS;
+void split_counts(Server *s, bool on, jlong *out) {
+    pthread_mutex_lock(&s->split_lock);
+    if (on != s->split_on) {
+        s->split_on = on;
+        split_reset(&s->split);
+        if (s->page != nullptr) __atomic_store_n(&s->page[STAMPS_WORD], on ? 1u : 0u, __ATOMIC_RELEASE);
+    }
+    const split_summary &w = s->split_last;
+    out[0] = (jlong)s->split_serial;
+    out[1] = w.span_ns;
+    out[2] = w.moves;
+    out[3] = w.frames;
+    out[4] = w.not_counted;
+    for (int k = 0; k < SPLIT_PARTS; k++) {
+        out[5 + k] = w.median_us[k];
+        out[5 + SPLIT_PARTS + k] = w.p95_us[k];
+    }
+    pthread_mutex_unlock(&s->split_lock);
+}
+
 void set_window(Server *s, bool covered, int32_t x, int32_t y, int32_t w, int32_t h, int32_t screen_w, int32_t screen_h) {
     pthread_mutex_lock(&s->lock);
     s->covered = covered;
@@ -1070,7 +1234,10 @@ void stop(Server *s) {
     farewell(s, s->active);
     s->view = false;
     drop_layer(s);
-    if (s->page != nullptr) __atomic_store_n(&s->page[WANTED_WORD], 0u, __ATOMIC_RELEASE);
+    if (s->page != nullptr) {
+        __atomic_store_n(&s->page[WANTED_WORD], 0u, __ATOMIC_RELEASE);
+        __atomic_store_n(&s->page[STAMPS_WORD], 0u, __ATOMIC_RELEASE);
+    }
     for (int i = 0; i < s->nfences; i++) close(s->fences[i]);
     s->nfences = 0;
     pthread_mutex_unlock(&s->lock);
@@ -1113,6 +1280,41 @@ extern "C" JNIEXPORT void JNICALL Java_com_pd2launcher_app_PresentServer_nativeS
 extern "C" JNIEXPORT void JNICALL Java_com_pd2launcher_app_PresentServer_nativeDetach(
     JNIEnv *env, jclass, jlong handle, jobject surface) {
     detach((Server *)(intptr_t)handle, env, surface);
+}
+
+// The display's rate now, for the frames' time on the screen in refreshes ([hertz]; 0: not known).
+extern "C" JNIEXPORT void JNICALL Java_com_pd2launcher_app_PresentServer_nativeSetRefreshRate(JNIEnv *, jclass, jlong handle, jfloat hertz) {
+    set_refresh_rate((Server *)(intptr_t)handle, hertz);
+}
+
+// The counts for the service log into [out], a long array of COUNTS numbers (counts()).
+extern "C" JNIEXPORT void JNICALL Java_com_pd2launcher_app_PresentServer_nativeCounts(JNIEnv *env, jclass, jlong handle, jlongArray out) {
+    jlong values[COUNTS];
+    counts((Server *)(intptr_t)handle, values);
+    env->SetLongArrayRegion(out, 0, COUNTS, values);
+}
+
+// Detailed logging: the pointer split's counts for the service log into [out], a long array of
+// SPLIT_COUNTS numbers (split_counts); [on] starts or stops it.
+extern "C" JNIEXPORT void JNICALL Java_com_pd2launcher_app_PresentServer_nativeSplit(JNIEnv *env, jclass, jlong handle, jboolean on,
+                                                                                    jlongArray out) {
+    jlong values[SPLIT_COUNTS];
+    split_counts((Server *)(intptr_t)handle, on, values);
+    env->SetLongArrayRegion(out, 0, SPLIT_COUNTS, values);
+}
+
+// Detailed logging: the Game view wrote a pointer move into x-input-relay's socket at [nanos]
+// (System.nanoTime, CLOCK_MONOTONIC), for the running server's pointer split. Not under the
+// server's lock: the Game view's sending thread waits at most for the split's own short work.
+extern "C" JNIEXPORT void JNICALL Java_com_pd2launcher_app_PresentServer_nativePointerMoved(JNIEnv *, jclass, jlong nanos) {
+    pthread_mutex_lock(&current_lock);
+    Server *s = current;
+    if (s != nullptr) {
+        pthread_mutex_lock(&s->split_lock);
+        if (s->split_on) split_move(&s->split, nanos);
+        pthread_mutex_unlock(&s->split_lock);
+    }
+    pthread_mutex_unlock(&current_lock);
 }
 
 // x-input-relay's word: [covered], the game's window is not alone on the X screen; else it is at

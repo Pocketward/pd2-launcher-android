@@ -467,6 +467,9 @@ object SaveSync {
         detail: (String) -> Unit = {},
     ): Outcome {
         val tree = { side: Side -> if (side == Side.APP) app else folder }
+        // The lines name no character ([SaveKeeper.maskCharacters]).
+        val names = SaveKeeper.characterNames(plan.groups.flatMap { it.paths })
+        val line = { text: String -> detail(SaveKeeper.maskCharacters(text, names)) }
         val hashes = record.toSortedMap()
         val backupPaths = plan.groups.flatMap { group -> group.steps.filterIsInstance<Step.Backup>().map { it.path } }
         val backup = backupPaths.takeIf { it.isNotEmpty() }?.let { SaveKeeper.backupFolder(backups, now, it) }
@@ -487,13 +490,13 @@ object SaveSync {
                         is Step.Backup -> {
                             backUp(tree(step.side), step, backup!!)
                             backedUp++
-                            detail("save sync: ${step.path}: the ${side(step.side)}'s copy is in ${backup.name} (${group.why.text})")
+                            line("save sync: ${step.path}: the ${side(step.side)}'s copy is in ${backup.name} (${group.why.text})")
                         }
                         is Step.Delete -> {
                             val target = tree(step.side)
                             if (hash(target, step.path) != step.hash) throw ChangedMeanwhile(step.path)
                             target.delete(step.path, step.hash)
-                            detail("save sync: ${step.path}: deleted in the ${side(step.side)} (${group.why.text})")
+                            line("save sync: ${step.path}: deleted in the ${side(step.side)} (${group.why.text})")
                         }
                         is Step.Copy -> {
                             val target = tree(step.from.other)
@@ -504,13 +507,14 @@ object SaveSync {
                                 throw ChangedMeanwhile(step.path)
                             }
                             target.write(step.path, step.time, step.over) { out -> copyChecked(tree(step.from), step.path, step.hash, out) }
-                            detail("save sync: ${step.path}: from the ${side(step.from)} to the ${side(step.from.other)} (${group.why.text})")
+                            line("save sync: ${step.path}: from the ${side(step.from)} to the ${side(step.from.other)} (${group.why.text})")
                         }
                     }
                 }
             } catch (error: Exception) {
-                failed += "${group.name}: $error"
-                detail("save sync: ${group.name}: not synced: $error")
+                val name = if (group.character) SaveKeeper.NAME_MASK else group.name
+                failed += SaveKeeper.maskCharacters("$name: $error", names)
+                line("save sync: $name: not synced: $error")
                 continue
             }
             when {

@@ -151,8 +151,8 @@ class DocumentPaths(game: File?, player: File?) {
             requestedAt != null && now - requestedAt < Play.LAUNCH_PENDING_MS
 
         /**
-         * [folder] when it is where a game folder can be, else null: the Managed prefix's Diablo II
-         * folder ([SessionPaths.managedGame]) or a folder copy's (`files/import/<token>/Diablo II`,
+         * [folder] when it is where a game folder can be, else null: the Managed Diablo II folder
+         * outside the prefix ([SessionPaths.managedGame]) or a folder copy's (`files/import/<token>/Diablo II`,
          * [SessionPaths.importedGame]), named exactly so, with every part from the data folder down
          * a real folder, walked without following links. So the root neither lies elsewhere in the
          * app's files (the App userland, the Launcher's records) nor holds them, whatever the

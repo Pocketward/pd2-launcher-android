@@ -4,6 +4,7 @@ import android.view.Surface
 import com.pd2launcher.app.input.GameWindow
 import java.io.File
 import java.nio.ByteOrder
+import java.util.Locale
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -48,6 +49,31 @@ class PresentServer private constructor(private val handle: Long) {
      */
     fun detach(surface: Surface) = synchronized(lock) {
         if (!stopped) nativeDetach(handle, surface)
+    }
+
+    /** The display shows at [hertz] now (0: not known): each frame's time on the screen counts in its refreshes ([counts]). */
+    fun setRefreshRate(hertz: Float) = synchronized(lock) {
+        if (!stopped) nativeSetRefreshRate(handle, hertz)
+    }
+
+    /** The counts since the server started ([PresentCounts]); null once it stopped. */
+    fun counts(): PresentCounts? = synchronized(lock) {
+        if (stopped) return null
+        val values = LongArray(PresentCounts.SIZE)
+        nativeCounts(handle, values)
+        PresentCounts.of(values)
+    }
+
+    /**
+     * Detailed logging's pointer split ([PointerSplit]): [on] while Detailed logging is on and the
+     * game runs. Mesa times the game's frames only while it is on; a change forgets the moves and
+     * the window. The last window's summary; null once the server stopped.
+     */
+    fun split(on: Boolean): PointerSplit? = synchronized(lock) {
+        if (stopped) return null
+        val values = LongArray(PointerSplit.SIZE)
+        nativeSplit(handle, on, values)
+        PointerSplit.of(values)
     }
 
     /**
@@ -112,6 +138,13 @@ class PresentServer private constructor(private val handle: Long) {
             return if (handle == 0L) null else PresentServer(handle).also { _current.value = it }
         }
 
+        /**
+         * Detailed logging: the Game view wrote a pointer move into x-input-relay's socket at
+         * [nanos] ([System.nanoTime]), for the running server's pointer split ([split]). Without a
+         * server, or while its split is off, nothing. Never waits for the server's lock.
+         */
+        fun pointerMoved(nanos: Long) = nativePointerMoved(nanos)
+
         /** The running server stops: the game's frames go to the X screen. */
         fun stopCurrent() {
             val server = _current.value ?: return
@@ -155,6 +188,18 @@ class PresentServer private constructor(private val handle: Long) {
         )
 
         @JvmStatic
+        private external fun nativeSetRefreshRate(handle: Long, hertz: Float)
+
+        @JvmStatic
+        private external fun nativeCounts(handle: Long, out: LongArray)
+
+        @JvmStatic
+        private external fun nativeSplit(handle: Long, on: Boolean, out: LongArray)
+
+        @JvmStatic
+        private external fun nativePointerMoved(nanos: Long)
+
+        @JvmStatic
         private external fun nativeLockShown(handle: Long, size: IntArray): java.nio.ByteBuffer?
 
         @JvmStatic
@@ -162,6 +207,110 @@ class PresentServer private constructor(private val handle: Long) {
 
         @JvmStatic
         private external fun nativeStop(handle: Long)
+    }
+}
+
+/**
+ * The direct present's counts since its server started (present_server.cpp, counts()): the
+ * swapchains that became the active one so far ([swapchain]: the active one's number), the active
+ * one's size, the mode of its last PRESENT ([mode]: the VkPresentModeKHR + 1, 0 when Mesa sends
+ * none) and its PRESENTs ([swapchainPresents]); the PRESENTs by mode ([byMode]: IMMEDIATE,
+ * MAILBOX, FIFO, FIFO_RELAXED, none sent); the frames by their time on the screen in refreshes of
+ * the display ([onScreen]: 1, 2, 3, 4, 5 or more) and the sum of those times; how long the layer
+ * showed; the display's refresh period; and the last 5 s line ([stats]: its number, 0 for none;
+ * the rates, the longest gap, where the frames showed: [WHERE]).
+ */
+data class PresentCounts(
+    val swapchain: Long,
+    val width: Int,
+    val height: Int,
+    val mode: Int,
+    val swapchainPresents: Long,
+    val byMode: List<Long>,
+    val onScreen: List<Long>,
+    val onScreenNanos: Long,
+    val visibleNanos: Long,
+    val refreshNanos: Long,
+    val stats: Long = 0,
+    val presentsPerSecond: Double = 0.0,
+    val shownPerSecond: Double = 0.0,
+    val longestGapMs: Double = 0.0,
+    val backPerSecond: Double = 0.0,
+    val where: Int = 0,
+) {
+    companion object {
+        /** How many numbers nativeCounts gives (present_server.cpp's COUNTS). */
+        const val SIZE = 24
+
+        /** The modes in [byMode]'s order; the last: none sent. */
+        val MODES = listOf("IMMEDIATE", "MAILBOX", "FIFO", "FIFO_RELAXED", "not sent")
+
+        /** [where]'s words, as the native 5 s line has them (present_server.cpp's WHERE). */
+        val WHERE = listOf("", "showing", "showing in the game's window", "the X screen", "no layer: the X screen", "no view: the newest frame kept")
+
+        val NONE = PresentCounts(0, 0, 0, 0, 0, List(5) { 0L }, List(5) { 0L }, 0, 0, 0)
+
+        fun of(v: LongArray) = PresentCounts(
+            v[0], v[1].toInt(), v[2].toInt(), v[3].toInt(), v[4], v.slice(5..9), v.slice(10..14), v[15], v[16], v[17],
+            v[18], v[19] / 1000.0, v[20] / 1000.0, v[21] / 1000.0, v[22] / 1000.0, v[23].toInt(),
+        )
+    }
+}
+
+/**
+ * Detailed logging's split of the pointer's delay after the Game view's write of a move into
+ * x-input-relay's socket, for the last window of the direct present (present_server.cpp,
+ * pointer_split.h; a window ends 5 s after its first frame, or at 2048 moves): its number
+ * ([serial], 0: none yet), the time from its first frame to its last ([spanNanos]), the [moves]
+ * counted, the [frames] that showed them, and the moves [notCounted] (no time on the screen, a wait
+ * of more than 500 ms for a frame, or too many); each part's median and 95th percentile in
+ * microseconds ([medianMicros], [p95Micros], in [PARTS]' order; -1: not known, clock -> latch
+ * without latch times). Each move counts with the first frame shown whose acquire came at or after
+ * its write. Mesa's acquire and present are on D2GL's render thread, which draws a frame that the
+ * game's thread made before (D2GL's frame latency), so the pointer in a frame can be older than its
+ * acquire; the line says so.
+ */
+data class PointerSplit(
+    val serial: Long,
+    val spanNanos: Long,
+    val moves: Int,
+    val frames: Int,
+    val notCounted: Int,
+    val medianMicros: List<Long>,
+    val p95Micros: List<Long>,
+) {
+    /** The service log's line for this window. */
+    fun line(): String {
+        val head = String.format(Locale.ROOT, "pointer split (5 s): %d moves in %.1f s", moves, spanNanos / 1e9)
+        if (moves == 0) return "$head, $notCounted not counted (no time on the screen, a wait of more than 500 ms for a frame, or too many)"
+        fun part(i: Int) = if (medianMicros[i] < 0) {
+            "${PARTS[i]} not known"
+        } else {
+            String.format(Locale.ROOT, "%s %.1f / %.1f", PARTS[i], medianMicros[i] / 1e3, p95Micros[i] / 1e3)
+        }
+        return "$head, shown by $frames frames, $notCounted not counted; median / p95 in ms: " +
+            "${part(0)}; ${part(1)}; ${part(2)} (${part(3)}); ${part(4)}; ${part(5)}; ${part(6)}; ${part(7)}; $RENDER_THREAD"
+    }
+
+    companion object {
+        /**
+         * The parts, as pointer_split.h's enum split_part has them: the times are the app's write,
+         * Mesa's four, the app's transaction, the compositor's latch and the present fence.
+         */
+        val PARTS = listOf(
+            "write -> acquire", "acquire -> present", "present -> clock", "present -> GPU done", "clock -> apply", "apply -> screen",
+            "clock -> latch", "write -> screen",
+        )
+
+        /** The end of each line: whose times Mesa's are. */
+        const val RENDER_THREAD = "acquire and present are D2GL's render thread's: the pointer in a frame can be older than its acquire"
+
+        /** How many numbers nativeSplit gives (present_server.cpp's SPLIT_COUNTS). */
+        val SIZE = 5 + 2 * PARTS.size
+
+        fun of(v: LongArray) = PointerSplit(
+            v[0], v[1], v[2].toInt(), v[3].toInt(), v[4].toInt(), v.slice(5 until 5 + PARTS.size), v.slice(5 + PARTS.size until SIZE),
+        )
     }
 }
 

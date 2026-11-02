@@ -101,7 +101,9 @@ class GameEnvironment(
             } else {
                 File(bin, "Xvfb").path to xvfbArguments
             }
-            val x = starter.start("xvfb", program, arguments, env, fd3 = memory) { process, _ -> if (xvfb == process) xvfb = null }
+            val x = starter.start("xvfb", program, arguments, env, fd3 = memory, rewrite = XvfbListenerLines()::rewrite) { process, _ ->
+                if (xvfb == process) xvfb = null
+            }
             xvfb = x
             awaitFramebuffer(x, framebuffer)
             _framebuffer.value = framebuffer
@@ -295,5 +297,32 @@ class GameEnvironment(
 
         /** The gamepad file, named to the game's XInput bridge in `PD2_GAMEPAD_FILE`. */
         fun gamepadFile(paths: SessionPaths) = File(paths.files, "gamepad.bin")
+    }
+}
+
+/**
+ * Xvfb's four lines at each start about the folder `/tmp/.X11-unix`, which it cannot make (no
+ * app may write to `/tmp` on Android; the X screen listens on its abstract socket), as one line
+ * in `xvfb.log` ([ProcessStarter.start]'s rewrite): one object for each start.
+ */
+class XvfbListenerLines {
+    private var said = false
+
+    /** [line] as the log writes it: the first of the four as [LINE], the others left out, any other line as it is. */
+    fun rewrite(line: String): String? {
+        if (EXPECTED.none { line.startsWith(it) }) return line
+        if (said) return null
+        said = true
+        return LINE
+    }
+
+    companion object {
+        const val LINE = "Xvfb: no /tmp/.X11-unix listener (expected on Android)"
+        private val EXPECTED = listOf(
+            "_XSERVTransmkdir: ERROR: euid != 0,directory /tmp/.X11-unix will not be created.",
+            "_XSERVTransmkdir: ERROR: Cannot create /tmp/.X11-unix",
+            "_XSERVTransSocketUNIXCreateListener: mkdir(/tmp/.X11-unix) failed",
+            "_XSERVTransMakeAllCOTSServerListeners: failed to create listener for unix",
+        )
     }
 }

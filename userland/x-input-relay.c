@@ -81,6 +81,15 @@
  * Should something move the window back each time, the relay stops after LAUNCHER_MOVES moves
  * until the next release. The launcher's files do not change: it keeps the middle as its place.
  *
+ * Its log (standard error, which the app writes to x-input-relay.log with a time on each line)
+ * also counts three things that the app cannot see (x-input-relay-counts.h): the moves by a
+ * distance that the pointer area's edges stopped, one line at most each 5 s with the count by edge
+ * and the last such move; the pointer at another place than where the relay last put it (the game
+ * or Wine moved it), one line at most each 10 s with the first such move and how many more came;
+ * and its own time for each move of the pointer, from the read of the event to XFlush, one line at
+ * most each 5 s while moves come. Each line comes at the end of the window that its first event
+ * starts, and at the relay's end.
+ *
  * Exit codes: 0 the app closed the socket; 1 bad usage, a broken event stream, or the X screen
  * went away (Xlib's I/O error handler); 2 no X screen; 3 the X screen has no XTEST.
  */
@@ -92,6 +101,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <X11/XKBlib.h>
@@ -101,6 +111,8 @@
 #include <X11/extensions/XTest.h>
 #include <X11/extensions/Xfixes.h>
 #include <X11/keysym.h>
+
+#include "x-input-relay-counts.h"
 
 struct relay_event {
     uint32_t type;
@@ -404,6 +416,18 @@ static void tell_cover(void) {
     }
 }
 
+/* The log lines' counts (x-input-relay-counts.h): the moves the area's edges stopped, and the
+ * pointer's moves by the game or Wine. */
+static struct edge_stops edge_stops;
+static struct foreign_moves foreign_moves;
+static struct move_times move_times;
+
+static int64_t now_ns(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (int64_t)t.tv_sec * 1000000000LL + t.tv_nsec;
+}
+
 /* Tells the app 'P', where the pointer is, while it shows (an 'I' told) and when it is not where
  * the last 'P' put it. */
 static void tell_place(void) {
@@ -414,6 +438,7 @@ static void tell_place(void) {
     if (!XQueryPointer(display, DefaultRootWindow(display), &root_return, &child, &x, &y, &window_x, &window_y, &buttons)) {
         return;
     }
+    pointer_seen(&foreign_moves, now_ns(), x, y);
     if (pointer_placed && pointer_at[0] == x && pointer_at[1] == y) return;
     pointer_placed = 1;
     pointer_at[0] = x;
@@ -678,7 +703,9 @@ static void set_area(uint32_t a, uint32_t b) {
 }
 
 /* RELAY_RELATIVE by [dx], [dy]: while a pointer area is set, from where the pointer really is to
- * the nearest place in the area (nothing when that is where it is); else by that distance. */
+ * the nearest place in the area (nothing when that is where it is); else by that distance. A
+ * pointer that is not where the relay put it, and a move that an edge stopped, count for the log
+ * (x-input-relay-counts.h). */
 static void move_by(int dx, int dy) {
     Window root_return, child;
     int x, y, window_x, window_y;
@@ -686,16 +713,32 @@ static void move_by(int dx, int dy) {
     if (empty(area) ||
         !XQueryPointer(display, DefaultRootWindow(display), &root_return, &child, &x, &y, &window_x, &window_y, &buttons)) {
         XTestFakeRelativeMotionEvent(display, dx, dy, CurrentTime);
+        pointer_unknown(&foreign_moves);
         return;
     }
+    int64_t now = now_ns();
+    pointer_seen(&foreign_moves, now, x, y);
+    edge_stop(&edge_stops, now, edges_met(x, y, dx, dy, area.left, area.top, area.right, area.bottom), dx, dy, x, y);
     int to_x = pointer_target(x, dx, area.left, area.right), to_y = pointer_target(y, dy, area.top, area.bottom);
     if (to_x != x || to_y != y) XTestFakeMotionEvent(display, -1, to_x, to_y, CurrentTime);
+    pointer_put(&foreign_moves, to_x, to_y);
+}
+
+/* The counts' lines that are due at [now] (all of them with [force], at the end) to the log. */
+static void write_counts(int64_t now, int force) {
+    char line[256];
+    if (edge_line(&edge_stops, now, force, area.left, area.top, area.right - area.left, area.bottom - area.top, line, sizeof line)) {
+        fprintf(stderr, "%s\n", line);
+    }
+    if (moved_line(&foreign_moves, now, force, line, sizeof line)) fprintf(stderr, "%s\n", line);
+    if (move_times_line(&move_times, now, force, line, sizeof line)) fprintf(stderr, "%s\n", line);
 }
 
 static void inject(const struct relay_event *event) {
     switch (event->type) {
     case RELAY_MOTION:
         XTestFakeMotionEvent(display, -1, event->a, event->b, CurrentTime);
+        pointer_put(&foreign_moves, event->a, event->b);
         tell_place();
         break;
     case RELAY_RELATIVE:
@@ -792,18 +835,34 @@ int main(int argc, char **argv) {
             if (pointer) tell_pointer();
         }
         XFlush(display);
-        /* Input is read every round; events read while answering are looked at next round. */
+        /* Input is read every round; events read while answering are looked at next round. A
+           count's line that is due wakes the relay too. */
         int queued = XEventsQueued(display, QueuedAlready);
+        int64_t due = first_due(first_due(edge_due(&edge_stops), moved_due(&foreign_moves)), move_times_due(&move_times));
+        int timeout = -1;
+        if (queued > 0) {
+            timeout = 0;
+        } else if (due != 0) {
+            int64_t left = due - now_ns();
+            timeout = left <= 0 ? 0 : (int)(left / 1000000 + 1);
+        }
         struct pollfd fds[2] = {{0, POLLIN, 0}, {ConnectionNumber(display), POLLIN, 0}};
-        if (poll(fds, 2, queued > 0 ? 0 : -1) < 0) {
+        if (poll(fds, 2, timeout) < 0) {
             if (errno == EINTR) continue;
             break;
         }
         if (fds[0].revents & (POLLIN | POLLHUP | POLLERR)) {
             got = read_event(&event);
-            if (got > 0) inject(&event);
+            if (got > 0) {
+                /* A move's time from its read to XFlush, which inject() ends with. */
+                int64_t read_at = now_ns();
+                inject(&event);
+                if (event.type == RELAY_MOTION || event.type == RELAY_RELATIVE) move_time(&move_times, read_at, now_ns() - read_at);
+            }
         }
+        write_counts(now_ns(), 0);
     }
+    write_counts(now_ns(), 1);
     XCloseDisplay(display);
     if (got < 0) {
         fprintf(stderr, "x-input-relay: broken event stream\n");
