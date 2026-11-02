@@ -48,7 +48,7 @@ https://github.com/user-attachments/assets/f294dbf7-d77c-46bf-a42d-584854420aa3
 - A supported GPU:
   - Qualcomm Adreno 6xx, 7xx or 8xx (Snapdragon devices), or
   - Arm Mali of the v10 to v13 architectures on Arm's CSF kernel driver, such as the Mali-G310, G610, G710, G615, G715, G720 and G725.
-- Free storage for the app and its runtime (about 0.6 GB), the game (about 3 GB), and the installer downloads (about 2.7 GB). The downloads are needed only during the installation: once the game works, the app offers to remove them.
+- Free storage for the app and its runtime (about 0.6 GB), the game (about 2.7 GB), and the installer downloads (about 2.7 GB). The downloads are needed only during the installation: once the game works, the app offers to remove them.
 
 The app checks all of this when it first starts and says what is missing. A GPU of a supported family that the bundled graphics driver does not know gets a warning instead: the game may still run. The check does not look at the kernel version.
 
