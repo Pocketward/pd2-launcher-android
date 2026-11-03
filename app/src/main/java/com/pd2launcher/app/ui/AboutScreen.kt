@@ -54,7 +54,7 @@ fun AboutScreen(onBack: () -> Unit, runtime: String? = null, update: UpdateUi? =
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Text(stringResource(R.string.app_name), style = Type.Title, color = Palette.Text)
-                Text(stringResource(R.string.about_version, BuildConfig.VERSION_NAME), style = Type.Body, color = Palette.Muted)
+                Text(stringResource(R.string.about_version, BuildConfig.SHOWN_VERSION), style = Type.Body, color = Palette.Muted)
                 update?.let { UpdateBlock(it) }
                 Text(stringResource(R.string.about_what), style = Type.Body, color = Palette.Text, modifier = Modifier.padding(top = 8.dp))
                 Text(stringResource(R.string.about_disclaimer), style = Type.Hint, color = Palette.Muted)

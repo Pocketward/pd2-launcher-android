@@ -1,6 +1,7 @@
 package com.pd2launcher.app
 
 import java.io.File
+import java.io.IOException
 
 /**
  * The CPUs of the slowest cluster: those whose highest frequency is the lowest of the device's
@@ -35,3 +36,46 @@ object LittleCores {
         return of(frequencies)
     }
 }
+
+/**
+ * A helper's start on the little cores through `taskset` (Xvfb, [GameEnvironment.start]), and
+ * once more without it when that start ends before the helper is ready: some firmware refuses
+ * taskset's own `sched_setaffinity` (issue #13, a Xiaomi POCO on HyperOS 3: "taskset: failed to
+ * set pid ...'s affinity: Operation not permitted", status 1), and the helper never runs. After
+ * that, every start goes without taskset for as long as this object lives (the app's process).
+ */
+class LittleCoresStart {
+    /** Whether a start through taskset ended before its helper was ready. */
+    @Volatile var refused = false
+        private set
+
+    /**
+     * [start] with [pinned] (taskset's program and argv; null: none) while taskset was not
+     * [refused], else with [direct]; [ready] waits until the process is ready and throws
+     * [EndedEarly] when it ended first. Gives the process that is ready.
+     */
+    fun <P> start(
+        pinned: Pair<String, List<String>>?,
+        direct: Pair<String, List<String>>,
+        log: (String) -> Unit,
+        start: (String, List<String>) -> P,
+        ready: (P) -> Unit,
+    ): P {
+        if (pinned != null && !refused) {
+            val process = start(pinned.first, pinned.second)
+            try {
+                ready(process)
+                return process
+            } catch (error: EndedEarly) {
+                refused = true
+                log("taskset could not keep ${direct.second.first()} on the little cores (${error.message}): started without taskset, also for the rest of the session")
+            }
+        } else if (pinned != null) {
+            log("${direct.second.first()} starts without taskset: taskset failed earlier in this session")
+        }
+        return start(direct.first, direct.second).also(ready)
+    }
+}
+
+/** A process ended before it was ready ([LittleCoresStart]). */
+class EndedEarly(message: String) : IOException(message)

@@ -19,6 +19,17 @@ fun versionCodeOf(name: String): Int {
     return ((major * 100 + minor) * 100 + patch) * 100 + beta
 }
 
+// A test build (build.sh: PD2_TEST_BUILD=<label>): `-Ppd2.testBuild=<label>` shows the version as
+// "<versionName> (test <label>)" in About and device.txt (SHOWN_VERSION); the versionName and
+// versionCode stay the version's own, which the updater reads. `-Ppd2.testCommit=<commit>` names
+// the commit it was built from in device.txt.
+val testBuild: String? = providers.gradleProperty("pd2.testBuild").orNull?.also {
+    require(Regex("[0-9A-Za-z.-]{1,32}").matches(it)) { "pd2.testBuild $it is not 1 to 32 of 0-9, A-Z, a-z, '.' and '-'" }
+}
+val testCommit: String = providers.gradleProperty("pd2.testCommit").orNull.orEmpty().also {
+    require(it.isEmpty() || Regex("[0-9a-f]{40}(-dirty)?").matches(it)) { "pd2.testCommit $it is not a commit" }
+}
+
 // Release signing (docs/BUILDING.md): the key stays outside the repository.
 // `build.sh release` mounts ~/.config/pd2launcher and names its
 // release-signing.properties (storeFile, relative to it; storePassword; keyAlias; keyPassword)
@@ -60,6 +71,8 @@ android {
         ndk { abiFilters += "arm64-v8a" }
         versionName = "0.3.7"
         versionCode = versionCodeOf(versionName!!)
+        buildConfigField("String", "SHOWN_VERSION", "\"$versionName${testBuild?.let { " (test $it)" }.orEmpty()}\"")
+        buildConfigField("String", "TEST_COMMIT", "\"$testCommit\"")
         // App updates (AppUpdater): the public releases the app looks at (the newest 10; it takes
         // the highest version that is not a pre-release), where their files must be, the name its
         // APKs have there (the release workflow's), and the SHA-256 of the certificate they are

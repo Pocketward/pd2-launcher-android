@@ -998,7 +998,8 @@ class MainActivity : ComponentActivity() {
         val operation = snapshot?.operation
         return LogShare.about(
             listOf(
-                "App" to "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}, ${BuildConfig.APPLICATION_ID}, ${BuildConfig.BUILD_TYPE})",
+                "App" to "${BuildConfig.SHOWN_VERSION} (${BuildConfig.VERSION_CODE}, ${BuildConfig.APPLICATION_ID}, ${BuildConfig.BUILD_TYPE})" +
+                    BuildConfig.TEST_COMMIT.let { if (it.isEmpty()) "" else ", commit $it" },
                 "Created" to Instant.now().toString(),
                 "Device" to "${Build.MANUFACTURER} ${Build.MODEL} (${Build.DEVICE})",
                 // Android 11 names no chip: its hardware name (Build.HARDWARE) instead.

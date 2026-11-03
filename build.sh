@@ -60,6 +60,13 @@ if [[ "${PD2_DEV_R8:-}" == 1 ]]; then
     tasks="-Ppd2.devR8=true $tasks"
 fi
 
+# PD2_TEST_BUILD=<label>: a test build, shown as "<version> (test <label>)" with the version's own
+# versionCode, and this tree's commit in device.txt (app/build.gradle.kts, pd2.testBuild).
+if [[ -n "${PD2_TEST_BUILD:-}" ]]; then
+    commit="$(git -C "$here" rev-parse HEAD)"
+    git -C "$here" diff --quiet HEAD -- . || commit+="-dirty"
+    tasks="-Ppd2.testBuild=$PD2_TEST_BUILD -Ppd2.testCommit=$commit $tasks"
+fi
 # Without unit tests the test task would only compile the debug variant again.
 [[ -d "$here/app/src/test" ]] || tasks="${tasks/ :app:testDebugUnitTest/}"
 if [[ "$target" == verification-metadata ]]; then
