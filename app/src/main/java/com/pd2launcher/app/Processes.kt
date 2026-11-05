@@ -105,7 +105,12 @@ class ProcessStarter(
                 mirror?.invoke(line)
             }
         }
-        val log = synchronized(lock) { logsByName.getOrPut(name) { RotatingLog(logs, name) } }
+        val log = synchronized(lock) {
+            logsByName.getOrPut(name) {
+                val (limit, keep) = logSize(name, AppSettingsStore.testBuild() != null)
+                RotatingLog(logs, name, limit, keep)
+            }
+        }
         // The process's own log has its start line once its first output comes ([drain]).
         val opened = AtomicBoolean(false)
         var startLine = ""
@@ -186,6 +191,18 @@ class ProcessStarter(
 
     companion object {
         private const val TAG = "pd2-processes"
+
+        /**
+         * The size of one file of the log of the process [name] and the files kept: in a test
+         * build ([AppSettingsStore.testBuild]) the engine's log keeps 4 MB in each of 5 files, as
+         * Detailed logging's record windows write every network call of a game's join (about
+         * 0.7 MB a minute while the player creates games); else [RotatingLog]'s own.
+         */
+        fun logSize(name: String, testBuild: Boolean): Pair<Long, Int> =
+            if (testBuild && name == ENGINE) (4L shl 20) to 5 else RotatingLog.LIMIT to RotatingLog.KEEP
+
+        /** The engine's process name, which names its log (`engine.log`). */
+        const val ENGINE = "engine"
         /** The logcat tag of the seccomp test harness's lines (debug builds, [harness]). */
         const val HARNESS_TAG = "pd2-seccomp"
         private const val HARNESS_LINE = "seccomp-run:"

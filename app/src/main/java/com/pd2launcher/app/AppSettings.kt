@@ -169,6 +169,8 @@ data class AppSettings(
         /** [updateChannel]'s name; none: no pick yet (this build's own channel). */
         const val UPDATE_CHANNEL = "update_channel"
         const val DETAILED_LOGGING = "detailed_logging"
+        /** The test build that turned [detailedLogging] on ([AppSettingsStore.testBuildLogging]); none: no test build did. */
+        const val TEST_BUILD_LOGGING = "test_build_logging"
         /** [syncFolder]'s URI; none: the sync is off. */
         const val SYNC_FOLDER = "sync_folder"
         /** [sourceChoice]'s name; none: no row selected yet. */
@@ -256,6 +258,25 @@ object AppSettingsStore {
         }
         editor.apply()
     }
+
+    /**
+     * A test build (a build for one player's problem report, "<version> (test <label>)") turns
+     * Detailed logging on by itself, once for each test build: the player can turn it off after.
+     * A normal build never does ([testBuild] null).
+     */
+    fun testBuildLogging(context: Context) = testBuildLogging(preferences(context), testBuild())
+
+    internal fun testBuildLogging(preferences: SharedPreferences, build: String?) {
+        synchronized(lock) {
+            if (build == null || preferences.getString(AppSettings.TEST_BUILD_LOGGING, null) == build) return
+            update(preferences) { it.copy(detailedLogging = true) }
+            preferences.edit().putString(AppSettings.TEST_BUILD_LOGGING, build).apply()
+        }
+    }
+
+    /** This build's name when it is a test build (its commit, or "(test" in its shown version), else null. */
+    fun testBuild(shown: String = BuildConfig.SHOWN_VERSION, commit: String = BuildConfig.TEST_COMMIT): String? =
+        if (commit.isNotEmpty() || shown.contains("(test")) "$shown $commit".trim() else null
 
     /** A game session ended ([AppSettings.gamePlayed]): saved the first time only. */
     fun gamePlayed(context: Context) = gamePlayed(preferences(context))

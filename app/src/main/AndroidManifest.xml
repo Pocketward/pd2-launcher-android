@@ -9,6 +9,10 @@
          DNS servers. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Detailed logging's network lines: the Wi-Fi signal, link speed, frequency and standard
+         (WifiManager's connection info; Android 11 has them nowhere else). Never the network's
+         name, the access point or a MAC address. Granted at install, no prompt. -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <!-- Check's grant buttons: Android's own prompt to stop optimising the app's battery use,
          and the notification prompt where the target allows. -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />

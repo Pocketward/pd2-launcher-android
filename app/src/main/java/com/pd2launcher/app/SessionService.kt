@@ -10,6 +10,8 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.drawable.Icon
 import android.net.ConnectivityManager
+import android.net.LinkProperties
+import android.net.Network
 import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.IBinder
@@ -38,6 +40,7 @@ import com.pd2launcher.app.ui.InstallProgress
 import com.pd2launcher.app.ui.Play
 import java.io.File
 import java.io.IOException
+import java.util.Locale
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -227,6 +230,12 @@ class SessionService : Service() {
     private val snapshotLines = SnapshotLines({ log(it) })
     /** The game's frames in the service log ([FrameWatch]); the frame look only. */
     private val frameWatch = FrameWatch()
+    /** What the phone did while the game joined an online game, in the service log ([JoinWindow]). */
+    private val joinWindow = JoinWindow()
+    /** The highest speed of each CPU (kHz), read at the first join window. */
+    private var joinMaxKhz: Map<Int, Long> = emptyMap()
+    /** Whether [joinWindow] is open, for its sampler off the worker; set on the worker. */
+    @Volatile private var joinOpen = false
     /** The game's frames as the direct present shows them, in the service log ([PresentWatch]); the frame look only. */
     private val presentWatch = PresentWatch()
     /** Detailed logging: D2GL's settings beside the pointer split, in the service log ([D2glWatch]); the frame look only. */
@@ -265,6 +274,7 @@ class SessionService : Service() {
         super.onCreate()
         paths = SessionPaths(DeviceCheck.dataDir(this))
         paths.createFolders()
+        AppSettingsStore.testBuildLogging(this)
         serviceLog = RotatingLog(paths.logs, "service")
         launcherRunLog = RotatingLog(paths.logs, OfficialLauncherLog.NAME, OfficialLauncherLog.LIMIT, OfficialLauncherLog.KEEP)
         launcherLog = OfficialLauncherLog(launcherRunLog::line, SystemClock::elapsedRealtime)
@@ -1019,6 +1029,11 @@ class SessionService : Service() {
                 mirror = { line ->
                     if (BuildConfig.DEBUG && line.startsWith(ENGINE_LINE)) Log.i(ENGINE_TAG, line)
                     launcherLog.engineLine(line)
+                    // Detailed logging: a connect to a game server opens the join window, its
+                    // socket's close ends it; the other network lines do nothing here.
+                    if (line.contains(JOIN_NETWORK) && (line.contains(" connect socket ") || line.contains(" closesocket "))) {
+                        post { joinLine(line) }
+                    }
                 },
             ) { exited, status -> post { onEngineExit(exited, status) } }
         } catch (error: IOException) {
@@ -1632,6 +1647,7 @@ class SessionService : Service() {
             syncSaves("before Play", forLaunch = true)
             log("Play: settings: ${settingsLine(settings)}")
             log("Play: ${inputLine(settings)}")
+            if (settings.detailedLogging) log("Play: network: ${NetworkFacts.ofDefault(this)?.text() ?: "no default network"}")
             launchSent = sendCommand(
                 Command.LaunchGame(
                     display = DisplaySize(width.toLong(), height.toLong()),
@@ -1749,6 +1765,7 @@ class SessionService : Service() {
             log("official launcher: settings: ${settingsLine(settings)}")
             log("official launcher: ${inputLine(settings)}")
             launcherLog.note("settings: ${settingsLine(settings)}")
+            if (settings.detailedLogging) log("official launcher: network: ${NetworkFacts.ofDefault(this)?.text() ?: "no default network"}")
             sendCommand(Command.OpenOfficialLauncher(strictMemoryOrder = false, detailedLogging = settings.detailedLogging))
                 ?.also { launchRequested(SystemClock.elapsedRealtime()) }
         }
@@ -2332,6 +2349,133 @@ class SessionService : Service() {
     }
 
     /**
+     * On the worker: an engine network [line] for the [joinWindow]. When it opens the window, the
+     * network's state goes to the log, a network callback follows the default network
+     * ([joinNetwork]), the first sample is taken at once and a sampler takes
+     * [JoinWindow.SAMPLES_PER_SECOND] a second until it ends.
+     */
+    private fun joinLine(line: String) {
+        if (joinMaxKhz.isEmpty()) joinMaxKhz = JoinWindow.coreKhz(File(CPU_FOLDER), "cpuinfo_max_freq")
+        val was = joinWindow.isOpen
+        joinWindow.line(line, SystemClock.elapsedRealtime(), joinMaxKhz)?.let(::log)
+        joinOpen = joinWindow.isOpen
+        if (!joinWindow.isOpen) joinNetworkStop()
+        if (was || !joinWindow.isOpen) return
+        val facts = NetworkFacts.ofDefault(this)
+        log("network at the join window: ${facts?.text() ?: "no default network"}")
+        joinNetworkStart(facts)
+        val sampler = JoinSampler()
+        joinWindow.sample(sampler.sample(), joinMaxKhz).forEach(::log)
+        scope.launch(Dispatchers.IO) {
+            while (joinOpen) {
+                delay(1000L / JoinWindow.SAMPLES_PER_SECOND)
+                val sample = sampler.sample()
+                post {
+                    if (joinWindow.isOpen) joinWindow.sample(sample, joinMaxKhz).forEach(::log)
+                    joinOpen = joinWindow.isOpen
+                    if (!joinWindow.isOpen) joinNetworkStop()
+                }
+            }
+        }
+    }
+
+    /**
+     * The looks at the phone of one join window: it keeps the game's process id and the threads
+     * of the sample before, so that each sample reads the name and the context switches of the
+     * three busiest threads only. On the sampler's thread.
+     */
+    private inner class JoinSampler {
+        private val proc = File("/proc")
+        private var pid: Int? = null
+        private var before: Map<Int, JoinWindow.ThreadSample>? = null
+
+        fun sample(): JoinWindow.Sample {
+            val threads = (pid ?: gamePid()?.also { pid = it })?.let { game ->
+                val all = JoinWindow.threads(proc, game)
+                if (all.isEmpty()) pid = null
+                JoinWindow.details(proc, game, all, JoinWindow.busiest(before, all))
+            }.orEmpty()
+            before = threads.takeIf { it.isNotEmpty() }
+            return JoinWindow.Sample(
+                SystemClock.elapsedRealtime(),
+                threads,
+                PresentCounter.reader(paths.presentCounter)?.presents(),
+                JoinWindow.coreKhz(File(CPU_FOLDER), "scaling_cur_freq"),
+                MemoryLog.read()?.availableKb,
+                Traffic.now(),
+                WifiFacts.ofDefault(this@SessionService)?.signal(),
+            )
+        }
+
+        private fun gamePid(): Int? = UidCleanup.scan(proc, Os.getuid(), Os.getpid(), ::owner)
+            .firstOrNull { it.name.equals(LauncherGame.PROCESS, ignoreCase = true) }?.pid
+    }
+
+    /** The network callback of the open join window, and the default network's last facts. */
+    private var joinNetwork: ConnectivityManager.NetworkCallback? = null
+    private var joinNetworkFacts: NetworkFacts? = null
+
+    /**
+     * On the worker: follow the default network while the join window is open, from [facts] (its
+     * state at the window's start): each loss, new network, change of its link or capabilities
+     * and block goes to the log with the time from the connect. Android calls back at once with
+     * the current state, which gives a line only where it differs from [facts].
+     */
+    private fun joinNetworkStart(facts: NetworkFacts?) {
+        if (joinNetwork != null) return
+        val manager = getSystemService(ConnectivityManager::class.java) ?: return
+        joinNetworkFacts = facts
+        val first = manager.activeNetwork
+        val seen = mutableSetOf<Network>().apply { first?.let(::add) }
+        var blocked: Boolean? = null
+        fun event(text: String) = post {
+            val start = joinWindow.startMs ?: return@post
+            log(String.format(Locale.ROOT, "join network %+.2f s: %s", (SystemClock.elapsedRealtime() - start) / 1000.0, text))
+        }
+        fun changed(network: Network, caps: NetworkCapabilities?, link: LinkProperties?, what: String) {
+            val now = NetworkFacts.of(manager, network, caps, link, this@SessionService) ?: return
+            post {
+                val before = joinNetworkFacts
+                joinNetworkFacts = now
+                val changes = if (before == null) now.text() else now.changesFrom(before)
+                if (changes != null) event("$what: $changes")
+            }
+        }
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                if (seen.add(network)) event("a new default network is available")
+            }
+
+            override fun onLost(network: Network) = event("the default network was lost")
+
+            override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) =
+                changed(network, capabilities, null, "capabilities changed")
+
+            override fun onLinkPropertiesChanged(network: Network, properties: LinkProperties) =
+                changed(network, null, properties, "link changed")
+
+            override fun onBlockedStatusChanged(network: Network, isBlocked: Boolean) {
+                if (blocked != isBlocked && (blocked != null || isBlocked)) event(if (isBlocked) "the network is BLOCKED for the app" else "the network is no longer blocked")
+                blocked = isBlocked
+            }
+        }
+        try {
+            manager.registerDefaultNetworkCallback(callback)
+            joinNetwork = callback
+        } catch (error: RuntimeException) {
+            log("join network: no network callback ($error)")
+        }
+    }
+
+    /** On the worker: the join window ended; its network callback ends. */
+    private fun joinNetworkStop() {
+        val callback = joinNetwork ?: return
+        joinNetwork = null
+        joinNetworkFacts = null
+        runCatching { getSystemService(ConnectivityManager::class.java)?.unregisterNetworkCallback(callback) }
+    }
+
+    /**
      * On the worker: the line [memoryWatch] gives for now, if any, and while the game runs the
      * environment line of each Wine program not seen before ([programEnvironments]). The game runs
      * while the Game client or the official PD2 launcher's game runs; while neither runs and none
@@ -2512,6 +2656,10 @@ class SessionService : Service() {
         private const val TAG = "pd2-session"
         private const val ENGINE_TAG = "pd2-engine"
         private const val ENGINE_LINE = "pd2-launcher:"
+        /** The engine's network lines (Detailed logging), which the [JoinWindow] reads. */
+        private const val JOIN_NETWORK = "pd2-launcher: network "
+        /** The CPUs' folder in sysfs, with each CPU's cpufreq. */
+        private const val CPU_FOLDER = "/sys/devices/system/cpu"
         const val ACTION_START = "com.pd2launcher.app.action.START"
         /** Try again after the engine or the userland failed: a fresh start, its failures forgotten ([RestartPolicy]). */
         const val ACTION_RETRY = "com.pd2launcher.app.action.RETRY"

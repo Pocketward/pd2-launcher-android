@@ -237,6 +237,7 @@ class MainActivity : ComponentActivity() {
         // A debug intent's settings and Play act once: not again when Android makes the activity again.
         freshIntent = savedInstanceState == null
         readScreenExtras(intent)
+        AppSettingsStore.testBuildLogging(this)
         AppSettingsStore.load(this)
         appUpdate.create(intent, fresh = savedInstanceState == null)
         // An install started and not finished opens on Install; an installed game on Play (Root
