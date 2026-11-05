@@ -91,6 +91,8 @@ data class SessionStatus(
      * prefix state runs meanwhile ([PrefixStateKeeper.wineRuns]).
      */
     val jobRequestedAt: Long? = null,
+    /** The `seq` of the job command that [jobRequestedAt] counts, until the engine refuses it or the engine ends. */
+    val jobRequestSeq: Long? = null,
     /**
      * The official PD2 launcher's session runs a game it started (Game.exe among the app's
      * processes, [LauncherGame]): the Game view shows the game's menu and controls, not the
@@ -100,12 +102,34 @@ data class SessionStatus(
     /** A press of Play's look for a new Project Diablo 2 version, until the game starts or Play shows again ([PlayCheck]). */
     val playCheck: PlayCheck.State? = null,
     /**
+     * The route whose graphics driver failed in the last game or game environment start
+     * ([PhoneDriverFailure.tells]): Play's error line names its driver, until the next game starts
+     * ([launch]) or the pick changes.
+     */
+    val driverFailed: GraphicsRoute? = null,
+    /** The running engine's route of the game's graphics ([GraphicsRoute]), for shared logs; null before an engine started or where none can run. */
+    val graphicsRoute: GraphicsRoute? = null,
+    /** The Game view shows the card that asks if the game works ([com.pd2launcher.app.ui.RouteCard], [PhoneDriverFailure.asks]). */
+    val routeQuestion: Boolean = false,
+    /** [graphicsRoute] is the pick in Settings → Display → GPU ([DriverPage.route]), for shared logs. */
+    val routeChosen: Boolean = false,
+    /** The engine of this install can run the Software driver (its welcome's `gdi_adjmouse`, [DriverPage.softwareRuns]; kept in [RouteState.engineSoftware]). */
+    val softwareDriver: Boolean = false,
+    /**
      * When the official PD2 launcher's session started (elapsed real time; [LauncherStart.since]),
      * while it runs: the Game view counts the seconds of its start from it.
      */
     val launcherSince: Long? = null,
 ) {
     enum class Engine { STOPPED, STARTING, CONNECTED, RESTARTING, FAILED }
+
+    /**
+     * This status without what the commands of an engine that is gone left in it: the next engine
+     * counts its commands from 1 again, so no refusal, update recheck, launch or job of the old
+     * one may stay ([SessionService.forgetEngineCommands]).
+     */
+    fun withoutEngineCommands(): SessionStatus =
+        copy(refusal = null, updateRecheck = null, launchRequestedAt = null, jobRequestedAt = null, jobRequestSeq = null)
 
     companion object {
         /**
@@ -142,8 +166,6 @@ class SessionService : Service() {
     private lateinit var paths: SessionPaths
     /** The device's GPU, probed once: Automatic's graphics choices and the engine's host values follow it. */
     private val gpu by lazy { HostGpu.probe() }
-    /** The `seq` of the job command that [SessionStatus.jobRequestedAt] counts (on the worker only). */
-    private var jobRequestSeq: Long? = null
     /** The capture of the prefix state ([keepPrefixState]); it remembers one that Wine's run put off. */
     private val prefixStateKeeper by lazy {
         PrefixStateKeeper(
@@ -215,6 +237,14 @@ class SessionService : Service() {
     private var launchSent: Pair<Long, Long>? = null
     /** When the Game client began running ([InstallerDownloads.played]); the snapshot collection only. */
     private var gameRunningSince: Long? = null
+    /** The player pressed Quit on the card ([quitRoute]): the game's end tells nothing of the driver. Worker thread only. */
+    private var gameQuit = false
+    /** The present counter when the app's own game started on a route that the app follows ([PhoneDriverFailure.failed]). */
+    private var presentsAtGameStart: Long? = null
+    /** The player or the app stopped the running game ([stopInGameView]): its end is no driver failure. */
+    @Volatile private var gameStoppedByApp = false
+    /** The system-driver server's lost contexts when the app's own game started ([PhoneDriverFailure.failed]). */
+    private var contextsLostAtGameStart = 0
     /** Whether the game folder was there when the Files roots were last told ([followGameFolder]); worker thread only. */
     private var gameFolderShown: Boolean? = null
     /** The newest start request's id, which an idle end names ([stopWhenIdle]). */
@@ -263,6 +293,10 @@ class SessionService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        PhoneDriver.init(this)
+        PhoneGles.init(this)
+        // The records of the removed automatic fallback go (RouteState.OLD_KEYS).
+        RouteState.dropOldRecords(this)
         paths = SessionPaths(DeviceCheck.dataDir(this))
         paths.createFolders()
         serviceLog = RotatingLog(paths.logs, "service")
@@ -271,14 +305,14 @@ class SessionService : Service() {
         // The start lines name the userland's, the APK's and the data folder by short names.
         shortFolders = listOf(paths.userland.path to "<userland>", applicationInfo.nativeLibraryDir to "<apk>", paths.data to "<data>")
         starter = ProcessStarter(paths.logs, serviceLog, ::seccompHarness, shortFolders)
-        game = GameEnvironment(paths, starter, ::log, this)
+        game = GameEnvironment(paths, starter, ::log, this) { engineRoute }
         SetupRecordStore.load(this)
         // The first notification channel triggers Android 13's permission prompt at targetSdk 28:
         // it comes over Check, once the device check passed (MainActivity). The notification
         // itself shows only while something must go on in the background (followForeground).
         createChannel()
         // Nothing of the session before stays: the one stopped last may not have cleared its status yet.
-        _status.value = SessionStatus.STARTING
+        _status.value = startingStatus()
         running = this
         log("service started (pid ${Os.getpid()}, uid ${Os.getuid()}, received ${ReceivedBytes.current() ?: "uncounted"} bytes so far)")
         try {
@@ -335,6 +369,13 @@ class SessionService : Service() {
                 }
             }
         }
+        // While the game runs on a route of the frozen-picture rule (FrozenPicture.ROUTES).
+        scope.launch {
+            while (true) {
+                delay(FrozenPicture.LOOK_MS)
+                post { followPicture() }
+            }
+        }
         // While a job downloads or installs: the app's received bytes, for the engine's stall rule.
         scope.launch(Dispatchers.IO) {
             while (true) {
@@ -355,6 +396,7 @@ class SessionService : Service() {
         scope.launch {
             _status.map { Triple(it.engine, it.snapshotSeq, it.refusal) }.distinctUntilChanged().collect { post { followPlayCheck() } }
         }
+        followRoutePick()
         // The session ends by itself once nothing runs and the app's screens went away: at once
         // after the player closed the app, 10 s after it only left the screen (SessionIdle).
         scope.launch {
@@ -485,24 +527,305 @@ class SessionService : Service() {
             ACTION_STOP_SAFELY -> worker.execute { sendCommand(Command.RequestSafeStop) }
             ACTION_INSTALL_PD2 -> worker.execute { installProjectDiablo(press = true) }
             ACTION_SYNC_SAVES -> syncSavesSoon(intent.getStringExtra(EXTRA_SYNC_WHY) ?: "Sync now")
+            ACTION_ROUTE_WORKS -> worker.execute { confirmRoute() }
+            ACTION_ROUTE_QUIT -> worker.execute { quitRoute() }
         }
         return START_NOT_STICKY
+    }
+
+    /**
+     * A debug build's forced route ([SystemDriver.forced]), read at each use: a test that adds or
+     * removes the file while the app runs gets it at the next Play or official PD2 launcher
+     * ([driverChanges]).
+     */
+    private fun forcedRoute(): GraphicsRoute? = SystemDriver.forced(filesDir)
+
+    /**
+     * The phone driver's report where the app may need it ([HostGpu.phoneDriver], whose probe runs
+     * once per process): where the built-in driver supports the GPU, only where the player picked
+     * the Phone driver ([phonePicked]), or in a debug build (its forced route); [DriverChoice.readsPhoneDriver].
+     */
+    private fun phoneDriverReport(): SystemDriverGpu? = HostGpu.phoneDriver(
+        gpu, forced = DriverChoice.readsPhoneDriver(forced = forcedRoute() != null, BuiltInDriver.debugRules(filesDir), phonePicked()),
+    )
+
+    /**
+     * The phone's OpenGL ES driver for the VirGL route ([HostGpu.phoneGles], whose probe runs once
+     * per process): where the built-in driver supports the GPU, on the same terms as
+     * [phoneDriverReport].
+     */
+    private fun phoneGlesReport(): PhoneGlesDriver? = HostGpu.phoneGles(
+        gpu, forced = DriverChoice.readsPhoneDriver(forced = forcedRoute() == GraphicsRoute.VIRGL, BuiltInDriver.debugRules(filesDir), phonePicked()),
+    )
+
+    /** The player picked the Phone driver on Settings → Display → GPU ([AppSettings.driverPick]): the app reads the phone's own drivers. */
+    private fun phonePicked(): Boolean = AppSettingsStore.load(this).driverPick == PlayerDriver.PHONE
+
+    /** [driverOptions] and whether the phone's own drivers were read for them (for a Phone driver pick, [phonePicked]). */
+    private var driverOptionsRead: Pair<Boolean, DriverOptions>? = null
+
+    /**
+     * Which routes can run the game here ([DriverChoice.options]); a forced route goes past them
+     * ([wantedRoute]). The unpack's skipped files follow them ([otherGpuDriver]). Made once per
+     * service, and once more after a pick of the Phone driver, which adds the routes to the phone's
+     * own driver.
+     */
+    private val driverOptions: DriverOptions
+        @Synchronized get() {
+            val probed = phonePicked()
+            driverOptionsRead?.takeIf { it.first == probed }?.let { return it.second }
+            return readDriverOptions().also { driverOptionsRead = probed to it }
+        }
+
+    private fun readDriverOptions(): DriverOptions =
+        DriverChoice.options(
+            gpu, phoneDriverReport(), SystemDriver.inApk(this),
+            gles = phoneGlesReport(), glServerInApk = SystemDriver.glServerInApk(applicationInfo.nativeLibraryDir),
+            hybrisInApk = SystemDriver.hybrisInApk(this),
+            // RADV: on an Xclipse where it is offered (to players, or a debug build's file, read
+            // once per process) and the APK carries the part it is in; presentDriverOptions checks
+            // that the unpacked userland has it.
+            radvAllowed = Radv.allowed(filesDir), radvFiles = UserlandAssets.carries(this, UserlandAssets.SYSTEM_DRIVER),
+            // mali-panvk on a job-manager Mali, the same way.
+            maliPanvkAllowed = MaliPanvk.allowed(filesDir), maliPanvkFiles = UserlandAssets.carries(this, UserlandAssets.SYSTEM_DRIVER),
+        )
+            .also { options ->
+                log("graphics routes that can run the game: $options -> ${options.route ?: "none"}")
+                options.orderReason?.let { log("graphics route order: $it") }
+            }
+
+    /**
+     * [driverOptions] with Venus only while the unpacked App userland has the mode's files
+     * ([SystemDriver.filesPresent]; [ensureUserland] writes back those an earlier unpack left out
+     * where Venus needs them now, so this only holds where that unpack failed); the same for the
+     * libhybris route's, RADV's and mali-panvk's files. [unpackWrites]: the player picked the Phone
+     * driver, so the engine's next start writes Venus's files first ([otherGpuDriver]): they count
+     * as there.
+     */
+    private fun presentDriverOptions(unpackWrites: Boolean = phonePicked()): DriverOptions {
+        var options = if (driverOptions.venus && !unpackWrites && !SystemDriver.filesPresent(paths.userland, systemDriverZink)) {
+            driverOptions.copy(venus = false)
+        } else {
+            driverOptions
+        }
+        // The same for the libhybris route's files (DriverChoice.skippedFiles), for RADV's and for mali-panvk's.
+        if (options.libhybris && !SystemDriver.hybrisFilesPresent(paths.userland)) options = options.copy(libhybris = false)
+        if (options.radv && !Radv.filesPresent(paths.userland)) options = options.copy(radv = false)
+        if (options.maliPanvk && !MaliPanvk.filesPresent(paths.userland)) options = options.copy(maliPanvk = false)
+        return options
+    }
+
+    /** The engine of this install can run the Software driver ([DriverPage.softwareRuns], [RouteState.engineSoftware]; review MED-3). */
+    private fun softwareRuns(): Boolean = RouteState.engineSoftware(this, PhoneDriver.installKey)
+
+    /**
+     * The route of the pick on Settings → Display → GPU ([AppSettings.driverPick],
+     * [DriverPage.route]); null: no route of the pick here, the app's own order.
+     */
+    private fun chosenRoute(): GraphicsRoute? =
+        AppSettingsStore.load(this).let { DriverPage.route(presentDriverOptions(), it.driverPick, it.driverWay, software = softwareRuns()) }
+
+    /**
+     * The route of the game's graphics now ([DriverChoice.route]): the forced one, the pick's, or
+     * the first that can run. No failure changes it.
+     */
+    private fun wantedRoute(): GraphicsRoute? = DriverChoice.route(presentDriverOptions(), forcedRoute(), chosenRoute())
+
+    /**
+     * The route of the running engine, fixed at its start ([startEngine]): the engine passes the
+     * game's Vulkan and GL values to Wine from its own environment, so a change of route starts
+     * it again ([applyGraphicsRoute]). The game environment (the system-driver server) follows it.
+     * Null: no route can run (the device check refuses such a device), the built-in values then.
+     */
+    @Volatile
+    private var engineRoute: GraphicsRoute? = null
+
+    /**
+     * The pick is [engineRoute] now ([chosenRoute]; no debug build's forced route), for the shared
+     * logs. Read at its use, not at the engine's start (bug B1: a pick of the same route does not
+     * start the engine again, so a value fixed at the start goes stale).
+     */
+    private fun routeChosen(): Boolean = PhoneDriverFailure.chosen(engineRoute, chosenRoute(), forced = forcedRoute() != null)
+
+    /**
+     * The running engine's route is one whose failures the app follows ([PhoneDriverFailure]): a
+     * route to the phone's own driver, or the built-in one; not the Software driver, which has no
+     * GPU driver.
+     */
+    private val routeFollowed: Boolean get() = engineRoute != null && engineRoute != GraphicsRoute.SOFTWARE
+
+    /**
+     * The route the game needs ([wantedRoute]) is not the running engine's (a route picked in
+     * Settings, which the session follows at once, [followRoutePick]; a debug build's forced route
+     * added or removed while the app runs, at the next Play or official launcher): when nothing runs, the game environment and the
+     * engine start again with it; while something runs (the game, a job, a job command that no
+     * snapshot shows yet, a launch, or Play's update check, its question or its update), it waits
+     * for that to end ([routeChangePending]). Not while the session closes ([RouteChange]).
+     */
+    private fun applyGraphicsRoute() {
+        // No engine yet: the next one starts on the route that the game needs then ([startEngine]).
+        if (engine == null) return
+        val wanted = wantedRoute()
+        val check = _status.value.playCheck
+        // A Close ends the session: no new engine for it ([close]).
+        val change = RouteChange.of(wanted, engineRoute, ending = closing || stopping) {
+            launchBusy("the graphics route change") || (check != null && check !is PlayCheck.State.Starting) ||
+                PrefixStateKeeper.jobRequested(_status.value, SystemClock.elapsedRealtime())
+        }
+        if (change == RouteChange.NONE) return
+        if (change == RouteChange.WAIT) {
+            routeChangePending = true
+            // A job command that no snapshot shows yet: in an idle session no snapshot may come, so
+            // the change also looks again when its wait is over (review F1).
+            PrefixStateKeeper.jobRequestLeft(_status.value, SystemClock.elapsedRealtime())?.let { left ->
+                log("graphics route change: waits up to $left ms for the job command that no snapshot shows yet")
+                scope.launch {
+                    delay(left)
+                    post { if (routeChangePending) applyGraphicsRoute() }
+                }
+            }
+            return
+        }
+        routeChangePending = false
+        log("graphics route change: ${engineRoute ?: "none"} -> ${wanted ?: "none"}; the engine starts again with it")
+        stopGameEnvironment()
+        stopEngine()
+        forgetEngineCommands()
+        _status.update { it.copy(engine = SessionStatus.Engine.STARTING, snapshotSeq = null, snapshot = null, playCheck = null) }
+        startSession()
+    }
+
+    /** A route change waits for what runs to end ([applyGraphicsRoute]); applied once nothing runs. */
+    private var routeChangePending = false
+
+    /**
+     * A pick in Settings → Display → GPU ([AppSettings.driverPick], [AppSettings.driverWay]) goes to
+     * the engine at once where nothing runs, else once what runs ends ([applyGraphicsRoute]): when
+     * the player comes back to Play, the engine runs the new route, and one press of Play starts the
+     * game on it (the owner, 2026-10-29: the first Play only started the engine again). A pick of
+     * the Phone driver first reads the phone's own drivers, for the session and for the screens
+     * ([DeviceCheckRun.readPhoneDrivers]; read once per process).
+     */
+    private fun followRoutePick() {
+        scope.launch {
+            // Review LOW: the first value is the stored pick, not the flow's default before the first load.
+            var before = AppSettingsStore.load(this@SessionService).let { it.driverPick to it.driverWay }
+            AppSettingsStore.current.map { it.driverPick to it.driverWay }.distinctUntilChanged().collect { picked ->
+                val pick = picked.first
+                val clears = DriverPage.pickClearsNotice(before, picked)
+                before = picked
+                post {
+                    // A new pick: the games with no frame of the route that the player leaves count no more (review LOW-1).
+                    if (clears) RouteState.framesShown(this@SessionService)
+                    // A new pick: Play's error line of the route that the player leaves goes (a phone check).
+                    if (clears && _status.value.driverFailed != null) {
+                        RouteState.clearNotice(this@SessionService)
+                        _status.update { it.copy(driverFailed = null) }
+                    }
+                    if (pick == PlayerDriver.PHONE) DeviceCheckRun.readPhoneDrivers()
+                    applyGraphicsRoute()
+                    // Review LOW-2: the shared logs' field follows a pick of the route already in use too.
+                    if (engine != null) _status.update { it.copy(routeChosen = routeChosen()) }
+                }
+            }
+        }
+    }
+
+    /**
+     * The route the game needs is not the running engine's (its change has not reached the
+     * session yet): [what] does not start, and the engine starts again with the route now; Play
+     * shows "Getting ready…" until it is back.
+     */
+    private fun driverChanges(what: String): Boolean {
+        if (wantedRoute() == engineRoute) return false
+        log("$what not started: the graphics route changes first")
+        applyGraphicsRoute()
+        return true
+    }
+
+    /**
+     * The Zink that the system-driver mode uses here ([SystemDriverGpu.zink]): the product Mesa's
+     * where the phone's driver meets its needs, else the older one (also when no report answers).
+     */
+    private val systemDriverZink: SystemDriver.Zink get() = phoneDriverReport()?.zink ?: SystemDriver.Zink.OLDER
+
+    /** The engine's environment for this GPU and the running engine's route ([SessionPaths.engineEnvironmentOn]). */
+    private fun engineEnvironment(): List<String> = paths.engineEnvironmentOn(
+        gpu, engineRoute, systemDriverZink, Build.VERSION.SDK_INT,
+        forcedLibhybrisValues = if (BuildConfig.DEBUG && forcedRoute() == GraphicsRoute.LIBHYBRIS) forcedRouteValues() else emptyList(),
+        read = { VulkanDriverProbe.read(paths.vulkanProbeMarker) },
+    )
+
+    /**
+     * Debug builds: the `NAME=value` lines of the forced route's debug file
+     * ([SystemDriver.forceFile]); on the libhybris route they go to the game's Wine processes.
+     */
+    private fun forcedRouteValues(): List<Pair<String, String>> {
+        val route = forcedRoute() ?: return emptyList()
+        val file = File(filesDir, SystemDriver.forceFile(route))
+        return if (file.isFile) SessionPaths.parseEnvironment(file.readText()) else emptyList()
+    }
+
+    /** The frozen-picture rule of the running game ([followPicture]); worker thread only. */
+    private val frozenPicture = FrozenPicture()
+
+    /** Whether the game of the last Play draws with GDI, from the engine's line at its start ([GdiGame]); the watches below read it. */
+    private val gdiGame = GdiGame()
+
+    /** The RADV route's failure lines in the engine's output since the last Play ([RadvFailureWatch]). */
+    private val radvFailure = RadvFailureWatch(gdiGame)
+
+    /** The mali-panvk route's failure lines in the engine's output since the last Play ([MaliPanvkFailureWatch]). */
+    private val maliPanvkFailure = MaliPanvkFailureWatch(gdiGame)
+
+    /** The built-in route's failure lines in the engine's output since the last Play ([BuiltInFailureWatch]). */
+    private val builtInFailure = BuiltInFailureWatch(gdiGame)
+
+    /** The running game's picture froze while frames came ([FrozenPicture]); read at the game's end. */
+    @Volatile private var pictureFroze = false
+
+    /**
+     * One look of the frozen-picture rule ([FrozenPicture]) while the app's game runs on the VirGL, the libhybris, the
+     * mali-panvk or the built-in route: the present counter and a hash of the game's picture (the app's buffer on the screen
+     * or the X screen, [GameEnvironment.pictureHash]). A frozen picture counts as a failure of the route's driver at the game's
+     * end, also when a Stop ends it. The built-in route counts only a picture that is still frozen at the
+     * game's end, and looks only while the app shows the game. Worker thread only.
+     */
+    private fun followPicture() {
+        val lenient = engineRoute == GraphicsRoute.BUILT_IN
+        if (engineRoute !in FrozenPicture.ROUTES || _status.value.snapshot?.game != Game.RUNNING || (pictureFroze && !lenient)) return
+        // No one sees the game: the mark goes, and the rule finds a real freeze again once the game shows.
+        if (pictureFroze && !appForeground) {
+            pictureFroze = false
+            frozenPicture.reset()
+            return
+        }
+        // The shown frame not ready to read yet: no look this time, and the rule keeps its time.
+        var notReady = false
+        val picture = game.pictureHash { notReady = true }
+        if (notReady) return
+        if (pictureFroze) {
+            if (frozenPicture.moved(picture)) {
+                pictureFroze = false
+                log("the game's picture moved again: no failure of ${driverName(engineRoute)}")
+            }
+            return
+        }
+        // A look without a picture starts the rule's time again.
+        val shown = if (lenient && !appForeground) null else picture
+        if (frozenPicture.feed(SystemClock.elapsedRealtime(), PresentCounter.read(paths.presentCounter), shown)) {
+            pictureFroze = true
+            log(
+                "the game's picture has not changed for ${FrozenPicture.FROZEN_MS / 1000} s while frames came: " +
+                    "${driverName(engineRoute)} failed",
+            )
+        }
     }
 
     /**
      * Holds (and renews) or releases [workLocks] on the worker, never once the service stops, and
      * says so in the service log when that changes.
      */
-    /**
-     * The engine's environment for this GPU (a Mali's values; `noconform` on an Adreno that needs it;
-     * Turnip's UBWC flag hint on an Adreno 740, [UbwcFlagHint]).
-     */
-    private fun engineEnvironment(): List<String> = paths.engineEnvironment(
-        mali = gpu is MaliGpu,
-        noconform = (gpu as? KgslGpu)?.let { adrenoWithoutMultiview(it.chipId) } ?: false,
-        ubwcFlagHint = UbwcFlagHint.choice(gpu, read = { VulkanDriverProbe.read(paths.vulkanProbeMarker) }).hint,
-    )
-
     private fun holdWorkLocks(wanted: Boolean) {
         val want = wanted && !stopping
         val changed = workLocks.held != want
@@ -623,7 +946,7 @@ class SessionService : Service() {
         val previous = stoppingWorker
         if (previous == null || previous === worker || previous.isTerminated) return
         log("waiting for the previous session to stop")
-        _status.value = SessionStatus.STARTING
+        _status.value = startingStatus()
         if (!previous.awaitTermination(PREVIOUS_STOP_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
             throw IOException("the previous session did not stop within $PREVIOUS_STOP_TIMEOUT_MS ms")
         }
@@ -665,14 +988,15 @@ class SessionService : Service() {
     }
 
     /**
-     * The other GPU family's Vulkan driver, which this device never loads: the unpack leaves it
-     * out (PanVK on an Adreno, Turnip on a Mali). Nothing is left out when no GPU answers.
+     * The drivers this device never loads, which the unpack leaves out ([DriverChoice.skippedFiles]);
+     * for a pick of the Phone driver, those of its routes are written.
      */
-    private fun otherGpuDriver(): Set<String> = when (gpu) {
-        is MaliGpu -> setOf("usr/lib/aarch64-linux-gnu/libvulkan_freedreno.so")
-        null -> emptySet()
-        else -> setOf("usr/lib/aarch64-linux-gnu/libvulkan_panfrost.so")
-    }
+    private fun otherGpuDriver(): Set<String> = DriverChoice.skippedFiles(
+        gpu,
+        // Review LOW-1: only where the pick really is a route of the Phone driver.
+        driverOptions.let { if (chosenRoute()?.player == PlayerDriver.PHONE) DriverPage.withoutApp(it) else it },
+        phoneDriverReport(), BuiltInDriver.debugRules(filesDir),
+    )
 
     /**
      * The App userland's version from the APK, current and its critical files as the APK has them
@@ -680,7 +1004,11 @@ class SessionService : Service() {
      * the session start, and the engine does not start.
      */
     private fun ensureUserland() {
-        val installer = UserlandInstaller(paths.userlandRoot, OwnedProcesses, skip = otherGpuDriver()) { log("userland: $it") }
+        // A file an earlier unpack left out that a route needs now (an app update, a new probe
+        // result) makes the version incomplete: it is unpacked again here, before the engine starts.
+        val installer = UserlandInstaller(
+            paths.userlandRoot, OwnedProcesses, skip = otherGpuDriver(), skippable = DriverChoice.skippableFiles,
+        ) { log("userland: $it") }
         val manifest = UserlandAssets.manifest(this)
         // A restart's check stays out of sight while it finds the version as it was.
         if (_status.value.userland != SessionStatus.Userland.Ready(manifest.version)) setUserland(SessionStatus.Userland.Checking)
@@ -895,9 +1223,12 @@ class SessionService : Service() {
                 if (command is Command.SelectExistingInstall) selectSent = it
                 // A job asked for: no capture of the prefix state until a snapshot shows it.
                 val job = PrefixStateKeeper.requestsJob(command)
-                if (job) jobRequestSeq = it
                 _status.update { status ->
-                    status.copy(refusal = null, jobRequestedAt = if (job) SystemClock.elapsedRealtime() else status.jobRequestedAt)
+                    status.copy(
+                        refusal = null,
+                        jobRequestedAt = if (job) SystemClock.elapsedRealtime() else status.jobRequestedAt,
+                        jobRequestSeq = if (job) it else status.jobRequestSeq,
+                    )
                 }
                 // No paused Install Diablo II goes on after Start over or an import.
                 if (HeldKeys.forgets(command)) heldKeys.clear()
@@ -960,15 +1291,15 @@ class SessionService : Service() {
     private fun onCommandError(error: EngineMessage.CommandError) {
         if (pendingStart?.clearCommand == error.seq) cancelOperationStart()
         // The job asked for does not come: a capture of the prefix state that it put off runs now.
-        if (error.seq == jobRequestSeq) {
-            jobRequestSeq = null
-            _status.update { it.copy(jobRequestedAt = null) }
+        // Not while a job runs: then the refusal was an earlier command's (review F4, the InstallWork.refused rule).
+        if (PrefixStateKeeper.jobRefused(_status.value, error.seq)) {
+            _status.update { it.copy(jobRequestedAt = null, jobRequestSeq = null) }
             keepPutOffPrefixState()
         }
         log("engine command error: seq ${error.seq}: ${error.reason}")
         launcherLog.refused(error.seq, error.reason)
-        // Play's Glide command was refused: the launch goes on at once with the stored renderer ([GlideFirst]).
-        if (error.seq == glideSeq && glideAskedAt != null) {
+        // Play's renderer command was refused: the launch goes on at once with the stored renderer ([GlideFirst]).
+        if (error.seq in glideSeqs && glideAskedAt != null) {
             glideRefused = true
             glideAnswered()
         }
@@ -1003,10 +1334,54 @@ class SessionService : Service() {
         // The last engine's snapshots counted since its last line; the new one's first gets a line.
         snapshotLines.restart()
         _status.update { it.copy(engine = SessionStatus.Engine.STARTING) }
+        // The graphics driver this engine passes on to the game, fixed for its life.
+        val forced = forcedRoute()
+        val picked = AppSettingsStore.load(this).driverPick
+        val chosen = chosenRoute()
+        engineRoute = wantedRoute()
+        val routeChosen = routeChosen()
+        _status.update { it.copy(graphicsRoute = engineRoute, routeChosen = routeChosen) }
+        if (picked == PlayerDriver.PHONE && chosen == null) {
+            log("graphics: the Phone driver picked in Settings cannot run here (${presentDriverOptions().routes}): the app's order instead")
+        }
+        // How the route came: the debug file, the pick on Settings → Display → GPU, or none (the app's order).
+        val how = when {
+            forced != null -> ", forced by the debug file"
+            routeChosen -> ", the pick in Settings: ${picked?.name?.lowercase()} driver"
+            else -> ""
+        }
+        when (engineRoute) {
+            GraphicsRoute.VENUS -> log(
+                "graphics: route VENUS, the phone's own Vulkan driver (system-driver mode, Zink ${systemDriverZink.name.lowercase()})" +
+                    "$how: ${phoneDriverReport() ?: gpu ?: "no GPU named"}",
+            )
+            GraphicsRoute.VIRGL -> log(
+                "graphics: route VIRGL, the phone's own OpenGL ES driver (system-driver mode, Mesa's virgl)" +
+                    "$how: ${phoneGlesReport() ?: gpu ?: "no GPU named"}",
+            )
+            GraphicsRoute.LIBHYBRIS -> log(
+                "graphics: route LIBHYBRIS, the phone's own Vulkan driver in the game's process (libhybris, Zink on libvulkan_pd2hybris.so, " +
+                    "API level ${Build.VERSION.SDK_INT})" +
+                    "$how: ${phoneDriverReport() ?: gpu ?: "no GPU named"}",
+            )
+            GraphicsRoute.RADV -> log(
+                "graphics: route RADV, our RADV for Samsung Xclipse (radv-xclipse, Zink current, the GPU's DRM node, no server)" +
+                    "${if (DriverChoice.RADV_FOR_PLAYERS) "" else ", offered by the debug file files/${Radv.DEBUG_FILE}"}$how: " +
+                    "${phoneDriverReport() ?: gpu ?: "no GPU named"}",
+            )
+            GraphicsRoute.MALI_PANVK -> log(
+                "graphics: route MALI_PANVK, mali-panvk for a Mali of kbase's job manager (Zink current, /dev/mali0, no server)" +
+                    "${if (DriverChoice.MALI_PANVK_FOR_PLAYERS) "" else ", offered by the debug file files/${MaliPanvk.DEBUG_FILE}"}$how: " +
+                    "${MaliPanvk.gpu(gpu, phoneDriverReport()) ?: gpu ?: "no GPU named"}",
+            )
+            GraphicsRoute.BUILT_IN -> log("graphics: route BUILT_IN, the built-in driver$how")
+            GraphicsRoute.SOFTWARE -> log("graphics: route SOFTWARE, no GPU driver for the game (DirectDraw with GDI)$how")
+            null -> log("graphics: no route can run the game here; the built-in driver's values")
+        }
         val enginePath = File(applicationInfo.nativeLibraryDir, ENGINE_LIBRARY)
         if (!enginePath.isFile) throw IOException("the engine is not in the APK ($enginePath)")
         val loader = paths.loader.path
-        log("UBWC flag hint: ${UbwcFlagHint.choice(gpu, read = { VulkanDriverProbe.read(paths.vulkanProbeMarker) }).describe()}")
+        log("UBWC flag hint: ${UbwcFlagHint.choice(gpu, read = { VulkanDriverProbe.read(paths.vulkanProbeMarker) }).describeOn(engineRoute)}")
         val pair = Spawner.socketPair()
         val process = try {
             // Started through the userland's loader.
@@ -1019,6 +1394,21 @@ class SessionService : Service() {
                 mirror = { line ->
                     if (BuildConfig.DEBUG && line.startsWith(ENGINE_LINE)) Log.i(ENGINE_TAG, line)
                     launcherLog.engineLine(line)
+                    // DirectDraw draws with GDI in this game: no GPU, so no failure line below counts.
+                    gdiGame.feed(line)
+                    // The RADV route: Zink found no RADV device or could not make one (strong
+                    // evidence for the next route at the game's end).
+                    if (engineRoute == GraphicsRoute.RADV && radvFailure.feed(line)) {
+                        post { log("RADV could not make its device: ${radvFailure.failure}") }
+                    }
+                    // The mali-panvk route: Zink found no device on it, or the GPU faulted (strong evidence too).
+                    if (engineRoute == GraphicsRoute.MALI_PANVK && maliPanvkFailure.feed(line)) {
+                        post { log("mali-panvk failed in the game: ${maliPanvkFailure.failure}") }
+                    }
+                    // The built-in route: Zink found or made no device, the device was lost, or our PanVK's queue group failed (strong evidence too).
+                    if (engineRoute == GraphicsRoute.BUILT_IN && builtInFailure.feed(line)) {
+                        post { log("the built-in driver failed in the game: ${builtInFailure.failure}") }
+                    }
                 },
             ) { exited, status -> post { onEngineExit(exited, status) } }
         } catch (error: IOException) {
@@ -1033,7 +1423,15 @@ class SessionService : Service() {
         channel = connection
         try {
             val welcome = connection.handshake(appVersion(), HostFacts.collect(this), HANDSHAKE_TIMEOUT_MS)
-            log("engine pid ${process.pid} welcome: protocol ${welcome.protocol}, launcher ${welcome.launcherVersion}")
+            log("engine pid ${process.pid} welcome: protocol ${welcome.protocol}, launcher ${welcome.launcherVersion}, capabilities ${welcome.capabilities}")
+            // Review MED-3: the Software driver only with an engine that can run it; kept for the next start.
+            val software = DriverPage.softwareRuns(welcome)
+            if (software != softwareRuns()) {
+                RouteState.engineSoftware(this, PhoneDriver.installKey, software)
+                log("graphics: the engine ${if (software) "can" else "cannot"} run the Software driver; the route is read again")
+                post { applyGraphicsRoute() }
+            }
+            _status.update { it.copy(softwareDriver = software) }
             // Only an engine that answered proves the userland works; every older version goes now.
             UserlandInstaller(paths.userlandRoot, OwnedProcesses) { log("userland: $it") }.markStarted()
         } catch (error: Exception) {
@@ -1062,6 +1460,25 @@ class SessionService : Service() {
         }
     }
 
+    /**
+     * What belonged to an engine that is gone ([onEngineExit], [applyGraphicsRoute]): the next
+     * engine counts its commands from 1 again, so no install start, owned install, launch,
+     * refusal or update recheck of the old one may match one of its commands.
+     */
+    private fun forgetEngineCommands() {
+        installStart = null
+        installEnvironment = false
+        installWork.clear()
+        launcherSent = null
+        launchSent = null
+        // Play's wait for the renderer belonged to that engine: no game starts later from it
+        // without a new press of Play (review of 9686c1f2, LOW 2).
+        glideAskedAt = null
+        glideSeqs = emptyList()
+        glideRefused = false
+        _status.update { it.withoutEngineCommands() }
+    }
+
     private fun applySnapshot(connection: ControlChannel, message: EngineMessage.SnapshotMessage) {
         val next = message.snapshot
         val now = SystemClock.elapsedRealtime()
@@ -1081,6 +1498,8 @@ class SessionService : Service() {
                 if (Play.gameEnded(previous?.game, next.game) && EarlyGameEnd.early(gameRunningSince, now)) {
                     logEarlyGameEnd(now - gameRunningSince!!)
                 }
+                // Read before the game environment goes: the phone's own driver in the game that ended.
+                if (Play.gameEnded(previous?.game, next.game)) followPhoneDriverAtGameEnd(now)
                 if (Play.gameEnded(previous?.game, next.game) ||
                     Play.officialLauncherEnded(previous?.activeJob, next.activeJob) ||
                     (launcherSettled && game.running && installWork.sequence == null)) {
@@ -1115,7 +1534,11 @@ class SessionService : Service() {
         SetupRecordStore.follow(this@SessionService, next)?.let { record ->
             log("setup record: $record")
             // Start over took the installation: the downloads notice waits for the next one.
-            if (record == SetupRecord.NONE) AppSettingsStore.startedOver(this@SessionService)
+            if (record == SetupRecord.NONE) {
+                AppSettingsStore.startedOver(this@SessionService)
+                // Try anyway is asked again before the new setup.
+                DeviceCheckRun.startedOver()
+            }
         }
         post { applyBackgroundSound() }
         post { holdWorkLocks(WorkLocks.wanted(next)) }
@@ -1171,6 +1594,18 @@ class SessionService : Service() {
         }
         if (Play.gameStarted(previous?.game, next.game)) {
             gameRunningSince = now
+            presentsAtGameStart = if (PhoneDriverFailure.countsFrames(engineRoute, next.settings.renderer)) {
+                PresentCounter.read(paths.presentCounter)
+            } else {
+                null
+            }
+            // Without a present counter It works could never count ([PhoneDriverFailure.answerCounts]): no card then.
+            val asks = presentsAtGameStart != null && routeAsks(next.settings.renderer)
+            if (asks) log("the card asks if the game works on route $engineRoute (the first game on it since another route ran)")
+            _status.update { it.copy(routeQuestion = asks) }
+            contextsLostAtGameStart = game.systemDriverContextsLost()
+            frozenPicture.reset()
+            pictureFroze = false
             post { followMemory() }
         }
         // The Game client exited: the game environment goes with it.
@@ -1218,6 +1653,70 @@ class SessionService : Service() {
         followPlayCheck()
         // Play's wait for Glide: this snapshot may have it.
         glideAnswered(next.settings)
+        // A graphics driver change that waited for what ran: now, once nothing runs.
+        if (next.game != Game.RUNNING && next.activeJob == null) post { if (routeChangePending) applyGraphicsRoute() }
+    }
+
+    /**
+     * The app's own game ended ([applySnapshot], before the cleanup stops the game environment,
+     * whose values these are): whether the route's graphics driver (the phone's own, RADV,
+     * mali-panvk, or the built-in Turnip or PanVK) failed in it ([PhoneDriverFailure];
+     * [phoneDriverFailed] runs after the cleanup), or showed frames ([RouteState.framesShown]; the
+     * route is then confirmed, [RouteState.confirm]: no card on it in the next game). After the
+     * card's Quit nothing counts: the player picks another driver on the GPU page. Worker thread only.
+     */
+    private fun followPhoneDriverAtGameEnd(now: Long) {
+        val quit = gameQuit
+        gameQuit = false
+        _status.update { it.copy(routeQuestion = false) }
+        val since = gameRunningSince
+        val lost = game.systemDriverContextsLost() - contextsLostAtGameStart
+        val ran = since?.let { now - it } ?: 0L
+        val presentsAtEnd = PresentCounter.read(paths.presentCounter)
+        val froze = pictureFroze
+        // The libhybris route: the ICD's word on the phone's driver in the game ([LibhybrisStatus]).
+        val hybrisLines = if (engineRoute == GraphicsRoute.LIBHYBRIS) readHybrisStatus() else null
+        val gdi = gdiGame.gdi
+        if (gdi) log("this game drew with GDI (no GPU): failed OpenGL or Vulkan starts in it are no driver failure")
+        val hybrisFailure = LibhybrisStatus.gameFailure(hybrisLines, gdi)
+        hybrisLines?.takeIf { it.isNotBlank() }?.let { text ->
+            log("libhybris route, this game: ${text.trim().lines().joinToString(" | ")}")
+        }
+        // The RADV route: Zink found no RADV device or could not make one ([RadvFailureWatch]).
+        val radvFailed = engineRoute == GraphicsRoute.RADV && radvFailure.failure != null
+        // The mali-panvk route: Zink found no device on it, or the GPU faulted ([MaliPanvkFailureWatch]).
+        val maliPanvkFailed = engineRoute == GraphicsRoute.MALI_PANVK && maliPanvkFailure.failure != null
+        // The built-in route: Zink found or made no device, the device was lost, or our PanVK's
+        // queue group failed ([BuiltInFailureWatch]); in a debug build also its debug file.
+        val builtInOnPurpose = engineRoute == GraphicsRoute.BUILT_IN && BuiltInDriver.failsOnPurpose(filesDir)
+        val builtInFailed = engineRoute == GraphicsRoute.BUILT_IN && builtInFailure.failure != null
+        val launcherFailed = radvFailed || maliPanvkFailed || builtInFailed || builtInOnPurpose
+        if (quit) {
+            log("the game ended after Quit on the card: no driver change (the GPU page opened)")
+        } else if (hybrisFailure != null) {
+            post { phoneDriverFailed("the phone's Vulkan driver failed in the game: $hybrisFailure", strong = true) }
+        } else if (PhoneDriverFailure.failed(routeFollowed, presentsAtGameStart, presentsAtEnd, lost, gameStoppedByApp, ran, froze || launcherFailed)) {
+            val strong = lost > 0 || froze || launcherFailed
+            val reason = when {
+                lost > 0 -> "its server gave up $lost context(s) of the game"
+                radvFailed -> "RADV could not make its device (${radvFailure.failure})"
+                maliPanvkFailed -> "mali-panvk failed in the game (${maliPanvkFailure.failure})"
+                builtInFailed -> "the built-in driver failed in the game (${builtInFailure.failure})"
+                builtInOnPurpose -> "the debug file files/${BuiltInDriver.DEBUG_FILE} makes the built-in route fail"
+                froze -> "the game's picture froze while frames came"
+                else -> "the game ended without a frame"
+            }
+            post { phoneDriverFailed(reason, strong) }
+        } else if (routeFollowed && presentsAtGameStart != null && presentsAtEnd != null && presentsAtGameStart != presentsAtEnd) {
+            // Frames on the route: earlier games with no frame are no longer in a row, and the route is
+            // confirmed: no card on it in the next game (the owner, 2026-11-04, as the old rescue rule).
+            val route = engineRoute
+            post {
+                RouteState.framesShown(this@SessionService)
+                if (route != null && forcedRoute() == null) RouteState.confirm(this@SessionService, route)
+            }
+        }
+        presentsAtGameStart = null
     }
 
     /** Closing the channel makes the engine stop safely and exit; SIGKILL if it does not in time. */
@@ -1245,7 +1744,8 @@ class SessionService : Service() {
         val cause = (connection.state.value as? ControlChannel.State.Closed)?.cause
         log("the Control channel closed (${cause ?: "the engine ended it"}); engine pid ${process.pid} has $ENGINE_STOP_TIMEOUT_MS ms to exit")
         launcherLog.note("the engine's Control channel closed (${cause ?: "the engine ended it"})")
-        _status.update { it.copy(engine = SessionStatus.Engine.RESTARTING, snapshotSeq = null, snapshot = null) }
+        gameQuit = false
+        _status.update { it.copy(engine = SessionStatus.Engine.RESTARTING, snapshotSeq = null, snapshot = null, routeQuestion = false) }
         // No session without the engine: no launcher's game to look for.
         watchLauncherGame(false)
         scope.launch {
@@ -1269,7 +1769,8 @@ class SessionService : Service() {
         val ended = SystemClock.elapsedRealtime()
         log("engine pid ${process.pid} ended unexpectedly (${ProcessStarter.describe(status)}); cleaning up before a restart")
         launcherLog.end("the engine ended unexpectedly (${ProcessStarter.describe(status)})")
-        _status.update { it.copy(engine = SessionStatus.Engine.RESTARTING, snapshotSeq = null, snapshot = null) }
+        gameQuit = false
+        _status.update { it.copy(engine = SessionStatus.Engine.RESTARTING, snapshotSeq = null, snapshot = null, routeQuestion = false) }
         watchLauncherGame(false)
         holdWorkLocks(false)
         // Awake for the cleanup: with the screen off the device suspends between polls, and the
@@ -1284,13 +1785,8 @@ class SessionService : Service() {
         }
         game.forget()
         xScreen = null
-        installStart = null
-        installEnvironment = false
-        installWork.clear()
-        launcherSent = null
-        launchSent = null
-        jobRequestSeq = null
-        _status.update { it.copy(gameEnvironment = false, refusal = null, updateRecheck = null, launchRequestedAt = null, jobRequestedAt = null) }
+        forgetEngineCommands()
+        _status.update { it.copy(gameEnvironment = false) }
         keepPutOffPrefixState()
 
         // Close ends the session: no new engine.
@@ -1414,7 +1910,87 @@ class SessionService : Service() {
             _status.update { it.copy(gameEnvironment = true, gameEnvironmentFailure = null) }
         } catch (error: Exception) {
             _status.update { it.copy(gameEnvironment = false, gameEnvironmentFailure = error.message ?: error.toString()) }
+            if (error is SystemDriverStartFailed) post { phoneDriverFailed("its server did not start: ${error.message}", strong = true) }
         }
+    }
+
+    /** The running game's route shows the card that asks if the game works: the first game on a new driver ([PhoneDriverFailure.asks]). */
+    private fun routeAsks(renderer: Renderer): Boolean =
+        PhoneDriverFailure.asks(engineRoute, RouteState.confirmed(this), forced = forcedRoute() != null, renderer = renderer)
+
+    /**
+     * The card's It works: the card goes, and the route is confirmed ([RouteState.confirm]) where
+     * the game sent a frame ([PhoneDriverFailure.answerCounts]); else the card comes back in the
+     * next game. Worker thread only.
+     */
+    private fun confirmRoute() {
+        val route = engineRoute
+        if (!_status.value.routeQuestion || route == null) return
+        if (PhoneDriverFailure.answerCounts(presentsAtGameStart, PresentCounter.read(paths.presentCounter))) {
+            log("the card: the player answered It works on route $route")
+            RouteState.confirm(this, route)
+        } else {
+            log("the card: the player answered It works on route $route before the game's first frame: no record, the card comes back in the next game")
+        }
+        _status.update { it.copy(routeQuestion = false) }
+    }
+
+    /**
+     * The card's Quit: the game stops as with the in-game menu's Stop, and the screens open
+     * Settings → Display → GPU (the Game view's [com.pd2launcher.app.ui.GameView] `onRouteQuit`).
+     * No driver changes, and the game's end counts nothing ([followPhoneDriverAtGameEnd]). Worker
+     * thread only.
+     */
+    private fun quitRoute() {
+        if (!_status.value.routeQuestion) return
+        log("the card: the player answered Quit on route $engineRoute")
+        gameQuit = true
+        _status.update { it.copy(routeQuestion = false) }
+        stopInGameView()
+    }
+
+    /** The driver of [route] for the log: the built-in one, RADV, mali-panvk, or the phone's own. */
+    private fun driverName(route: GraphicsRoute?): String = when (route) {
+        GraphicsRoute.BUILT_IN -> "the built-in driver"
+        GraphicsRoute.RADV -> "RADV"
+        GraphicsRoute.MALI_PANVK -> "mali-panvk"
+        else -> "the phone's own graphics driver"
+    }
+
+    /** A session's first status: starting, with Play's error line of the last failure if no game started since ([RouteState.keepNotice]). */
+    private fun startingStatus(): SessionStatus =
+        SessionStatus.STARTING.copy(driverFailed = RouteState.notice(this, RouteState.APP_VERSION), softwareDriver = softwareRuns())
+
+    /** The libhybris route's status file of this game environment ([SessionPaths.hybrisStatus]); null when there is none. */
+    private fun readHybrisStatus(): String? = try {
+        paths.hybrisStatus.takeIf { it.isFile }?.readText()
+    } catch (_: IOException) {
+        null
+    }
+
+    /**
+     * The route's graphics driver failed ([PhoneDriverFailure]): Play says which driver had an
+     * error, with a button to Settings → Display → GPU ([PhoneDriverFailure.tells]: on [strong]
+     * evidence at once, the server gave up a game context or did not start, a route's failure watch
+     * saw its line, the picture froze; else after [PhoneDriverFailure.NO_FRAME_GAMES_TO_TELL] games
+     * in a row with no frame). The route and the pick stay: no failure changes the driver (the owner,
+     * 2026-11-04). A debug build's forced route shows nothing.
+     */
+    private fun phoneDriverFailed(reason: String, strong: Boolean) {
+        val forced = forcedRoute() != null
+        val route = engineRoute
+        val noFrameGames = if (!forced && !strong) RouteState.noFrameGame(this, RouteState.APP_VERSION) else 0
+        val tells = route != null && PhoneDriverFailure.tells(forced, strong, noFrameGames)
+        log(
+            "${driverName(route)} failed on route ${route ?: "none"}: $reason; the route stays; " +
+                (if (tells) "Play tells of the error" else if (forced) "forced by the debug file: Play shows nothing" else "Play shows nothing yet") +
+                (if (noFrameGames > 0) "; games with no frame in a row: $noFrameGames of ${PhoneDriverFailure.NO_FRAME_GAMES_TO_TELL}" else ""),
+        )
+        if (!tells || route == null) return
+        // The line says which driver; the server's own error text is not for the player. Kept until
+        // the next game: a session that starts again shows it too ([startingStatus]).
+        RouteState.keepNotice(this, route, RouteState.APP_VERSION)
+        _status.update { it.copy(driverFailed = route, gameEnvironmentFailure = null) }
     }
 
     /**
@@ -1434,7 +2010,8 @@ class SessionService : Service() {
      * asks); with them off, or no network, the game starts at once ([launch]).
      */
     private fun play() {
-        if (launchBusy("Play")) return
+        // A change of the graphics driver first: Play's check runs on the engine that starts the game.
+        if (launchBusy("Play") || driverChanges("Play")) return
         val current = _status.value.playCheck
         if (current != null && current !is PlayCheck.State.Starting) {
             log("Play not taken: its update check, question or update runs ($current)")
@@ -1502,6 +2079,8 @@ class SessionService : Service() {
 
     private fun setPlayCheck(state: PlayCheck.State?) {
         _status.update { it.copy(playCheck = state) }
+        // A route change that waited for Play's check ([applyGraphicsRoute]).
+        if (state == null && routeChangePending) post { if (routeChangePending) applyGraphicsRoute() }
     }
 
     /**
@@ -1580,20 +2159,32 @@ class SessionService : Service() {
      * while a launch is under way or something runs ([launchBusy]).
      */
     private fun launch() {
-        if (launchBusy("Play")) {
-            // The launch under way keeps its time; only Play's note goes.
+        if (launchBusy("Play") || driverChanges("Play")) {
+            // The launch under way keeps its time (or the engine starts again with the player's
+            // graphics driver); only Play's note goes.
             _status.update { if (it.playCheck is PlayCheck.State.Starting) it.copy(playCheck = null) else it }
             return
         }
-        // Glide for every Play (GlideFirst): a stored DirectDraw goes to Glide first, and Play waits for the engine.
+        // The driver's renderer for every Play (GlideFirst): Glide, or DirectDraw with GDI on the
+        // Software driver; stored settings that differ go first, and Play waits for the engine.
         val now = SystemClock.elapsedRealtime()
-        when (GlideFirst.step(_status.value.snapshot?.settings, glideAskedAt, now, glideRefused)) {
-            GlideFirst.Step.SET_GLIDE -> {
-                val seq = sendCommand(GlideFirst.command)
-                if (seq != null) {
-                    log("Play: the stored Renderer is DirectDraw; set to Glide first (seq $seq), the game starts once the engine has it")
+        val software = engineRoute == GraphicsRoute.SOFTWARE
+        // Debug builds: files/debug/renderer sets the renderer over the driver's (the matrix test); the pick stays.
+        val debugRenderer = GlideFirst.debugRenderer(filesDir)
+        when (GlideFirst.step(_status.value.snapshot?.settings, glideAskedAt, now, glideRefused, software, debugRenderer)) {
+            GlideFirst.Step.SET -> {
+                val commands = GlideFirst.commands(_status.value.snapshot?.settings, software, debugRenderer)
+                val seqs = commands.mapNotNull { sendCommand(it) }
+                if (seqs.size == commands.size) {
+                    val wanted = when {
+                        debugRenderer == GlideFirst.DebugRenderer.DDRAW -> "debug file's (${GlideFirst.DEBUG_FILE}: DirectDraw with OpenGL)"
+                        debugRenderer == GlideFirst.DebugRenderer.GLIDE -> "debug file's (${GlideFirst.DEBUG_FILE}: Glide)"
+                        software -> "Software driver's (DirectDraw with GDI)"
+                        else -> "GPU driver's (Glide)"
+                    }
+                    log("Play: the stored renderer is not the $wanted; set it first (seq ${seqs.joinToString()}), the game starts once the engine has it")
                     glideAskedAt = now
-                    glideSeq = seq
+                    glideSeqs = seqs
                     glideRefused = false
                     launchRequested(now)
                     scope.launch {
@@ -1602,23 +2193,39 @@ class SessionService : Service() {
                     }
                     return
                 }
-                log("Play: the stored Renderer is DirectDraw, and Glide could not be sent; the game starts as it is")
+                log("Play: the driver's renderer could not be sent; the game starts as it is")
             }
             GlideFirst.Step.WAIT -> return
             GlideFirst.Step.LAUNCH -> if (glideAskedAt != null) {
                 val why = when {
-                    _status.value.snapshot?.settings?.renderer == Renderer.GLIDE -> "the engine has Glide"
-                    glideRefused -> "the engine refused Glide"
-                    else -> "no answer for Glide in ${GlideFirst.WAIT_MS} ms"
+                    GlideFirst.commands(_status.value.snapshot?.settings, software, debugRenderer).isEmpty() -> "the engine has the driver's renderer"
+                    glideRefused -> "the engine refused the driver's renderer"
+                    else -> "no answer for the driver's renderer in ${GlideFirst.WAIT_MS} ms"
                 }
                 log("Play: $why; the game starts")
             }
         }
         glideAskedAt = null
-        glideSeq = null
+        glideSeqs = emptyList()
         glideRefused = false
+        debugRenderer?.let { log("Play: a debug build's ${GlideFirst.DEBUG_FILE} sets the renderer: ${it.name.lowercase()} (the pick stays)") }
+        _status.update { it.copy(driverFailed = null) }
+        RouteState.clearNotice(this)
+        // On the worker, as a Stop: a new game's end is a driver failure until a Stop says otherwise.
+        gameStoppedByApp = false
+        gameQuit = false
+        // A new game: RADV's, mali-panvk's and the built-in driver's failure lines count from here (they can come before the game's start shows),
+        // and the GDI fact goes until the engine's line of this game's start ([GdiGame]).
+        gdiGame.reset()
+        radvFailure.reset()
+        maliPanvkFailure.reset()
+        builtInFailure.reset()
         launchRequested(now)
         val settings = AppSettingsStore.load(this)
+        if (game.serverLost()) {
+            log("the system-driver server ended; restarting the game environment")
+            stopGameEnvironment()
+        }
         stopAtOtherSize()
         if (!game.running) startGameEnvironment(null)
         val (width, height) = xScreen?.takeIf { game.running } ?: run {
@@ -1650,20 +2257,22 @@ class SessionService : Service() {
         }
     }
 
-    /** When Play asked the engine for Glide first ([GlideFirst]); null: no such wait. Worker thread only. */
+    /** When Play asked the engine for the driver's renderer first ([GlideFirst]); null: no such wait. Worker thread only. */
     private var glideAskedAt: Long? = null
 
-    /** The seq of that Glide command, and whether the engine refused it ([onCommandError]): then Play goes on at once. */
-    private var glideSeq: Long? = null
+    /** The seqs of those commands, and whether the engine refused one ([onCommandError]): then Play goes on at once. */
+    private var glideSeqs: List<Long> = emptyList()
     private var glideRefused = false
 
     /**
-     * Play's wait for Glide ([GlideFirst]): once the engine's snapshot has it, or the wait is over,
-     * the launch goes on. Worker thread only.
+     * Play's wait for the driver's renderer ([GlideFirst]): once the engine's snapshot has it, or
+     * the wait is over, the launch goes on. Worker thread only.
      */
     private fun glideAnswered(settings: Settings? = _status.value.snapshot?.settings) {
         if (glideAskedAt == null) return
-        if (GlideFirst.step(settings, glideAskedAt, SystemClock.elapsedRealtime(), glideRefused) == GlideFirst.Step.WAIT) return
+        val software = engineRoute == GraphicsRoute.SOFTWARE
+        val debugRenderer = GlideFirst.debugRenderer(filesDir)
+        if (GlideFirst.step(settings, glideAskedAt, SystemClock.elapsedRealtime(), glideRefused, software, debugRenderer) == GlideFirst.Step.WAIT) return
         // The launch that waited holds launchRequestedAt: free it for launch() itself.
         launchRequested(null)
         launch()
@@ -1710,9 +2319,21 @@ class SessionService : Service() {
             }
             return
         }
+        if (driverChanges("official launcher")) {
+            if (launcherLog.running) {
+                launcherLog.note("one more press, not taken: the graphics driver changes first")
+            } else {
+                launcherLog.notTaken("the graphics driver changes first")
+            }
+            return
+        }
         val settings = AppSettingsStore.load(this)
         beginLauncherRun(settings.detailedLogging)
         launchRequested(SystemClock.elapsedRealtime())
+        if (game.serverLost()) {
+            log("the system-driver server ended; restarting the game environment")
+            stopGameEnvironment()
+        }
         stopAtOtherSize()
         val started = !game.running
         if (started) startGameEnvironment(null)
@@ -2156,6 +2777,7 @@ class SessionService : Service() {
             launcherLog.note("Close launcher: the engine is asked to stop the session safely")
             sendCommand(Command.RequestSafeStop)
         } else {
+            gameStoppedByApp = true
             stopGameEnvironment()
         }
     }
@@ -2539,6 +3161,10 @@ class SessionService : Service() {
         const val ACTION_CLOSE = "com.pd2launcher.app.action.CLOSE"
         /** Settings → Files and saves → Game files → Save sync: a sync now ([syncSavesSoon]), named by [EXTRA_SYNC_WHY]. */
         const val ACTION_SYNC_SAVES = "com.pd2launcher.app.action.SYNC_SAVES"
+        /** The card's It works ([confirmRoute]). */
+        const val ACTION_ROUTE_WORKS = "com.pd2launcher.app.action.ROUTE_WORKS"
+        /** The card's Quit ([quitRoute]). */
+        const val ACTION_ROUTE_QUIT = "com.pd2launcher.app.action.ROUTE_QUIT"
         /** Debug builds: the X screen's size for [ACTION_GAME_START], `<width>x<height>`. */
         const val EXTRA_X_SCREEN = "xscreen"
         /** Why [ACTION_SYNC_SAVES] came (Sync now, the setting turned on, another folder), for the log. */

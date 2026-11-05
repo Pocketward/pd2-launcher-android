@@ -1,0 +1,921 @@
+From 6ad10227e2b36d6b1e46f5bd9ecf8c4bb57b7466 Mon Sep 17 00:00:00 2001
+From: TheKit <thekit@disroot.org>
+Date: Sun, 16 Feb 2025 15:56:18 +0200
+Subject: [PATCH 1/9] hybris: introduce thunk-based TLS access patcher for
+ aarch64
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Some Android graphics drivers (noticed with libGLES_mali.so) make use of private
+bionic TLS slots. Since these slots use fixed offsets from the thread ID
+register, the access routine is inlined by the compiler and cannot be hooked by
+libhybris symbol overriding.
+
+The code compiled with glibc has no notion of bionic's reserved TLS area, so
+these slots may be used by the executable/other libraries. While
+libtls-padding.so worked when TLS was relocatable, it fails when the main
+executable uses local-exec TLS model, where access is inlined similarly to
+bionic and can't be relocated by the linker.
+
+This causes the application and GLES driver to overwrite each other's TLS data,
+leading to crashes.
+
+Introduce thunk-based TLS access patching support into libhybris to work around
+this. When HYBRIS_TLS_PATCH=1, all libhybris linker-loaded code is analyzed for
+MRS TPIDR_EL0 instructions. When found, the instruction is replaced with a
+branch to a dynamically generated thunk that:
+
+1. Reads the thread pointer (mrs x<rt>, tpidr_el0)
+2. Adds the libhybris TLS offset (add x<rt>, x<rt>, #offset)
+3. Branches back to the next instruction
+
+The linker allocates thunk regions immediately after loading the library,
+which should stay within the ±128MB range limit for the branch instruction
+as long as the library is smaller than that.
+
+HYBRIS_TLS_PATCH can also be set to a colon-separated list of library filenames
+to limit the performance impact and avoid breaking unrelated code, e.g.:
+
+HYBRIS_TLS_PATCH=libGLES_mali.so
+---
+ hybris/common/Makefile.am           |   5 +
+ hybris/common/hooks.c               |  27 +++-
+ hybris/common/jb/linker.c           |   6 +-
+ hybris/common/mm/linker.cpp         |   5 +-
+ hybris/common/n/linker.cpp          |   5 +-
+ hybris/common/o/linker_main.cpp     |  10 +-
+ hybris/common/q/linker_main.cpp     |  10 +-
+ hybris/common/q/linker_phdr.cpp     | 119 +++++++++++++++++-
+ hybris/common/tls_patcher.c         | 186 ++++++++++++++++++++++++++++
+ hybris/common/tls_patcher.h         |  57 +++++++++
+ hybris/common/tls_patcher_aarch64.c | 184 +++++++++++++++++++++++++++
+ 11 files changed, 594 insertions(+), 20 deletions(-)
+ create mode 100644 hybris/common/tls_patcher.c
+ create mode 100644 hybris/common/tls_patcher.h
+ create mode 100644 hybris/common/tls_patcher_aarch64.c
+
+diff --git a/hybris/common/Makefile.am b/hybris/common/Makefile.am
+index 9bfc1db..a96132a 100644
+--- a/hybris/common/Makefile.am
++++ b/hybris/common/Makefile.am
+@@ -50,6 +50,11 @@ libhybris_common_la_SOURCES += \
+ 	wrapper_code_generic_arm.c
+ endif
+ 
++if WANT_ARCH_ARM64
++libhybris_common_la_SOURCES += \
++	tls_patcher.c
++endif
++
+ libhybris_common_la_CPPFLAGS = \
+ 	-I$(top_srcdir)/include \
+ 	$(ANDROID_HEADERS_CFLAGS) \
+diff --git a/hybris/common/hooks.c b/hybris/common/hooks.c
+index 67bbf31..2704d4f 100644
+--- a/hybris/common/hooks.c
++++ b/hybris/common/hooks.c
+@@ -86,6 +86,7 @@ extern int my_property_list(void (*propfn)(const char *key, const char *value, v
+ #define bool int
+ 
+ #include "dso_handle_counters.h"
++#include "tls_patcher.h"
+ 
+ #ifdef WANT_ARM_TRACING
+ #include "wrappers.h"
+@@ -96,9 +97,9 @@ static int locale_inited = 0;
+ static hybris_hook_cb hook_callback = NULL;
+ 
+ #ifdef WANT_ARM_TRACING
+-static void (*_android_linker_init)(int sdk_version, void* (*get_hooked_symbol)(const char*, const char*), int enable_linker_gdb_support, void *(_create_wrapper)(const char*, void*, int), int wrapping_enabled) = NULL;
++static void (*_android_linker_init)(int sdk_version, void* (*get_hooked_symbol)(const char*, const char*), int enable_linker_gdb_support, hybris_tls_patcher_funcs_t* tls_patcher_funcs, void *(_create_wrapper)(const char*, void*, int), int wrapping_enabled) = NULL;
+ #else
+-static void (*_android_linker_init)(int sdk_version, void* (*get_hooked_symbol)(const char*, const char*), int enable_linker_gdb_support) = NULL;
++static void (*_android_linker_init)(int sdk_version, void* (*get_hooked_symbol)(const char*, const char*), int enable_linker_gdb_support, hybris_tls_patcher_funcs_t* tls_patcher_funcs) = NULL;
+ #endif
+ static void* __hybris_get_hooked_symbol(const char *sym, const char *requester);
+ 
+@@ -2426,9 +2427,11 @@ __THROW int _hybris_hook___snprintf_chk (char *__restrict __s, size_t __n, int _
+     return ret;
+ }
+ 
+-static __thread void *tls_hooks[16];
++static __attribute__((tls_model ("initial-exec")))
++       __thread void *tls_hooks[16];
+ 
+-static void *_hybris_hook___get_tls_hooks()
++__attribute__((__visibility__("default")))
++void *_hybris_hook___get_tls_hooks()
+ {
+     TRACE_HOOK("");
+     return tls_hooks;
+@@ -3699,11 +3702,23 @@ static void __hybris_linker_init()
+ #if WANT_LINKER_Q
+     _android_shared_globals = dlsym(linker_handle, "android_shared_globals");
+ #endif
++
++    /* Create TLS patcher function pointers struct */
++    hybris_tls_patcher_funcs_t tls_patcher_funcs = {0};
++#ifdef __aarch64__
++    if (getenv("HYBRIS_PATCH_TLS") != NULL) {
++        tls_patcher_funcs.patch_tls = hybris_patch_tls;
++        tls_patcher_funcs.register_thunk_region = hybris_register_thunk_region;
++        tls_patcher_funcs.allocate_thunk_near = hybris_allocate_thunk_near;
++        tls_patcher_funcs.is_within_thunk_region = hybris_is_within_thunk_region;
++    }
++#endif
++
+     /* Now its time to setup the linker itself */
+ #ifdef WANT_ARM_TRACING
+-    _android_linker_init(sdk_version, __hybris_get_hooked_symbol, enable_linker_gdb_support, create_wrapper, wrappers_enabled());
++    _android_linker_init(sdk_version, __hybris_get_hooked_symbol, enable_linker_gdb_support, &tls_patcher_funcs, create_wrapper, wrappers_enabled());
+ #else
+-    _android_linker_init(sdk_version, __hybris_get_hooked_symbol, enable_linker_gdb_support);
++    _android_linker_init(sdk_version, __hybris_get_hooked_symbol, enable_linker_gdb_support, &tls_patcher_funcs);
+ #endif
+ 
+     if (_android_set_application_target_sdk_version) {
+diff --git a/hybris/common/jb/linker.c b/hybris/common/jb/linker.c
+index 1043dde..23baab6 100644
+--- a/hybris/common/jb/linker.c
++++ b/hybris/common/jb/linker.c
+@@ -51,6 +51,8 @@
+ #include "linker_environ.h"
+ #include "linker_format.h"
+ 
++#include "../tls_patcher.h"
++
+ #ifdef WANT_ARM_TRACING
+ #include "../wrappers.h"
+ #endif
+@@ -2425,9 +2427,9 @@ unsigned __linker_init(unsigned **elfdata) {
+ }
+ 
+ #ifdef WANT_ARM_TRACING
+-void android_linker_init(int sdk_version, void *(get_hooked_symbol)(const char*, const char*), int enable_linker_gdb_support, void *(create_wrapper)(const char*, void*, int), int wrapping_enabled) {
++void android_linker_init(int sdk_version, void *(get_hooked_symbol)(const char*, const char*), int enable_linker_gdb_support, hybris_tls_patcher_funcs_t* tls_patcher_funcs, void *(create_wrapper)(const char*, void*, int), int wrapping_enabled) {
+ #else
+-void android_linker_init(int sdk_version, void *(get_hooked_symbol)(const char*, const char*), int enable_linker_gdb_support) {
++void android_linker_init(int sdk_version, void *(get_hooked_symbol)(const char*, const char*), int enable_linker_gdb_support, hybris_tls_patcher_funcs_t* tls_patcher_funcs) {
+ #endif
+    (void) sdk_version;
+    _get_hooked_symbol = get_hooked_symbol;
+diff --git a/hybris/common/mm/linker.cpp b/hybris/common/mm/linker.cpp
+index c09d482..a7f9650 100644
+--- a/hybris/common/mm/linker.cpp
++++ b/hybris/common/mm/linker.cpp
+@@ -60,6 +60,7 @@
+ 
+ #include "hybris_compat.h"
+ 
++#include "../tls_patcher.h"
+ #ifdef WANT_ARM_TRACING
+ #include "../wrappers.h"
+ #endif
+@@ -3399,9 +3400,9 @@ static ElfW(Addr) get_elf_exec_load_bias(const ElfW(Ehdr)* elf) {
+ }
+ 
+ #ifdef WANT_ARM_TRACING
+-extern "C" void android_linker_init(int sdk_version, void* (*get_hooked_symbol)(const char*, const char*), int enable_linker_gdb_support, void *(create_wrapper)(const char*, void*, int), int wrapping_enabled) {
++extern "C" void android_linker_init(int sdk_version, void* (*get_hooked_symbol)(const char*, const char*), int enable_linker_gdb_support, hybris_tls_patcher_funcs_t* tls_patcher_funcs, void *(create_wrapper)(const char*, void*, int), int wrapping_enabled) {
+ #else
+-extern "C" void android_linker_init(int sdk_version, void* (*get_hooked_symbol)(const char*, const char*), int enable_linker_gdb_support) {
++extern "C" void android_linker_init(int sdk_version, void* (*get_hooked_symbol)(const char*, const char*), int enable_linker_gdb_support, hybris_tls_patcher_funcs_t* tls_patcher_funcs) {
+ #endif
+   // Get a few environment variables.
+   const char* LD_DEBUG = getenv("HYBRIS_LD_DEBUG");
+diff --git a/hybris/common/n/linker.cpp b/hybris/common/n/linker.cpp
+index de06e05..ec22cf9 100644
+--- a/hybris/common/n/linker.cpp
++++ b/hybris/common/n/linker.cpp
+@@ -68,6 +68,7 @@
+ #include "linker_non_pie.h"
+ #endif
+ 
++#include "../tls_patcher.h"
+ #ifdef WANT_ARM_TRACING
+ #include "../wrappers.h"
+ #endif
+@@ -4759,9 +4760,9 @@ static void __linker_cannot_link(KernelArgumentBlock& args) {
+ }
+ 
+ #ifdef WANT_ARM_TRACING
+-extern "C" void android_linker_init(int sdk_version, void* (*get_hooked_symbol)(const char*, const char*), int enable_linker_gdb_support, void *(create_wrapper)(const char*, void*, int), int wrapping_enabled) {
++extern "C" void android_linker_init(int sdk_version, void* (*get_hooked_symbol)(const char*, const char*), int enable_linker_gdb_support, hybris_tls_patcher_funcs_t* tls_patcher_funcs, void *(create_wrapper)(const char*, void*, int), int wrapping_enabled) {
+ #else
+-extern "C" void android_linker_init(int sdk_version, void* (*get_hooked_symbol)(const char*, const char*), int enable_linker_gdb_support) {
++extern "C" void android_linker_init(int sdk_version, void* (*get_hooked_symbol)(const char*, const char*), int enable_linker_gdb_support, hybris_tls_patcher_funcs_t* tls_patcher_funcs) {
+ #endif
+   // Get a few environment variables.
+   const char* LD_DEBUG = getenv("HYBRIS_LD_DEBUG");
+diff --git a/hybris/common/o/linker_main.cpp b/hybris/common/o/linker_main.cpp
+index 8fb3de9..6b9b59d 100644
+--- a/hybris/common/o/linker_main.cpp
++++ b/hybris/common/o/linker_main.cpp
+@@ -51,6 +51,8 @@
+ 
+ #include <vector>
+ 
++#include "../tls_patcher.h"
++
+ extern void __libc_init_globals(KernelArgumentBlock&);
+ #ifdef DISABLED_FOR_HYBRIS_SUPPORT
+ extern void __libc_init_AT_SECURE(KernelArgumentBlock&);
+@@ -512,12 +514,13 @@ static void __linker_cannot_link(const char* argv0) {
+ }
+ 
+ void* (*_get_hooked_symbol)(const char *sym, const char *requester);
++hybris_tls_patcher_funcs_t _tls_patcher_funcs = {0};
+ #ifdef WANT_ARM_TRACING
+ void *(*_create_wrapper)(const char *symbol, void *function, int wrapper_type);
+ int _wrapping_enabled = 0;
+-extern "C" void android_linker_init(int sdk_version, void* (*get_hooked_symbol)(const char*, const char*), int enable_linker_gdb_support, void *(create_wrapper)(const char*, void*, int), int wrapping_enabled) {
++extern "C" void android_linker_init(int sdk_version, void* (*get_hooked_symbol)(const char*, const char*), int enable_linker_gdb_support, hybris_tls_patcher_funcs_t* tls_patcher_funcs, void *(create_wrapper)(const char*, void*, int), int wrapping_enabled) {
+ #else
+-extern "C" void android_linker_init(int sdk_version, void* (*get_hooked_symbol)(const char*, const char*), int enable_linker_gdb_support) {
++extern "C" void android_linker_init(int sdk_version, void* (*get_hooked_symbol)(const char*, const char*), int enable_linker_gdb_support, hybris_tls_patcher_funcs_t* tls_patcher_funcs) {
+ #endif
+   // Get a few environment variables.
+   const char* LD_DEBUG = getenv("HYBRIS_LD_DEBUG");
+@@ -543,6 +546,9 @@ extern "C" void android_linker_init(int sdk_version, void* (*get_hooked_symbol)(
+ 
+   _get_hooked_symbol = get_hooked_symbol;
+   _linker_enable_gdb_support = enable_linker_gdb_support;
++  if (tls_patcher_funcs) {
++    _tls_patcher_funcs = *tls_patcher_funcs;
++  }
+ #ifdef WANT_ARM_TRACING
+   _create_wrapper = create_wrapper;
+   _wrapping_enabled = wrapping_enabled;
+diff --git a/hybris/common/q/linker_main.cpp b/hybris/common/q/linker_main.cpp
+index a78ffbf..c3beb09 100644
+--- a/hybris/common/q/linker_main.cpp
++++ b/hybris/common/q/linker_main.cpp
+@@ -63,6 +63,8 @@
+ 
+ #include <vector>
+ 
++#include "../tls_patcher.h"
++
+ extern void __libc_init_globals(KernelArgumentBlock&);
+ #ifdef DISABLED_FOR_HYBRIS_SUPPORT
+ extern void __libc_init_AT_SECURE(KernelArgumentBlock&);
+@@ -782,12 +784,13 @@ static const char* get_executable_path() {
+ }
+ 
+ void* (*_get_hooked_symbol)(const char *sym, const char *requester);
++hybris_tls_patcher_funcs_t _tls_patcher_funcs = {0};
+ #ifdef WANT_ARM_TRACING
+ void *(*_create_wrapper)(const char *symbol, void *function, int wrapper_type);
+ int _wrapping_enabled = 0;
+-extern "C" void android_linker_init(int sdk_version, void* (*get_hooked_symbol)(const char*, const char*), int enable_linker_gdb_support, void *(create_wrapper)(const char*, void*, int), int wrapping_enabled) {
++extern "C" void android_linker_init(int sdk_version, void* (*get_hooked_symbol)(const char*, const char*), int enable_linker_gdb_support, hybris_tls_patcher_funcs_t* tls_patcher_funcs, void *(create_wrapper)(const char*, void*, int), int wrapping_enabled) {
+ #else
+-extern "C" void android_linker_init(int sdk_version, void* (*get_hooked_symbol)(const char*, const char*), int enable_linker_gdb_support) {
++extern "C" void android_linker_init(int sdk_version, void* (*get_hooked_symbol)(const char*, const char*), int enable_linker_gdb_support, hybris_tls_patcher_funcs_t* tls_patcher_funcs) {
+ #endif
+   // Get a few environment variables.
+   const char* LD_DEBUG = getenv("HYBRIS_LD_DEBUG");
+@@ -815,6 +818,9 @@ extern "C" void android_linker_init(int sdk_version, void* (*get_hooked_symbol)(
+ 
+   _get_hooked_symbol = get_hooked_symbol;
+   _linker_enable_gdb_support = enable_linker_gdb_support;
++  if (tls_patcher_funcs) {
++    _tls_patcher_funcs = *tls_patcher_funcs;
++  }
+ #ifdef WANT_ARM_TRACING
+   _create_wrapper = create_wrapper;
+   _wrapping_enabled = wrapping_enabled;
+diff --git a/hybris/common/q/linker_phdr.cpp b/hybris/common/q/linker_phdr.cpp
+index 4eb9620..f0cea7b 100644
+--- a/hybris/common/q/linker_phdr.cpp
++++ b/hybris/common/q/linker_phdr.cpp
+@@ -49,6 +49,11 @@
+ #include "private/CFIShadow.h" // For kLibraryAlignment
+ #include "private/bionic_prctl.h"
+ 
++#include "../tls_patcher.h"
++
++// Thunk allocation constants
++#define THUNK_PADDING_SIZE (64 * 1024)  // 64KB padding after each executable segment
++
+ static int GetTargetElfMachine() {
+ #if defined(__arm__)
+   return EM_ARM;
+@@ -506,8 +511,10 @@ size_t phdr_table_get_load_size(const ElfW(Phdr)* phdr_table, size_t phdr_count,
+       min_vaddr = phdr->p_vaddr;
+     }
+ 
+-    if (phdr->p_vaddr + phdr->p_memsz > max_vaddr) {
+-      max_vaddr = phdr->p_vaddr + phdr->p_memsz;
++    ElfW(Addr) segment_end = phdr->p_vaddr + phdr->p_memsz;
++
++    if (segment_end > max_vaddr) {
++      max_vaddr = segment_end;
+     }
+   }
+   if (!found_pt_load) {
+@@ -560,8 +567,7 @@ static void* ReserveAligned(size_t size, size_t align) {
+ }
+ 
+ // Reserve a virtual address range big enough to hold all loadable
+-// segments of a program header table. This is done by creating a
+-// private anonymous mmap() with PROT_NONE.
++// segments of a program header table plus thunk regions.
+ bool ElfReader::ReserveAddressSpace(address_space_params* address_space) {
+   ElfW(Addr) min_vaddr;
+   load_size_ = phdr_table_get_load_size(phdr_table_, phdr_num_, &min_vaddr);
+@@ -570,6 +576,18 @@ bool ElfReader::ReserveAddressSpace(address_space_params* address_space) {
+     return false;
+   }
+ 
++  // Add space for thunk regions after all segments
++  size_t num_executable_segments = 0;
++  for (size_t i = 0; i < phdr_num_; ++i) {
++    const ElfW(Phdr)* phdr = &phdr_table_[i];
++    if (phdr->p_type == PT_LOAD && (phdr->p_flags & PF_X) != 0) {
++      num_executable_segments++;
++    }
++  }
++
++  size_t total_thunk_size = num_executable_segments * THUNK_PADDING_SIZE;
++  load_size_ += total_thunk_size;
++
+   uint8_t* addr = reinterpret_cast<uint8_t*>(min_vaddr);
+   void* start;
+ 
+@@ -598,7 +616,17 @@ bool ElfReader::ReserveAddressSpace(address_space_params* address_space) {
+   return true;
+ }
+ 
++extern hybris_tls_patcher_funcs_t _tls_patcher_funcs;
++
+ bool ElfReader::LoadSegments() {
++  // Collect executable segments for TLS patching after thunk regions are registered
++  struct exec_segment {
++    void* addr;
++    size_t size;
++    int orig_prot;
++  };
++  std::vector<exec_segment> exec_segments;
++
+   for (size_t i = 0; i < phdr_num_; ++i) {
+     const ElfW(Phdr)* phdr = &phdr_table_[i];
+ 
+@@ -651,11 +679,16 @@ bool ElfReader::LoadSegments() {
+         add_dlwarning(name_.c_str(), "W+E load segments");
+       }
+ 
++      int orig_prot = prot;
+       if ((prot & PROT_EXEC) != 0) {
+         // hybris: make sure executable code is mapped as readable to neutralize
+         // https://source.android.com/devices/tech/debug/execute-only-memory
+         // without this libgcc's unwind on host may crash
+         prot |= PROT_READ;
++
++        // hybris: allow TLS patcher to modify executable segments
++        if (_tls_patcher_funcs.patch_tls)
++          prot |= PROT_WRITE;
+       }
+ 
+       void* seg_addr = mmap64(reinterpret_cast<void*>(seg_page_start),
+@@ -668,6 +701,11 @@ bool ElfReader::LoadSegments() {
+         DL_ERR("couldn't map \"%s\" segment %zd: %s", name_.c_str(), i, strerror(errno));
+         return false;
+       }
++
++      // hybris: collect executable segments for later TLS patching
++      if (_tls_patcher_funcs.patch_tls && (prot & PROT_EXEC) != 0) {
++        exec_segments.push_back({seg_addr, file_length, orig_prot});
++      }
+     }
+ 
+     // if the segment is writable, and does not end on a page boundary,
+@@ -698,6 +736,79 @@ bool ElfReader::LoadSegments() {
+       prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, zeromap, zeromap_size, ".bss");
+     }
+   }
++
++  // Calculate where thunk regions should start - after all ELF segments
++  // Use the original load size calculation to find the end of ELF segments
++  ElfW(Addr) min_vaddr, max_vaddr;
++  size_t elf_size = phdr_table_get_load_size(phdr_table_, phdr_num_, &min_vaddr, &max_vaddr);
++  ElfW(Addr) thunk_start = reinterpret_cast<ElfW(Addr)>(load_start_) + elf_size;
++
++  // Now map thunk regions after all segments for each executable segment
++  for (size_t i = 0; i < phdr_num_; ++i) {
++    const ElfW(Phdr)* phdr = &phdr_table_[i];
++
++    if (phdr->p_type != PT_LOAD || (phdr->p_flags & PF_X) == 0) {
++      continue;
++    }
++
++    // Ensure we don't map beyond our reserved address space
++    ElfW(Addr) load_end = reinterpret_cast<ElfW(Addr)>(load_start_) + load_size_;
++    if (thunk_start + THUNK_PADDING_SIZE > load_end) {
++      DL_ERR("thunk region for \"%s\" segment %zd would exceed reserved address space",
++             name_.c_str(), i);
++      return false;
++    }
++
++    void* thunk_region = mmap(reinterpret_cast<void*>(thunk_start),
++                             THUNK_PADDING_SIZE,
++                             PROT_READ | PROT_WRITE | PROT_EXEC,
++                             MAP_FIXED | MAP_ANONYMOUS | MAP_PRIVATE,
++                             -1,
++                             0);
++    if (thunk_region == MAP_FAILED) {
++      DL_ERR("couldn't map thunk region for \"%s\" segment %zd: %s",
++             name_.c_str(), i, strerror(errno));
++      return false;
++    }
++
++    // Verify we got the address we expected
++    if (thunk_region != reinterpret_cast<void*>(thunk_start)) {
++      DL_ERR("thunk region for \"%s\" segment %zd mapped at wrong address: expected %p, got %p",
++             name_.c_str(), i, reinterpret_cast<void*>(thunk_start), thunk_region);
++      return false;
++    }
++
++    prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, thunk_region, THUNK_PADDING_SIZE, ".thunks");
++
++    // Register the thunk region with the TLS patcher
++    if (_tls_patcher_funcs.register_thunk_region) {
++      _tls_patcher_funcs.register_thunk_region(thunk_region, THUNK_PADDING_SIZE);
++    }
++
++    LD_LOG(kLogDlopen, "Mapped thunk region for %s: %p - %p (%zu bytes)",
++           name_.c_str(), thunk_region,
++           reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(thunk_region) + THUNK_PADDING_SIZE),
++           THUNK_PADDING_SIZE);
++
++    // Move to next thunk region
++    thunk_start += THUNK_PADDING_SIZE;
++  }
++
++  // hybris: Now that all thunk regions are registered, patch TLS accesses in executable segments
++  if (_tls_patcher_funcs.patch_tls && !exec_segments.empty()) {
++    for (const auto& seg : exec_segments) {
++      _tls_patcher_funcs.patch_tls(seg.addr, seg.size, name_.c_str());
++
++      // Restore original write protection if needed
++      if ((seg.orig_prot & PROT_WRITE) == 0) {
++        int prot = PFLAGS_TO_PROT(seg.orig_prot) | PROT_READ;
++        if (mprotect(seg.addr, seg.size, prot) < 0) {
++          DL_ERR("couldn't mprotect \"%s\" segment: %s", name_.c_str(), strerror(errno));
++        }
++      }
++    }
++  }
++
+   return true;
+ }
+ 
+diff --git a/hybris/common/tls_patcher.c b/hybris/common/tls_patcher.c
+new file mode 100644
+index 0000000..9d7b9b3
+--- /dev/null
++++ b/hybris/common/tls_patcher.c
+@@ -0,0 +1,186 @@
++/*
++ * Copyright (c) 2025 Nikita Ukhrenkov <thekit@disroot.org>
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ *
++ */
++
++#include "tls_patcher.h"
++#include "logging.h"
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++#include <libgen.h>
++#include <pthread.h>
++#include <unistd.h>
++
++extern void* _hybris_hook___get_tls_hooks(void);
++
++/* Architecture-specific patch function */
++extern void hybris_patch_tls_arch(void* segment_addr, size_t segment_size, int tls_offset);
++
++/* Simple thunk region tracking */
++#define MAX_THUNK_REGIONS 32
++static struct {
++    void* start;
++    size_t size;
++    size_t used;
++} thunk_regions[MAX_THUNK_REGIONS];
++static int num_thunk_regions = 0;
++static pthread_mutex_t thunk_mutex = PTHREAD_MUTEX_INITIALIZER;
++
++/* Register a thunk region allocated by the linker */
++void hybris_register_thunk_region(void* start, size_t size) {
++    pthread_mutex_lock(&thunk_mutex);
++
++    if (num_thunk_regions < MAX_THUNK_REGIONS) {
++        thunk_regions[num_thunk_regions].start = start;
++        thunk_regions[num_thunk_regions].size = size;
++        thunk_regions[num_thunk_regions].used = 0;
++        num_thunk_regions++;
++
++        HYBRIS_DEBUG_LOG(HOOKS, "Registered thunk region: %p - %p (%zu bytes)",
++                        start, (char*)start + size, size);
++    }
++
++    pthread_mutex_unlock(&thunk_mutex);
++}
++
++/* Allocate a thunk near the target address */
++void* hybris_allocate_thunk_near(void* target_addr, size_t thunk_size) {
++    pthread_mutex_lock(&thunk_mutex);
++
++    uintptr_t target = (uintptr_t)target_addr;
++    void* result = NULL;
++
++    /* Find the closest thunk region within branching distance (128MB for ARM64) */
++    for (int i = 0; i < num_thunk_regions; i++) {
++        uintptr_t region_addr = (uintptr_t)thunk_regions[i].start;
++        uintptr_t distance = (target > region_addr) ? (target - region_addr) : (region_addr - target);
++
++        if (distance > (128 * 1024 * 1024)) {
++            continue;
++        }
++
++        /* Align thunk size to 16-byte boundary */
++        size_t aligned_size = (thunk_size + 15) & ~15;
++
++        if (thunk_regions[i].used + aligned_size <= thunk_regions[i].size) {
++            result = (char*)thunk_regions[i].start + thunk_regions[i].used;
++            thunk_regions[i].used += aligned_size;
++
++            HYBRIS_DEBUG_LOG(HOOKS, "Allocated thunk at %p (size %zu) for target %p",
++                           result, thunk_size, target_addr);
++            break;
++        }
++    }
++
++    if (!result) {
++        HYBRIS_DEBUG_LOG(HOOKS, "Failed to allocate thunk for target %p - no suitable region found", target_addr);
++    }
++
++    pthread_mutex_unlock(&thunk_mutex);
++    return result;
++}
++
++/* Check if an address is within a thunk region */
++int hybris_is_within_thunk_region(void* addr) {
++    pthread_mutex_lock(&thunk_mutex);
++
++    uintptr_t check_addr = (uintptr_t)addr;
++    int result = 0;
++
++    for (int i = 0; i < num_thunk_regions; i++) {
++        uintptr_t region_start = (uintptr_t)thunk_regions[i].start;
++        uintptr_t region_end = region_start + thunk_regions[i].size;
++
++        if (check_addr >= region_start && check_addr < region_end) {
++            result = 1;
++            break;
++        }
++    }
++
++    pthread_mutex_unlock(&thunk_mutex);
++    return result;
++}
++
++/* Calculate offset from thread pointer to our TLS area */
++static int hybris_calculate_tls_offset(void) {
++    void* tp = __builtin_thread_pointer();
++    void* tls_area = _hybris_hook___get_tls_hooks();
++    return (int)((uintptr_t)tls_area - (uintptr_t)tp) / sizeof(uintptr_t);
++}
++
++/* Extract filename from path without modifying input */
++static const char* get_basename(const char* path) {
++    const char* base = strrchr(path, '/');
++    return base ? base + 1 : path;
++}
++
++/* Check if library should be patched based on HYBRIS_PATCH_TLS value */
++static int should_patch_library(const char* library_name) {
++    static const char* patch_tls = NULL;
++    static int init_done = 0;
++
++    /* Initialize on first call */
++    if (!init_done) {
++        patch_tls = getenv("HYBRIS_PATCH_TLS");
++        init_done = 1;
++    }
++
++    /* No environment variable set - do nothing */
++    if (!patch_tls) {
++        return 0;
++    }
++
++    /* Simple enable/disable */
++    if (patch_tls[0] == '0' || patch_tls[0] == '1') {
++        return patch_tls[0] == '1';
++    }
++
++    /* Check if library basename is in colon-separated list */
++    const char *start = patch_tls;
++    const char *name = get_basename(library_name);
++    size_t name_len = strlen(name);
++
++    while (start && *start) {
++        const char *end = strchr(start, ':');
++        size_t len = end ? (size_t)(end - start) : strlen(start);
++
++        if (len == name_len && strncmp(start, name, len) == 0) {
++            return 1;
++        }
++
++        start = end ? end + 1 : NULL;
++    }
++
++    return 0;
++}
++
++void hybris_patch_tls(void* segment_addr, size_t segment_size, const char* library_name) {
++    if (!should_patch_library(library_name)) {
++        return;
++    }
++
++    HYBRIS_DEBUG_LOG(HOOKS, "Patching TLS accesses in %s", library_name);
++
++    int tls_offset = hybris_calculate_tls_offset();
++    HYBRIS_DEBUG_LOG(HOOKS, "Offset from thread pointer to hybris tls_space (in words): %d",
++        tls_offset);
++
++    hybris_patch_tls_arch(segment_addr, segment_size, tls_offset);
++}
++
++#ifdef __aarch64__
++#include "tls_patcher_aarch64.c"
++#endif
+diff --git a/hybris/common/tls_patcher.h b/hybris/common/tls_patcher.h
+new file mode 100644
+index 0000000..c0f2870
+--- /dev/null
++++ b/hybris/common/tls_patcher.h
+@@ -0,0 +1,57 @@
++/*
++ * Copyright (c) 2025 Nikita Ukhrenkov <thekit@disroot.org>
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ *
++ */
++
++#ifndef TLS_PATCHER_H
++#define TLS_PATCHER_H
++
++#include <stddef.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++typedef void (*hybris_tls_patcher_t)(void* segment_addr, size_t segment_size, const char* library_name);
++typedef void (*hybris_register_thunk_region_t)(void* start, size_t size);
++typedef void* (*hybris_allocate_thunk_near_t)(void* target_addr, size_t thunk_size);
++typedef int (*hybris_is_within_thunk_region_t)(void* addr);
++
++/* Struct containing all TLS patcher function pointers */
++struct hybris_tls_patcher_funcs {
++    hybris_tls_patcher_t patch_tls;
++    hybris_register_thunk_region_t register_thunk_region;
++    hybris_allocate_thunk_near_t allocate_thunk_near;
++    hybris_is_within_thunk_region_t is_within_thunk_region;
++};
++typedef struct hybris_tls_patcher_funcs hybris_tls_patcher_funcs_t;
++
++/* Register a thunk region allocated by the linker */
++void hybris_register_thunk_region(void* start, size_t size);
++
++/* Allocate a thunk near the target address */
++void* hybris_allocate_thunk_near(void* target_addr, size_t thunk_size);
++
++/* Check if an address is within a thunk region */
++int hybris_is_within_thunk_region(void* addr);
++
++/* Patches TLS accesses in the given segment at runtime */
++void hybris_patch_tls(void* segment_addr, size_t segment_size, const char* library_name);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* TLS_PATCHER_H */
+diff --git a/hybris/common/tls_patcher_aarch64.c b/hybris/common/tls_patcher_aarch64.c
+new file mode 100644
+index 0000000..7f389aa
+--- /dev/null
++++ b/hybris/common/tls_patcher_aarch64.c
+@@ -0,0 +1,184 @@
++/*
++ * Copyright (c) 2025 Nikita Ukhrenkov <thekit@disroot.org>
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ *
++ */
++
++#include <stdint.h>
++#include <stddef.h>
++#include <string.h>
++#include <sys/mman.h>
++#include "logging.h"
++
++/* AArch64 instruction opcodes and system register encodings */
++#define MRS_OPCODE 0xD53
++#define TPIDR_EL0  0x5E82
++#define B_OPCODE   0x14      /* Unconditional branch */
++
++/* Thunk size in bytes (4 instructions = 16 bytes) */
++#define THUNK_SIZE 16
++
++/* Instruction format for MRS X<rt>, TPIDR_EL0 */
++struct __attribute__((__packed__)) mrs_inst {
++    uint32_t rt:5;        /* 0:4   - Destination register */
++    uint32_t sys_reg:15;  /* 5:19  - System register encoding */
++    uint32_t opcode:12;   /* 20:31 - Must be 0xD53 (MRS instruction) */
++};
++_Static_assert(sizeof(struct mrs_inst) == 4, "MRS instruction size must be 4");
++
++/* Instruction format for B <offset> (unconditional branch) */
++struct __attribute__((__packed__)) branch_inst {
++    uint32_t imm26:26;    /* 0:25  - 26-bit signed immediate (word offset) */
++    uint32_t opcode:6;    /* 26:31 - Must be 0x05 (B instruction) */
++};
++_Static_assert(sizeof(struct branch_inst) == 4, "Branch instruction size must be 4");
++
++/* Calculate the branch offset from source to target (in words) */
++static int32_t calculate_branch_offset(void* source, void* target) {
++    intptr_t diff = (intptr_t)target - (intptr_t)source;
++
++    /* Branch offset is in words (4-byte units) */
++    if (diff % 4 != 0) {
++        return 0x7FFFFFFF; /* Invalid offset */
++    }
++
++    int32_t word_offset = diff / 4;
++
++    /* Check if offset fits in 26-bit signed immediate */
++    if (word_offset >= -(1 << 25) && word_offset < (1 << 25)) {
++        return word_offset;
++    }
++
++    return 0x7FFFFFFF; /* Out of range */
++}
++
++/* Generate a thunk that adjusts the thread pointer and jumps back */
++static void* generate_tls_thunk(int tls_offset_words, uint32_t target_register, void* mrs_location) {
++    void* thunk = hybris_allocate_thunk_near(mrs_location, THUNK_SIZE);
++    if (!thunk) {
++        HYBRIS_DEBUG_LOG(HOOKS, "Failed to allocate thunk for TLS patching");
++        return NULL;
++    }
++
++    uint32_t* code = (uint32_t*)thunk;
++
++    /* Convert word offset to byte offset */
++    int tls_offset_bytes = tls_offset_words * 8;
++
++    /* Calculate return address - the instruction after the original MRS */
++    void* return_addr = (char*)mrs_location + 4;
++
++    /* Calculate branch offset back to the return address */
++    int32_t return_offset = calculate_branch_offset((char*)thunk + 8, return_addr);
++    if (return_offset == 0x7FFFFFFF) {
++        HYBRIS_DEBUG_LOG(HOOKS, "Return address %p too far from thunk %p", return_addr, thunk);
++        return NULL;
++    }
++
++    /* Generate thunk code:
++     * mrs x<rt>, tpidr_el0     ; Read thread pointer
++     * add x<rt>, x<rt>, #offset ; Add TLS offset
++     * b <return_addr>          ; Branch back to next instruction
++     * nop                      ; Padding to 16 bytes
++     */
++
++    /* MRS X<rt>, TPIDR_EL0 */
++    code[0] = 0xD53BD040 | target_register;
++
++    /* ADD X<rt>, X<rt>, #immediate */
++    if (tls_offset_bytes >= 0 && tls_offset_bytes <= 0xFFF) {
++        /* ADD X<rt>, X<rt>, #imm (12-bit immediate) */
++        code[1] = 0x91000000 | (target_register << 5) | target_register | (tls_offset_bytes << 10);
++    } else {
++        /* For larger offsets, we'd need to use multiple instructions */
++        HYBRIS_DEBUG_LOG(HOOKS, "TLS offset %d too large for simple ADD instruction", tls_offset_bytes);
++        return NULL;
++    }
++
++    /* B <return_offset> - Branch back to the instruction after the original MRS */
++    code[2] = 0x14000000 | (return_offset & 0x3FFFFFF);
++
++    /* NOP (padding) */
++    code[3] = 0xD503201F;
++
++    HYBRIS_DEBUG_LOG(HOOKS, "Generated TLS thunk at %p for register X%d with offset %d, returns to %p",
++                     thunk, target_register, tls_offset_words, return_addr);
++
++    return thunk;
++}
++
++/* Replace MRS instruction with branch to thunk */
++static int patch_mrs_with_branch(uint32_t* mrs_location, void* thunk) {
++    int32_t offset = calculate_branch_offset(mrs_location, thunk);
++
++    if (offset == 0x7FFFFFFF) {
++        HYBRIS_DEBUG_LOG(HOOKS, "Thunk %p too far from MRS at %p for branch instruction",
++                         thunk, mrs_location);
++        return 0;
++    }
++
++    /* Create branch instruction: B <offset> */
++    struct branch_inst branch = {
++        .imm26 = offset & 0x3FFFFFF,
++        .opcode = 0x05
++    };
++
++    /* Replace the MRS instruction */
++    *mrs_location = *(uint32_t*)&branch;
++
++    HYBRIS_DEBUG_LOG(HOOKS, "Patched MRS at %p with branch to thunk %p (offset: %d)",
++                     mrs_location, thunk, offset);
++
++    return 1;
++}
++
++void hybris_patch_tls_arch(void* segment_addr, size_t segment_size, int tls_offset) {
++    uint32_t* text = (uint32_t*)segment_addr;
++    size_t count = segment_size / sizeof(uint32_t);
++    int patches_applied = 0;
++
++    HYBRIS_DEBUG_LOG(HOOKS, "Scanning %zu instructions for MRS TPIDR_EL0 in segment %p",
++                     count, segment_addr);
++
++    for (size_t i = 0; i < count; i++) {
++        const struct mrs_inst* mrs = (const struct mrs_inst*)&text[i];
++
++        /* Look for MRS instruction that reads TPIDR_EL0 */
++        if (mrs->opcode != MRS_OPCODE || mrs->sys_reg != TPIDR_EL0) {
++            continue;
++        }
++
++        HYBRIS_DEBUG_LOG(HOOKS, "Found MRS TPIDR_EL0, X%d at offset 0x%zx",
++                         mrs->rt, i * 4);
++
++        /* Generate thunk for this specific register */
++        void* thunk = generate_tls_thunk(tls_offset, mrs->rt, &text[i]);
++        if (!thunk) {
++            continue;
++        }
++
++        /* Replace MRS with branch to thunk */
++        if (patch_mrs_with_branch(&text[i], thunk)) {
++            patches_applied++;
++        }
++    }
++
++    if (patches_applied > 0) {
++        /* Flush instruction cache for the entire segment */
++        __builtin___clear_cache(segment_addr, (char*)segment_addr + segment_size);
++
++        HYBRIS_DEBUG_LOG(HOOKS, "Applied %d TLS patches in segment %p",
++                         patches_applied, segment_addr);
++    }
++}
+-- 
+2.56.0
+

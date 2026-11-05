@@ -1,0 +1,22 @@
+Subject: [PATCH] virgl: also take the vtest socket from MESA_VTEST_SOCKET_NAME
+
+The Launcher engine gives a Wine process only the variables it knows (src/wine_environment.rs:
+MESA_*, GALLIUM_*, VK_*, LIBGL_* and the other graphics prefixes, not VTEST_*), so
+VTEST_SOCKET_NAME never reaches the game's virgl driver (GALLIUM_DRIVER=virpipe), which then
+connects to /tmp/.virgl_test, a path that Android does not have. When VTEST_SOCKET_NAME is not
+set, take MESA_VTEST_SOCKET_NAME, which the engine passes on, as patches/mesa-sysdrv/0001 does
+for Venus.
+
+---
+--- a/src/gallium/winsys/virgl/vtest/virgl_vtest_socket.c
++++ b/src/gallium/winsys/virgl/vtest/virgl_vtest_socket.c
+@@ -201,6 +201,9 @@
+    struct sockaddr_un un;
+    int sock, ret;
+    const char* socket_name = os_get_option("VTEST_SOCKET_NAME");
++   /* PD2 Launcher: the engine passes MESA_* variables to Wine processes, not VTEST_* */
++   if (!socket_name)
++      socket_name = os_get_option("MESA_VTEST_SOCKET_NAME");
+ 
+    sock = socket(PF_UNIX, SOCK_STREAM, 0);
+    if (sock < 0)

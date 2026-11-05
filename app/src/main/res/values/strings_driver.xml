@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The game's graphics route (DriverChoice): Play's line and label and the device check's Try
+     anyway (the GPU page's own texts are in strings_settings.xml). Play's lines use the owner's
+     names (2026-11-02; review MED-1): "App driver" (Turnip, PanVK, RADV, mali-panvk) and "Phone
+     driver" (VirGL, Venus, libhybris), by GraphicsRoute.player. No route or driver names in a
+     player's text, Play's label (DriverPage.label: as on the GPU page, the owner, 2026-11-04) and
+     the device check included; technology names only in About and in the logs. -->
+<resources>
+    <!-- Play, after the driver of the route failed (PhoneDriverFailure.tells): %1$s is Play's label ("App driver", "Phone driver · VirGL", "Software driver"). The pick stays (the owner, 2026-11-04). Proposed 2026-11-04, for the owner's approval. -->
+    <string name="driver_had_error">The %1$s had an error. Pick another driver in Settings → Display → GPU.</string>
+    <!-- The button under that line: Settings → Display → GPU. Proposed 2026-11-04, for the owner's approval. -->
+    <string name="driver_open_gpu">Open GPU settings</string>
+    <!-- Play, debug builds: a test forced the phone's own driver where PD2 Launcher's runs too (SystemDriver.forced). -->
+    <string name="driver_phone_forced">Graphics driver: Phone driver, forced for a test (files/debug/system-driver or system-driver-virgl).</string>
+    <!-- Play, where the game uses the Phone driver because the launcher has no driver for the chip (also libhybris on a PowerVR). -->
+    <string name="driver_phone_only">Graphics driver: Phone driver. The launcher has no driver for this graphics chip. The game can be slower, or it may not start.</string>
+    <!-- Play, where the game uses the App driver on a chip that Turnip and PanVK do not support (RADV on a Samsung Xclipse, mali-panvk on an older Mali). -->
+    <string name="driver_launcher_new">Graphics driver: App driver. This driver is new for this graphics chip: tell us how the game runs.</string>
+    <!-- Play, where the Software driver is the default because no GPU driver runs on the chip (DriverPage.defaultPick). Proposed 2026-11-04, for the owner's approval. -->
+    <string name="driver_software_only">Graphics driver: Software driver. No GPU driver runs on this graphics chip. The game can be really slow.</string>
+    <!-- Play, where the player picked another driver than the chip's default on Settings → Display → GPU (DriverPage.route). -->
+    <string name="driver_native_chosen">Graphics driver: Phone driver, chosen in Settings.</string>
+    <!-- Approved by the owner, 2026-11-04 (decision 40). -->
+    <string name="driver_software_chosen">Graphics driver: Software driver, chosen in Settings. The game can be really slow.</string>
+
+    <!-- Play's driver label in the top bar for the Phone driver's ways (DriverPage.label; the others are driver_app, driver_phone, driver_software). -->
+    <string name="driver_label_virgl">Phone driver · VirGL</string>
+    <string name="driver_label_venus">Phone driver · Venus</string>
+
+    <!-- The card over the game on the first game on a new driver until the player answers (RouteCard). Its Quit stops the game and opens Settings → Display → GPU. -->
+    <string name="route_card_title">Does the game work?</string>
+    <!-- %1$s is Play's label of the driver ("App driver", "Phone driver · VirGL"). Proposed 2026-11-04, for the owner's approval. -->
+    <string name="route_card_body">The app now uses the %1$s.</string>
+    <string name="route_card_works">It works</string>
+    <string name="route_card_quit">Quit</string>
+    <!-- Quit with no controller: a touch needs a press of half a second. -->
+    <string name="route_card_hold_quit">Hold to quit</string>
+    <!-- On a card's button with a controller: the key to hold, A or B. -->
+    <string name="route_card_hold">Hold %1$s</string>
+
+    <!-- The device check, for a graphics chip that Turnip and PanVK do not support (PhoneDriverDialog). Owner's names (2026-11-04): App driver, Phone driver. -->
+    <!-- The small amber label over the dialog's title. -->
+    <string name="phone_driver_experimental">EXPERIMENTAL</string>
+    <!-- Only the Phone driver can try (an Adreno or Mali that Turnip or PanVK does not know, a PowerVR). -->
+    <string name="phone_driver_title">The launcher has no driver for this graphics chip</string>
+    <string name="phone_driver_body">The app can use the phone driver instead. The game can be slower, or it may not work at all. Do not use Blizzard\'s installers on this phone: they are the least likely to work.</string>
+    <!-- The App driver for the chip is the default (RADV on Samsung Xclipse, mali-panvk on an older Mali; DriverOptions.newLauncherDriver). The Phone driver is the player's pick on the GPU page; new words 2026-11-04, for the owner's approval. -->
+    <string name="phone_driver_title_launcher">The app driver for this graphics chip is new</string>
+    <string name="phone_driver_body_launcher">Only a few phones with this graphics chip have run the game. If the app driver fails, pick the phone driver in Settings → Display → GPU. It can be slower. The game may not work at all. Do not use Blizzard\'s installers on this phone: they are the least likely to work.</string>
+    <string name="phone_driver_forced">A test forced this (files/debug/system-driver).</string>
+    <!-- The check page behind the dialog. -->
+    <string name="phone_driver_check_title">Device check</string>
+    <string name="phone_driver_check_intro">The app needs your answer before it continues.</string>
+    <!-- The Diablo II source page for such a phone, under Blizzard's installers (SourceScreen). -->
+    <string name="source_blizzard_phone_driver">Not recommended on this phone: Blizzard\'s installers are the least likely to work here.</string>
+    <string name="source_phone_driver_forced">Shown because a test forced the phone driver.</string>
+    <string name="device_phone_driver_forced">Graphics chip: %1$s. A test forced the phone driver.</string>
+    <string name="device_phone_driver_only">Graphics chip: %1$s. The launcher has no driver for it. The phone driver can try.</string>
+    <string name="device_phone_driver_launcher">Graphics chip: %1$s. The app driver for it is new. If it fails, you can pick the phone driver in Settings.</string>
+    <string name="phone_driver_try">Try anyway</string>
+    <!-- The device check's Device row, where no GPU driver runs and the Software driver is the default (Finding.Kind.SOFTWARE_ONLY): with the chip's name, and without one. Approved by the owner, 2026-11-04. A stored pick of another driver with no route here shows driver_no_gpu_driver instead (Finding.Kind.PICK_HAS_NO_ROUTE). -->
+    <string name="device_software_only">Graphics chip: %1$s. No GPU driver runs on it. The game uses the Software driver. It can be really slow.</string>
+    <string name="device_software_only_unknown">No GPU driver runs on this graphics chip. The game uses the Software driver. It can be really slow.</string>
+</resources>

@@ -1,0 +1,262 @@
+Subject: [PATCH] venus: allocate host-visible memory from a dma-buf heap without gbm
+
+A driver that imports dma-bufs but exports no host-visible memory (neither as a dma-buf nor
+as an opaque fd) sends virglrenderer to its "allocate elsewhere and import" path, whose
+allocators are gbm and udmabuf. Android has neither, so every host-visible vkAllocateMemory
+failed ("minigbm_allocation is not enabled") and the client's next command naming that
+memory made the context fatal. This happened with Arm's Mali-G715 driver (r54p3).
+
+Without gbm, open a dma-buf heap at physical-device setup (Linux
+include/uapi/linux/dma-heap.h): /dev/dma_heap/system-uncached, else /dev/dma_heap/system
+with a warning that it may not be coherent. In vkAllocateMemory of a host-visible type,
+allocate the page-rounded size from it (DMA_HEAP_IOCTL_ALLOC), import the dma-buf
+(VkImportMemoryFdInfoKHR) and keep the heap buffer's fd for the blob export, as the udmabuf
+path keeps its udmabuf. When vkGetMemoryFdPropertiesKHR does not list the requested memory
+type (the Mali driver imports into its cached type only, not its coherent one), import into
+a host-visible type of the same memory heap that it does list; the client still maps the
+dma-buf, whose uncached pages keep it coherent. Also close the udmabuf or heap fd when the
+allocation fails.
+
+Written from virglrenderer 1.3.0's udmabuf path (src/venus/vkr_device_memory.c:50-135, 341-353,
+src/venus/vkr_physical_device.c:14-44, 230-242), Linux include/uapi/linux/dma-heap.h and the
+Vulkan specification (VK_KHR_external_memory_fd, VK_EXT_external_memory_dma_buf:
+vkGetMemoryFdPropertiesKHR, VkImportMemoryFdInfoKHR). Rebased onto virglrenderer main
+e18f8c00 (2026-10-20) without a change of content; the failure path now sits beside the
+Metal shared-memory one.
+
+---
+--- a/config.h.meson
++++ b/config.h.meson
+@@ -55,6 +55,7 @@
+ #mesondefine HAVE_EVENTFD_H
+ #mesondefine HAVE_DMABUF_H
+ #mesondefine HAVE_LINUX_UDMABUF_H
++#mesondefine HAVE_LINUX_DMA_HEAP_H
+ #mesondefine HAVE_DLFCN_H
+ #mesondefine ENABLE_VIDEO
+ #mesondefine ENABLE_TRACING
+--- a/meson.build
++++ b/meson.build
+@@ -224,6 +224,10 @@
+    conf_data.set('HAVE_LINUX_UDMABUF_H', 1)
+ endif
+ 
++if cc.has_header('linux/dma-heap.h')
++   conf_data.set('HAVE_LINUX_DMA_HEAP_H', 1)
++endif
++
+ foreach b : ['bswap32', 'bswap64', 'clz', 'clzll', 'expect', 'ffs', 'ffsll',
+              'popcount', 'popcountll', 'types_compatible_p', 'unreachable']
+   if cc.has_function(b)
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -137,6 +137,100 @@
+ 
+ #endif /* HAVE_LINUX_UDMABUF_H && HAVE_MEMFD_CREATE */
+ 
++#ifdef HAVE_LINUX_DMA_HEAP_H
++#include <fcntl.h>
++#include <linux/dma-heap.h>
++#include <sys/ioctl.h>
++
++/* Like the udmabuf path: allocates the page-rounded size from the physical device's dma-buf
++ * heap and fills out_fd_info to import that dma-buf; the heap buffer's fd is kept in
++ * out_heap_fd for the blob export.  A driver may import a dma-buf into fewer memory types than
++ * it allocates from (vkGetMemoryFdPropertiesKHR); a requested type it cannot import into is
++ * replaced by a host-visible type of the same memory heap that it can.  The client keeps the
++ * requested type's properties: it only maps the dma-buf, never the driver's memory.
++ */
++static VkResult
++vkr_dma_heap_get_fd_info_from_allocation_info(struct vkr_device *dev,
++                                              VkMemoryAllocateInfo *alloc_info,
++                                              int *out_heap_fd,
++                                              VkImportMemoryFdInfoKHR *out_fd_info)
++{
++   struct vkr_physical_device *physical_dev = dev->physical_device;
++   struct vn_device_proc_table *vk = &dev->proc_table;
++   struct dma_heap_allocation_data heap_alloc = {
++      .len = align64(alloc_info->allocationSize, getpagesize()),
++      .fd_flags = O_RDWR | O_CLOEXEC,
++   };
++   if (ioctl(physical_dev->dma_heap_fd, DMA_HEAP_IOCTL_ALLOC, &heap_alloc) < 0) {
++      vkr_log("DMA_HEAP_IOCTL_ALLOC of %llu bytes failed (%s)",
++              (unsigned long long)heap_alloc.len, strerror(errno));
++      return VK_ERROR_OUT_OF_DEVICE_MEMORY;
++   }
++   const int heap_fd = (int)heap_alloc.fd;
++
++   VkMemoryFdPropertiesKHR fd_props = {
++      .sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR,
++   };
++   VkResult result = vk->GetMemoryFdPropertiesKHR(
++      dev->base.handle.device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, heap_fd,
++      &fd_props);
++   if (result != VK_SUCCESS) {
++      vkr_log("vkGetMemoryFdPropertiesKHR of a heap dma-buf failed (vk ret %d)", result);
++      close(heap_fd);
++      return result;
++   }
++
++   const VkPhysicalDeviceMemoryProperties *props = &physical_dev->memory_properties;
++   const uint32_t requested = alloc_info->memoryTypeIndex;
++   if (!(fd_props.memoryTypeBits & (1u << requested))) {
++      const uint32_t heap_index = props->memoryTypes[requested].heapIndex;
++      uint32_t i;
++      for (i = 0; i < props->memoryTypeCount; i++) {
++         if ((fd_props.memoryTypeBits & (1u << i)) &&
++             props->memoryTypes[i].heapIndex == heap_index &&
++             (props->memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
++            break;
++      }
++      if (i == props->memoryTypeCount) {
++         vkr_log("no host-visible memory type of heap %u imports a dma-buf (bits 0x%x)",
++                 heap_index, fd_props.memoryTypeBits);
++         close(heap_fd);
++         return VK_ERROR_OUT_OF_DEVICE_MEMORY;
++      }
++      alloc_info->memoryTypeIndex = i;
++   }
++
++   const int fd = os_dupfd_cloexec(heap_fd);
++   if (fd < 0) {
++      vkr_log("os_dupfd_cloexec failed (%s)", strerror(errno));
++      close(heap_fd);
++      return VK_ERROR_OUT_OF_HOST_MEMORY;
++   }
++
++   *out_heap_fd = heap_fd;
++   *out_fd_info = (VkImportMemoryFdInfoKHR){
++      .sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR,
++      .pNext = alloc_info->pNext,
++      .fd = fd,
++      .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
++   };
++   return VK_SUCCESS;
++}
++
++#else /* HAVE_LINUX_DMA_HEAP_H */
++
++static inline VkResult
++vkr_dma_heap_get_fd_info_from_allocation_info(UNUSED struct vkr_device *dev,
++                                              UNUSED VkMemoryAllocateInfo *alloc_info,
++                                              UNUSED int *out_heap_fd,
++                                              UNUSED VkImportMemoryFdInfoKHR *out_fd_info)
++{
++   vkr_log("dma_heap_allocation is not enabled");
++   return VK_ERROR_OUT_OF_DEVICE_MEMORY;
++}
++
++#endif /* HAVE_LINUX_DMA_HEAP_H */
++
+ #ifdef ENABLE_GBM_ALLOCATION
+ #include <gbm.h>
+ 
+@@ -387,6 +481,10 @@
+              */
+             args->ret = vkr_udmabuf_get_fd_info_from_allocation_info(
+                physical_dev, alloc_info, &udmabuf_fd, &local_import_info);
++         } else if (physical_dev->dma_heap_fd >= 0) {
++            /* the heap buffer's fd is kept like the udmabuf's, for the blob export */
++            args->ret = vkr_dma_heap_get_fd_info_from_allocation_info(
++               dev, alloc_info, &udmabuf_fd, &local_import_info);
+          } else {
+             args->ret = vkr_gbm_get_fd_info_from_allocation_info(
+                physical_dev, alloc_info, &gbm_bo, &local_import_info);
+@@ -410,6 +508,8 @@
+    if (!mem) {
+       if (local_import_info.fd >= 0)
+          close(local_import_info.fd);
++      if (udmabuf_fd >= 0)
++         close(udmabuf_fd);
+       if (gbm_bo)
+          vkr_gbm_bo_destroy(gbm_bo);
+       vkr_mtl_shm_free(mtl_shm);
+--- a/src/venus/vkr_device_memory.h
++++ b/src/venus/vkr_device_memory.h
+@@ -24,7 +24,7 @@
+    /* gbm bo backing non-external mappable memory */
+    struct gbm_bo *gbm_bo;
+ 
+-   /* udmabuf backing non-external mappable memory */
++   /* udmabuf or dma-buf heap buffer backing non-external mappable memory */
+    int udmabuf_fd;
+ 
+    /* Metal buffer backed by POSIX shared memory */
+--- a/src/venus/vkr_physical_device.c
++++ b/src/venus/vkr_physical_device.c
+@@ -43,6 +43,51 @@
+ 
+ #endif /* HAVE_LINUX_UDMABUF_H */
+ 
++#ifdef HAVE_LINUX_DMA_HEAP_H
++#include <fcntl.h>
++
++/* A dma-buf heap (Linux include/uapi/linux/dma-heap.h) to allocate host-visible memory from
++ * when the driver imports dma-bufs but exports no host-visible memory and there is no gbm, as
++ * on Android.  The uncached system heap first: the CPU maps its pages uncached, so the memory
++ * stays coherent with a GPU that does not snoop the CPU's caches.  The cached system heap is
++ * the fallback; it is not coherent on such a GPU.  Heaps are opened read-only: the allocation
++ * ioctl needs no write access, and Android makes them world-readable only.
++ */
++static int dma_heap_fd = -1;
++
++static void
++vkr_dma_heap_init_once(void)
++{
++   dma_heap_fd = open("/dev/dma_heap/system-uncached", O_RDONLY | O_CLOEXEC);
++   if (dma_heap_fd >= 0)
++      return;
++   vkr_log("failed to open /dev/dma_heap/system-uncached: %s", strerror(errno));
++
++   dma_heap_fd = open("/dev/dma_heap/system", O_RDONLY | O_CLOEXEC);
++   if (dma_heap_fd >= 0)
++      vkr_log("using /dev/dma_heap/system: host-visible memory may not be coherent");
++   else
++      vkr_log("failed to open /dev/dma_heap/system: %s", strerror(errno));
++}
++
++static inline int
++vkr_physical_device_get_dma_heap_fd(void)
++{
++   static once_flag dma_heap_once_flag = ONCE_FLAG_INIT;
++   call_once(&dma_heap_once_flag, vkr_dma_heap_init_once);
++   return dma_heap_fd;
++}
++
++#else /* HAVE_LINUX_DMA_HEAP_H */
++
++static inline int
++vkr_physical_device_get_dma_heap_fd(void)
++{
++   return -1;
++}
++
++#endif /* HAVE_LINUX_DMA_HEAP_H */
++
+ #ifdef ENABLE_GBM_ALLOCATION
+ #include <gbm.h>
+ #ifdef MINIGBM
+@@ -250,6 +295,13 @@
+        physical_dev->EXT_external_memory_dma_buf)
+       physical_dev->gbm_device = vkr_physical_device_get_gbm_device();
+ 
++   /* without gbm, fall back to dma-buf heap allocation with dma-buf import */
++   physical_dev->dma_heap_fd = -1;
++   if (!physical_dev->is_dma_buf_fd_export_supported &&
++       !physical_dev->is_opaque_fd_export_supported &&
++       physical_dev->EXT_external_memory_dma_buf && !physical_dev->gbm_device)
++      physical_dev->dma_heap_fd = vkr_physical_device_get_dma_heap_fd();
++
+    physical_dev->udmabuf_dev_fd = -1;
+    if (VKR_DEBUG(UDMABUF)) {
+       if (physical_dev->EXT_external_memory_dma_buf)
+--- a/src/venus/vkr_physical_device.h
++++ b/src/venus/vkr_physical_device.h
+@@ -38,6 +38,7 @@
+    bool is_opaque_fd_export_supported;
+    void *gbm_device;
+    int udmabuf_dev_fd;
++   int dma_heap_fd;
+ 
+    VkQueueFamilyProperties *queue_family_properties;
+    uint32_t queue_family_property_count;

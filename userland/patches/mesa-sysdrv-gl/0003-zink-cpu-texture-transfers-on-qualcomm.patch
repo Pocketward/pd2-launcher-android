@@ -1,0 +1,38 @@
+Subject: [PATCH] zink: texture transfers through the CPU on Qualcomm's proprietary driver
+
+With PIPE_TEXTURE_TRANSFER_BLIT, the state tracker uploads a texture from a bound PBO with a draw
+(st_pbo: a fragment shader that reads the PBO through a texel buffer and writes the texture).
+D2GL uploads its movie frames that way. On Qualcomm's Adreno 650 driver (Vulkan 1.1.128, driver
+0746.0, through Venus) the GPU then hangs at the first movie frames, every time: kgsl "GPU hang
+detected", the same submission of the game's context each time, three faults in 3 s, a lost
+device (VK_ERROR_DEVICE_LOST), and the game ends. With the draw-based PBO upload off, the
+uploads go through _mesa_store_texsubimage (a CPU copy from the mapped PBO into the mapped
+texture): the movie plays and PD2's menu runs.
+
+Give that driver no blit- or compute-based texture transfers (PIPE_TEXTURE_TRANSFER_DEFAULT).
+This also keeps ReadPixels and GetTexImage on their CPU paths there. Through Venus, Zink sees
+the host's driver ID only when the host driver has VK_KHR_maintenance7; Qualcomm's Vulkan 1.1
+driver has not, so Zink sees VK_DRIVER_ID_MESA_VENUS, and the vendor ID stays the host's
+(0x5143, Qualcomm): that pair counts too (this GL stack is used only through Venus; Turnip has
+its own, newer Mesa). Only for the system-driver mode's older GL stack (Mesa 25.1.9,
+build-sysdrv.sh).
+
+---
+--- a/src/gallium/drivers/zink/zink_screen.c
++++ b/src/gallium/drivers/zink/zink_screen.c
+@@ -965,6 +965,15 @@
+           screen->info.have_KHR_16bit_storage &&
+           screen->info.have_KHR_shader_float16_int8)
+          mode |= PIPE_TEXTURE_TRANSFER_COMPUTE;
++      /* Qualcomm's proprietary driver (also through Venus, which keeps the
++       * host's vendor ID 0x5143) hangs the GPU when the state tracker uploads
++       * a PBO with a draw (D2GL's movie frames): texture transfers go through
++       * the CPU there.
++       */
++      if (zink_driverid(screen) == VK_DRIVER_ID_QUALCOMM_PROPRIETARY ||
++          (zink_driverid(screen) == VK_DRIVER_ID_MESA_VENUS &&
++           screen->info.props.vendorID == 0x5143))
++         mode = PIPE_TEXTURE_TRANSFER_DEFAULT;
+       caps->texture_transfer_modes = mode;
+    }
+ 

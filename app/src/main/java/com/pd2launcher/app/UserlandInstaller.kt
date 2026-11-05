@@ -36,6 +36,19 @@ data class UserlandManifest(
     /** Bytes of every regular file, unpacked. */
     val fileBytes: Long get() = entries.sumOf { it.size ?: 0L }
 
+    /**
+     * This manifest with [part]'s files: a part of the userland that pack.sh packs on its own
+     * (the system-driver mode's), which an APK carries or leaves out. One tree and one version,
+     * "<version>+<part's version>", so that an APK with another set of parts unpacks again. The
+     * part must be built for the same placeholder and prefix, and list no path of this one.
+     */
+    fun withPart(part: UserlandManifest): UserlandManifest {
+        require(part.placeholder == placeholder && part.prefix == prefix) { "part ${part.version} is built for another prefix" }
+        val paths = entries.mapTo(HashSet()) { it.path }
+        part.entries.firstOrNull { it.path in paths }?.let { throw IllegalArgumentException("part ${part.version} also lists ${it.path}") }
+        return copy(version = "$version+${part.version}", entries = entries + part.entries)
+    }
+
     companion object {
         fun parse(text: String): UserlandManifest = json.decodeFromString(serializer(), text)
     }
@@ -105,6 +118,13 @@ class UserlandInstaller(
      * against the manifest like every file, but not written, so they take no space.
      */
     private val skip: Set<String> = emptySet(),
+    /**
+     * Files that an unpack may leave out on this device ([skip] names those it leaves out now;
+     * [DriverChoice.skippableFiles]): a version that lacks one of them that [skip] no longer names
+     * (an earlier unpack left it out, and a route needs it now) is unpacked again
+     * ([forgetIfChanged]).
+     */
+    private val skippable: Set<String> = emptySet(),
     /** Makes a folder's entries durable (fsync on the folder); the JVM tests record the calls. */
     private val syncDirectory: (Path) -> Unit = ::fsyncDirectory,
     private val log: (String) -> Unit = {},
@@ -149,11 +169,12 @@ class UserlandInstaller(
      * makes the version incomplete (its record goes, or whatever is in its folder's place, a link
      * say), so [install] unpacks it again through staging, without whatever was added. Nothing is
      * removed while the way to the versions is not as it must be ([misplaced]): it would lead
-     * through a link; [install] puts that right first. Returns what differed.
+     * through a link; [install] puts that right first. A file of [skippable] that an earlier unpack
+     * left out and [skip] no longer names is a difference too ([leftOut]). Returns what differed.
      */
     fun forgetIfChanged(manifest: UserlandManifest): List<String> {
         val changed = refusal(manifest)?.let { listOf(it) }
-            ?: CriticalFiles(manifest, relocation(manifest), root.toPath()).problems()
+            ?: CriticalFiles(manifest, relocation(manifest), root.toPath()).problems().ifEmpty { leftOut(manifest) }
         if (changed.isNotEmpty()) {
             log("$changed in ${manifest.version}; it is unpacked again")
             val tree = File(root, manifest.version).toPath()
@@ -168,6 +189,20 @@ class UserlandInstaller(
             }
         }
         return changed
+    }
+
+    /**
+     * The files of [skippable] that [manifest] lists, that [skip] no longer names and that are not
+     * in its unpacked version (an earlier unpack left them out). Read after [CriticalFiles] found
+     * the way to the version as it must be.
+     */
+    private fun leftOut(manifest: UserlandManifest): List<String> {
+        val wanted = skippable - skip
+        if (wanted.isEmpty()) return emptyList()
+        val tree = File(root, manifest.version)
+        return manifest.entries
+            .filter { it.type == "file" && it.path in wanted && !File(tree, it.path).isFile }
+            .map { "${it.path}: left out by an earlier unpack, needed now" }
     }
 
     /**
@@ -333,7 +368,8 @@ class UserlandInstaller(
         // The file as packed, which the manifest names, and as written.
         val digest = MessageDigest.getInstance("SHA-256")
         val writtenDigest = MessageDigest.getInstance("SHA-256")
-        val tar = TarReader(input)
+        // The main archive, then the parts' archives, one after the other ([UserlandAssets.openTar]).
+        val tar = TarReader(input, concatenated = true)
         val links = HashSet<String>()
 
         while (true) {
@@ -501,8 +537,10 @@ private val json = Json { ignoreUnknownKeys = true }
  * A reader for the GNU tar stream pack.sh writes: regular files, folders, symlinks, and GNU
  * long names ('L') and long link targets ('K'). Other entry types are returned for the caller
  * to refuse. A truncated stream or a bad header checksum throws [CorruptUserland].
+ * [concatenated]: archives one after the other (GNU tar's --ignore-zeros): an end-of-archive block
+ * is skipped, with the zero blocks after it, and the stream ends only at its end, on a block.
  */
-internal class TarReader(private val input: InputStream) {
+internal class TarReader(private val input: InputStream, private val concatenated: Boolean = false) {
     class Entry(val name: String, val type: Char, val mode: Int, val size: Long, val linkName: String)
 
     private val header = ByteArray(BLOCK)
@@ -517,8 +555,19 @@ internal class TarReader(private val input: InputStream) {
         var longName: String? = null
         var longLink: String? = null
         while (true) {
-            readFully(header, BLOCK)
-            if (header.all { it == 0.toByte() }) return null
+            if (concatenated) {
+                if (!readBlockOrEnd(header)) {
+                    if (longName != null || longLink != null) throw CorruptUserland("tar long name without its entry")
+                    return null
+                }
+                if (header.all { it == 0.toByte() }) {
+                    if (longName != null || longLink != null) throw CorruptUserland("tar long name without its entry")
+                    continue
+                }
+            } else {
+                readFully(header, BLOCK)
+                if (header.all { it == 0.toByte() }) return null
+            }
             val stored = octal(148, 8)
             var sum = 0L
             for (i in 0 until BLOCK) sum += if (i in 148 until 156) 0x20 else header[i].toInt() and 0xFF
@@ -577,6 +626,20 @@ internal class TarReader(private val input: InputStream) {
             if (n < 0) throw CorruptUserland("tar stream truncated")
             done += n
         }
+    }
+
+    /** One block into [buffer]; false at the stream's end before its first byte (a part of a block is truncated). */
+    private fun readBlockOrEnd(buffer: ByteArray): Boolean {
+        var done = 0
+        while (done < BLOCK) {
+            val n = input.read(buffer, done, BLOCK - done)
+            if (n < 0) {
+                if (done == 0) return false
+                throw CorruptUserland("tar stream truncated")
+            }
+            done += n
+        }
+        return true
     }
 
     private fun skip(count: Long) {

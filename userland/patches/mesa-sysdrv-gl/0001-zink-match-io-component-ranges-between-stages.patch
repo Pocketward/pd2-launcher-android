@@ -1,0 +1,119 @@
+Subject: [PATCH] zink: give the inputs and outputs of linked stages the same component ranges
+
+Zink builds the i/o variables of each shader from its own access (rework_io_vars), so the two
+sides of one generic varying can split it differently: a fragment shader that reads the x and y
+components of a vertex output apart gets two inputs (location N component 0, location N
+component 1) where the vertex shader has one uvec2 output (location N component 0). Some drivers
+link an input only to an output with its exact location and component range; Qualcomm's Adreno
+driver (Vulkan 1.1.128, through Venus) fails the pipeline with "input slot_33_c1 not declared in
+output from previous stage", and the game's first draw with it ends the context.
+
+In zink_compiler_assign_io, once the slots are assigned, a generic varying variable (VAR0 to
+VAR31, 32-bit, not arrayed, not a patch, not compact, not captured by transform feedback) that
+lies inside the other stage's variable at its slot takes that variable's component range; a
+variable that then repeats another of its shader is removed. Only in a shader whose i/o is
+lowered: one with i/o derefs (such as zink's generated geometry shader) keeps its variables. An integer output to the fragment
+shader is made flat, as its input is: the rebuilt output variables carry no interpolation of
+their own. The i/o is lowered at that point, so the variables are only declarations:
+add_derefs maps each access to the variable that holds its components, as it does for any
+access narrower than its variable.
+
+Only for the system-driver mode's older GL stack (Mesa 25.1.9, build-sysdrv.sh); the product
+Mesa (main) is not changed. Written from Mesa 25.1.9's zink_compiler.c (zink_compiler_assign_io,
+rework_io_vars, create_io_var, add_derefs_instr) and the Vulkan specification's interface
+matching rules (Shader Interfaces, Location and Component assignment).
+
+---
+--- a/src/gallium/drivers/zink/zink_compiler.c
++++ b/src/gallium/drivers/zink/zink_compiler.c
+@@ -2875,6 +2875,81 @@
+    return false;
+ }
+ 
++/* Whether [var] is a plain generic varying that match_io_vars may reshape: a scalar or vector of
++ * 32-bit components at a VAR slot, not arrayed, not a patch, not compact, not captured by
++ * transform feedback.
++ */
++static bool
++is_plain_generic_io(const nir_variable *var)
++{
++   return var->data.location >= VARYING_SLOT_VAR0 && var->data.location <= VARYING_SLOT_VAR31 &&
++          !var->data.patch && !var->data.compact && !var->data.explicit_xfb_buffer &&
++          glsl_type_is_vector_or_scalar(var->type) && glsl_get_bit_size(var->type) == 32;
++}
++
++/* Gives [var] the component range [frac, frac + count) of its slot, or removes it when another
++ * variable of [mode] in [nir] has that range at that slot already.  The i/o is lowered, so the
++ * variables are only declarations here; add_derefs maps each access to the variable that holds
++ * its components.
++ */
++static void
++widen_io_var(nir_shader *nir, nir_variable_mode mode, nir_variable *var, unsigned frac, unsigned count)
++{
++   /* a shader with i/o derefs (such as zink's generated geometry shader) keeps its variables */
++   if (!nir->info.io_lowered)
++      return;
++   nir_foreach_variable_with_modes(other, nir, mode) {
++      if (other != var && other->data.location == var->data.location && is_plain_generic_io(other) &&
++          other->data.location_frac == frac && glsl_get_vector_elements(other->type) == count) {
++         exec_node_remove(&var->node);
++         return;
++      }
++   }
++   var->type = glsl_vector_type(glsl_get_base_type(var->type), count);
++   var->data.location_frac = frac;
++}
++
++/* Some drivers link an input to the previous stage's output only when an output there has the
++ * input's exact location and component range: an input that covers part of an output, or an
++ * output that covers part of an input, fails the pipeline ("input ... not declared in output
++ * from previous stage").  Each shader's variables are built from its own access, so a consumer
++ * that reads the components of one output apart, or a producer that writes the components of
++ * one input apart, gets narrower variables than the other stage.  For each generic slot, a
++ * variable that lies inside the other stage's variable takes that variable's range.  Such
++ * drivers also want an integer output flat, as its input must be: the rebuilt output variables
++ * have no interpolation of their own.
++ */
++static void
++match_io_vars(nir_shader *producer, nir_shader *consumer)
++{
++   if (consumer->info.stage == MESA_SHADER_FRAGMENT && producer->info.io_lowered) {
++      nir_foreach_variable_with_modes(var_out, producer, nir_var_shader_out) {
++         if (is_plain_generic_io(var_out) && glsl_base_type_is_integer(glsl_get_base_type(var_out->type)))
++            var_out->data.interpolation = INTERP_MODE_FLAT;
++      }
++   }
++   nir_foreach_variable_with_modes_safe(var_in, consumer, nir_var_shader_in) {
++      if (!is_plain_generic_io(var_in))
++         continue;
++      const unsigned in_frac = var_in->data.location_frac;
++      const unsigned in_count = glsl_get_vector_elements(var_in->type);
++      nir_foreach_variable_with_modes_safe(var_out, producer, nir_var_shader_out) {
++         if (var_out->data.location != var_in->data.location || !is_plain_generic_io(var_out))
++            continue;
++         const unsigned out_frac = var_out->data.location_frac;
++         const unsigned out_count = glsl_get_vector_elements(var_out->type);
++         if (out_frac == in_frac && out_count == in_count)
++            break;
++         if (out_frac <= in_frac && in_frac + in_count <= out_frac + out_count) {
++            widen_io_var(consumer, nir_var_shader_in, var_in, out_frac, out_count);
++            break;
++         }
++         if (in_frac <= out_frac && out_frac + out_count <= in_frac + in_count)
++            widen_io_var(producer, nir_var_shader_out, var_out, in_frac, in_count);
++      }
++   }
++}
++
+ void
+ zink_compiler_assign_io(struct zink_screen *screen, nir_shader *producer, nir_shader *consumer)
+ {
+@@ -2950,6 +3025,8 @@
+             do_fixup |= nir_shader_intrinsics_pass(consumer, fill_zero_reads, nir_metadata_dominance, &wc);
+       }
+    }
++   if (producer->info.stage != MESA_SHADER_TESS_CTRL)
++      match_io_vars(producer, consumer);
+    if (!do_fixup)
+       return;
+    nir_fixup_deref_modes(nir);

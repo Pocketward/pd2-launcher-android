@@ -133,6 +133,10 @@ For online play, use **Game's own size** and keep **Check for game updates** on.
 
 The app needs an ARM64 device with Android 11 or later, 4 KB memory pages and a supported graphics chip (GPU). Android does not install the app on Android 10 or earlier. See [What your device needs](../README.md#what-your-device-needs) and [Supported graphics chips](../README.md#supported-graphics-chips) in the README. When the app starts for the first time, it checks your device and tells you what is missing.
 
+The beta versions also have the App driver for more graphics chips, a driver that is new for each of them: Samsung Xclipse and older Arm Mali GPUs (such as the Mali-G52, G57, G68 and G77). The Pixel 10 and Pixel 11 (PowerVR GPU) use the Phone driver. The check asks you first (**Try anyway**). If the App driver has an error in a game, **Play** tells you, and you can pick the Phone driver (your phone's own driver) in **Settings → Display → GPU**. It can be slower.
+
+In the beta versions you can also pick the driver yourself in **Settings → Display → GPU**: the **App driver** (the launcher's own driver), the **Phone driver** (your phone's own driver) or the **Software driver** (the processor draws the game, which can be really slow). At the first start, the app picks the driver for your graphics chip. After that, the driver changes only when you pick another one: the app never changes it after an error. If a driver has an error, **Play** tells you which driver it was, with a button to **Settings → Display → GPU**. On the first game with a new driver, the app asks **Does the game work?**. Tap **It works**, or hold **Quit** to stop the game and open **Settings → Display → GPU**.
+
 ### The app says that my device is not supported
 
 The app runs the game only on the GPUs in [Supported graphics chips](../README.md#supported-graphics-chips). [Open an issue](https://github.com/Pocketward/pd2-launcher-android/issues/new?template=bug_report.yml) and give your device's name and its Android version. If the app shows a GPU name, add it under **What is the problem?**.

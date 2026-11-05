@@ -1,0 +1,118 @@
+Subject: [PATCH] venus: hide device extensions that a driver runs wrong, and by a test list
+
+The server offers the guest every device extension that the driver lists and Venus knows
+(vkr_physical_device_init_extensions); Venus then offers a passthrough extension only when the
+server does (Mesa src/virtio/vulkan/vn_physical_device.c). Two ways to leave one out:
+- driver rules (driver id + extension name), each with a log line on the server's stderr. The
+  driver id comes from VkPhysicalDeviceDriverProperties where the device has Vulkan 1.2.
+  Samsung's Xclipse driver (driver id 21; Exynos 2400, driver 24.0.545): while Zink 25.1.9 uses
+  VK_EXT_vertex_input_dynamic_state, a vertex attribute at offset 8 of an interleaved binding
+  reaches the vertex shader as 0 (integer and float formats), so D2GL loses most vertex inputs.
+  Without the extension Zink puts the vertex input into each pipeline and gives the stride with
+  vkCmdBindVertexBuffers2 (VK_EXT_extended_dynamic_state), and the values are right.
+  PD2_VKR_DRIVER_RULES=0 in the server's environment
+  turns the rules off (tests).
+- PD2_VKR_HIDE_EXTENSIONS=<name>[,<name>...] in the server's environment: more extensions to
+  hide (tests; the app passes it only from a debug build's files/debug/system-driver).
+
+---
+--- a/src/venus/vkr_physical_device.c
++++ b/src/venus/vkr_physical_device.c
+@@ -339,6 +339,79 @@
+    }
+ }
+ 
++/* Device extensions that the server does not offer to the guest (Venus offers a passthrough
++ * extension only when the server does, Mesa src/virtio/vulkan/vn_physical_device.c):
++ * - driver rules: an extension that a driver lists but runs wrong under Zink. Samsung's Xclipse
++ *   driver (driver id 21; Exynos 2400, driver 24.0.545): while Zink 25.1.9 uses
++ *   VK_EXT_vertex_input_dynamic_state (vkCmdSetVertexInputEXT), a vertex attribute at offset 8
++ *   of an interleaved binding reaches the vertex shader as 0 (integer and float formats); the
++ *   attribute at offset 0 and an attribute alone in its own binding are right. Without the
++ *   extension Zink puts the vertex input into each pipeline and gives the stride with
++ *   vkCmdBindVertexBuffers2 (VK_EXT_extended_dynamic_state), and the values are right.
++ *   PD2_VKR_DRIVER_RULES=0 in the server's environment turns the rules off (tests).
++ * - PD2_VKR_HIDE_EXTENSIONS=<name>[,<name>...]: more extensions to hide (tests; the app passes
++ *   it only from a debug build's debug file). Names without spaces. An extension that Venus
++ *   needs (for example VK_KHR_external_memory_fd) makes the guest refuse the device when hidden.
++ */
++static const struct {
++   VkDriverId driver_id;
++   const char *name;
++   const char *reason;
++} vkr_hidden_extension_rules[] = {
++   { VK_DRIVER_ID_SAMSUNG_PROPRIETARY, "VK_EXT_vertex_input_dynamic_state",
++     "interleaved vertex attributes after offset 0 read as 0 with it" },
++};
++
++static bool
++vkr_name_in_list(const char *list, const char *name)
++{
++   const size_t len = strlen(name);
++   for (const char *p = list; p && *p; p = strchr(p, ',') ? strchr(p, ',') + 1 : NULL) {
++      if (!strncmp(p, name, len) && (p[len] == ',' || p[len] == '\0'))
++         return true;
++   }
++   return false;
++}
++
++static VkDriverId
++vkr_physical_device_driver_id(struct vkr_physical_device *physical_dev)
++{
++   /* the device's version: a client's older instance version must not skip the rules */
++   if (physical_dev->properties.apiVersion < VK_API_VERSION_1_2)
++      return 0;
++   VkPhysicalDeviceDriverProperties driver = {
++      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES,
++   };
++   VkPhysicalDeviceProperties2 props2 = {
++      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
++      .pNext = &driver,
++   };
++   physical_dev->proc_table.GetPhysicalDeviceProperties2(
++      physical_dev->base.handle.physical_device, &props2);
++   return driver.driverID;
++}
++
++static bool
++vkr_physical_device_hides_extension(const char *name, VkDriverId driver_id)
++{
++   if (vkr_name_in_list(getenv("PD2_VKR_HIDE_EXTENSIONS"), name)) {
++      vkr_log("hiding %s from the guest (PD2_VKR_HIDE_EXTENSIONS)", name);
++      return true;
++   }
++   const char *rules = getenv("PD2_VKR_DRIVER_RULES");
++   if (rules && !strcmp(rules, "0"))
++      return false;
++   for (size_t i = 0; i < sizeof(vkr_hidden_extension_rules) / sizeof(vkr_hidden_extension_rules[0]); i++) {
++      if (vkr_hidden_extension_rules[i].driver_id == driver_id &&
++          !strcmp(vkr_hidden_extension_rules[i].name, name)) {
++         vkr_log("hiding %s from the guest on driver id %d: %s", name, (int)driver_id,
++                 vkr_hidden_extension_rules[i].reason);
++         return true;
++      }
++   }
++   return false;
++}
++
+ static void
+ vkr_physical_device_init_extensions(struct vkr_physical_device *physical_dev)
+ {
+@@ -362,6 +435,7 @@
+       return;
+    }
+ 
++   const VkDriverId driver_id = vkr_physical_device_driver_id(physical_dev);
+    uint32_t advertised_count = 0;
+    for (uint32_t i = 0; i < count; i++) {
+       VkExtensionProperties *props = &exts[i];
+@@ -384,6 +458,9 @@
+       else if (!strcmp(props->extensionName, "VK_EXT_queue_family_foreign"))
+          physical_dev->EXT_queue_family_foreign = true;
+ 
++      if (vkr_physical_device_hides_extension(props->extensionName, driver_id))
++         continue;
++
+       const uint32_t spec_ver = vkr_extension_get_spec_version(props->extensionName);
+       if (spec_ver) {
+          if (props->specVersion > spec_ver)

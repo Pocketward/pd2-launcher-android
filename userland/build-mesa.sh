@@ -2,10 +2,12 @@
 # Cross-builds Mesa (config.sh's MESA_COMMIT of main) for aarch64 (Debian multiarch, in its own image
 # containers/Containerfile.mesa)
 # and installs it into the staging tree: Zink (OpenGL on Vulkan) without LLVM, softpipe for Xvfb's
-# GLX extension (its swrast_dri.so lists the GLX visuals; the game draws through Zink), GLX (dri)
-# and EGL as glvnd vendors, and Turnip (Vulkan driver "freedreno", KGSL only). The ARM64 Wine's
-# OpenGL loads it in the game's own process. Options from Mesa's meson.options (at MESA_COMMIT):
-#   gallium-drivers=zink,softpipe   Zink and softpipe in libgallium
+# GLX extension (its swrast_dri.so lists the GLX visuals; the game draws through Zink), virgl for
+# the system-driver mode's VirGL route (GALLIUM_DRIVER=virpipe on the GLX software path: OpenGL
+# over vtest's socket to the APK's virglrenderer server, which draws with the phone's own GLES),
+# GLX (dri) and EGL as glvnd vendors, and Turnip (Vulkan driver "freedreno", KGSL only). The ARM64
+# Wine's OpenGL loads it in the game's own process. Options from Mesa's meson.options (at MESA_COMMIT):
+#   gallium-drivers=zink,softpipe,virgl   Zink, softpipe and virgl (its vtest winsys) in libgallium
 #   vulkan-drivers=freedreno        Turnip
 #   freedreno-kmds=kgsl             KGSL only (Android's Adreno kernel driver)
 #   allow-kcmp=disabled             kcmp is blocked by Android's seccomp policy (meson.build:1147)
@@ -94,7 +96,7 @@ endian = 'little'
 EOF
     meson setup "$build/out" "$src" --cross-file "$build/cross.ini" --wrap-mode=nodownload \
         --prefix="$USERLAND/usr" --libdir=lib/aarch64-linux-gnu --buildtype=release -Db_ndebug=true \
-        -Dgallium-drivers=zink,softpipe -Dvulkan-drivers=freedreno -Dfreedreno-kmds=kgsl -Dallow-kcmp=disabled \
+        -Dgallium-drivers=zink,softpipe,virgl -Dvulkan-drivers=freedreno -Dfreedreno-kmds=kgsl -Dallow-kcmp=disabled \
         -Dplatforms=x11 -Dglx=dri -Degl=enabled -Dglvnd=enabled -Dgbm=disabled -Dopengl=true \
         -Dgles1=disabled -Dgles2=disabled -Dllvm=disabled -Dvalgrind=disabled -Dlibunwind=disabled \
         -Dlmsensors=disabled -Dvulkan-layers= -Dtools= -Dbuild-tests=false -Dhtml-docs=disabled \
@@ -124,4 +126,4 @@ for f in usr/lib/aarch64-linux-gnu/libGLX_mesa.so.0 usr/lib/aarch64-linux-gnu/li
     usr/share/glvnd/egl_vendor.d/50_mesa.json; do
     [[ -e "$staging/$f" ]] || { echo "Mesa install incomplete: no $f" >&2; exit 1; }
 done
-echo "Mesa $MESA_VERSION (${MESA_COMMIT:0:12}) installed (Zink, softpipe, GLX, EGL, Turnip); ICD -> $got"
+echo "Mesa $MESA_VERSION (${MESA_COMMIT:0:12}) installed (Zink, softpipe, virgl, GLX, EGL, Turnip); ICD -> $got"

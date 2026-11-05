@@ -1,0 +1,149 @@
+Subject: [PATCH] vtest: import a client's dma-buf as a blob resource (VCMD_PD2_RESOURCE_IMPORT_FD)
+
+vtest has no way for a client to give the server a dma-buf: Mesa's Venus over vtest sets
+bo_ops.create_from_dma_buf to NULL and reports no dma-buf import (vn_renderer_vtest.c:887,
+1033 in mesa-26.2.3). The PD2 Launcher's direct present (its Mesa WSI patch 0004) imports the
+app's AHardwareBuffers as dma-bufs, so in the system-driver mode every frame went through
+PutImage instead.
+
+A new command, VCMD_PD2_RESOURCE_IMPORT_FD (64): the client sends the size (0: the dma-buf's
+own) and then the dma-buf with SCM_RIGHTS, as for VCMD_DRM_SYNC_IMPORT_SYNC_FILE; the server
+makes it a HOST3D blob resource with virgl_renderer_resource_import_blob (DMABUF) and attaches
+it to the client's context, so the proxy hands the fd to the render server (proxy_context.c,
+DMABUF resources) and Venus imports it with VkImportMemoryResourceInfoMESA (vkr_device_memory.c,
+VkImportMemoryFdInfoKHR, DMA_BUF). The answer is the resource id, 0 when the import failed.
+VCMD_GET_PARAM VCMD_PARAM_PD2_RESOURCE_IMPORT_FD (64) says that the server has the command, so
+a client never sends it to a server without it. The numbers are far above upstream's so that
+a later upstream command does not take them.
+
+Our own code, written from virglrenderer e18f8c00 vtest/vtest_renderer.c, vtest_server.c,
+vtest_protocol.h and src/virglrenderer.c. The client side is the Launcher's
+userland/patches/mesa-sysdrv/0004.
+
+---
+--- a/vtest/vtest_protocol.h
++++ b/vtest/vtest_protocol.h
+@@ -163,6 +163,8 @@
+ enum vcmd_param  {
+    VCMD_PARAM_MAX_TIMELINE_COUNT = 1,
+    VCMD_PARAM_HAS_TIMELINE_SYNCOBJ = 2,
++   /* PD2 Launcher: the server has VCMD_PD2_RESOURCE_IMPORT_FD */
++   VCMD_PARAM_PD2_RESOURCE_IMPORT_FD = 64,
+ };
+ #define VCMD_GET_PARAM_SIZE 1
+ #define VCMD_GET_PARAM_PARAM 0
+@@ -349,4 +351,13 @@
+ #define VCMD_RESOURCE_EXPORT_FD_RES_HANDLE 0
+ /* rsp fd */
+ 
++/* PD2 Launcher: a dma-buf of the client (sent with SCM_RIGHTS after the command) becomes a
++ * HOST3D blob resource attached to the client's context, so that Venus can import it
++ * (VkImportMemoryResourceInfoMESA). Size 0 means the dma-buf's own size. */
++#define VCMD_PD2_RESOURCE_IMPORT_FD 64
++#define VCMD_PD2_RESOURCE_IMPORT_FD_SIZE 2
++#define VCMD_PD2_RESOURCE_IMPORT_FD_SIZE_LO 0
++#define VCMD_PD2_RESOURCE_IMPORT_FD_SIZE_HI 1
++/* resp res_id, 0 when the import failed */
++
+ #endif /* VTEST_PROTOCOL */
+--- a/vtest/vtest.h
++++ b/vtest/vtest.h
+@@ -112,6 +112,7 @@
+ int vtest_drm_sync_query(uint32_t length_dw);
+ int vtest_drm_sync_transfer(uint32_t length_dw);
+ int vtest_resource_export_fd(uint32_t length_dw);
++int vtest_pd2_resource_import_fd(uint32_t length_dw);
+ 
+ void vtest_set_max_length(uint32_t length);
+ 
+--- a/vtest/vtest_server.c
++++ b/vtest/vtest_server.c
+@@ -730,6 +730,7 @@
+    HANDLER(DRM_SYNC_TRANSFER,           drm_sync_transfer,         true   ),
+ #endif /* ENABLE_DRM */
+    HANDLER(RESOURCE_EXPORT_FD,          resource_export_fd,        true   ),
++   HANDLER(PD2_RESOURCE_IMPORT_FD,      pd2_resource_import_fd,    true   ),
+ };
+ 
+ static int vtest_client_dispatch_commands(struct vtest_client *client)
+--- a/vtest/vtest_renderer.c
++++ b/vtest/vtest_renderer.c
+@@ -958,6 +958,10 @@
+    resp[1] = 0;
+ 
+    switch (param) {
++   case VCMD_PARAM_PD2_RESOURCE_IMPORT_FD:
++      resp[0] = true;
++      resp[1] = 1;
++      break;
+    case VCMD_PARAM_MAX_TIMELINE_COUNT:
+       resp[0] = true;
+       /* TODO until we have a timerfd */
+@@ -3053,6 +3057,67 @@
+    return ret;
+ }
+ 
++/* PD2 Launcher: the client's dma-buf as a HOST3D blob resource of its context (the render
++ * server then imports it into the Vulkan driver); answers 0 when that fails. */
++int vtest_pd2_resource_import_fd(UNUSED uint32_t length_dw)
++{
++   struct vtest_context *ctx = vtest_get_current_context();
++   uint32_t import_buf[VCMD_PD2_RESOURCE_IMPORT_FD_SIZE];
++   uint32_t resp_buf[VTEST_HDR_SIZE + 1];
++   struct vtest_resource *res;
++   uint32_t res_id = 0;
++   uint64_t size;
++   int fd, ret;
++
++   ret = ctx->input->read(ctx->input, import_buf, sizeof(import_buf));
++   if (ret != sizeof(import_buf))
++      return -1;
++
++   fd = vtest_receive_fd(ctx->input->data.fd);
++   if (fd < 0)
++      return fd;
++
++   size = import_buf[VCMD_PD2_RESOURCE_IMPORT_FD_SIZE_LO];
++   size |= (uint64_t)import_buf[VCMD_PD2_RESOURCE_IMPORT_FD_SIZE_HI] << 32;
++   if (!size) {
++      off_t end = lseek(fd, 0, SEEK_END);
++      lseek(fd, 0, SEEK_SET);
++      size = end > 0 ? (uint64_t)end : 0;
++   }
++
++   res = size ? vtest_new_resource(0) : NULL;
++   if (res) {
++      const struct virgl_renderer_resource_import_blob_args args = {
++         .res_handle = res->res_id,
++         .blob_mem = VIRGL_RENDERER_BLOB_MEM_HOST3D,
++         .fd_type = VIRGL_RENDERER_BLOB_FD_TYPE_DMABUF,
++         .fd = fd,
++         .size = size,
++      };
++      /* On success the resource owns the fd, and a failed allocation (-ENOMEM) has closed
++       * it; any other failure leaves it here. */
++      ret = virgl_renderer_resource_import_blob(&args);
++      if (!ret || ret == -ENOMEM)
++         fd = -1;
++      if (ret) {
++         report_failed_call("virgl_renderer_resource_import_blob", ret);
++         vtest_unref_resource(res);
++      } else {
++         virgl_renderer_ctx_attach_resource(ctx->ctx_id, res->res_id);
++         util_hash_table_set(ctx->resource_table, intptr_to_pointer(res->res_id), res);
++         res_id = res->res_id;
++      }
++   }
++   if (fd >= 0)
++      close(fd);
++
++   resp_buf[VTEST_CMD_LEN] = 1;
++   resp_buf[VTEST_CMD_ID] = VCMD_PD2_RESOURCE_IMPORT_FD;
++   resp_buf[VTEST_CMD_DATA_START] = res_id;
++   ret = vtest_block_write(ctx->out_fd, resp_buf, sizeof(resp_buf));
++   return ret < 0 ? ret : 0;
++}
++
+ void vtest_set_max_length(uint32_t length)
+ {
+    renderer.max_length = length;

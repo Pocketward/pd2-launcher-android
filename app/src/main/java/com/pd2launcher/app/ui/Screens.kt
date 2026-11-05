@@ -1,6 +1,8 @@
 package com.pd2launcher.app.ui
 
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
@@ -32,22 +34,32 @@ fun CheckingDeviceScreen() {
     }
 }
 
+/**
+ * The device check refused this device, with Close. Where a route to the phone's own driver can
+ * run the game ([Screen.NotSupported.tryAnyway]), it asks instead, in a dialog over the check's
+ * findings ([PhoneDriverDialog]): Try anyway ([onTryAnyway]) or Close ([onClose]).
+ */
 @Composable
-fun NotSupportedScreen(screen: Screen.NotSupported, onClose: () -> Unit) {
-    val focus = remember { FocusRequester() }
-    InitialFocus(focus)
-    FlowShell(
-        step = FlowStep.CHECK,
-        failed = true,
-        title = stringResource(R.string.not_supported_title),
-        intro = stringResource(R.string.not_supported_body),
-        action = { CornerPill(stringResource(R.string.not_supported_close), onClose, Kind.PRIMARY, focusRequester = focus) },
-    ) {
-        val findings = screen.problems.map { Tone.ERROR to it } + screen.warnings.map { Tone.WARNING to it }
-        findings.forEachIndexed { index, (tone, line) ->
-            if (index > 0) Rule()
-            StatusLine(tone, text(line), emptyList())
+fun NotSupportedScreen(screen: Screen.NotSupported, onClose: () -> Unit, onTryAnyway: () -> Unit = {}) {
+    val ask = screen.tryAnyway
+    Box(Modifier.fillMaxSize()) {
+        val focus = remember { FocusRequester() }
+        // The dialog takes the focus while it shows.
+        if (!ask) InitialFocus(focus)
+        FlowShell(
+            step = FlowStep.CHECK,
+            failed = !ask,
+            title = stringResource(if (ask) R.string.phone_driver_check_title else R.string.not_supported_title),
+            intro = stringResource(if (ask) R.string.phone_driver_check_intro else R.string.not_supported_body),
+            action = if (ask) null else ({ CornerPill(stringResource(R.string.not_supported_close), onClose, Kind.PRIMARY, focusRequester = focus) }),
+        ) {
+            val findings = screen.problems.map { Tone.ERROR to it } + screen.warnings.map { Tone.WARNING to it }
+            findings.forEachIndexed { index, (tone, line) ->
+                if (index > 0) Rule()
+                StatusLine(tone, text(line), emptyList())
+            }
         }
+        if (ask) PhoneDriverDialog(onTryAnyway, onClose, forced = screen.forced, newLauncherDriver = screen.newLauncherDriver)
     }
 }
 

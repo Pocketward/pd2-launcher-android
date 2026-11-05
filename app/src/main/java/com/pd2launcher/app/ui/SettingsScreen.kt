@@ -73,12 +73,14 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.pd2launcher.app.AppSettings
 import com.pd2launcher.app.BuildConfig
+import com.pd2launcher.app.DriverPage
 import com.pd2launcher.app.FrameRateVote
 import com.pd2launcher.app.GameDisplay
 import com.pd2launcher.app.GameResolution
 import com.pd2launcher.app.GraphicsProfiles
 import com.pd2launcher.app.HostGpu
 import com.pd2launcher.app.LauncherSettings
+import com.pd2launcher.app.PlayerDriver
 import com.pd2launcher.app.Line
 import com.pd2launcher.app.R
 import com.pd2launcher.app.SaveSyncFolder
@@ -126,9 +128,10 @@ private const val SCROLL_BACK_MS = 500L
  * (its input, [PointerSpeedInput]) and the chord. Files and saves: the game folder, Save sync and
  * Storage. App ([appPage]; null: this build gets no updates): the version, Check now and the
  * Update channel, and About ([onAbout]). Help: the problem reports (Detailed logging and Save
- * logs), and Android's battery and notification settings ([system]). [back]: the back label, to
- * where Settings returns
- * ([com.pd2launcher.app.Onboarding.settingsBack]).
+ * logs) and Android's battery and notification settings ([system]). Display's GPU row and sub
+ * page show the route that the next Play takes ([gpuInUse], [DriverPage.onRoute]), and the
+ * Renderer row the driver's renderer. [back]: the
+ * back label, to where Settings returns ([com.pd2launcher.app.Onboarding.settingsBack]).
  */
 @Composable
 fun SettingsScreen(
@@ -150,11 +153,12 @@ fun SettingsScreen(
     onBack: () -> Unit,
     appPage: AppPageUi? = null,
     running: Pair<Int, Int>? = null,
+    gpuInUse: DriverPage.InUse? = null,
 ) {
     // Display's GPU sub page over Settings, as About and Buttons: on the way back Settings is new,
     // and the focus returns to the GPU row (nav.opener).
     if (nav.gpu) {
-        GpuPage(app, gpu, onAppChange) { nav.gpu = false }
+        GpuPage(app, gpu, onAppChange, gpuInUse) { nav.gpu = false }
         return
     }
     val context = LocalContext.current
@@ -284,7 +288,7 @@ fun SettingsScreen(
                 stringResource(R.string.settings_sound_in_background), stringResource(R.string.settings_sound_in_background_body),
                 launcher?.soundInBackground ?: false, { onCommand(LauncherSettings.soundInBackground(it)) }, enabled, focusOf(row),
             )
-            SettingsRow.RENDERER -> RendererInfoRow()
+            SettingsRow.RENDERER -> RendererInfoRow(software = gpuInUse?.driver == PlayerDriver.SOFTWARE)
             SettingsRow.LOOT_FILTERS -> LootFiltersRow()
             SettingsRow.ON_SCREEN_CONTROLS -> OpenRow(
                 stringResource(R.string.controls_edit_on_screen), body = stringResource(R.string.controls_edit_on_screen_body),
@@ -328,7 +332,7 @@ fun SettingsScreen(
             )
             // Display's GPU: the driver in use, and its sub page (decision 23).
             SettingsRow.GPU -> OpenRow(
-                stringResource(R.string.settings_gpu), gpuValue(driverPage(app, gpu).first), focusRequester = focusOf(row),
+                stringResource(R.string.settings_gpu), gpuValue(driverPage(app, gpu, gpuInUse).first), focusRequester = focusOf(row),
             ) { opens(row) { nav.gpu = true } }
             SettingsRow.ABOUT -> OpenRow(
                 stringResource(R.string.settings_about), stringResource(R.string.about_version, BuildConfig.SHOWN_VERSION), minHeight = 56.dp,
@@ -644,18 +648,19 @@ private fun ChoiceRow(title: String, options: List<String>, selected: Int, onSel
 /**
  * Display → Renderer, information only (decision 24, the owner, 2026-11-03: "renderers are now tied
  * to the GPU options"): information only, the first line white as other titles, the second greyed;
- * no focus, no sheet. Every Play from the app runs
- * Glide ([com.pd2launcher.app.GlideFirst]); in 0.4.0 the Software driver plays with DirectDraw.
+ * no focus, no sheet. Every Play from the app runs the driver's renderer
+ * ([com.pd2launcher.app.GlideFirst]): Glide, and DirectDraw on the Software driver ([software]).
  */
 @Composable
-private fun RendererInfoRow() {
+private fun RendererInfoRow(software: Boolean) {
     Column(
         Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 14.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
         // Two lines (the owner, 2026-11-03): "Renderer: Glide", white as the other rows' titles ("white like the rest
         // menu items for consistency"), then who sets it, greyed.
-        Text(stringResource(R.string.settings_renderer_value, stringResource(R.string.settings_renderer_glide)), style = Type.Body, color = Palette.Text)
+        val renderer = if (software) R.string.settings_renderer_direct_draw else R.string.settings_renderer_glide
+        Text(stringResource(R.string.settings_renderer_value, stringResource(renderer)), style = Type.Body, color = Palette.Text)
         Text(stringResource(R.string.settings_renderer_set_by_gpu), style = Type.Hint, color = Palette.Faint)
     }
 }

@@ -77,7 +77,8 @@ if [[ "${1:-}" == --in-tools ]]; then
     debs=/cache/debs
     work=/cache/work
     mkdir -p "$debs"
-    rm -rf "$work/staging" "$work/sysroot"
+    # The parts' lists (pack.sh) belong to the staging tree: its install steps write them again.
+    rm -rf "$work/staging" "$work/sysroot" "$work/parts"
     mkdir -p "$work/staging" "$work/sysroot"
 
     extract() { # deb, root

@@ -17,7 +17,10 @@ Play [Project Diablo 2](https://www.projectdiablo2.com/) on your Android phone o
 - **Frame rate and display:** frame rate, game resolution, fit to screen or center.
 - **Low sound delay.**
 - **Your files:** in Android's Files app. **Save sync** keeps your characters in a folder for a sync app, such as Syncthing.
-- **App updates:** the app updates itself and keeps your game, characters and settings. **Stable** versions, and **Beta** versions when a test version is out.
+- **Release channels:** choose **Stable** or **Beta** in **Settings → App**. The app updates itself in place and keeps your game, characters and settings. Unless the notes of a release say otherwise, you can switch back and forth between Stable and Beta.
+- **Settings:** six pages (Display, Game, Controls, Files and saves, App and Help). On a handheld, the list and the page show side by side. With a controller, **L1** and **R1** go from page to page.
+- **Graphics driver (beta):** pick the **App driver**, the **Phone driver** or the **Software driver** in **Settings → Display → GPU**.
+- **Server status:** **Play** shows the status of the Project Diablo 2 server and the number of players in game.
 - **On your device:** no root and no PC streaming. The game uses your device's own graphics chip.
 
 ## See it run
@@ -37,28 +40,40 @@ https://github.com/user-attachments/assets/f294dbf7-d77c-46bf-a42d-584854420aa3
 <p align="center"><b>Left:</b> walk with the on-screen controls, a virtual controller. <b>Right:</b> the in-game menu's <b>Controls</b> screen shows what each controller button does. <b>Edit on-screen layout</b> moves, resizes and fades each on-screen control, and adds buttons for keys.</p>
 
 <p align="center">
-  <img src="docs/media/settings.gif" width="49%" alt="The Settings: the game resolution (the game's own size or Custom), the display (Fit to screen or Center), the frame rate, then the App and Controller tabs">
+  <img src="docs/media/v0.3.8-play-stats.png" width="49%" alt="Play with the server status and the number of players in game">
+  <img src="docs/media/v0.3.8-settings-display.png" width="49%" alt="Settings, the Display page">
+</p>
+<p align="center"><b>Left:</b> <b>Play</b> with the server status and the number of players in game. <b>Right:</b> <b>Settings</b>: the page list and the <b>Display</b> page side by side.</p>
+
+<p align="center">
+  <img src="docs/media/v0.3.8-settings-gpu.png" width="49%" alt="Settings, Display, GPU: the App driver, the Phone driver and the Software driver">
+  <img src="docs/media/v0.3.8-settings-app.png" width="49%" alt="Settings, the App page with the Stable and Beta channels">
+</p>
+<p align="center"><b>Left:</b> <b>Display → GPU</b>: the graphics driver (grey in 0.3.8; the 0.4.0 beta turns it on). <b>Right:</b> <b>Settings → App</b>: the <b>Stable</b> and <b>Beta</b> channels and <b>Check now</b>.</p>
+
+<p align="center">
   <img src="docs/media/logs.gif" width="49%" alt="Saving the logs from the Settings">
 </p>
-<p align="center"><b>Left:</b> <b>Settings</b>: the game resolution, the display, the graphics profile, the frame rate, and the other pages. <b>Right:</b> for a problem report, <b>Save logs</b> saves the app's logs as one file in a folder that you pick.</p>
+<p align="center">For a problem report, <b>Save logs</b> saves the app's logs as one file in a folder that you pick.</p>
 
 ## What your device needs
 
 - An ARM64 device with Android 11 or later, using 4 KB memory pages (almost every phone and handheld does).
 - A supported GPU:
-  - Qualcomm Adreno 6xx, 7xx or 8xx (Snapdragon devices), or
-  - Arm Mali of the v10 to v13 architectures on Arm's CSF kernel driver, such as the Mali-G310, G610, G710, G615, G715, G720 and G725.
+  - Qualcomm Adreno 6xx, 7xx or 8xx (Snapdragon devices),
+  - Arm Mali of the v10 to v13 architectures on Arm's CSF kernel driver, such as the Mali-G310, G610, G710, G615, G715, G720 and G725, or
+  - **beta:** Samsung Xclipse (Exynos phones), an older Arm Mali on Arm's job-manager kernel driver (Bifrost and Valhall, such as the Mali-G52, G57, G68, G76, G77 and G78), or the Imagination PowerVR GPU of the Google Pixel 10 and Pixel 11.
 - Free storage for the app and its runtime (about 0.6 GB), the game (about 2.7 GB), and the installer downloads (about 2.7 GB). The downloads are needed only during the installation: once the game works, the app offers to remove them.
 
-The app checks all of this when it first starts and says what is missing. A GPU of a supported family that the bundled graphics driver does not know gets a warning instead: the game may still run. The check does not look at the kernel version.
+The app checks all of this when it first starts and says what is missing. A GPU of a supported family that the App driver does not know gets a warning instead: the game may still run. The check does not look at the kernel version.
 
 If the app says that your device is not supported, [open an issue](https://github.com/Pocketward/pd2-launcher-android/issues/new?template=bug_report.yml). Give your device's name and its Android version. If the app shows a GPU name, add it under **What is the problem?**.
 
 ## Supported graphics chips
 
-### Built-in driver
+### App driver
 
-The app has its own graphics driver from Mesa: Turnip for Adreno GPUs and PanVK for Mali GPUs. This driver knows the GPUs below. For a different GPU of these families, the Check screen shows a warning, and the game may still run.
+The app has its own graphics driver, the **App driver**, for Adreno and Mali GPUs. It knows the GPUs below. For a different GPU of these families, the Check screen shows a warning, and the game may still run.
 
 | Family | GPUs |
 |---|---|
@@ -69,9 +84,21 @@ The app has its own graphics driver from Mesa: Turnip for Adreno GPUs and PanVK 
 
 The Check screen shows some of these GPUs with a different name: the Adreno 642L and 643 as Adreno 635, and an Immortalis GPU as the Mali GPU of the same type (the Immortalis-G925 as Mali-G725).
 
-### Phone's own driver
+### Samsung Xclipse, older Mali, and Google Pixel 10 and 11 (beta)
 
-Not in this version. The game uses only the built-in driver.
+The beta versions also have the App driver for Samsung Xclipse GPUs and for the older Mali GPUs on Arm's job-manager kernel driver: the Mali-G31, G51, G52, G57, G68, G71, G72, G76, G77 and G78 (the newer Mali GPUs keep the App driver above, and another older Mali GPU gets only the Phone driver). On the Pixel 10 and Pixel 11 (PowerVR GPU) the app uses the **Phone driver**: the launcher has no driver for that chip. When the App driver fails in a game, **Play** tells you, and you can pick the **Phone driver** (the phone's own driver) in **Settings → Display → GPU**. The game can be slower with it. The Check screen asks you first (**Try anyway**).
+
+| Tested phone | GPU | Town, first driver |
+|---|---|---|
+| Galaxy S24 (Exynos) | Xclipse 940 | 60 fps |
+| Galaxy S23 FE (Exynos) | Xclipse 920 | 60 fps |
+| Galaxy A55 | Xclipse 530 | 58–59 fps (Phone driver: 45–47 fps) |
+| Pixel 10 | PowerVR | 55–57 fps |
+| Pixel 11 | PowerVR | 60 fps |
+
+Other GPUs that only the Phone driver can run also get **Try anyway**: the game may not work at all.
+
+**Settings → Display → GPU** (beta versions): pick the **App driver**, the **Phone driver** (your phone's own driver; where two ways can run, you also pick VirGL or Venus) or the **Software driver** (no GPU: the processor draws the game, which can be really slow). At the first start, the app picks the driver for your graphics chip: the App driver where the chip has one, else the Phone driver, else the Software driver. After that, the driver changes only when you pick another one. If a driver has an error, **Play** tells you which driver it was, with a button to this page. On the first game with a new driver, the app asks **Does the game work?**: **Quit** stops the game and opens this page. Where the Phone driver cannot run on your graphics chip, its row is grey. Where one of its two ways cannot run the game on your graphics chip, that way is grey or not there. The renderer follows the driver: Glide, or DirectDraw with the Software driver. Play shows the driver in its top-right corner. When you report a problem, say which driver you used.
 
 ## Install
 
@@ -103,7 +130,7 @@ In the game:
 - **Touch:** with **Trackpad** (the default), your finger moves the pointer as on a laptop's trackpad. Tap to click where the pointer is. To hold the left button, tap, then touch again at once and move. A two-finger tap is a right click. **Pointer speed** sets how far the pointer moves. With **Direct**, the pointer goes where you touch: tap to click, long press for a right click, and drag to hold the left button. Choose at **Touch** in the in-game **Controls** screen or in **Settings → Controls**. On-screen controls (a virtual controller) show while no controller is connected; switch them with **On-screen controls** in the in-game menu and arrange them with **Edit on-screen layout** in its Controls screen.
 - **Controller, mouse and keyboard:** see [How do I use a controller?](docs/FAQ.md#how-do-i-use-a-controller) and [Can I use a mouse and a keyboard?](docs/FAQ.md#can-i-use-a-mouse-and-a-keyboard) in the FAQ.
 - **In-game menu:** the floating button, Android's Back gesture, or the controller chord opens a menu on the right edge, without pausing the game. **L1** and **R1** step through **Quick**, **Controls** and **Settings**. While the menu is open, the game runs at its background frame rate, and the on-screen controls show dimmed and do not work (with **Slower game in the background** on). **Quick:** On-screen controls, FPS counter, Display, Keyboard and Frame rate. **Settings:** Slower game in the background, Sound in background, Keep the screen on during play, and Stop game. The gamepad icon opens **Controls**, which keeps the menu's side bar: pad mode and mouse mode (**Use mouse mode** or **Use pad mode** switches the controller, as Select + Start does), what each button does (press a button's row to change it), the pointer speed and the on-screen layout.
-- **Settings:** six pages. **Display:** the GPU (App driver, Phone driver or Software driver; in 0.3.8 a preview, shown grey with no choice to make: the game always uses the App driver; the 0.4.0 beta enables it), the renderer (Glide, set by the GPU driver), the game resolution (the game's own 1068 × 600 by default, or a custom size; on a smaller screen, its full size), the picture size (Fit to screen: the game's menus and the game as large as the screen allows; or Center: each game pixel as one screen pixel; also in the in-game menu), the graphics profile (Default or Performance), the frame rate, Slower game in the background, the FPS counter and Keep the screen on during play. **Game:** Check for game updates, then the options that **Play** gives Diablo II: Skip to Battle.net and Sound in background. **Controls:** the on-screen controls, the buttons (the same Controls screen as in the game), Touch, the pointer speed, and the menu and mouse-mode chord. **Files and saves:** the game folder, Save sync and storage. **App:** your version, Check now, the update channel (**Stable**, and **Beta** when a test version is out) and About. **Help:** Detailed logging, Save logs, and Android's notification and battery settings. Each page shows its current values in the list. On a handheld the list and the open page show side by side; on a phone the list comes first. With a controller, **L1** and **R1** step through the pages.
+- **Settings:** six pages. **Display:** the GPU (App driver, Phone driver or Software driver; the beta versions use your pick, and 0.3.8 shows it grey with no choice to make), the renderer (set by the GPU driver: Glide, or DirectDraw with the Software driver), the game resolution (the game's own 1068 × 600 by default, or a custom size; on a smaller screen, its full size), the picture size (Fit to screen: the game's menus and the game as large as the screen allows; or Center: each game pixel as one screen pixel; also in the in-game menu), the graphics profile (Default or Performance), the frame rate, Slower game in the background, the FPS counter and Keep the screen on during play. **Game:** Check for game updates, then the options that **Play** gives Diablo II: Skip to Battle.net and Sound in background. **Controls:** the on-screen controls, the buttons (the same Controls screen as in the game), Touch, the pointer speed, and the menu and mouse-mode chord. **Files and saves:** the game folder, Save sync and storage. **App:** your version, Check now, the update channel (**Stable**, and **Beta** when a test version is out) and About. **Help:** Detailed logging, Save logs, and Android's notification and battery settings. Each page shows its current values in the list. On a handheld the list and the open page show side by side; on a phone the list comes first. With a controller, **L1** and **R1** step through the pages.
 
 The game keeps running when you switch apps; a notification shows while it does. The official PD2 launcher, a download and an install also keep running, with the same notification. Its **Close** button stops them safely (an install pauses, and **Resume** continues it later) and closes the app. When nothing runs, there is no notification: the app stops in the background 10 seconds after you leave it, and at once when you close it or swipe it away.
 

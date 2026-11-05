@@ -26,6 +26,12 @@ target_compile_options(kgslprobe PRIVATE -Wall -Wextra -Werror)
 add_library(maliprobe SHARED mali_probe.c)
 target_compile_options(maliprobe PRIVATE -Wall -Wextra -Werror)
 
+# The device check's probe of the phone's own Vulkan driver (the system-driver mode), for GPUs that
+# Turnip and PanVK do not drive; it loads Android's libvulkan.so at run time.
+add_library(systemdriverprobe SHARED system_driver_probe.c)
+target_compile_options(systemdriverprobe PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(systemdriverprobe dl)
+
 # The version of the phone's own Vulkan driver, for Turnip's UBWC flag hint on an Adreno 740
 # (UbwcFlagHint.kt).
 add_library(vulkandriverprobe SHARED vulkan_driver_probe.c)

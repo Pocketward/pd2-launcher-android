@@ -1,0 +1,83 @@
+panvk: a GPU fault on the job manager is a lost device
+
+On a job-manager Mali (Bifrost v6/v7, Valhall v9) the tree's kbase backend sees a GPU fault: the
+event thread logs "kbase: atom N finished with event code X, not DONE" and calls the submission's
+done callback with ok false. The tree's JM done callback (panvk_kbase_submit_done) and blocking
+path (panvk_queue_submit_batch) only log it ("panvk: the kbase submission did not complete"), and
+the JM gpu_queue_check_status always answers VK_SUCCESS, so the app does not learn of the fault:
+the fence wait, the next submit and vkQueueWaitIdle answer VK_SUCCESS. The tree's CSF path marks
+its queue lost (pan_kmod_kbase_csf_group_faulted).
+
+With this patch both mark the queue lost (vk_queue_set_lost), the done callback before it signals
+the submission's sync objects; so does a new callback for the parts of a submission too large for
+one JOB_SUBMIT, which have no callback in the tree. The runtime then answers VK_ERROR_DEVICE_LOST
+where it checks the device: vkWaitForFences after its wait (vk_fence.c, vk_device_check_status),
+the next vkQueueSubmit (panvk's gpu_queue_submit returns vk_device_check_status) and
+vkQueueWaitIdle (the same). A fence-trigger atom is no GPU work: its error never fails a
+submission, also not one that is only a fence (in the tree such a submission fails, and with the
+lost device that would end the app).
+
+--- a/src/panfrost/lib/kmod/kbase_kmod.c
++++ b/src/panfrost/lib/kmod/kbase_kmod.c
+@@ -1565,7 +1565,9 @@
+          if (q->last_atom == an)
+             q->last_atom = 0;
+          if (ev[i].event_code != KBASE_JD_EVENT_DONE) {
+-            if (q->is_fence[an] && !sub->done) {
++            /* A fence-trigger atom is no GPU work: its error never fails a submission (a failed
++             * submission is a lost device), also when the fence is the whole submission. */
++            if (q->is_fence[an]) {
+                if (!q->fence_warned) {
+                   mesa_loge("kbase: fence-trigger atom finished with event code %u; presents "
+                             "will wait for the GPU", ev[i].event_code);
+--- a/src/panfrost/vulkan/jm/panvk_vX_gpu_queue.c
++++ b/src/panfrost/vulkan/jm/panvk_vX_gpu_queue.c
+@@ -116,6 +116,8 @@
+    if (!ok) {
+       mesa_loge("panvk: the kbase submission did not complete");
+       panvk_kbase_report_faults(dev, d->cmdbufs, d->nr_cmdbufs);
++      /* Before the signals below, so that a wait they end sees the lost device. */
++      vk_queue_set_lost(&d->queue->vk, "a kbase submission did not complete");
+    }
+ 
+    for (uint32_t j = 0; j < d->nr_cmdbufs; ++j) {
+@@ -129,6 +131,17 @@
+    free(d);
+ }
+ 
++/* A part of a submission too large for one JOB_SUBMIT (no signals of its own): a fault in it is a
++ * lost device too. */
++static void
++panvk_kbase_part_done(void *data, bool ok)
++{
++   struct panvk_gpu_queue *queue = data;
++
++   if (!ok)
++      vk_queue_set_lost(&queue->vk, "a kbase submission did not complete");
++}
++
+ /*
+  * kbase: every batch of a vkQueueSubmit in one JOB_SUBMIT, each atom waiting on the one before
+  * it, and no wait at all. Submitted and waited for batch by batch, a Minecraft frame (about 30
+@@ -193,7 +206,8 @@
+ 
+          /* More than one submission takes: send what there is, the rest runs after it. */
+          if (nr_atoms + 2 > PAN_KMOD_KBASE_MAX_ATOMS) {
+-            if (!pan_kmod_kbase_submit_async(dev->kmod.dev, atoms, nr_atoms, NULL, NULL, NULL))
++            if (!pan_kmod_kbase_submit_async(dev->kmod.dev, atoms, nr_atoms, NULL,
++                                             panvk_kbase_part_done, queue))
+                mesa_loge("panvk: the kbase submission was refused");
+             nr_atoms = 0;
+             last = 0;
+@@ -318,8 +332,10 @@
+             fprintf(stderr, "\n");
+          }
+          panvk_gs_dbg_pos_cpu = NULL;
+-      } else if (nr_atoms && !pan_kmod_kbase_submit(dev->kmod.dev, atoms, nr_atoms))
++      } else if (nr_atoms && !pan_kmod_kbase_submit(dev->kmod.dev, atoms, nr_atoms)) {
+          mesa_loge("panvk: the kbase submission did not complete");
++         vk_queue_set_lost(&queue->vk, "a kbase submission did not complete");
++      }
+ 
+       /* The GPU is finished by the time we get here, so anything read back on the CPU has to see
+        * what it wrote. */

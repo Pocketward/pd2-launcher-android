@@ -5,6 +5,11 @@
 #   build-mesa.sh     Mesa (main at config.sh's MESA_COMMIT): Zink, softpipe, GLX and EGL for glvnd,
 #                     Turnip (KGSL) and its ICD JSON
 #   build-panvk.sh    Mesa's PanVK with our kbase backend (Mali) and its ICD JSON (PD2_PANVK_STAGE=1)
+#   build-sysdrv.sh   the system-driver part: Mesa's Venus ICD, Mesa 25.1.9's Zink as "pd2sysdrv"
+#   build-hybris.sh   the libhybris route: libhybris and our Vulkan ICD (part "system-driver" too)
+#   build-radv.sh     RADV for Samsung's Xclipse GPUs (radv-xclipse, MIT) into the system-driver part
+#   build-mali-panvk.sh  the community PanVK tree mali-panvk (MIT) for Mali GPUs, beside our PanVK,
+#                     into the system-driver part
 #   build-glibc.sh    only with PD2_USERLAND_WITH_GLIBC=1: our glibc (glibc/) replaces Debian's libc6
 #   build-relay.sh    x-input-relay, touch and keyboard into the X screen (x-input-relay.c, our code)
 #   relocate.sh       interpreter, run paths, links, etc/ for the prefix
@@ -32,6 +37,10 @@ step fetch-debian.sh "$@"
 step build-xvfb.sh
 step build-mesa.sh
 PD2_PANVK_STAGE=1 step build-panvk.sh
+step build-sysdrv.sh
+step build-hybris.sh
+step build-radv.sh
+step build-mali-panvk.sh
 [[ "${PD2_USERLAND_WITH_GLIBC:-0}" == 1 ]] && step build-glibc.sh
 step build-relay.sh
 step relocate.sh

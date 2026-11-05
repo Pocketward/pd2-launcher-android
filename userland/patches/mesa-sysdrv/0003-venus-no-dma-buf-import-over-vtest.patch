@@ -1,0 +1,29 @@
+Subject: [PATCH] venus: refuse a dma-buf import when the renderer has none (vtest)
+
+The vtest renderer sets bo_ops.create_from_dma_buf to NULL, but
+vn_renderer_bo_create_from_dma_buf calls it without a check. Any dma-buf import then calls
+address 0: vkGetMemoryFdPropertiesKHR (vn_get_memory_dma_buf_properties) and
+vkAllocateMemory with VkImportMemoryFdInfoKHR. Our WSI patch 0004 (the direct present to the
+app) calls vkGetMemoryFdPropertiesKHR for each of the app's buffers when the swapchain is
+made. On Arm's Mali-G715 driver, Wine's first OpenGL call faulted there, inside
+win32u's pthread_once for the OpenGL driver; Wine returned the fault to the caller, the once
+stayed "in progress", and the game's next OpenGL call waited on it for ever (no frame).
+With no import op, return VK_ERROR_INVALID_EXTERNAL_HANDLE; the direct present then keeps
+PutImage ("the GPU refused a buffer").
+
+Applied by build-sysdrv.sh to its Venus build of Mesa main (config.sh MESA_COMMIT) only.
+
+---
+--- a/src/virtio/vulkan/vn_renderer.h
++++ b/src/virtio/vulkan/vn_renderer.h
+@@ -331,6 +331,10 @@ vn_renderer_bo_create_from_dma_buf(struc
+                                    VkMemoryPropertyFlags flags,
+                                    struct vn_renderer_bo **out_bo)
+ {
++   /* PD2 Launcher: the vtest renderer has no dma-buf import (NULL op) */
++   if (!renderer->bo_ops.create_from_dma_buf)
++      return VK_ERROR_INVALID_EXTERNAL_HANDLE;
++
+    struct vn_renderer_bo *bo;
+    VkResult result =
+       renderer->bo_ops.create_from_dma_buf(renderer, size, fd, flags, &bo);

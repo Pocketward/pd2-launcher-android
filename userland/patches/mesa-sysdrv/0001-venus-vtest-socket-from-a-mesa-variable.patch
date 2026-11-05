@@ -1,0 +1,23 @@
+Subject: [PATCH] venus: also take the vtest socket from MESA_VTEST_SOCKET_NAME
+
+The Launcher engine gives a Wine process only the variables it knows (src/wine_environment.rs:
+MESA_*, VK_* and the other graphics prefixes, not VTEST_*), so VTEST_SOCKET_NAME never reaches
+the game's Venus and vtest_init fails ("ZINK: vkEnumeratePhysicalDevices failed
+(VK_ERROR_INITIALIZATION_FAILED)"). When VTEST_SOCKET_NAME
+is not set, take MESA_VTEST_SOCKET_NAME, which the engine passes on.
+
+Applied by build-sysdrv.sh to its Venus build of Mesa main (config.sh MESA_COMMIT) only.
+
+---
+--- a/src/virtio/vulkan/vn_renderer_vtest.c
++++ b/src/virtio/vulkan/vn_renderer_vtest.c
+@@ -983,6 +983,9 @@ static VkResult
+ vtest_init(struct vtest *vtest)
+ {
+    const char *socket_name = os_get_option("VTEST_SOCKET_NAME");
++   /* PD2 Launcher: the engine passes MESA_* variables to Wine processes, not VTEST_* */
++   if (!socket_name)
++      socket_name = os_get_option("MESA_VTEST_SOCKET_NAME");
+ 
+    util_sparse_array_init(&vtest->shmem_array, sizeof(struct vtest_shmem),
+                           1024);

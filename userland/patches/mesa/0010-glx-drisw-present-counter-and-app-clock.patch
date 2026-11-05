@@ -1,0 +1,159 @@
+Subject: [PATCH] glx/drisw: present counter and the app's clock
+
+The GLX software path (drisw: the game's virgl driver on the phone's GLES, which draws through
+no Vulkan WSI) counts its frames and waits for the app's clock as the Vulkan software present
+does (patches 0002 and 0008), for each glXSwapBuffers that is not Zink's (kopper):
+- when PD2_PRESENT_COUNTER names a file of at least 4 bytes, its first 32-bit word goes up by
+  one after a round trip to the X server, which then has the frame's PutImage. The app reads the
+  count for the game's frame rate and for a game that sent no frame;
+- when the file is a page or more, a swap with a swap interval (vsync on: the default, as this
+  path has no glXSwapInterval) first waits until the app's clock has ticked since the swap
+  before (the tick word at byte 256, the clock's word at byte 320), at most 100 ms, and not
+  again until the clock ticks after such a timeout. So the player's frame rate caps the game.
+Without the variable or the file nothing is counted, nothing waits and no round trip is made.
+The Game view's take (patch 0003) is not waited for here.
+
+---
+--- a/src/glx/drisw_glx.c
++++ b/src/glx/drisw_glx.c
+@@ -47,6 +47,16 @@
+ #include "mesa/glapi/glapi/glapi.h"
+ #include "dispatch.h"
+ #include "x11_display.h"
++#include "util/u_call_once.h"
++#include "util/futex.h"
++#ifdef __linux__
++#include <errno.h>
++#include <fcntl.h>
++#include <sys/mman.h>
++#include <sys/stat.h>
++#include <time.h>
++#include <unistd.h>
++#endif
+ 
+ static int xshm_error = 0;
+ static int xshm_opcode = -1;
+@@ -538,6 +548,113 @@
+    return &pdp->base;
+ }
+ 
++#ifdef __linux__
++/* A count of the frames the software path has sent, shared with whoever
++ * shows the X screen (as the Vulkan software present's, patch 0002):
++ * PD2_PRESENT_COUNTER names a file of at least 4 bytes (made by that reader)
++ * whose first 32-bit word, native endian, goes up by one per frame. Without
++ * the variable or the file nothing is counted. A file of a page or more also
++ * carries the app's clock (patch 0008): drisw_present_clock.
++ */
++#define DRISW_PAGE_SIZE 4096
++#define DRISW_TICK_WORD (256 / sizeof(uint32_t))
++#define DRISW_CLOCK_WORD (320 / sizeof(uint32_t))
++#define DRISW_PACING_TIMEOUT_NS 100000000ll
++static uint32_t *drisw_present_counter;
++static bool drisw_pacing_mapped;
++static util_once_flag drisw_present_counter_once = UTIL_ONCE_FLAG_INIT;
++
++static void
++drisw_present_counter_open(void)
++{
++   const char *path = getenv("PD2_PRESENT_COUNTER");
++   if (path == NULL || path[0] == '\0')
++      return;
++   int fd = open(path, O_RDWR | O_CLOEXEC);
++   if (fd < 0)
++      return;
++   struct stat st;
++   if (fstat(fd, &st) == 0 && st.st_size >= (off_t)sizeof(uint32_t)) {
++      size_t size = st.st_size >= DRISW_PAGE_SIZE ? DRISW_PAGE_SIZE : sizeof(uint32_t);
++      void *map = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
++      if (map != MAP_FAILED) {
++         drisw_present_counter = map;
++         drisw_pacing_mapped = size == DRISW_PAGE_SIZE;
++      }
++   }
++   close(fd);
++}
++
++/* The app's clock, as the Vulkan software present waits for it (patch 0008):
++ * the app counts its ticks in the word at byte 256 of the counter's page (and
++ * wakes its futex waiters) at the player's frame rate, and keeps the word at
++ * byte 320 non-zero while it ticks. A swap with a swap interval (vsync on,
++ * the default here: the software path has no glXSwapInterval) waits until a
++ * tick has come since the swap before, so the game draws at most one frame a
++ * tick and a late frame goes at once. A clock that has not ticked for 100 ms
++ * is not waited for again until it ticks.
++ */
++static uint32_t drisw_clock_tick;
++static bool drisw_clock_stalled;
++
++static void
++drisw_present_clock(int swap_interval)
++{
++#if UTIL_FUTEX_SUPPORTED
++   util_call_once(&drisw_present_counter_once, drisw_present_counter_open);
++   if (!drisw_pacing_mapped)
++      return;
++   uint32_t *tick = &drisw_present_counter[DRISW_TICK_WORD];
++   const uint32_t *running = &drisw_present_counter[DRISW_CLOCK_WORD];
++   uint32_t now = __atomic_load_n(tick, __ATOMIC_ACQUIRE);
++   if (now != drisw_clock_tick)
++      drisw_clock_stalled = false;
++   if (swap_interval > 0 && !drisw_clock_stalled && now == drisw_clock_tick) {
++      struct timespec deadline;
++      clock_gettime(CLOCK_MONOTONIC, &deadline);
++      deadline.tv_nsec += DRISW_PACING_TIMEOUT_NS;
++      if (deadline.tv_nsec >= 1000000000l) {
++         deadline.tv_sec += 1;
++         deadline.tv_nsec -= 1000000000l;
++      }
++      while (now == drisw_clock_tick && __atomic_load_n(running, __ATOMIC_ACQUIRE)) {
++         if (futex_wait(tick, now, &deadline) != 0 && errno != EAGAIN && errno != EINTR) {
++            drisw_clock_stalled = true; /* the deadline, or a futex that fails: no spin */
++            break;
++         }
++         now = __atomic_load_n(tick, __ATOMIC_ACQUIRE);
++      }
++   }
++   drisw_clock_tick = now;
++#else
++   (void) swap_interval;
++#endif
++}
++
++static void
++drisw_present_counted(Display *dpy)
++{
++   util_call_once(&drisw_present_counter_once, drisw_present_counter_open);
++   if (drisw_present_counter == NULL)
++      return;
++   /* The round trip comes back after the frame's PutImage: the X server has it. */
++   XSync(dpy, False);
++   __atomic_fetch_add(drisw_present_counter, 1, __ATOMIC_RELEASE);
++}
++#else
++static void
++drisw_present_counted(Display *dpy)
++{
++   (void) dpy;
++}
++
++static void
++drisw_present_clock(int swap_interval)
++{
++   (void) swap_interval;
++}
++#endif
++
+ static int64_t
+ driswSwapBuffers(__GLXDRIdrawable * pdraw,
+                  int64_t target_msc, int64_t divisor, int64_t remainder,
+@@ -556,7 +673,9 @@
+       CALL_Flush(GET_DISPATCH(), ());
+    }
+ 
++   drisw_present_clock(((struct drisw_drawable *) pdraw)->swapInterval);
+    driSwapBuffers(pdraw->dri_drawable, 0, NULL);
++   drisw_present_counted(pdraw->psc->dpy);
+ 
+    return 0;
+ }

@@ -1,0 +1,694 @@
+From 18207b2260b0f83437fd121f094cb8a1c1586f94 Mon Sep 17 00:00:00 2001
+From: "Sophie Winter [AI]" <git@phie.me>
+Date: Mon, 20 Apr 2026 14:18:50 -0700
+Subject: [PATCH 3/9] TLS patcher: fix thunk/encoding bugs, always enable on
+ aarch64
+
+---
+ hybris/common/hooks.c               |   9 +-
+ hybris/common/q/linker_phdr.cpp     | 141 +++++++++++-----------
+ hybris/common/tls_patcher.c         | 145 +++++------------------
+ hybris/common/tls_patcher.h         |  19 ++-
+ hybris/common/tls_patcher_aarch64.c | 175 +++++++++++-----------------
+ 5 files changed, 181 insertions(+), 308 deletions(-)
+
+diff --git a/hybris/common/hooks.c b/hybris/common/hooks.c
+index 38c96d3..f49846d 100644
+--- a/hybris/common/hooks.c
++++ b/hybris/common/hooks.c
+@@ -3779,12 +3779,9 @@ static void __hybris_linker_init()
+     /* Create TLS patcher function pointers struct */
+     hybris_tls_patcher_funcs_t tls_patcher_funcs = {0};
+ #ifdef __aarch64__
+-    if (getenv("HYBRIS_PATCH_TLS") != NULL) {
+-        tls_patcher_funcs.patch_tls = hybris_patch_tls;
+-        tls_patcher_funcs.register_thunk_region = hybris_register_thunk_region;
+-        tls_patcher_funcs.allocate_thunk_near = hybris_allocate_thunk_near;
+-        tls_patcher_funcs.is_within_thunk_region = hybris_is_within_thunk_region;
+-    }
++    tls_patcher_funcs.patch_tls = hybris_patch_tls;
++    tls_patcher_funcs.register_thunk_region = hybris_register_thunk_region;
++    tls_patcher_funcs.count_tls = hybris_count_tls;
+ #endif
+ 
+     /* Now its time to setup the linker itself */
+diff --git a/hybris/common/q/linker_phdr.cpp b/hybris/common/q/linker_phdr.cpp
+index f0cea7b..11e064f 100644
+--- a/hybris/common/q/linker_phdr.cpp
++++ b/hybris/common/q/linker_phdr.cpp
+@@ -51,8 +51,7 @@
+ 
+ #include "../tls_patcher.h"
+ 
+-// Thunk allocation constants
+-#define THUNK_PADDING_SIZE (64 * 1024)  // 64KB padding after each executable segment
++extern hybris_tls_patcher_funcs_t _tls_patcher_funcs;
+ 
+ static int GetTargetElfMachine() {
+ #if defined(__arm__)
+@@ -576,18 +575,23 @@ bool ElfReader::ReserveAddressSpace(address_space_params* address_space) {
+     return false;
+   }
+ 
+-  // Add space for thunk regions after all segments
+-  size_t num_executable_segments = 0;
+-  for (size_t i = 0; i < phdr_num_; ++i) {
+-    const ElfW(Phdr)* phdr = &phdr_table_[i];
+-    if (phdr->p_type == PT_LOAD && (phdr->p_flags & PF_X) != 0) {
+-      num_executable_segments++;
++  // Over-reserve VA space for the TLS thunk region that will be placed after
++  // the ELF segments. The actual thunk size is determined exactly by counting
++  // MRS instructions in LoadSegments; this just ensures there's room.
++  // Worst case: every instruction is MRS → (code_size / 4) * 16 = 4x code
++  // size. Page-aligned since the thunk mmap rounds up to page boundaries.
++  // This only costs virtual address space (PROT_NONE), not physical memory.
++  if (_tls_patcher_funcs.patch_tls) {
++    size_t thunk_reserve = 0;
++    for (size_t i = 0; i < phdr_num_; ++i) {
++      const ElfW(Phdr)* phdr = &phdr_table_[i];
++      if (phdr->p_type == PT_LOAD && (phdr->p_flags & PF_X) != 0) {
++        thunk_reserve += phdr->p_filesz * 4;
++      }
+     }
++    load_size_ += PAGE_END(thunk_reserve);
+   }
+ 
+-  size_t total_thunk_size = num_executable_segments * THUNK_PADDING_SIZE;
+-  load_size_ += total_thunk_size;
+-
+   uint8_t* addr = reinterpret_cast<uint8_t*>(min_vaddr);
+   void* start;
+ 
+@@ -616,8 +620,6 @@ bool ElfReader::ReserveAddressSpace(address_space_params* address_space) {
+   return true;
+ }
+ 
+-extern hybris_tls_patcher_funcs_t _tls_patcher_funcs;
+-
+ bool ElfReader::LoadSegments() {
+   // Collect executable segments for TLS patching after thunk regions are registered
+   struct exec_segment {
+@@ -737,76 +739,79 @@ bool ElfReader::LoadSegments() {
+     }
+   }
+ 
+-  // Calculate where thunk regions should start - after all ELF segments
+-  // Use the original load size calculation to find the end of ELF segments
+-  ElfW(Addr) min_vaddr, max_vaddr;
+-  size_t elf_size = phdr_table_get_load_size(phdr_table_, phdr_num_, &min_vaddr, &max_vaddr);
+-  ElfW(Addr) thunk_start = reinterpret_cast<ElfW(Addr)>(load_start_) + elf_size;
+-
+-  // Now map thunk regions after all segments for each executable segment
+-  for (size_t i = 0; i < phdr_num_; ++i) {
+-    const ElfW(Phdr)* phdr = &phdr_table_[i];
+-
+-    if (phdr->p_type != PT_LOAD || (phdr->p_flags & PF_X) == 0) {
+-      continue;
++  // hybris: Two-pass TLS patching.
++  // Pass 1: count MRS TPIDR_EL0 instructions to size the thunk region exactly.
++  // Pass 2: allocate thunks and patch instructions.
++  if (_tls_patcher_funcs.count_tls && _tls_patcher_funcs.patch_tls && !exec_segments.empty()) {
++    // Pass 1: count
++    size_t total_mrs_count = 0;
++    for (const auto& seg : exec_segments) {
++      total_mrs_count += _tls_patcher_funcs.count_tls(seg.addr, seg.size);
+     }
+ 
+-    // Ensure we don't map beyond our reserved address space
+-    ElfW(Addr) load_end = reinterpret_cast<ElfW(Addr)>(load_start_) + load_size_;
+-    if (thunk_start + THUNK_PADDING_SIZE > load_end) {
+-      DL_ERR("thunk region for \"%s\" segment %zd would exceed reserved address space",
+-             name_.c_str(), i);
+-      return false;
+-    }
++    void* thunk_region = nullptr;
++    size_t thunk_size = 0;
++
++    if (total_mrs_count > 0) {
++      // Allocate one thunk region sized exactly for all MRS instructions,
++      // placed right after the ELF segments in the over-reserved address space.
++      thunk_size = total_mrs_count * 16;  // 16 bytes per thunk
++      thunk_size = (thunk_size + 4095) & ~(size_t)4095;  // page-align
++
++      ElfW(Addr) min_vaddr, max_vaddr;
++      size_t elf_size = phdr_table_get_load_size(phdr_table_, phdr_num_, &min_vaddr, &max_vaddr);
++      ElfW(Addr) thunk_addr = reinterpret_cast<ElfW(Addr)>(load_start_) + elf_size;
++      ElfW(Addr) load_end = reinterpret_cast<ElfW(Addr)>(load_start_) + load_size_;
++
++      if (thunk_addr + thunk_size > load_end) {
++        // This means the over-reservation estimate was too small. Increase
++        // the multiplier in estimate_thunk_space() to fix.
++        DL_ERR("thunk region for \"%s\" (%zu thunks, %zu bytes) exceeds reserved space "
++               "(%zu bytes available)", name_.c_str(), total_mrs_count, thunk_size,
++               (size_t)(load_end - thunk_addr));
++        return false;
++      }
+ 
+-    void* thunk_region = mmap(reinterpret_cast<void*>(thunk_start),
+-                             THUNK_PADDING_SIZE,
+-                             PROT_READ | PROT_WRITE | PROT_EXEC,
+-                             MAP_FIXED | MAP_ANONYMOUS | MAP_PRIVATE,
+-                             -1,
+-                             0);
+-    if (thunk_region == MAP_FAILED) {
+-      DL_ERR("couldn't map thunk region for \"%s\" segment %zd: %s",
+-             name_.c_str(), i, strerror(errno));
+-      return false;
+-    }
++      thunk_region = mmap(reinterpret_cast<void*>(thunk_addr), thunk_size,
++                               PROT_READ | PROT_WRITE | PROT_EXEC,
++                               MAP_FIXED | MAP_ANONYMOUS | MAP_PRIVATE,
++                               -1, 0);
++      if (thunk_region == MAP_FAILED) {
++        DL_ERR("couldn't map thunk region for \"%s\": %s", name_.c_str(), strerror(errno));
++        return false;
++      }
+ 
+-    // Verify we got the address we expected
+-    if (thunk_region != reinterpret_cast<void*>(thunk_start)) {
+-      DL_ERR("thunk region for \"%s\" segment %zd mapped at wrong address: expected %p, got %p",
+-             name_.c_str(), i, reinterpret_cast<void*>(thunk_start), thunk_region);
+-      return false;
+-    }
++      prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, thunk_region, thunk_size, ".thunks");
+ 
+-    prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, thunk_region, THUNK_PADDING_SIZE, ".thunks");
++      if (_tls_patcher_funcs.register_thunk_region) {
++        _tls_patcher_funcs.register_thunk_region(thunk_region, thunk_size);
++      }
+ 
+-    // Register the thunk region with the TLS patcher
+-    if (_tls_patcher_funcs.register_thunk_region) {
+-      _tls_patcher_funcs.register_thunk_region(thunk_region, THUNK_PADDING_SIZE);
++      LD_LOG(kLogDlopen, "Mapped thunk region for %s: %p (%zu bytes, %zu thunks)",
++             name_.c_str(), thunk_region, thunk_size, total_mrs_count);
+     }
+ 
+-    LD_LOG(kLogDlopen, "Mapped thunk region for %s: %p - %p (%zu bytes)",
+-           name_.c_str(), thunk_region,
+-           reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(thunk_region) + THUNK_PADDING_SIZE),
+-           THUNK_PADDING_SIZE);
+-
+-    // Move to next thunk region
+-    thunk_start += THUNK_PADDING_SIZE;
+-  }
+-
+-  // hybris: Now that all thunk regions are registered, patch TLS accesses in executable segments
+-  if (_tls_patcher_funcs.patch_tls && !exec_segments.empty()) {
++    // Pass 2: patch
+     for (const auto& seg : exec_segments) {
+       _tls_patcher_funcs.patch_tls(seg.addr, seg.size, name_.c_str());
+ 
+-      // Restore original write protection if needed
++      // Restore original protection (remove PROT_WRITE we added for patching,
++      // keep PROT_READ that hybris adds for unwind safety)
+       if ((seg.orig_prot & PROT_WRITE) == 0) {
+-        int prot = PFLAGS_TO_PROT(seg.orig_prot) | PROT_READ;
+-        if (mprotect(seg.addr, seg.size, prot) < 0) {
+-          DL_ERR("couldn't mprotect \"%s\" segment: %s", name_.c_str(), strerror(errno));
++        if (mprotect(seg.addr, seg.size, seg.orig_prot | PROT_READ) < 0) {
++          DL_ERR("couldn't restore protection on \"%s\" segment: %s", name_.c_str(), strerror(errno));
++          return false;
+         }
+       }
+     }
++
++    // Remove write permission from thunk region now that patching is done
++    if (thunk_region != nullptr) {
++      if (mprotect(thunk_region, thunk_size, PROT_READ | PROT_EXEC) < 0) {
++        DL_ERR("couldn't make thunk region read-only for \"%s\": %s", name_.c_str(), strerror(errno));
++        return false;
++      }
++    }
+   }
+ 
+   return true;
+diff --git a/hybris/common/tls_patcher.c b/hybris/common/tls_patcher.c
+index 9d7b9b3..df3f51f 100644
+--- a/hybris/common/tls_patcher.c
++++ b/hybris/common/tls_patcher.c
+@@ -17,8 +17,9 @@
+ 
+ #include "tls_patcher.h"
+ #include "logging.h"
+-#include <stdint.h>
++#include <stdio.h>
+ #include <stdlib.h>
++#include <stdint.h>
+ #include <string.h>
+ #include <libgen.h>
+ #include <pthread.h>
+@@ -26,90 +27,54 @@
+ 
+ extern void* _hybris_hook___get_tls_hooks(void);
+ 
+-/* Architecture-specific patch function */
+-extern void hybris_patch_tls_arch(void* segment_addr, size_t segment_size, int tls_offset);
++/* Forward declarations for arch-specific functions (#included at bottom) */
++static void hybris_patch_tls_arch(void* segment_addr, size_t segment_size, int tls_offset);
++static size_t hybris_count_tls_arch(void* segment_addr, size_t segment_size);
+ 
+-/* Simple thunk region tracking */
+-#define MAX_THUNK_REGIONS 32
++/* Current thunk region. Only one is active at a time -- the linker registers
++ * a region for each library immediately before patching it. */
+ static struct {
+     void* start;
+     size_t size;
+     size_t used;
+-} thunk_regions[MAX_THUNK_REGIONS];
+-static int num_thunk_regions = 0;
++} current_thunk_region;
+ static pthread_mutex_t thunk_mutex = PTHREAD_MUTEX_INITIALIZER;
+ 
+-/* Register a thunk region allocated by the linker */
+ void hybris_register_thunk_region(void* start, size_t size) {
+     pthread_mutex_lock(&thunk_mutex);
+-
+-    if (num_thunk_regions < MAX_THUNK_REGIONS) {
+-        thunk_regions[num_thunk_regions].start = start;
+-        thunk_regions[num_thunk_regions].size = size;
+-        thunk_regions[num_thunk_regions].used = 0;
+-        num_thunk_regions++;
+-
+-        HYBRIS_DEBUG_LOG(HOOKS, "Registered thunk region: %p - %p (%zu bytes)",
+-                        start, (char*)start + size, size);
+-    }
+-
++    current_thunk_region.start = start;
++    current_thunk_region.size = size;
++    current_thunk_region.used = 0;
+     pthread_mutex_unlock(&thunk_mutex);
+ }
+ 
+-/* Allocate a thunk near the target address */
+-void* hybris_allocate_thunk_near(void* target_addr, size_t thunk_size) {
++/* Allocate a thunk from the current region. Aborts on failure -- the region
++ * is exactly sized by the counting pass, so running out is a bug. */
++static void* hybris_allocate_thunk_near(void* target_addr, size_t thunk_size) {
+     pthread_mutex_lock(&thunk_mutex);
+ 
+-    uintptr_t target = (uintptr_t)target_addr;
+-    void* result = NULL;
+-
+-    /* Find the closest thunk region within branching distance (128MB for ARM64) */
+-    for (int i = 0; i < num_thunk_regions; i++) {
+-        uintptr_t region_addr = (uintptr_t)thunk_regions[i].start;
+-        uintptr_t distance = (target > region_addr) ? (target - region_addr) : (region_addr - target);
+-
+-        if (distance > (128 * 1024 * 1024)) {
+-            continue;
+-        }
+-
+-        /* Align thunk size to 16-byte boundary */
+-        size_t aligned_size = (thunk_size + 15) & ~15;
++    size_t aligned_size = (thunk_size + 15) & ~(size_t)15;
+ 
+-        if (thunk_regions[i].used + aligned_size <= thunk_regions[i].size) {
+-            result = (char*)thunk_regions[i].start + thunk_regions[i].used;
+-            thunk_regions[i].used += aligned_size;
+-
+-            HYBRIS_DEBUG_LOG(HOOKS, "Allocated thunk at %p (size %zu) for target %p",
+-                           result, thunk_size, target_addr);
+-            break;
+-        }
+-    }
+-
+-    if (!result) {
+-        HYBRIS_DEBUG_LOG(HOOKS, "Failed to allocate thunk for target %p - no suitable region found", target_addr);
++    if (!current_thunk_region.start ||
++        current_thunk_region.used + aligned_size > current_thunk_region.size) {
++        fprintf(stderr, "HYBRIS: fatal: thunk region exhausted (used %zu / %zu, need %zu) for target %p\n",
++                current_thunk_region.used, current_thunk_region.size, aligned_size, target_addr);
++        abort();
+     }
+ 
+-    pthread_mutex_unlock(&thunk_mutex);
+-    return result;
+-}
+-
+-/* Check if an address is within a thunk region */
+-int hybris_is_within_thunk_region(void* addr) {
+-    pthread_mutex_lock(&thunk_mutex);
+-
+-    uintptr_t check_addr = (uintptr_t)addr;
+-    int result = 0;
++    void* result = (char*)current_thunk_region.start + current_thunk_region.used;
+ 
+-    for (int i = 0; i < num_thunk_regions; i++) {
+-        uintptr_t region_start = (uintptr_t)thunk_regions[i].start;
+-        uintptr_t region_end = region_start + thunk_regions[i].size;
+-
+-        if (check_addr >= region_start && check_addr < region_end) {
+-            result = 1;
+-            break;
+-        }
++    /* Verify within 128MB branch range */
++    uintptr_t target = (uintptr_t)target_addr;
++    uintptr_t thunk = (uintptr_t)result;
++    uintptr_t distance = (target > thunk) ? (target - thunk) : (thunk - target);
++    if (distance > 128 * 1024 * 1024) {
++        fprintf(stderr, "HYBRIS: fatal: thunk at %p is %zuMB from target %p (max 128MB)\n",
++                result, distance / (1024 * 1024), target_addr);
++        abort();
+     }
+ 
++    current_thunk_region.used += aligned_size;
+     pthread_mutex_unlock(&thunk_mutex);
+     return result;
+ }
+@@ -121,57 +86,11 @@ static int hybris_calculate_tls_offset(void) {
+     return (int)((uintptr_t)tls_area - (uintptr_t)tp) / sizeof(uintptr_t);
+ }
+ 
+-/* Extract filename from path without modifying input */
+-static const char* get_basename(const char* path) {
+-    const char* base = strrchr(path, '/');
+-    return base ? base + 1 : path;
+-}
+-
+-/* Check if library should be patched based on HYBRIS_PATCH_TLS value */
+-static int should_patch_library(const char* library_name) {
+-    static const char* patch_tls = NULL;
+-    static int init_done = 0;
+-
+-    /* Initialize on first call */
+-    if (!init_done) {
+-        patch_tls = getenv("HYBRIS_PATCH_TLS");
+-        init_done = 1;
+-    }
+-
+-    /* No environment variable set - do nothing */
+-    if (!patch_tls) {
+-        return 0;
+-    }
+-
+-    /* Simple enable/disable */
+-    if (patch_tls[0] == '0' || patch_tls[0] == '1') {
+-        return patch_tls[0] == '1';
+-    }
+-
+-    /* Check if library basename is in colon-separated list */
+-    const char *start = patch_tls;
+-    const char *name = get_basename(library_name);
+-    size_t name_len = strlen(name);
+-
+-    while (start && *start) {
+-        const char *end = strchr(start, ':');
+-        size_t len = end ? (size_t)(end - start) : strlen(start);
+-
+-        if (len == name_len && strncmp(start, name, len) == 0) {
+-            return 1;
+-        }
+-
+-        start = end ? end + 1 : NULL;
+-    }
+-
+-    return 0;
++size_t hybris_count_tls(void* segment_addr, size_t segment_size) {
++    return hybris_count_tls_arch(segment_addr, segment_size);
+ }
+ 
+ void hybris_patch_tls(void* segment_addr, size_t segment_size, const char* library_name) {
+-    if (!should_patch_library(library_name)) {
+-        return;
+-    }
+-
+     HYBRIS_DEBUG_LOG(HOOKS, "Patching TLS accesses in %s", library_name);
+ 
+     int tls_offset = hybris_calculate_tls_offset();
+diff --git a/hybris/common/tls_patcher.h b/hybris/common/tls_patcher.h
+index c0f2870..e2c890e 100644
+--- a/hybris/common/tls_patcher.h
++++ b/hybris/common/tls_patcher.h
+@@ -26,28 +26,23 @@ extern "C" {
+ 
+ typedef void (*hybris_tls_patcher_t)(void* segment_addr, size_t segment_size, const char* library_name);
+ typedef void (*hybris_register_thunk_region_t)(void* start, size_t size);
+-typedef void* (*hybris_allocate_thunk_near_t)(void* target_addr, size_t thunk_size);
+-typedef int (*hybris_is_within_thunk_region_t)(void* addr);
++typedef size_t (*hybris_count_tls_t)(void* segment_addr, size_t segment_size);
+ 
+-/* Struct containing all TLS patcher function pointers */
++/* Function pointers passed from hooks.c to the Android linker */
+ struct hybris_tls_patcher_funcs {
+     hybris_tls_patcher_t patch_tls;
+     hybris_register_thunk_region_t register_thunk_region;
+-    hybris_allocate_thunk_near_t allocate_thunk_near;
+-    hybris_is_within_thunk_region_t is_within_thunk_region;
++    hybris_count_tls_t count_tls;
+ };
+ typedef struct hybris_tls_patcher_funcs hybris_tls_patcher_funcs_t;
+ 
+-/* Register a thunk region allocated by the linker */
++/* Register a thunk region for the current library being patched */
+ void hybris_register_thunk_region(void* start, size_t size);
+ 
+-/* Allocate a thunk near the target address */
+-void* hybris_allocate_thunk_near(void* target_addr, size_t thunk_size);
++/* Count MRS TPIDR_EL0 instructions in a code segment */
++size_t hybris_count_tls(void* segment_addr, size_t segment_size);
+ 
+-/* Check if an address is within a thunk region */
+-int hybris_is_within_thunk_region(void* addr);
+-
+-/* Patches TLS accesses in the given segment at runtime */
++/* Patch TLS accesses in the given segment at runtime */
+ void hybris_patch_tls(void* segment_addr, size_t segment_size, const char* library_name);
+ 
+ #ifdef __cplusplus
+diff --git a/hybris/common/tls_patcher_aarch64.c b/hybris/common/tls_patcher_aarch64.c
+index 7f389aa..00efd05 100644
+--- a/hybris/common/tls_patcher_aarch64.c
++++ b/hybris/common/tls_patcher_aarch64.c
+@@ -19,12 +19,10 @@
+ #include <stddef.h>
+ #include <string.h>
+ #include <sys/mman.h>
+-#include "logging.h"
+ 
+ /* AArch64 instruction opcodes and system register encodings */
+ #define MRS_OPCODE 0xD53
+ #define TPIDR_EL0  0x5E82
+-#define B_OPCODE   0x14      /* Unconditional branch */
+ 
+ /* Thunk size in bytes (4 instructions = 16 bytes) */
+ #define THUNK_SIZE 16
+@@ -37,148 +35,107 @@ struct __attribute__((__packed__)) mrs_inst {
+ };
+ _Static_assert(sizeof(struct mrs_inst) == 4, "MRS instruction size must be 4");
+ 
+-/* Instruction format for B <offset> (unconditional branch) */
+-struct __attribute__((__packed__)) branch_inst {
+-    uint32_t imm26:26;    /* 0:25  - 26-bit signed immediate (word offset) */
+-    uint32_t opcode:6;    /* 26:31 - Must be 0x05 (B instruction) */
+-};
+-_Static_assert(sizeof(struct branch_inst) == 4, "Branch instruction size must be 4");
+-
+-/* Calculate the branch offset from source to target (in words) */
+-static int32_t calculate_branch_offset(void* source, void* target) {
+-    intptr_t diff = (intptr_t)target - (intptr_t)source;
+-
+-    /* Branch offset is in words (4-byte units) */
+-    if (diff % 4 != 0) {
+-        return 0x7FFFFFFF; /* Invalid offset */
+-    }
++static int is_mrs_tpidr_el0(uint32_t instruction) {
++    const struct mrs_inst* mrs = (const struct mrs_inst*)&instruction;
++    return mrs->opcode == MRS_OPCODE && mrs->sys_reg == TPIDR_EL0;
++}
+ 
+-    int32_t word_offset = diff / 4;
++/* Count MRS TPIDR_EL0 instructions in a code segment */
++static size_t hybris_count_tls_arch(void* segment_addr, size_t segment_size) {
++    uint32_t* text = (uint32_t*)segment_addr;
++    size_t count = segment_size / sizeof(uint32_t);
++    size_t mrs_count = 0;
+ 
+-    /* Check if offset fits in 26-bit signed immediate */
+-    if (word_offset >= -(1 << 25) && word_offset < (1 << 25)) {
+-        return word_offset;
++    for (size_t i = 0; i < count; i++) {
++        if (is_mrs_tpidr_el0(text[i]))
++            mrs_count++;
+     }
+-
+-    return 0x7FFFFFFF; /* Out of range */
++    return mrs_count;
+ }
+ 
+-/* Generate a thunk that adjusts the thread pointer and jumps back */
+-static void* generate_tls_thunk(int tls_offset_words, uint32_t target_register, void* mrs_location) {
+-    void* thunk = hybris_allocate_thunk_near(mrs_location, THUNK_SIZE);
+-    if (!thunk) {
+-        HYBRIS_DEBUG_LOG(HOOKS, "Failed to allocate thunk for TLS patching");
+-        return NULL;
+-    }
+-
++/* Generate a thunk that adjusts the thread pointer and jumps back.
++ *
++ * Thunk code (4 instructions, 16 bytes):
++ *   mrs x<rt>, tpidr_el0                 ; Read glibc thread pointer
++ *   add x<rt>, x<rt>, #(offset & 0xFFF)  ; Low 12 bits
++ *   add x<rt>, x<rt>, #(offset>>12), LSL #12  ; High 12 bits (adds 0 if unused)
++ *   b <return_addr>                      ; Branch back to instruction after original MRS
++ *
++ * ADD (immediate) supports up to 12 bits unshifted or 12 bits shifted left by 12,
++ * so two ADDs cover offsets up to 0xFFFFFF (16 MB).
++ */
++static void generate_tls_thunk(int tls_offset_words, uint32_t target_register,
++                               void* mrs_location, void* thunk) {
+     uint32_t* code = (uint32_t*)thunk;
++    int64_t tls_offset_bytes = (int64_t)tls_offset_words * 8;
+ 
+-    /* Convert word offset to byte offset */
+-    int tls_offset_bytes = tls_offset_words * 8;
++    if (tls_offset_bytes < 0 || tls_offset_bytes > 0xFFFFFF) {
++        fprintf(stderr, "HYBRIS: fatal: TLS offset %lld bytes exceeds 24-bit range (max %d)\n",
++                (long long)tls_offset_bytes, 0xFFFFFF);
++        abort();
++    }
+ 
+-    /* Calculate return address - the instruction after the original MRS */
+-    void* return_addr = (char*)mrs_location + 4;
++    uint32_t imm_lo = tls_offset_bytes & 0xFFF;
++    uint32_t imm_hi = (tls_offset_bytes >> 12) & 0xFFF;
+ 
+-    /* Calculate branch offset back to the return address */
+-    int32_t return_offset = calculate_branch_offset((char*)thunk + 8, return_addr);
+-    if (return_offset == 0x7FFFFFFF) {
+-        HYBRIS_DEBUG_LOG(HOOKS, "Return address %p too far from thunk %p", return_addr, thunk);
+-        return NULL;
++    /* Calculate branch offset back to the instruction after the original MRS */
++    void* return_addr = (char*)mrs_location + 4;
++    intptr_t return_diff = (intptr_t)return_addr - (intptr_t)((char*)thunk + 12);
++    if (return_diff % 4 != 0 || return_diff / 4 < -(1 << 25) || return_diff / 4 >= (1 << 25)) {
++        fprintf(stderr, "HYBRIS: fatal: return branch from thunk %p to %p out of range\n",
++                thunk, return_addr);
++        abort();
+     }
+-
+-    /* Generate thunk code:
+-     * mrs x<rt>, tpidr_el0     ; Read thread pointer
+-     * add x<rt>, x<rt>, #offset ; Add TLS offset
+-     * b <return_addr>          ; Branch back to next instruction
+-     * nop                      ; Padding to 16 bytes
+-     */
++    int32_t return_offset = return_diff / 4;
+ 
+     /* MRS X<rt>, TPIDR_EL0 */
+     code[0] = 0xD53BD040 | target_register;
+ 
+-    /* ADD X<rt>, X<rt>, #immediate */
+-    if (tls_offset_bytes >= 0 && tls_offset_bytes <= 0xFFF) {
+-        /* ADD X<rt>, X<rt>, #imm (12-bit immediate) */
+-        code[1] = 0x91000000 | (target_register << 5) | target_register | (tls_offset_bytes << 10);
+-    } else {
+-        /* For larger offsets, we'd need to use multiple instructions */
+-        HYBRIS_DEBUG_LOG(HOOKS, "TLS offset %d too large for simple ADD instruction", tls_offset_bytes);
+-        return NULL;
+-    }
+-
+-    /* B <return_offset> - Branch back to the instruction after the original MRS */
+-    code[2] = 0x14000000 | (return_offset & 0x3FFFFFF);
++    /* ADD X<rt>, X<rt>, #imm_lo */
++    code[1] = 0x91000000 | (target_register << 5) | target_register | (imm_lo << 10);
+ 
+-    /* NOP (padding) */
+-    code[3] = 0xD503201F;
++    /* ADD X<rt>, X<rt>, #imm_hi, LSL #12  (sh bit 22 set) */
++    code[2] = 0x91400000 | (target_register << 5) | target_register | (imm_hi << 10);
+ 
+-    HYBRIS_DEBUG_LOG(HOOKS, "Generated TLS thunk at %p for register X%d with offset %d, returns to %p",
+-                     thunk, target_register, tls_offset_words, return_addr);
+-
+-    return thunk;
++    /* B <return_offset> */
++    code[3] = 0x14000000 | (return_offset & 0x3FFFFFF);
+ }
+ 
+ /* Replace MRS instruction with branch to thunk */
+-static int patch_mrs_with_branch(uint32_t* mrs_location, void* thunk) {
+-    int32_t offset = calculate_branch_offset(mrs_location, thunk);
+-
+-    if (offset == 0x7FFFFFFF) {
+-        HYBRIS_DEBUG_LOG(HOOKS, "Thunk %p too far from MRS at %p for branch instruction",
+-                         thunk, mrs_location);
+-        return 0;
++static void patch_mrs_with_branch(uint32_t* mrs_location, void* thunk) {
++    intptr_t diff = (intptr_t)thunk - (intptr_t)mrs_location;
++    if (diff % 4 != 0 || diff / 4 < -(1 << 25) || diff / 4 >= (1 << 25)) {
++        fprintf(stderr, "HYBRIS: fatal: branch from MRS at %p to thunk %p out of range\n",
++                (void*)mrs_location, thunk);
++        abort();
+     }
++    int32_t word_offset = diff / 4;
+ 
+-    /* Create branch instruction: B <offset> */
+-    struct branch_inst branch = {
+-        .imm26 = offset & 0x3FFFFFF,
+-        .opcode = 0x05
+-    };
+-
+-    /* Replace the MRS instruction */
+-    *mrs_location = *(uint32_t*)&branch;
+-
+-    HYBRIS_DEBUG_LOG(HOOKS, "Patched MRS at %p with branch to thunk %p (offset: %d)",
+-                     mrs_location, thunk, offset);
+-
+-    return 1;
++    /* B <offset> : opcode 0b000101 in bits [31:26] */
++    *mrs_location = 0x14000000 | (word_offset & 0x3FFFFFF);
+ }
+ 
+-void hybris_patch_tls_arch(void* segment_addr, size_t segment_size, int tls_offset) {
++static void hybris_patch_tls_arch(void* segment_addr, size_t segment_size, int tls_offset) {
+     uint32_t* text = (uint32_t*)segment_addr;
+     size_t count = segment_size / sizeof(uint32_t);
+     int patches_applied = 0;
+ 
+-    HYBRIS_DEBUG_LOG(HOOKS, "Scanning %zu instructions for MRS TPIDR_EL0 in segment %p",
+-                     count, segment_addr);
+-
+     for (size_t i = 0; i < count; i++) {
+-        const struct mrs_inst* mrs = (const struct mrs_inst*)&text[i];
+-
+-        /* Look for MRS instruction that reads TPIDR_EL0 */
+-        if (mrs->opcode != MRS_OPCODE || mrs->sys_reg != TPIDR_EL0) {
++        if (!is_mrs_tpidr_el0(text[i]))
+             continue;
+-        }
+ 
+-        HYBRIS_DEBUG_LOG(HOOKS, "Found MRS TPIDR_EL0, X%d at offset 0x%zx",
+-                         mrs->rt, i * 4);
++        const struct mrs_inst* mrs = (const struct mrs_inst*)&text[i];
+ 
+-        /* Generate thunk for this specific register */
+-        void* thunk = generate_tls_thunk(tls_offset, mrs->rt, &text[i]);
+-        if (!thunk) {
+-            continue;
+-        }
++        /* Allocate 16 bytes from the thunk region */
++        void* thunk = hybris_allocate_thunk_near(&text[i], THUNK_SIZE);
+ 
+-        /* Replace MRS with branch to thunk */
+-        if (patch_mrs_with_branch(&text[i], thunk)) {
+-            patches_applied++;
+-        }
++        /* Generate thunk and patch the instruction */
++        generate_tls_thunk(tls_offset, mrs->rt, &text[i], thunk);
++        patch_mrs_with_branch(&text[i], thunk);
++        patches_applied++;
+     }
+ 
+     if (patches_applied > 0) {
+-        /* Flush instruction cache for the entire segment */
+         __builtin___clear_cache(segment_addr, (char*)segment_addr + segment_size);
+-
+-        HYBRIS_DEBUG_LOG(HOOKS, "Applied %d TLS patches in segment %p",
+-                         patches_applied, segment_addr);
+     }
+ }
+-- 
+2.56.0
+

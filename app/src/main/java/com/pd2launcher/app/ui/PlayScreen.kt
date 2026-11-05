@@ -47,10 +47,18 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.pd2launcher.app.DriverChoice
+import com.pd2launcher.app.DriverPage
+import com.pd2launcher.app.PlayerDriver
+import com.pd2launcher.app.DriverOptions
+import com.pd2launcher.app.GraphicsRoute
+import com.pd2launcher.app.HostGpu
 import com.pd2launcher.app.Line
 import com.pd2launcher.app.Onboarding
 import com.pd2launcher.app.OperationStart
 import com.pd2launcher.app.PlayCheck
+import com.pd2launcher.app.PhoneDriverAdvice
+import com.pd2launcher.app.PhoneDriverFailure
 import com.pd2launcher.app.PlayStats
 import com.pd2launcher.app.R
 import com.pd2launcher.app.SessionStatus
@@ -400,14 +408,104 @@ object Play {
     }
 
     /**
-     * The one line of facts under Play: the renderer the next launch uses (Glide: every Play from
-     * the app runs Glide, [com.pd2launcher.app.GlideFirst], also over a stored DirectDraw), the GPU it runs on,
+     * Play's graphics driver, where the game's route is not Turnip or PanVK ([route],
+     * [GraphicsRoute.phoneDriver]), the player picked another driver than the chip's default
+     * ([chosen]), or the route is the Software driver: one line in amber that says which driver
+     * ([GraphicsRoute.player]: the App, the Phone or the Software driver); and after a failure of
+     * a driver ([failed]) the line that it had an error, with a button to Settings → Display → GPU.
+     */
+    data class DriverView(
+        /**
+         * Null: the stored pick has no route here and no other route runs; Play says so with the GPU
+         * page's text and its button ([opensGpu]), and the pick stays (review open question 1).
+         */
+        val route: GraphicsRoute?,
+        /** The route whose driver failed in the last game ([PhoneDriverFailure.tells]): the error line and its button. */
+        val failed: GraphicsRoute? = null,
+        /** A debug build forced the route where the built-in driver runs too: the line says so. */
+        val forced: Boolean = false,
+        /** The player picked a driver on Settings → Display → GPU that is not the chip's default ([DriverPage.defaultPick]): the line says so. */
+        val chosen: Boolean = false,
+    )
+
+    /**
+     * What Play shows of the route that [options] give ([DriverChoice.route]: the one a debug build
+     * [forced], or the pick's ([chosen]), or the first that can run): a [DriverView] for a route
+     * other than Turnip or PanVK, for the Software driver, for a pick that is not the chip's
+     * default, and after a failure ([failed]; not for a forced route); for no route, a view with
+     * none where a pick is stored ([picked]) and the engine can run the Software driver (the player
+     * can pick it on the GPU page; no automatic change); else null. [software]: the engine can run
+     * the Software driver (for the chip's default).
+     */
+    fun driverView(
+        options: DriverOptions?,
+        forced: GraphicsRoute? = null,
+        chosen: GraphicsRoute? = null,
+        failed: GraphicsRoute? = null,
+        software: Boolean = true,
+        picked: PlayerDriver? = null,
+    ): DriverView? {
+        val route = options?.let { DriverChoice.route(it, forced, chosen) } ?: forced
+            ?: return DriverView(null).takeIf { options != null && picked != null && software }
+        val shownFailed = failed.takeIf { forced == null }
+        val default = options?.let { o -> DriverPage.defaultPick(o).let { (pick, way) -> DriverPage.route(o, pick, way, software) } }
+        val own = forced == null && chosen != null && chosen != default
+        val advice = if (options != null) PhoneDriverAdvice.of(options, forced) else PhoneDriverAdvice.FORCED
+        val view = DriverView(route, shownFailed, forced = advice == PhoneDriverAdvice.FORCED, chosen = own)
+        return view.takeIf { shownFailed != null || own || view.forced || route.phoneDriver || route == GraphicsRoute.SOFTWARE }
+    }
+
+    /**
+     * The amber line of [driver]'s route, with the owner's names ([GraphicsRoute.player]): the forced
+     * test's, the Software driver's (picked, or the default where no GPU driver runs), the Phone
+     * driver picked in Settings, the App driver new for the chip (RADV, mali-panvk), or the Phone
+     * driver's where the launcher has none (libhybris too); null for the built-in route and the
+     * App driver.
+     */
+    fun driverLine(driver: DriverView): Int? = when {
+        driver.route == null -> R.string.driver_no_gpu_driver
+        driver.forced -> R.string.driver_phone_forced
+        driver.route == GraphicsRoute.SOFTWARE -> if (driver.chosen) R.string.driver_software_chosen else R.string.driver_software_only
+        driver.chosen && driver.route.player == PlayerDriver.PHONE -> R.string.driver_native_chosen
+        driver.route == GraphicsRoute.BUILT_IN || driver.chosen -> null
+        driver.route.player == PlayerDriver.APP -> R.string.driver_launcher_new
+        else -> R.string.driver_phone_only
+    }
+
+    /**
+     * The error line after a failure ([DriverView.failed]): "The <driver> had an error. Pick another
+     * driver in Settings → Display → GPU." with the driver named as Play's label ([failureLabel]);
+     * null without a failure.
+     */
+    fun failureLine(driver: DriverView): Int? = R.string.driver_had_error.takeIf { driver.failed != null }
+
+    /** The link to Settings → Display → GPU shows: after a failure ([failureLine]), and where the pick has no route ([DriverView.route] null). */
+    fun opensGpu(driver: DriverView): Boolean = driver.failed != null || driver.route == null
+
+    /** The failed driver's name in [failureLine], as Play's label and the GPU page name it ([DriverPage.label]). */
+    fun failureLabel(driver: DriverView): Line? = driver.failed?.let { DriverPage.label(it) }
+
+    /**
+     * Play's driver label in the top bar's corner, on every phone and in every build (the owner,
+     * 2026-10-29: "list out which engine the user currently has it selected"): the label as on the
+     * GPU page ([DriverPage.label]: no technology names) of the route that the next Play takes
+     * ([DriverChoice.route]: a debug build's [forced] route, the pick's ([chosen]), or the first of
+     * [options] that can run); null while the device check runs ([options] null). The amber line
+     * ([driverLine]) says why.
+     */
+    fun driverLabel(options: DriverOptions?, forced: GraphicsRoute? = null, chosen: GraphicsRoute? = null): Line? =
+        options?.let { DriverChoice.route(it, forced, chosen) }?.let { DriverPage.label(it) }
+
+    /**
+     * The one line of facts under Play: the renderer the next launch uses (the driver's:
+     * [com.pd2launcher.app.GlideFirst] sets it before each Play; Glide, or DirectDraw on the
+     * Software driver, [software]), the GPU it runs on,
      * and Project Diablo 2's update state once the engine has checked, or that its update checks
      * are off. Only what is known; no update state while the game files wait for their check
      * ([clientDiffers]), which comes first.
      */
-    fun facts(snapshot: Snapshot?, gpu: String?): List<Line> = buildList {
-        if (snapshot?.settings != null) add(Line(R.string.play_fact_glide))
+    fun facts(snapshot: Snapshot?, gpu: String?, software: Boolean = false): List<Line> = buildList {
+        if (snapshot?.settings != null) add(Line(if (software) R.string.play_fact_direct_draw else R.string.play_fact_glide))
         if (!gpu.isNullOrBlank()) add(Line(R.string.play_fact_plain, gpu))
         if (snapshot != null && clientDiffers(snapshot)) return@buildList
         if (snapshot?.settings?.updateChecks == false) {
@@ -468,6 +566,11 @@ class PlayDestinations(
  * ([Play.launchPending]): both buttons and "Play without updating" wait.
  * [newVersion]: a newer version of this app is out ([com.pd2launcher.app.AppUpdate.newVersionDot]):
  * an amber dot on Version until it is installed.
+ * [driver]: where the game's route is the phone's own driver or a pick, its amber line (and after
+ * a failure the error line with a button to Settings → Display → GPU, [onOpenGpu]) between the
+ * buttons and the facts line. [driverLabel]: the graphics driver that the next Play uses
+ * ([Play.driverLabel]), small and muted at the top bar's end, opposite the wordmark; on a phone
+ * (portrait, narrow) on its own line under the bar, at the end, so the wordmark keeps its room.
  * [stats]: the PD2 server's status and the players in game ([PlayStats]), one centred line above
  * the foot's rule; null: no line.
  */
@@ -489,6 +592,12 @@ fun PlayScreen(
     /** The running update was started by the question after a press of Play: the game starts when it is done. */
     playAfterUpdate: Boolean = false,
     newVersion: Boolean = false,
+    /** The game's route where it is not Turnip or PanVK, or picked in Settings ([Play.driverView]), under the buttons above the facts line; null: nothing to say. */
+    driver: Play.DriverView? = null,
+    /** The next Play's graphics driver by name ([Play.driverLabel]); null: not known yet. */
+    driverLabel: String? = null,
+    /** The button under the error line after a failure ([Play.DriverView.failed]): opens Settings → Display → GPU. */
+    onOpenGpu: () -> Unit = {},
     stats: PlayStats.Stats? = null,
 ) {
     val focus = remember { FocusRequester() }
@@ -507,7 +616,9 @@ fun PlayScreen(
         ) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Wordmark(Modifier.weight(1f))
+                if (!phone && driverLabel != null) DriverLabel(driverLabel, Modifier.padding(start = 12.dp))
             }
+            if (phone && driverLabel != null) DriverLabel(driverLabel, Modifier.align(Alignment.End))
             // The engine runs an out-of-date client too (online play may need the update).
             val playWithout = update.playWithout && waiting == null && !launching
             PlayStage(
@@ -561,6 +672,8 @@ fun PlayScreen(
                 },
                 below = {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        // The phone's own driver hangs from the buttons, so the main button keeps its place while it fits.
+                        if (driver != null) DriverRouteView(driver, onOpenGpu, Modifier.padding(top = 12.dp).width(width))
                         Spacer(Modifier.height(10.dp))
                         if (problem != null) {
                             Text(problem, style = Type.Hint, color = Palette.Red, textAlign = TextAlign.Center)
@@ -754,3 +867,33 @@ private val BUTTON_GAP = 10.dp
 
 /** "Play without updating": smaller than the main button's 68 dp, still a 48 dp target. */
 private val PLAY_WITHOUT_HEIGHT = 48.dp
+
+/** Play's driver label ([Play.driverLabel]): text, as the facts line, not a focus stop. */
+@Composable
+private fun DriverLabel(label: String, modifier: Modifier) {
+    Text(label, modifier, style = Type.Hint, color = Palette.Muted, maxLines = 1, textAlign = TextAlign.End)
+}
+
+/**
+ * Play's graphics driver ([Play.DriverView]): after a failure, the error line in amber that names
+ * the driver ([Play.failureLine]) and a link to Settings → Display → GPU ([onOpenGpu]); then the
+ * driver's own amber line ([Play.driverLine]), with the owner's names and no route names.
+ */
+@Composable
+private fun DriverRouteView(driver: Play.DriverView, onOpenGpu: () -> Unit, modifier: Modifier) {
+    Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
+        Play.failureLine(driver)?.let { line ->
+            Text(
+                stringResource(line, Play.failureLabel(driver)?.let { text(it) }.orEmpty()),
+                style = Type.Hint, color = Palette.Amber, textAlign = TextAlign.Center,
+            )
+            TextLink(stringResource(R.string.driver_open_gpu), onOpenGpu)
+            Spacer(Modifier.height(6.dp))
+        }
+        Play.driverLine(driver)?.let { line ->
+            Text(stringResource(line), style = Type.Hint, color = Palette.Amber, textAlign = TextAlign.Center)
+        }
+        // No route for the pick: the same link under the line.
+        if (driver.failed == null && Play.opensGpu(driver)) TextLink(stringResource(R.string.driver_open_gpu), onOpenGpu)
+    }
+}

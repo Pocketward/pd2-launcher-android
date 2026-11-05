@@ -1,0 +1,53 @@
+Subject: [PATCH] util: build os_misc.c with the NDK
+
+virglrenderer copies Mesa's util code from before Mesa moved its Android branch to the
+NDK; the old one needs the AOSP-internal <log/log.h> and <cutils/properties.h>. Use the
+NDK APIs instead, as Mesa 26.2.3 src/util/os_misc.c does: <android/log.h>
+(__android_log_write) and <sys/system_properties.h> (__system_property_get).
+
+---
+--- a/src/mesa/util/os_misc.c
++++ b/src/mesa/util/os_misc.c
+@@ -55,8 +55,8 @@
+ #if DETECT_OS_ANDROID
+ #  define LOG_TAG "MESA"
+ #  include <unistd.h>
+-#  include <log/log.h>
+-#  include <cutils/properties.h>
++#  include <android/log.h>
++#  include <sys/system_properties.h>
+ #elif DETECT_OS_LINUX || DETECT_OS_CYGWIN || DETECT_OS_SOLARIS || DETECT_OS_HURD
+ #  include <unistd.h>
+ #elif DETECT_OS_OPENBSD || DETECT_OS_FREEBSD
+@@ -117,7 +117,7 @@
+    fputs(message, fout);
+    fflush(fout);
+ #  if DETECT_OS_ANDROID
+-   LOG_PRI(ANDROID_LOG_ERROR, LOG_TAG, "%s", message);
++   __android_log_write(ANDROID_LOG_ERROR, LOG_TAG, message);
+ #  endif
+ #endif
+ }
+@@ -172,9 +172,10 @@
+       return entry->data;
+    }
+ 
+-   char value[PROPERTY_VALUE_MAX];
+-   char key[PROPERTY_KEY_MAX];
+-   char *p = key, *end = key + PROPERTY_KEY_MAX;
++   /* The NDK's property API (Mesa 26.2.3 src/util/os_misc.c): names are not limited since API 26. */
++   char value[PROP_VALUE_MAX];
++   char key[128];
++   char *p = key, *end = key + sizeof(key);
+    /* add "mesa." prefix if necessary: */
+    if (strstr(name, "MESA_") != name)
+       p += strlcpy(p, "mesa.", end - p);
+@@ -188,7 +189,7 @@
+    }
+ 
+    const char *opt = NULL;
+-   int len = property_get(key, value, NULL);
++   int len = __system_property_get(key, value);
+    if (len > 1) {
+       opt = ralloc_strdup(options_tbl, value);
+    }

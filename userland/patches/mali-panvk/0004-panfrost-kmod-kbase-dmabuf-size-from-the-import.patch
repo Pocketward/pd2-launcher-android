@@ -1,0 +1,41 @@
+panfrost/kmod: kbase imports a dma-buf whose size lseek does not give
+
+The tree's kbase backend takes an imported dma-buf's size from lseek(fd, 0, SEEK_END) and refuses
+the buffer when the answer is 0 or less ("kbase: invalid dmabuf size"). KBASE_IOCTL_MEM_IMPORT
+itself answers with the size it imported (va_pages), which the backend already uses for the BO, as
+our own backend does (mesa-kbase kbase_kmod.c, kbase_kmod_bo_import). With this patch the import
+does not depend on lseek: the BO's size is the kernel's answer, the lseek answer is only a check
+when there is one, and an import of 0 pages is refused.
+
+--- a/src/panfrost/lib/kmod/kbase_kmod.c
++++ b/src/panfrost/lib/kmod/kbase_kmod.c
+@@ -748,11 +748,10 @@
+ {
+    struct kbase_kmod_dev *kbase_dev = container_of(dev, struct kbase_kmod_dev, base);
+ 
++   /* The size is what the kernel imports (va_pages below). The dma-buf's own size, where it
++    * answers lseek, only checks that answer: an fd that lseek cannot size answers -1 or 0, and
++    * the import decides. */
+    const off_t size = lseek(fd, 0, SEEK_END);
+-   if (size <= 0) {
+-      mesa_loge("kbase: invalid dmabuf size");
+-      return NULL;
+-   }
+ 
+    struct kbase_kmod_bo *bo = pan_kmod_dev_alloc(dev, sizeof(*bo));
+    if (!bo)
+@@ -775,10 +774,11 @@
+    }
+ 
+    const uint64_t pages = req.out.va_pages;
+-   if (!(req.out.flags & (BASE_MEM_SAME_VA | BASE_MEM_NEED_MMAP)) || pages * 4096 < size) {
+-      mesa_loge("kbase: MEM_IMPORT returned flags 0x%" PRIx64 ", %" PRIu64 " pages for %" PRIu64
++   if (!(req.out.flags & (BASE_MEM_SAME_VA | BASE_MEM_NEED_MMAP)) || !pages ||
++       (size > 0 && pages * 4096 < (uint64_t)size)) {
++      mesa_loge("kbase: MEM_IMPORT returned flags 0x%" PRIx64 ", %" PRIu64 " pages for %" PRId64
+                 " bytes; only a SAME_VA import is handled",
+-                (uint64_t)req.out.flags, pages, size);
++                (uint64_t)req.out.flags, pages, (int64_t)size);
+       pan_kmod_dev_free(dev, bo);
+       return NULL;
+    }

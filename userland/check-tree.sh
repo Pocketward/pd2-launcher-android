@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
-# Checks the packed App userland as the device will see it: unpacks out/userland.tar.zst into a
-# scratch directory and verifies
+# Checks the packed App userland as the device will see it: unpacks out/userland.tar.zst and each
+# part (out/parts/<name>/userland.tar.zst, pack.sh) into one scratch directory, as the app does,
+# and verifies
+#   - each part's archive holds exactly the files its manifest lists, the main archive none of
+#     them, and the parts are built for the main manifest's placeholder and prefix; the checks
+#     below take the main manifest with the parts' entries (work/check-manifest.json)
 #   - no hard-link entries in the archive and no hard links in the unpacked tree
 #   - no absolute symlinks
 #   - every ELF with a program interpreter requests $USERLAND/lib/ld-linux-aarch64.so.1 (readelf -l),
@@ -9,6 +13,16 @@
 #   - usr/bin/x-input-relay is there and every library it needs is in the tree
 #   - PanVK (build-panvk.sh) is there: its ICD JSON and libvulkan_panfrost.so, every library it
 #     needs in the tree
+#   - the system-driver mode (build-sysdrv.sh) is there: the Venus ICD JSON and libvulkan_virtio.so,
+#     the second GL stack as glvnd vendor "pd2sysdrv" (libGLX_pd2sysdrv.so.0, also its soname),
+#     every library they need in the tree
+#   - the libhybris route (build-hybris.sh) is there: its ICD JSON, libvulkan_pd2hybris.so,
+#     libhybris-common.so.1, its linker plugin libhybris/linker/q.so and its licence texts, every
+#     library they need in the tree
+#   - RADV for Xclipse (build-radv.sh) is there: its ICD JSON, libvulkan_radeon.so with no shared
+#     libdrm and every library it needs in the tree, its licence and notices
+#   - mali-panvk (build-mali-panvk.sh) is there: its ICD JSON outside icd.d, naming its library at the
+#     prefix, every library it needs in the tree, its licence and notices
 #   - the manifest matches the tree (every entry, type, mode, size, SHA-256)
 #   - the placeholder (config.sh): the manifest names it and the prefix, and lists for every file
 #     exactly the offsets where the tree holds it, rewritten as text exactly when the file is not
@@ -56,6 +70,43 @@ bad() { echo "FAIL: $*" >&2; fail=1; }
 hardlinks="$(zstd -dc "$archive" | tar -tv | grep -c '^h' || true)"
 [[ "$hardlinks" == 0 ]] || bad "$hardlinks hard-link entries in the archive"
 zstd -dc "$archive" | tar -x -p -C "$tree"
+
+# The parts, unpacked over the main tree as the app does, and the manifest the checks below take.
+manifest=/cache/work/check-manifest.json
+rm -f "$manifest"
+part_dirs=()
+for d in /out/parts/*/; do [[ -f "$d/manifest.json" ]] && part_dirs+=("${d%/}"); done
+for d in "${part_dirs[@]}"; do
+    part="$(basename "$d")"
+    n="$(zstd -dc "$d/userland.tar.zst" | tar -tv | grep -vc '^-' || true)"
+    [[ "$n" == 0 ]] || bad "part $part: $n entries that are not regular files"
+    diff <(zstd -dc "$d/userland.tar.zst" | tar -t | LC_ALL=C sort) <(jq -r '.entries[].path' "$d/manifest.json" | LC_ALL=C sort) >/dev/null \
+        || bad "part $part: its archive does not hold exactly its manifest's files"
+    # grep reads all of the listing (no -q): an early end would break the pipe and hide the match.
+    if zstd -dc "$archive" | tar -t | grep -xFf <(jq -r '.entries[].path' "$d/manifest.json") >/dev/null; then
+        bad "part $part: the main archive also holds its files"
+    fi
+    zstd -dc "$d/userland.tar.zst" | tar -x -p -C "$tree"
+done
+python3 - /out/manifest.json "$manifest" "${part_dirs[@]}" <<'EOF' || fail=1
+import json, sys
+main, merged, *parts = sys.argv[1:]
+m = json.load(open(main))
+paths = {e['path'] for e in m['entries']}
+for d in parts:
+    p = json.load(open(d + '/manifest.json'))
+    if (p['placeholder'], p['prefix']) != (m['placeholder'], m['prefix']):
+        sys.exit(f"FAIL: part {p.get('part')} is built for another placeholder or prefix")
+    if p['critical'] or p['absent']:
+        sys.exit(f"FAIL: part {p.get('part')} has critical or absent paths")
+    both = paths & {e['path'] for e in p['entries']}
+    if both:
+        sys.exit(f"FAIL: part {p.get('part')} and the main manifest both list {sorted(both)[0]}")
+    paths |= {e['path'] for e in p['entries']}
+    m['entries'] += p['entries']
+    print(f"part {p.get('part')} {p['version']}: {len(p['entries'])} files, unpacked over the main tree")
+json.dump(m, open(merged, 'w'))
+EOF
 n="$(find "$tree" -type f -links +1 | wc -l)"
 [[ "$n" == 0 ]] || bad "$n hard-linked files in the unpacked tree"
 
@@ -103,7 +154,85 @@ else
     bad "PanVK missing (usr/share/vulkan/icd.d/panfrost_icd.aarch64.json, libvulkan_panfrost.so)"
 fi
 
-python3 - "$tree" /out/manifest.json <<'EOF' || fail=1
+# The system-driver mode (build-sysdrv.sh): the Venus ICD, and the second GL stack as glvnd's vendor
+# "pd2sysdrv" (libGLX_pd2sysdrv.so.0, its soname too) with the libgallium it needs, every library
+# they need in the tree.
+venus="$tree/usr/lib/aarch64-linux-gnu/libvulkan_virtio.so"
+sysglx="$tree/usr/lib/aarch64-linux-gnu/libGLX_pd2sysdrv.so.0"
+if [[ -f "$tree/usr/share/vulkan/icd.d/virtio_icd.aarch64.json" && -f "$venus" && -f "$sysglx" ]]; then
+    aarch64-linux-gnu-readelf -d "$sysglx" | grep -q 'Library soname: \[libGLX_pd2sysdrv.so.0\]' \
+        || bad "libGLX_pd2sysdrv.so.0: its soname is not libGLX_pd2sysdrv.so.0"
+    for elf in "$venus" "$sysglx"; do
+        for lib in $(aarch64-linux-gnu-readelf -d "$elf" | sed -n 's/.*(NEEDED).*\[\(.*\)\]$/\1/p'); do
+            [[ -e "$tree/usr/lib/aarch64-linux-gnu/$lib" || -e "$tree/lib/aarch64-linux-gnu/$lib" ]] \
+                || bad "${elf#"$tree/"}: $lib not in the tree"
+        done
+    done
+    echo "system driver: Venus ICD and the pd2sysdrv GL vendor present, every NEEDED library is in the tree"
+else
+    bad "system driver missing (virtio_icd.aarch64.json, libvulkan_virtio.so, libGLX_pd2sysdrv.so.0)"
+fi
+
+# The libhybris route (build-hybris.sh): our ICD with its JSON, libhybris-common.so.1 and its linker
+# plugin in its compiled-in folder, the licence texts; every library they need in the tree (the
+# phone's own bionic libraries are not: libhybris loads those from /system and /vendor).
+hybicd="$tree/usr/lib/aarch64-linux-gnu/libvulkan_pd2hybris.so"
+hybcommon="$tree/usr/lib/aarch64-linux-gnu/libhybris-common.so.1"
+hybq="$tree/usr/lib/aarch64-linux-gnu/libhybris/linker/q.so"
+if [[ -f "$tree/usr/share/vulkan/icd.d/pd2hybris_icd.aarch64.json" && -f "$hybicd" && -f "$hybcommon" && -f "$hybq" ]]; then
+    for elf in "$hybicd" "$hybcommon" "$hybq"; do
+        for lib in $(aarch64-linux-gnu-readelf -d "$elf" | sed -n 's/.*(NEEDED).*\[\(.*\)\]$/\1/p'); do
+            [[ -e "$tree/usr/lib/aarch64-linux-gnu/$lib" || -e "$tree/lib/aarch64-linux-gnu/$lib" ]] \
+                || bad "${elf#"$tree/"}: $lib not in the tree"
+        done
+    done
+    for l in README LICENSE.Apache2 LICENSE.BSD-2 LICENSE.ISC; do
+        [[ -f "$tree/usr/share/licenses/pd2-libhybris/$l" ]] || bad "libhybris: no usr/share/licenses/pd2-libhybris/$l"
+    done
+    echo "libhybris route: ICD, libhybris-common.so.1, linker q.so and licences present, every NEEDED library is in the tree"
+else
+    bad "libhybris route missing (pd2hybris_icd.aarch64.json, libvulkan_pd2hybris.so, libhybris-common.so.1, libhybris/linker/q.so)"
+fi
+
+# RADV for Xclipse (build-radv.sh): its ICD and libvulkan_radeon.so, every library it needs in the
+# tree, no shared libdrm (its libdrm 2.4.133 is in it), and its licence and notices.
+radv="$tree/usr/lib/aarch64-linux-gnu/libvulkan_radeon.so"
+if [[ -f "$tree/usr/share/vulkan/icd.d/radeon_icd.aarch64.json" && -f "$radv" ]]; then
+    for lib in $(aarch64-linux-gnu-readelf -d "$radv" | sed -n 's/.*(NEEDED).*\[\(.*\)\]$/\1/p'); do
+        [[ "$lib" != libdrm* ]] || bad "libvulkan_radeon.so needs a shared $lib"
+        [[ -e "$tree/usr/lib/aarch64-linux-gnu/$lib" || -e "$tree/lib/aarch64-linux-gnu/$lib" ]] \
+            || bad "libvulkan_radeon.so: $lib not in the tree"
+    done
+    for f in LICENSE NOTICE.txt THIRD_PARTY_NOTICES.md; do
+        [[ -f "$tree/usr/share/licenses/radv-xclipse/$f" ]] || bad "RADV: usr/share/licenses/radv-xclipse/$f missing"
+    done
+    echo "RADV for Xclipse: ICD, libvulkan_radeon.so and its notices present, every NEEDED library is in the tree"
+else
+    bad "RADV for Xclipse missing (radeon_icd.aarch64.json, libvulkan_radeon.so)"
+fi
+
+# mali-panvk (build-mali-panvk.sh): its ICD (not in icd.d: only a VK_DRIVER_FILES that names it
+# loads it) names its library at the prefix, every library it needs is in the tree, and its
+# licence and notices are there.
+mpanvk=usr/lib/aarch64-linux-gnu/mali-panvk/libvulkan_panfrost.so
+mpanvk_icd="$tree/usr/share/mali-panvk/mali_panvk_icd.aarch64.json"
+if [[ -f "$mpanvk_icd" && -f "$tree/$mpanvk" ]]; then
+    [[ "$(jq -r .ICD.library_path "$mpanvk_icd")" == "$USERLAND/$mpanvk" ]] \
+        || bad "mali-panvk ICD library_path is not $USERLAND/$mpanvk"
+    [[ ! -e "$tree/usr/share/vulkan/icd.d/mali_panvk_icd.aarch64.json" ]] || bad "mali-panvk ICD in icd.d"
+    for lib in $(aarch64-linux-gnu-readelf -d "$tree/$mpanvk" | sed -n 's/.*(NEEDED).*\[\(.*\)\]$/\1/p'); do
+        [[ -e "$tree/usr/lib/aarch64-linux-gnu/$lib" || -e "$tree/lib/aarch64-linux-gnu/$lib" ]] \
+            || bad "mali-panvk libvulkan_panfrost.so: $lib not in the tree"
+    done
+    for f in LICENSE NOTICE.txt THIRD_PARTY_NOTICES.md COPYRIGHT-HOLDERS.txt; do
+        [[ -f "$tree/usr/share/licenses/mali-panvk/$f" ]] || bad "mali-panvk: usr/share/licenses/mali-panvk/$f missing"
+    done
+    echo "mali-panvk: ICD, its libvulkan_panfrost.so and its notices present, every NEEDED library is in the tree"
+else
+    bad "mali-panvk missing (usr/share/mali-panvk/mali_panvk_icd.aarch64.json, $mpanvk)"
+fi
+
+python3 - "$tree" "$manifest" <<'EOF' || fail=1
 import hashlib, json, os, stat, sys
 tree, manifest = sys.argv[1:]
 m = json.load(open(manifest))
@@ -126,7 +255,7 @@ for dirpath, dirnames, filenames in os.walk(tree):
 print(f"manifest {m['version']}: {len(m['entries'])} entries match the unpacked tree")
 EOF
 
-python3 - "$tree" /out/manifest.json "$DATA_PLACEHOLDER" "$USERLAND" "${ENGINE_NEEDED[*]}" <<'EOF' || fail=1
+python3 - "$tree" "$manifest" "$DATA_PLACEHOLDER" "$USERLAND" "${ENGINE_NEEDED[*]}" <<'EOF' || fail=1
 import json, os, re, subprocess, sys
 tree, manifest, placeholder, prefix, engine_needed = sys.argv[1:]
 m = json.load(open(manifest))
@@ -234,7 +363,7 @@ if jq -e .glibc /out/manifest.json >/dev/null; then
     done
     deb="/cache/debs/$(basename "$(awk '$1 == "runtime" && $2 == "libc6" {print $7}' /src/packages.lock)")"
     dpkg-deb --fsys-tarfile "$deb" | tar -x -C "$scratch/libc6"
-    python3 - "$tree" /out/manifest.json "$scratch" /src/glibc/patches <<'EOF' || fail=1
+    python3 - "$tree" "$manifest" "$scratch" /src/glibc/patches <<'EOF' || fail=1
 import hashlib, json, os, sys
 tree, manifest, scratch, patchdir = sys.argv[1:]
 g = json.load(open(manifest))['glibc']
@@ -286,7 +415,7 @@ fi
 echo "archive: $(stat -c %s "$archive") bytes; regular files: $(find "$tree" -type f | wc -l); unpacked: $(du -sb "$tree" | cut -f1) bytes"
 
 # The tree rewritten for $data as the app rewrites it (UserlandInstaller), then run from there.
-python3 - "$tree" /out/manifest.json "$data" <<'EOF' || fail=1
+python3 - "$tree" "$manifest" "$data" <<'EOF' || fail=1
 import json, os, sys
 tree, manifest, data = sys.argv[1:]
 m = json.load(open(manifest))

@@ -93,6 +93,10 @@ data class UbwcChoice(
         val vulkan = "${version shr 22}.${qualcommDriverNumber(version)}.${qualcommDriverPatch(version)}$build"
         return "$name$maker, Qualcomm driver ${qualcommDriverNumber(version)} (Vulkan driver version $vulkan): $value"
     }
+
+    /** [describe] on [route]: only the built-in Turnip takes the value ([SessionPaths.engineEnvironment]). */
+    fun describeOn(route: GraphicsRoute?): String =
+        describe() + if (hint != null && route != null && route != GraphicsRoute.BUILT_IN) " (not used on route $route)" else ""
 }
 
 /**

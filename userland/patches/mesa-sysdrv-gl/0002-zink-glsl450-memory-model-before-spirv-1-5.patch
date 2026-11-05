@@ -1,0 +1,28 @@
+Subject: [PATCH] zink: keep the GLSL450 memory model where SPIR-V has no Vulkan memory model core
+
+With VK_KHR_vulkan_memory_model, nir_to_spirv emits OpCapability VulkanMemoryModel and
+OpMemoryModel Logical Vulkan. That is core only from SPIR-V 1.5 (Vulkan 1.2); a Vulkan 1.1 device
+gets SPIR-V 1.3 modules, which then need OpExtension "SPV_KHR_vulkan_memory_model", and
+nir_to_spirv does not declare it, so every module is invalid: spirv-val refuses each one
+("operand VulkanMemoryModel(5345) requires one of these extensions: SPV_KHR_vulkan_memory_model").
+Qualcomm's Adreno 650 driver (Vulkan 1.1.128, with the extension) is such a device.
+
+Use the Vulkan memory model only from SPIR-V 1.5; before it, keep the GLSL450 memory model, as
+on a device without the extension. Only for the system-driver mode's older GL stack (Mesa 25.1.9).
+
+---
+--- a/src/gallium/drivers/zink/zink_compiler.c
++++ b/src/gallium/drivers/zink/zink_compiler.c
+@@ -6203,7 +6203,11 @@
+    zs->has_edgeflags = nir->info.stage == MESA_SHADER_VERTEX &&
+                        nir->info.outputs_written & VARYING_BIT_EDGE;
+ 
+-   zs->sinfo.have_vulkan_memory_model = screen->info.have_KHR_vulkan_memory_model;
++   /* SPIR-V before 1.5 has the Vulkan memory model only as SPV_KHR_vulkan_memory_model, which
++    * nir_to_spirv does not declare: there, keep the GLSL450 memory model.
++    */
++   zs->sinfo.have_vulkan_memory_model = screen->info.have_KHR_vulkan_memory_model &&
++                                        screen->spirv_version >= SPIRV_VERSION(1, 5);
+    zs->sinfo.have_workgroup_memory_explicit_layout = screen->info.have_KHR_workgroup_memory_explicit_layout;
+    zs->sinfo.broken_arbitary_type_const = screen->driver_compiler_workarounds.broken_const;
+    if (screen->info.have_KHR_shader_float_controls) {

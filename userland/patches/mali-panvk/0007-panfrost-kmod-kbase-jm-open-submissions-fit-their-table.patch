@@ -1,0 +1,25 @@
+panfrost/kmod: kbase on the job manager waits for room in its table of open submissions
+
+The tree's JM submission keeps each submission's sequence number in open_seq[256] until the event
+thread has run its callback, but frees its atom numbers (at most 255 in flight) as soon as their
+events come. So the submitting thread can make new submissions while finished ones still wait for
+their callbacks, and more than 256 can be open: open_seq then overflows into nr_open_seq and
+in_flight, the queue's counters are wrong, and a wait for idle can go on for ever. Many quick
+submissions in a row make it happen.
+
+With this patch a submission also waits until open_seq has room; the event thread already wakes it
+when it removes one.
+
+--- a/src/panfrost/lib/kmod/kbase_kmod.c
++++ b/src/panfrost/lib/kmod/kbase_kmod.c
+@@ -1696,7 +1696,9 @@
+       return seq;
+    }
+ 
+-   while (q->free_atoms < need)
++   /* A submission stays open until its callback has run, after its atoms are free again, so more
++    * than 255 can be open: wait for room in open_seq too, which they overflowed. */
++   while (q->free_atoms < need || q->nr_open_seq >= ARRAY_SIZE(q->open_seq))
+       pthread_cond_wait(&q->cond, &q->lock);
+ 
+ 

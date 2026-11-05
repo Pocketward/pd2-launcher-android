@@ -1,0 +1,73 @@
+panvk: vkSetEvent tells kbase on CSF
+
+The part of our mesa-panvk/0002 (with the backend's notify op, mesa-kbase kbase_kmod.c
+kbase_kmod_notify_sync_update) that the mali-panvk tree does not have, for its kbase backend.
+
+A command stream that waits on a VkEvent (vkCmdWaitEvents) makes its queue group idle, and kbase
+suspends the group. kbase evaluates the wait of a suspended group again only when it is told that
+CSF events changed (KBASE_IOCTL_CS_EVENT_SIGNAL, ioctl 44 in csf/mali_kbase_csf_ioctl.h; the
+kernel then calls kbase_csf_event_signal_notify_gpu). The tree's vkSetEvent writes the event's
+sync objects (CSF_EVENT memory, the tree's sync pool) and tells nobody, so the group stays
+suspended, and a GPU wait on a host-set VkEvent does not end. The backend gets
+pan_kmod_kbase_csf_event_signal() (a no-op on a JM context and on a device that is not kbase), and
+the CSF vkSetEvent calls it after the write.
+
+--- a/src/panfrost/lib/kmod/kbase_kmod.c
++++ b/src/panfrost/lib/kmod/kbase_kmod.c
+@@ -2088,6 +2088,9 @@ struct kbase_ioctl_cs_tiler_heap_term {
+    _IOWR(KBASE_IOCTL_TYPE, 51, struct kbase_ioctl_cs_get_glb_iface)
+ #define KBASE_IOCTL_CS_QUEUE_GROUP_CREATE                                                         \
+    _IOWR(KBASE_IOCTL_TYPE, 58, union kbase_ioctl_cs_queue_group_create)
++/* No payload: kbase signals the context's CSF events and re-evaluates the sync waits of its
++ * suspended queue groups (csf/mali_kbase_csf_ioctl.h, kbase_csf_event_signal_notify_gpu). */
++#define KBASE_IOCTL_CS_EVENT_SIGNAL _IO(KBASE_IOCTL_TYPE, 44)
+ 
+ /* BASE_CSF_NOTIFICATION_*: what a read() of the context's fd returns, 64 bytes each. */
+ #define KBASE_CSF_NOTIFICATION_SIZE              64
+@@ -2872,6 +2875,13 @@ pan_kmod_kbase_csf_group_faulted(const struct pan_kmod_kbase_csf_group *g)
+    return g->faulted;
+ }
+ 
++void
++pan_kmod_kbase_csf_event_signal(struct pan_kmod_dev *dev)
++{
++   if (pan_kmod_kbase_is_csf(dev) && pan_kmod_ioctl(dev->fd, KBASE_IOCTL_CS_EVENT_SIGNAL, NULL))
++      mesa_loge("kbase: CS_EVENT_SIGNAL failed (err=%d)", errno);
++}
++
+ 
+ static uint64_t
+ kbase_kmod_query_timestamp(const struct pan_kmod_dev *dev)
+--- a/src/panfrost/lib/kmod/kbase_kmod.h
++++ b/src/panfrost/lib/kmod/kbase_kmod.h
+@@ -174,4 +174,9 @@ bool pan_kmod_kbase_csf_wait(struct pan_kmod_kbase_csf_group *group, uint64_t se
+ int pan_kmod_kbase_csf_fence_fd(struct pan_kmod_kbase_csf_group *group, uint64_t seq);
+ bool pan_kmod_kbase_csf_group_faulted(const struct pan_kmod_kbase_csf_group *group);
+ 
++/* The CPU changed sync objects in CSF_EVENT memory (a host vkSetEvent). A queue group whose
++ * streams all wait is suspended, and kbase reads the awaited objects again only when it is told
++ * (CS_EVENT_SIGNAL); without it the group stays suspended. Nothing on a JM context. */
++void pan_kmod_kbase_csf_event_signal(struct pan_kmod_dev *dev);
++
+ #endif /* KBASE_KMOD_H */
+--- a/src/panfrost/vulkan/csf/panvk_vX_event.c
++++ b/src/panfrost/vulkan/csf/panvk_vX_event.c
+@@ -80,6 +80,7 @@ panvk_per_arch(GetEventStatus)(VkDevice _device, VkEvent _event)
+ VKAPI_ATTR VkResult VKAPI_CALL
+ panvk_per_arch(SetEvent)(VkDevice _device, VkEvent _event)
+ {
++   VK_FROM_HANDLE(panvk_device, device, _device);
+    VK_FROM_HANDLE(panvk_event, event, _event);
+ 
+    panvk_priv_mem_write_array(event->syncobjs, 0, struct panvk_cs_sync32,
+@@ -88,6 +89,10 @@ panvk_per_arch(SetEvent)(VkDevice _device, VkEvent _event)
+          syncobjs[i].seqno = 1;
+    }
+ 
++   /* A command stream may wait on this event in a queue group kbase has suspended: let kbase
++    * evaluate the wait again. */
++   pan_kmod_kbase_csf_event_signal(device->kmod.dev);
++
+    return VK_SUCCESS;
+ }
+ 

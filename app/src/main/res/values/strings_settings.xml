@@ -49,8 +49,12 @@
     <string name="driver_app_none">The launcher has no driver for this graphics chip.</string>
     <string name="driver_phone">Phone driver</string>
     <string name="driver_phone_body">Your phone\'s built-in driver. It might not work.</string>
+    <!-- The Phone driver where its drivers were read and none can run the game (decision 40; the mock's line of decision 11). -->
+    <string name="driver_phone_none">Does not run on this graphics chip.</string>
     <string name="driver_software">Software driver</string>
     <string name="driver_software_body">Renders the game using software. Can be really slow.</string>
+    <!-- The Software driver with an engine that cannot run it (review MED-3; for the owner's approval, 2026-11-04). -->
+    <string name="driver_software_needs_update">Needs a newer app version.</string>
     <!-- A chip with no usable GPU driver (decision 25, the owner's text). -->
     <string name="driver_no_gpu_driver">The launcher has no GPU driver for this chip, and it cannot use your phone\'s GPU driver. You can still try the Software driver.</string>
     <!-- The Phone driver's two ways, under it while it is in use (the owner, 2026-10-31: the names show, no "Way" label). -->
@@ -59,7 +63,6 @@
     <!-- Decision 33 (owner-approved, 2026-11-03): the tag beside the driver or way in use, and the note on the chip's better way. -->
     <string name="driver_in_use">In use</string>
     <string name="driver_way_better">Usually runs better on this graphics chip.</string>
-    <string name="driver_app_failed">It stopped after an error. The app uses the phone driver until the next app update.</string>
 
     <!-- Game → Diablo II start options → Renderer: its value, then its sheet (what it does at the top, then the two choices). -->
     <string name="settings_renderer_glide_recommended">Glide (recommended)</string>

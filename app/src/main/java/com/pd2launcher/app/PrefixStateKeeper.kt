@@ -86,15 +86,31 @@ class PrefixStateKeeper(
             command is Command.DownloadAll || command is Command.ImportExistingInstall || command is Command.InstallProjectDiablo ||
             command is Command.ApplyUpdate || command is Command.DiscardDownloads
 
+        /** Whether a job command went out in the last [JOB_REQUEST_WAIT_MS] before [now] (elapsed real time) and no snapshot shows it yet. */
+        fun jobRequested(status: SessionStatus, now: Long): Boolean =
+            status.jobRequestedAt?.let { now - it < JOB_REQUEST_WAIT_MS } == true
+
+        /** How long [jobRequested] still holds at [now]; null where it does not hold (a route change that waits for it looks again then). */
+        fun jobRequestLeft(status: SessionStatus, now: Long): Long? =
+            status.jobRequestedAt?.let { JOB_REQUEST_WAIT_MS - (now - it) }?.takeIf { it > 0 }
+
+        /**
+         * Whether the engine's refusal of [seq] ends the job command that no snapshot shows yet: it
+         * has that command's seq and [status]'s snapshot shows no job at work. Protocol 5 can give
+         * the refusal of an earlier command the newest seq, so a refusal with that seq while a job
+         * runs proves nothing (the [InstallWork.refused] rule).
+         */
+        fun jobRefused(status: SessionStatus, seq: Long): Boolean =
+            seq == status.jobRequestSeq && status.snapshot?.activeJob == null
+
         /**
          * Whether Wine runs, or a program or a job that changes the prefix may start at once, as
          * [status] stands at [now] (elapsed real time): the game environment, a job, the game, the
-         * official launcher's game, a launch requested, or a job command sent in the last
-         * [JOB_REQUEST_WAIT_MS] that no snapshot shows yet. The session service's [wineRuns].
+         * official launcher's game, a launch requested, or a job command that no snapshot shows
+         * yet ([jobRequested]). The session service's [wineRuns].
          */
         fun wineRuns(status: SessionStatus, now: Long): Boolean =
             status.gameEnvironment || status.snapshot?.activeJob != null || status.snapshot?.game == Game.RUNNING ||
-                status.launcherGame || status.launchRequestedAt != null ||
-                status.jobRequestedAt?.let { now - it < JOB_REQUEST_WAIT_MS } == true
+                status.launcherGame || status.launchRequestedAt != null || jobRequested(status, now)
     }
 }

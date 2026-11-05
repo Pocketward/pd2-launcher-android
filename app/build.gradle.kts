@@ -92,10 +92,10 @@ android {
         // "not compatible" refusal at install. abiFilters limits our own CMake libraries and the
         // libraries inside dependencies (zstd-jni, androidx.graphics.path) alike.
         ndk { abiFilters += "arm64-v8a" }
-        versionName = "0.3.8"
+        versionName = "0.4.0-beta1"
         // A beta build names here the Stable it was made after ("0.3.8" for 0.4.0-beta1 after 0.3.8),
         // and takes its versionCode; a Stable leaves it null ([versionCodeOf]).
-        val betaBase: String? = null
+        val betaBase: String? = "0.3.8"
         versionCode = versionCodeOf(versionName!!, betaBase)
         buildConfigField("String", "SHOWN_VERSION", "\"$versionName${testBuild?.let { " (test $it)" }.orEmpty()}\"")
         buildConfigField("String", "TEST_COMMIT", "\"$testCommit\"")
@@ -182,18 +182,39 @@ android {
     // the session service starts it through the App userland's loader.
     sourceSets["main"].jniLibs.srcDir("engine")
 
+    // The system-driver mode's parts (the game on the phone's own Vulkan driver, for GPUs that the
+    // built-in drivers do not support): the App userland's part (userland/pack.sh:
+    // system-driver/assets/userland-system-driver/) and virglrenderer's servers (devdriver/build.sh,
+    // staged by build.sh as system-driver/jniLibs/arm64-v8a/libvirgl_*.so), both gitignored. With
+    // the Gradle property pd2.systemDriver=false (build.sh: PD2_SYSTEM_DRIVER=0) the APK leaves both
+    // out, and the app has no route to the phone's own driver (DriverChoice, UserlandAssets).
+    val systemDriver = providers.gradleProperty("pd2.systemDriver").map {
+        when (it) {
+            "true" -> true
+            "false" -> false
+            else -> throw GradleException("pd2.systemDriver is true or false, not '$it'")
+        }
+    }.getOrElse(true)
+    if (systemDriver) {
+        sourceSets["main"].assets.srcDir("system-driver/assets")
+        sourceSets["main"].jniLibs.srcDir("system-driver/jniLibs")
+    }
+
     packaging {
         jniLibs {
             // Extract native libraries at install, so the engine exists as a file to run.
             useLegacyPackaging = true
-            // Ship the engine byte-identical to the built artifact (it is already stripped).
+            // Ship the engine and the system-driver mode's vtest server (android/devdriver/build.sh)
+            // byte-identical to the built artifacts (they are already stripped).
             keepDebugSymbols += "**/libpd2launcher.so"
+            keepDebugSymbols += "**/libvirgl_*.so"
         }
     }
 
     androidResources {
-        // The App userland archive (userland/pack.sh) is already zstd-compressed and is
-        // streamed from the APK; storing it uncompressed avoids a second inflate.
+        // The App userland archives (userland/pack.sh: the main one and its parts) are already
+        // zstd-compressed and are streamed from the APK; storing them uncompressed avoids a second
+        // inflate.
         noCompress += "zst"
     }
 
@@ -231,10 +252,13 @@ tasks.matching { it.name == "preReleaseBuild" }.configureEach {
 // by src/test/cpp/pointer_split_test.c, with Mesa patch 0008's ring writer written out); and the
 // game's sound path: the ring between Wine's ALSA plugin
 // and the app (../runtime/pd2-audio/pd2_audio_ring.h) and the resampler
-// (src/main/cpp/game_audio_resampler.c, by src/test/cpp/game_audio_test.c); and x-input-relay's log
-// counts (../userland/x-input-relay-counts.h, by src/test/cpp/relay_counts_test.c). The NDK's clang
-// builds each as a static x86_64 program, which the build image (linux/amd64) runs. Skipped where a
-// test, the NDK's Linux x86_64 clang or a Linux x86_64 host to run the program is not.
+// (src/main/cpp/game_audio_resampler.c, by src/test/cpp/game_audio_test.c); x-input-relay's log
+// counts (../userland/x-input-relay-counts.h, by src/test/cpp/relay_counts_test.c); and the libhybris
+// route's wait for the app's clock and its present queue (../userland/hybris/present_counter.h and
+// present_queue.h, by src/test/cpp/hybris_clock_test.c, on a real page and futex, with real
+// threads). The NDK's clang builds each as a
+// static x86_64 program, which the build image (linux/amd64) runs. Skipped where a test, the NDK's
+// Linux x86_64 clang or a Linux x86_64 host to run the program is not.
 val nativeHostTestPrograms = mapOf(
     "frame_pacing_test" to listOf("src/test/cpp/frame_pacing_test.c", "src/main/cpp/frame_pacing.c"),
     "frame_layer_test" to listOf(
@@ -243,6 +267,7 @@ val nativeHostTestPrograms = mapOf(
     ),
     "pointer_split_test" to listOf("src/test/cpp/pointer_split_test.c", "src/main/cpp/pointer_split.c"),
     "game_audio_test" to listOf("src/test/cpp/game_audio_test.c", "src/main/cpp/game_audio_resampler.c"),
+    "hybris_clock_test" to listOf("src/test/cpp/hybris_clock_test.c"),
     "relay_counts_test" to listOf("src/test/cpp/relay_counts_test.c"),
 )
 // Read only when a host-test task is configured: not on every Gradle run.
@@ -254,8 +279,12 @@ for ((name, paths) in nativeHostTestPrograms) {
     val program = layout.buildDirectory.file("native-host-tests/$name").get().asFile
     val build = tasks.register<Exec>("build_$name") {
         onlyIf { sources[0].isFile && nativeHostClang.canExecute() && nativeHostIsLinuxX64 }
-        // With every header and C file they read: frame_copy_harness.c includes frame_copy.c.
-        inputs.files(sources + fileTree("src/main/cpp") + fileTree("../runtime/pd2-audio") + file("../userland/x-input-relay-counts.h"))
+        // With every header and C file they read: frame_copy_harness.c includes frame_copy.c, and
+        // hybris_clock_test.c includes ../userland/hybris/present_counter.h and present_queue.h.
+        inputs.files(
+            sources + fileTree("src/main/cpp") + fileTree("../runtime/pd2-audio") + fileTree("../userland/hybris") +
+                file("../userland/x-input-relay-counts.h"),
+        )
         outputs.file(program)
         doFirst { program.parentFile.mkdirs() }
         commandLine(

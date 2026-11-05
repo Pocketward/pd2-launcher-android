@@ -1,0 +1,63 @@
+Subject: [PATCH] vrend: EGL on Android without GBM
+
+Android has no GBM, so meson finds no EGL platform for vrend there (it looks for gbm after
+libdrm, and the NDK has neither). On Android, take EGL as on Windows and macOS, and have
+vrend_winsys_init open the default EGL display with the surfaceless and GLES flags of the
+vtest server (--use-egl-surfaceless --use-gles): Android's EGL has EGL_KHR_surfaceless_context
+and no EGL_MESA_platform_surfaceless, so virgl_egl_init falls back to eglGetDisplay
+(EGL_DEFAULT_DISPLAY). vrend_winsys_cleanup destroys that display's context again.
+
+Written for virglrenderer e18f8c00 meson.build and src/vrend/vrend_winsys.c.
+
+---
+--- a/meson.build
++++ b/meson.build
+@@ -56,6 +56,7 @@
+ 
+ with_host_windows = host_machine.system() == 'windows'
+ with_host_darwin = host_machine.system() == 'darwin'
++with_host_android = host_machine.system() == 'android'
+ 
+ warnings = [
+    '-Werror=enum-int-mismatch',
+@@ -308,7 +309,7 @@
+ 
+ if with_egl
+    if cc.has_header('epoxy/egl.h', dependencies: epoxy_dep) and epoxy_dep.get_variable(pkgconfig: 'epoxy_has_egl') == '1'
+-      if with_host_windows or with_host_darwin
++      if with_host_windows or with_host_darwin or with_host_android
+          have_egl = true
+       else
+          if libdrm_dep.found()
+--- a/src/vrend/vrend_winsys.c
++++ b/src/vrend/vrend_winsys.c
+@@ -76,6 +76,15 @@
+       }
+ 
+       use_context = CONTEXT_EGL;
++#elif defined(__ANDROID__)
++      /* No GBM on Android: the default display, surfaceless (EGL_KHR_surfaceless_context) */
++      (void)preferred_fd;
++      egl = virgl_egl_init(EGL_DEFAULT_DISPLAY, flags & VIRGL_RENDERER_USE_SURFACELESS,
++                           flags & VIRGL_RENDERER_USE_GLES);
++      if (!egl)
++         return -1;
++
++      use_context = CONTEXT_EGL;
+ #else
+       (void)preferred_fd;
+       virgl_error("EGL is not supported on this platform\n");
+@@ -98,6 +107,13 @@
+ 
+ void vrend_winsys_cleanup(void)
+ {
++#if defined(__ANDROID__) && !defined(ENABLE_GBM)
++   if (use_context == CONTEXT_EGL) {
++      virgl_egl_destroy(egl);
++      egl = NULL;
++      use_context = CONTEXT_NONE;
++   }
++#endif
+ #ifdef ENABLE_GBM
+    if (use_context == CONTEXT_EGL) {
+       virgl_egl_destroy(egl);

@@ -15,14 +15,22 @@
 # goes into the cache's sources/, where build-mesa.sh's fetch_source takes it, and its SHA-256
 # becomes MESA_SHA256; for the current pin the checked archive in sources/ is used, and one whose
 # SHA-256 is not MESA_SHA256 is refused), unpack it into a scratch tree, then apply in build
-# order patches/mesa/*.patch (build-mesa.sh's series; build-panvk.sh applies its *-wsi-* part) and
-# patches/mesa-panvk/*.patch (build-panvk.sh's, after the WSI series), each with --fuzz=0 as the
-# builds do. Per patch it prints "exact", "offsets" or "FAILS" (with the failed hunks, and whether
+# order patches/mesa/*.patch (build-mesa.sh's series; build-panvk.sh applies its *-wsi-* part),
+# patches/mesa-panvk/*.patch (build-panvk.sh's, after the WSI series) and
+# patches/mesa-sysdrv/*.patch (build-sysdrv.sh's Venus build, after the whole patches/mesa/
+# series), each with --fuzz=0 as the builds do. Per patch it prints "exact", "offsets" or "FAILS" (with the failed hunks, and whether
 # fuzz would let it apply: a sign that only context moved). A failed patch is applied as far as
 # it goes, so the scratch tree keeps its .rej files for a rebase by hand.
-# One tree serves both builds' orders only while the patches of patches/mesa/ that are not
-# *-wsi-* change no file that a WSI or PanVK patch changes; the script refuses otherwise, and it
-# refuses a patch that adds or deletes a file (the refresh handles changed files only).
+# For build-sysdrv.sh it also checks that the new tree's subprojects/venus-protocol.wrap names
+# config.sh's VENUS_PROTOCOL_VERSION, and that the patches of patches/mesa/ that the older Mesa of
+# the system-driver mode's GL stack also takes (MESA_SYSDRV_GL_SHARED_PATCHES) still apply to it
+# with --fuzz=0, before and after their refresh (its archive from the cache's sources/, downloaded
+# and checked against MESA_SYSDRV_SHA256 when missing); nothing is written otherwise.
+# One tree serves the three builds' orders only while the patches of patches/mesa/ that are not
+# *-wsi-* change no file that a WSI or PanVK patch changes, and the Venus patches no file that a
+# PanVK patch changes; the script refuses otherwise, and it refuses a patch that adds or deletes a
+# file (the refresh handles changed files only). config.sh's VENUS_PROTOCOL_* pin must match the
+# new tree's subprojects/venus-protocol.wrap; build-sysdrv.sh checks that.
 # Exit 0: every patch applies (with --write: pin and patches written); 1: a patch fails or is
 # refused, or a step fails (download, unpack, refresh), nothing written; 2: wrong arguments.
 #
@@ -66,9 +74,11 @@ echo "trying:      $commit"
 # The files a patch changes, as its "+++ b/" lines name them, each once.
 patch_files() { sed -n 's|^+++ b/\([^[:space:]]*\).*|\1|p' "$1" | awk '!seen[$0]++'; }
 
-# Build order: the Turnip series, then PanVK's (only the folders' own files, as the builds take).
+# Build order: the Turnip series, then PanVK's, then Venus's (only the folders' own files, as the
+# builds take).
 mapfile -t series < <(find "$here/patches/mesa" -maxdepth 1 -name '*.patch' | LC_ALL=C sort
-    find "$here/patches/mesa-panvk" -maxdepth 1 -name '*.patch' | LC_ALL=C sort)
+    find "$here/patches/mesa-panvk" -maxdepth 1 -name '*.patch' | LC_ALL=C sort
+    find "$here/patches/mesa-sysdrv" -maxdepth 1 -name '*.patch' | LC_ALL=C sort)
 
 # Refusals, before anything is downloaded: a patch that adds or deletes a file, and a non-WSI
 # Turnip patch that shares a file with the WSI series or PanVK's (build-panvk.sh applies the
@@ -91,6 +101,22 @@ for p in "${series[@]}"; do
         if [[ -n "${shared[$f]:-}" ]]; then
             echo "refusing ${p#"$here/patches/"}: it changes $f, which a WSI or PanVK patch changes" \
                 "too; the two builds would need two trees" >&2
+            refused=1
+        fi
+    done < <(patch_files "$p")
+done
+# Venus's build applies no PanVK patch: a file of both would need a tree of its own.
+declare -A panvk=()
+for p in "${series[@]}"; do
+    [[ "$p" == */patches/mesa-panvk/* ]] || continue
+    while IFS= read -r f; do panvk["$f"]=1; done < <(patch_files "$p")
+done
+for p in "${series[@]}"; do
+    [[ "$p" == */patches/mesa-sysdrv/* ]] || continue
+    while IFS= read -r f; do
+        if [[ -n "${panvk[$f]:-}" ]]; then
+            echo "refusing ${p#"$here/patches/"}: it changes $f, which a PanVK patch changes too;" \
+                "the Venus build would need a tree of its own" >&2
             refused=1
         fi
     done < <(patch_files "$p")
@@ -164,6 +190,39 @@ if [[ $failed == 1 ]]; then
     exit 1
 fi
 echo "every patch applies to $commit"
+
+# The system-driver mode (build-sysdrv.sh): the Venus protocol release the new tree's wrap names,
+# and the patches the older GL stack shares, on that older Mesa.
+wrap_dir="$(sed -n 's/^directory *= *//p' "$tree/subprojects/venus-protocol.wrap" 2>/dev/null || true)"
+if [[ "$wrap_dir" != "venus-protocol-${VENUS_PROTOCOL_VERSION#v}" ]]; then
+    echo "the new tree's subprojects/venus-protocol.wrap names '${wrap_dir:-nothing}', not" \
+        "venus-protocol-${VENUS_PROTOCOL_VERSION#v}: move config.sh's VENUS_PROTOCOL_* and devdriver/build.sh's" \
+        "VPROTO_* to that release first (both sides speak one protocol); nothing written" >&2
+    exit 1
+fi
+sysdrv_tarball="$USERLAND_CACHE/sources/$(basename "$MESA_SYSDRV_URL")"
+if ! echo "$MESA_SYSDRV_SHA256  $sysdrv_tarball" | sha256sum -c --quiet - >/dev/null 2>&1; then
+    mkdir -p "$(dirname "$sysdrv_tarball")"
+    curl -fsSL --retry 3 -o "$sysdrv_tarball.part" "$MESA_SYSDRV_URL"
+    echo "$MESA_SYSDRV_SHA256  $sysdrv_tarball.part" | sha256sum -c --quiet - ||
+        { rm -f "$sysdrv_tarball.part"; echo "$(basename "$MESA_SYSDRV_URL"): SHA-256 mismatch; nothing written" >&2; exit 1; }
+    mv "$sysdrv_tarball.part" "$sysdrv_tarball"
+fi
+# [patch file] applies to the older Mesa with --fuzz=0: only its files are unpacked.
+applies_to_sysdrv_gl() {
+    local scratch rc=0 files
+    scratch="$(mktemp -d "$base/sysdrv-gl.XXXXXX")"
+    mapfile -t files < <(patch_files "$1")
+    tar -xJf "$sysdrv_tarball" -C "$scratch" --strip-components=1 "${files[@]/#/mesa-$MESA_SYSDRV_VERSION/}" || rc=1
+    [[ $rc == 0 ]] && { patch -d "$scratch" -p1 --forward --fuzz=0 --dry-run --quiet < "$1" >/dev/null 2>&1 || rc=1; }
+    rm -rf "$scratch"
+    return "$rc"
+}
+for shared in "${MESA_SYSDRV_GL_SHARED_PATCHES[@]}"; do
+    applies_to_sysdrv_gl "$here/patches/mesa/$shared" ||
+        { echo "patches/mesa/$shared does not apply to Mesa $MESA_SYSDRV_VERSION (build-sysdrv.sh); nothing written" >&2; exit 1; }
+done
+echo "the system-driver mode: venus-protocol ${VENUS_PROTOCOL_VERSION#v} as the wrap names; ${MESA_SYSDRV_GL_SHARED_PATCHES[*]} apply to Mesa $MESA_SYSDRV_VERSION"
 if [[ $write != 1 ]]; then
     rm -rf "$work"
     exit 0
@@ -188,6 +247,14 @@ for p in "${series[@]}"; do
         [[ $rc == 1 ]] || { echo "refreshing ${p#"$here/patches/"}: no change in $f (diff exit $rc)" >&2; exit 1; }
         rm -f "$work/part" "$work/after"
     done < <(patch_files "$p")
+    # A refreshed patch that the older GL stack shares must still apply there.
+    for shared in "${MESA_SYSDRV_GL_SHARED_PATCHES[@]}"; do
+        if [[ "$p" == "$here/patches/mesa/$shared" ]] && ! applies_to_sysdrv_gl "$new"; then
+            echo "the refreshed patches/mesa/$shared does not apply to Mesa $MESA_SYSDRV_VERSION (build-sysdrv.sh):" \
+                "keep both forms or rebase it by hand; nothing written" >&2
+            exit 1
+        fi
+    done
 done
 # The new config.sh is made and checked in work/ too. Then the archive, config.sh (written in
 # place, so that it keeps its mode) and the patches go to their places: if a write stops part way,

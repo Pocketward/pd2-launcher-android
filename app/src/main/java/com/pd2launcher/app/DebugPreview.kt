@@ -25,6 +25,22 @@ import com.pd2launcher.app.ui.InstallRun
  */
 object DebugPreview {
     const val NOT_SUPPORTED = "not-supported"
+    /** The device check for a GPU that only the phone's own driver can run: its dialog, Try anyway or Close. */
+    const val PHONE_DRIVER_ONLY = "phone-driver-only"
+    /** The same dialog on this device as a debug build's forced route gives it, marked as forced. */
+    const val PHONE_DRIVER_FORCED = "phone-driver-forced"
+    /** Play where the route is the phone's own driver (the built-in driver does not support the GPU), and after its failure (the error line and its button). */
+    const val PLAY_PHONE_DRIVER_ONLY = "play-phone-driver-only"
+    const val PLAY_PHONE_DRIVER_FAILED = "play-phone-driver-failed"
+
+    /** The driver options a Play preview shows ([PLAY_PHONE_DRIVER_ONLY], [PLAY_PHONE_DRIVER_FAILED]); null for the others. */
+    fun driverOptions(name: String?): DriverOptions? = when (name) {
+        PLAY_PHONE_DRIVER_ONLY, PLAY_PHONE_DRIVER_FAILED -> DriverOptions(builtIn = false, venus = true)
+        else -> null
+    }
+
+    /** The route whose failure a Play preview shows ([PLAY_PHONE_DRIVER_FAILED]); null for the others. */
+    fun driverFailed(name: String?): GraphicsRoute? = if (name == PLAY_PHONE_DRIVER_FAILED) GraphicsRoute.VENUS else null
     const val UNPACK = "unpack"
     /**
      * Install over the live session from Blizzard's downloads: before it starts; running at
@@ -60,6 +76,16 @@ object DebugPreview {
      * Continue sends nothing and opens the running [DOWNLOAD] preview instead.
      */
     const val SOURCE = "source"
+    /** The same where the game takes a route for a GPU that Turnip and PanVK do not support: Blizzard's installers not recommended ([PhoneDriverAdvice]); and as forced by a test. */
+    const val SOURCE_PHONE_DRIVER = "source-phone-driver"
+    const val SOURCE_PHONE_DRIVER_FORCED = "source-phone-driver-forced"
+
+    /** The advice a source preview shows ([SOURCE_PHONE_DRIVER], [SOURCE_PHONE_DRIVER_FORCED]); null for the others. */
+    fun sourceAdvice(name: String?): PhoneDriverAdvice? = when (name) {
+        SOURCE_PHONE_DRIVER -> PhoneDriverAdvice.UNSUPPORTED
+        SOURCE_PHONE_DRIVER_FORCED -> PhoneDriverAdvice.FORCED
+        else -> null
+    }
     /** Settings over the live session; `--es page <name>` picks the page, `--ez buttons true` opens the Controls screen over it. */
     const val SETTINGS = "settings"
     /** Repair over the live session, as where the app holds it on screen; its actions do nothing here. */
@@ -285,6 +311,16 @@ object DebugPreview {
         return when (name) {
             // An Adreno 505: refused.
             NOT_SUPPORTED -> Onboarding.screen(device(facts.copy(gpu = KgslGpu(0x05000500, 5))), session, notificationsOff)
+            // A Samsung Xclipse 940 whose own Vulkan driver can run the system-driver mode.
+            PHONE_DRIVER_ONLY -> {
+                val xclipse = SystemDriverGpu("Samsung Xclipse 940", 1 to 3, zinkStarts = true, memory = SharedMemory.DMA_BUF_EXPORT)
+                Onboarding.screen(
+                    device(facts.copy(gpu = xclipse, phoneDriver = xclipse, systemDriverServer = true, systemDriverFiles = true)),
+                    session, notificationsOff,
+                )
+            }
+            // This device as a debug build's forced route gives the dialog (not accepted yet).
+            PHONE_DRIVER_FORCED -> Onboarding.screen(device(facts.copy(forcedRoute = GraphicsRoute.VENUS)), session, notificationsOff)
             CHECK -> Onboarding.screen(done, session, notificationsOff, network = network)
             CHECK_GRANTS -> Onboarding.screen(done, session, notificationsOff = true, batteryRestricted = true)
             CHECK_PASSED -> Onboarding.screen(done, session, notificationsOff = false, batteryRestricted = false)

@@ -1,0 +1,49 @@
+Subject: [PATCH] virgl: the vtest winsys without libdrm
+
+Our build links no libdrm (Turnip with KGSL only: meson.build sets system_has_kms_drm to false
+and dep_libdrm to the not-found dependency), but a build with the virgl driver also compiles
+virgl's DRM winsys (virtio-gpu), which needs libdrm's headers and functions, and drm_helper.h
+calls it for the virtio_gpu DRM driver. The game uses only the vtest winsys (GALLIUM_DRIVER=
+virpipe on the GLX software path). Build the DRM winsys, link it into the virgl driver and give
+drm_helper.h's virtio_gpu screen only where libdrm is found (HAVE_LIBDRM); else the virtio_gpu
+descriptor is a stub, as for a driver that is not built.
+
+---
+--- a/src/gallium/meson.build
++++ b/src/gallium/meson.build
+@@ -171,7 +171,10 @@
+ if with_gallium_virgl
+   subdir('winsys/virgl/common')
+   if not with_platform_windows
+-    subdir('winsys/virgl/drm')
++    # The DRM winsys (virtio-gpu) needs libdrm; the vtest winsys (virpipe) does not.
++    if dep_libdrm.found()
++      subdir('winsys/virgl/drm')
++    endif
+     subdir('winsys/virgl/vtest')
+   endif
+   subdir('drivers/virgl')
+--- a/src/gallium/drivers/virgl/meson.build
++++ b/src/gallium/drivers/virgl/meson.build
+@@ -26,7 +26,9 @@
+ 
+ virgl_deps = [libvirgl]
+ if not with_platform_windows
+-  virgl_deps += libvirgldrm
++  if dep_libdrm.found()
++    virgl_deps += libvirgldrm
++  endif
+   virgl_deps += libvirglvtest
+ endif
+ 
+--- a/src/gallium/auxiliary/target-helpers/drm_helper.h
++++ b/src/gallium/auxiliary/target-helpers/drm_helper.h
+@@ -256,7 +256,7 @@
+ DRM_DRIVER_DESCRIPTOR_STUB(kgsl)
+ #endif
+ 
+-#if defined(GALLIUM_VIRGL)
++#if defined(GALLIUM_VIRGL) && defined(HAVE_LIBDRM)
+ #include "virgl/drm/virgl_drm_public.h"
+ #include "virgl/virgl_public.h"
+ 

@@ -5,6 +5,7 @@ import android.hardware.display.DisplayManager
 import android.view.Display
 import android.view.Surface
 import java.io.File
+import java.io.IOException
 import java.io.RandomAccessFile
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -352,6 +353,42 @@ object PresentCounter {
 
         fun ticks(): Long = word.getInt(TICKS).toLong() and 0xFFFFFFFFL
     }
+
+    /** The frames counted so far (the first word, in the device's little-endian order); null without the file. */
+    fun read(file: File): Long? = try {
+        RandomAccessFile(file, "r").use { f ->
+            if (f.length() < 4) {
+                null
+            } else {
+                val b = ByteArray(4)
+                f.readFully(b)
+                ByteBuffer.wrap(b).order(ByteOrder.LITTLE_ENDIAN).int.toLong() and 0xFFFFFFFFL
+            }
+        }
+    } catch (_: IOException) {
+        null
+    }
+
+    /**
+     * Whether the game's frames go to the app's buffers now, not to the X screen (the present
+     * server's word at byte 192, [PresentServer]); null without the file.
+     */
+    fun toTheApp(file: File): Boolean? = try {
+        RandomAccessFile(file, "r").use { f ->
+            if (f.length() < TO_THE_APP + 4) {
+                null
+            } else {
+                val b = ByteArray(4)
+                f.seek(TO_THE_APP)
+                f.readFully(b)
+                ByteBuffer.wrap(b).order(ByteOrder.LITTLE_ENDIAN).int != 0
+            }
+        }
+    } catch (_: IOException) {
+        null
+    }
+
+    private const val TO_THE_APP = 192L
 }
 
 /**

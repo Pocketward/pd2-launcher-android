@@ -1,0 +1,74 @@
+Subject: [PATCH] TEST ONLY: vkr: show the device as an older driver would
+
+Never shipped. For tests of Zink on drivers older than the one at hand (Samsung's Xclipse
+driver is Vulkan 1.3 without VK_KHR_maintenance5; Mali drivers before r53 have no
+VK_EXT_robustness2) on a driver that has everything (a Vulkan 1.4 desktop or Mali driver),
+in the server's environment:
+- VKR_TEST_VULKAN_1_3: the device's apiVersion is capped at 1.3 in vkGetPhysicalDeviceProperties
+  and vkGetPhysicalDeviceProperties2, and VK_KHR_maintenance5 is left out;
+- VKR_TEST_HIDE_EXTENSIONS=<name>[,<name>...]: these device extensions are left out.
+Venus then gives Zink the device the way it would give it that driver (Mesa 26.2.3
+src/virtio/vulkan/vn_physical_device.c: the version is the minimum of the renderer's, and a
+passthrough extension needs the renderer's).
+
+Written from virglrenderer main e18f8c00 src/venus/vkr_physical_device.c; applies after our
+0001-0003.
+
+---
+--- a/src/venus/vkr_physical_device.c
++++ b/src/venus/vkr_physical_device.c
+@@ -316,6 +316,28 @@
+    }
+ }
+ 
++static bool
++vkr_test_hidden_extension(const char *name)
++{
++   /* TEST ONLY (patches/test/0901): the device as a driver without these extensions shows it */
++   if (getenv("VKR_TEST_VULKAN_1_3") && !strcmp(name, "VK_KHR_maintenance5"))
++      return true;
++   const char *list = getenv("VKR_TEST_HIDE_EXTENSIONS");
++   const size_t len = strlen(name);
++   for (const char *p = list; p && *p; p = strchr(p, ',') ? strchr(p, ',') + 1 : NULL) {
++      if (!strncmp(p, name, len) && (p[len] == ',' || p[len] == '\0'))
++         return true;
++   }
++   return false;
++}
++
++static void
++vkr_test_vulkan_1_3(uint32_t *api_version)
++{
++   if (getenv("VKR_TEST_VULKAN_1_3") && *api_version > VK_API_VERSION_1_3)
++      *api_version = VK_MAKE_API_VERSION(0, 1, 3, VK_API_VERSION_PATCH(*api_version));
++}
++
+ static void
+ vkr_physical_device_init_extensions(struct vkr_physical_device *physical_dev)
+ {
+@@ -356,6 +378,9 @@
+       else if (!strcmp(props->extensionName, "VK_KHR_portability_subset"))
+          physical_dev->KHR_portability_subset = true;
+ 
++      if (vkr_test_hidden_extension(props->extensionName))
++         continue;
++
+       const uint32_t spec_ver = vkr_extension_get_spec_version(props->extensionName);
+       if (spec_ver) {
+          if (props->specVersion > spec_ver)
+@@ -421,6 +446,7 @@
+ 
+    VkPhysicalDeviceProperties *props = &physical_dev->properties;
+    props->apiVersion = vkr_api_version_cap_minor(props->apiVersion, VKR_MAX_API_VERSION);
++   vkr_test_vulkan_1_3(&props->apiVersion);
+ }
+ 
+ static inline void
+@@ -757,6 +783,7 @@
+ 
+    vn_replace_vkGetPhysicalDeviceProperties2_args_handle(args);
+    vk->GetPhysicalDeviceProperties2(args->physicalDevice, args->pProperties);
++   vkr_test_vulkan_1_3(&args->pProperties->properties.apiVersion);
+ }
+ 
+ static void

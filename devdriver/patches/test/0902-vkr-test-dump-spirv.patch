@@ -1,0 +1,77 @@
+Subject: [PATCH] test only: vkr writes each shader module's SPIR-V to VKR_TEST_SPIRV_DIR and logs a refused pipeline's modules
+
+For the bring-up of a driver that refuses a pipeline without saying why (the module files are
+read with spirv-dis on a PC). Never applied by build.sh.
+
+---
+--- a/src/venus/vkr_pipeline.c
++++ b/src/venus/vkr_pipeline.c
+@@ -7,6 +7,25 @@
+ 
+ #include "vkr_pipeline_gen.h"
+ 
++#include <stdio.h>
++#include <stdlib.h>
++
++/* Test only: with VKR_TEST_SPIRV_DIR=<dir>, each shader module's SPIR-V is written there as
++ * module-<driver handle>.spv, and a graphics pipeline that the driver refuses logs the driver
++ * handles of its stages' modules.
++ */
++static const char *
++vkr_test_spirv_dir(void)
++{
++   static const char *dir;
++   static bool read;
++   if (!read) {
++      dir = getenv("VKR_TEST_SPIRV_DIR");
++      read = true;
++   }
++   return dir;
++}
++
+ static void
+ vkr_dispatch_vkCreateShaderModule(struct vn_dispatch_context *dispatch,
+                                   struct vn_command_vkCreateShaderModule *args)
+@@ -41,7 +60,21 @@
+       return;
+    }
+ 
+-   vkr_shader_module_create_and_add(dispatch->data, args);
++   struct vkr_shader_module *mod = vkr_shader_module_create_and_add(dispatch->data, args);
++   const char *dir = vkr_test_spirv_dir();
++   if (mod && dir) {
++      char path[512];
++      snprintf(path, sizeof(path), "%s/module-%llx.spv", dir,
++               (unsigned long long)(uintptr_t)mod->base.handle.shader_module);
++      FILE *f = fopen(path, "wb");
++      if (f) {
++         fwrite(args->pCreateInfo->pCode, 1, args->pCreateInfo->codeSize, f);
++         fclose(f);
++      }
++      vkr_log("test: shader module %llx: %zu bytes",
++              (unsigned long long)(uintptr_t)mod->base.handle.shader_module,
++              (size_t)args->pCreateInfo->codeSize);
++   }
+ }
+ 
+ static void
+@@ -114,8 +147,18 @@
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct object_array arr;
+ 
+-   if (vkr_graphics_pipeline_create_array(ctx, args, &arr) < VK_SUCCESS)
++   if (vkr_graphics_pipeline_create_array(ctx, args, &arr) < VK_SUCCESS) {
++      if (vkr_test_spirv_dir()) {
++         for (uint32_t i = 0; i < args->createInfoCount; i++) {
++            const VkGraphicsPipelineCreateInfo *info = &args->pCreateInfos[i];
++            for (uint32_t j = 0; j < info->stageCount; j++)
++               vkr_log("test: refused pipeline %u stage 0x%x module %llx", i,
++                       info->pStages[j].stage,
++                       (unsigned long long)(uintptr_t)info->pStages[j].module);
++         }
++      }
+       return;
++   }
+ 
+    vkr_pipeline_add_array(ctx, dev, &arr, args->pPipelines);
+ }

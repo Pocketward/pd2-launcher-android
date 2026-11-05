@@ -1,0 +1,485 @@
+panvk/kmod: abandoned JM work ends as failed, and every JM wait for the queue's work has a time limit
+
+Patch 0006 gives the job manager's waits for idle and for the device's end a time limit of 10 s from
+the call, and then abandons the work still in flight: it drops the callbacks. A dropped callback
+leaves the work's sync objects SUBMITTED for ever, the other waits for that work have no limit
+(Zink's vkWaitSemaphores with UINT64_MAX; pan_kmod_kbase_wait_seq for a command buffer used again,
+for the BC refresh ring and for an emulated BC image; a submission's wait for free atoms, for room
+in open_seq and for the work before it), and a limit from the call takes a long queue of valid work
+for a lost device.
+
+This patch:
+- pan_kmod_kbase_abandon() ends the submissions still in flight as failed: it runs each callback
+  once, with ok false (so the sync objects are signaled; with patch 0008 the callback reads nothing
+  that the app can free once the device is lost), and then the submissions are no longer open, so
+  every wait for them returns. The event thread still frees their atoms if they report later, but
+  it runs no callback of them and does not end their open seq: abandon ends it after the callback,
+  so a blocking submitter, whose callback writes to its stack, waits until then. abandon counts its
+  own callbacks as running and returns once no callback runs, so a second call returns only after
+  the callbacks of the first. From the first call on, nothing is submitted (submit_async returns 0).
+- Every wait of panvk for submitted work on the job manager has the limit (panvk_kbase_wait_seq):
+  vkQueueWaitIdle and the queue's destroy, and the waits for a command buffer used again, for the
+  BC refresh ring's slot and for an emulated BC image's last refresh. When the work sends no event
+  for 10 s (1 s on a device that is lost already: vkQueueWaitIdle then waits too, and abandons),
+  the device is lost (first, so that the callbacks read no command buffer), panvk logs "panvk: the
+  queue's work did not report in N s; it ends as failed", and the work is abandoned.
+- A submission's waits in submit_async (for free atoms and room in open_seq, and for the work
+  before it when it has nothing to run) end at the same limit, or when the queue is abandoned:
+  then it is not sent (0), and the kmod logs "kbase: the queue's work sent no event in 10 s".
+  The caller then loses the device and abandons the work, as it does when the kernel refuses a
+  submission or a part of a large submission.
+- The limits count from the last event of the work, not from the call
+  (pan_kmod_kbase_wait_seq_timeout takes a time without an event; the event thread records when it
+  reads events), so a long queue of valid work is not a lost device.
+- The log names the oldest open submission (the table is not in order) and says "has not reported
+  yet" for each atom still in flight, once.
+
+--- a/src/panfrost/lib/kmod/kbase_kmod.c
++++ b/src/panfrost/lib/kmod/kbase_kmod.c
+@@ -263,6 +263,8 @@
+    bool thread_started, stop, fence_warned;
+    int64_t stop_by;                  /* CLOCK_MONOTONIC: once stopped, the thread ends by then */
+    unsigned in_cb;                   /* finished submissions whose callback has not returned */
++   bool abandoned;                   /* pan_kmod_kbase_abandon: nothing is submitted any more */
++   int64_t last_event_ns;            /* CLOCK_MONOTONIC: when the last events were read */
+ };
+ 
+ struct kbase_kmod_dev {
+@@ -1530,6 +1532,9 @@
+    uint64_t seq;
+    unsigned pending;
+    bool ok;
++   /* pan_kmod_kbase_abandon took it: it runs the callback and ends the submission's open seq,
++    * not the event thread. */
++   bool abandoned;
+    pan_kmod_kbase_done_cb done;
+    void *data;
+ };
+@@ -1579,6 +1584,7 @@
+       unsigned nr_finished = 0;
+ 
+       pthread_mutex_lock(&q->lock);
++      q->last_event_ns = os_time_get_nano();
+       for (unsigned i = 0; i < n / sizeof(struct kbase_jd_event); i++) {
+          if (ev[i].udata[0] != KBASE_ATOM_TAG)
+             continue; /* not one of ours */
+@@ -1624,8 +1630,9 @@
+             done[i](sub->data, sub->ok);
+          pthread_mutex_lock(&q->lock);
+          q->in_cb -= !!done[i];
+-         /* seq 0: a fence atom of its own, not a submission. */
+-         for (unsigned k = 0; sub->seq && k < q->nr_open_seq; k++) {
++         /* seq 0: a fence atom of its own, not a submission. An abandoned one stays open until
++          * pan_kmod_kbase_abandon has run its callback: a blocking submitter waits for it. */
++         for (unsigned k = 0; sub->seq && !sub->abandoned && k < q->nr_open_seq; k++) {
+             if (q->open_seq[k] == sub->seq) {
+                q->open_seq[k] = q->open_seq[--q->nr_open_seq];
+                break;
+@@ -1670,6 +1677,20 @@
+    pthread_mutex_destroy(&q->lock);
+ }
+ 
++/* With q->lock held: one wait for q->cond, until no event has come for timeout_ns from start or
++ * from the last events read, whichever is later (a long queue of work that reports is not lost).
++ * False once that time has passed. */
++static bool
++kbase_queue_wait(struct kbase_queue *q, int64_t start, int64_t timeout_ns)
++{
++   const int64_t end = MAX2(start, q->last_event_ns) + timeout_ns;
++   if (os_time_get_nano() >= end)
++      return false;
++   const struct timespec until = {.tv_sec = end / 1000000000ll, .tv_nsec = end % 1000000000ll};
++   pthread_cond_timedwait(&q->cond, &q->lock, &until);
++   return true;
++}
++
+ uint64_t
+ pan_kmod_kbase_submit_async(struct pan_kmod_dev *dev, const struct pan_kmod_kbase_atom *atoms,
+                             unsigned nr_atoms, int *fence_fd, pan_kmod_kbase_done_cb done,
+@@ -1697,15 +1718,33 @@
+       q->thread_started = true;
+    }
+ 
++   if (q->abandoned) {
++      pthread_mutex_unlock(&q->lock);
++      return 0;
++   }
++
+    const uint64_t seq = q->next_seq++;
+    const bool fence = fence_fd && (nr_atoms || q->last_atom);
+    const unsigned need = nr_atoms + fence;
++   /* The waits below end when the queue is abandoned, or when its work sends no event for
++    * PAN_KMOD_KBASE_END_QUEUE_TIMEOUT_NS: then nothing is sent, and the caller counts the device
++    * as lost and abandons the work. */
++   const int64_t start = os_time_get_nano();
++   const long long limit_s = PAN_KMOD_KBASE_END_QUEUE_TIMEOUT_NS / 1000000000ll;
+ 
+    if (!need) {
+       /* Nothing to run and nothing on the GPU: complete once earlier submissions have run their
+        * callbacks, so completion stays in order. */
+-      while (q->nr_open_seq)
+-         pthread_cond_wait(&q->cond, &q->lock);
++      while (!q->abandoned && q->nr_open_seq &&
++             kbase_queue_wait(q, start, PAN_KMOD_KBASE_END_QUEUE_TIMEOUT_NS))
++         ;
++      if (q->abandoned || q->nr_open_seq) {
++         if (!q->abandoned)
++            mesa_loge("kbase: the queue's work sent no event in %lld s; a submission is not sent",
++                      limit_s);
++         pthread_mutex_unlock(&q->lock);
++         return 0;
++      }
+       pthread_mutex_unlock(&q->lock);
+       if (done)
+          done(data, true);
+@@ -1714,8 +1753,17 @@
+ 
+    /* A submission stays open until its callback has run, after its atoms are free again, so more
+     * than 255 can be open: wait for room in open_seq too, which they overflowed. */
+-   while (q->free_atoms < need || q->nr_open_seq >= ARRAY_SIZE(q->open_seq))
+-      pthread_cond_wait(&q->cond, &q->lock);
++   while (!q->abandoned &&
++          (q->free_atoms < need || q->nr_open_seq >= ARRAY_SIZE(q->open_seq)) &&
++          kbase_queue_wait(q, start, PAN_KMOD_KBASE_END_QUEUE_TIMEOUT_NS))
++      ;
++   if (q->abandoned || q->free_atoms < need || q->nr_open_seq >= ARRAY_SIZE(q->open_seq)) {
++      if (!q->abandoned)
++         mesa_loge("kbase: the queue's work sent no event in %lld s; a submission is not sent",
++                   limit_s);
++      pthread_mutex_unlock(&q->lock);
++      return 0;
++   }
+ 
+ 
+    /* With GPU atoms, the fence atom gets a record of its own (seq 0, no callback); a fence
+@@ -1839,9 +1887,10 @@
+ }
+ 
+ bool
+-pan_kmod_kbase_wait_seq_timeout(struct pan_kmod_dev *dev, uint64_t seq, int64_t abs_timeout_ns)
++pan_kmod_kbase_wait_seq_timeout(struct pan_kmod_dev *dev, uint64_t seq, int64_t timeout_ns)
+ {
+    struct kbase_queue *q = kbase_queue(dev);
++   const int64_t start = os_time_get_nano();
+ 
+    bool done = false;
+    pthread_mutex_lock(&q->lock);
+@@ -1855,18 +1904,8 @@
+          done = true;
+          break;
+       }
+-      if (abs_timeout_ns == INT64_MAX) {
+-         pthread_cond_wait(&q->cond, &q->lock);
+-         continue;
+-      }
+-      struct timespec now;
+-      clock_gettime(CLOCK_MONOTONIC, &now);
+-      const int64_t now_ns = (int64_t)now.tv_sec * 1000000000ll + now.tv_nsec;
+-      if (now_ns >= abs_timeout_ns)
++      if (!kbase_queue_wait(q, start, timeout_ns))
+          break;
+-      const struct timespec until = {.tv_sec = abs_timeout_ns / 1000000000ll,
+-                                     .tv_nsec = abs_timeout_ns % 1000000000ll};
+-      pthread_cond_timedwait(&q->cond, &q->lock, &until);
+    }
+    pthread_mutex_unlock(&q->lock);
+    return done;
+@@ -1876,18 +1915,62 @@
+ pan_kmod_kbase_abandon(struct pan_kmod_dev *dev)
+ {
+    struct kbase_queue *q = kbase_queue(dev);
++   /* At most one entry for each atom number in flight. */
++   struct {
++      pan_kmod_kbase_done_cb done;
++      void *data;
++   } fail[256];
++   uint64_t seqs[256];
++   unsigned nr_fail = 0, nr_seqs = 0;
+ 
+    pthread_mutex_lock(&q->lock);
+-   mesa_loge("kbase: the queue ends with %u submission(s) open (one is %" PRIu64 ", the newest "
+-             "is %" PRIu64 "), %u in flight, %u callback(s) running", q->nr_open_seq,
+-             q->nr_open_seq ? q->open_seq[0] : 0, q->next_seq - 1, q->in_flight, q->in_cb);
++   /* Once abandoned, nothing is submitted, so a later call has no work of its own to end. */
++   const bool first = !q->abandoned;
++   q->abandoned = true;
++   uint64_t oldest = 0;
++   for (unsigned k = 0; k < q->nr_open_seq; k++)
++      oldest = !oldest || q->open_seq[k] < oldest ? q->open_seq[k] : oldest;
++   if (first)
++      mesa_loge("kbase: %u submission(s) still open (the oldest is %" PRIu64 ", the newest is "
++                "%" PRIu64 "), %u in flight, %u callback(s) running; they end as failed",
++                q->nr_open_seq, oldest, q->next_seq - 1, q->in_flight, q->in_cb);
+    for (unsigned an = 1; an < 256; an++) {
+-      if (!q->owner[an])
++      struct kbase_sub *sub = q->owner[an];
++      if (!sub || sub->abandoned)
+          continue;
+-      mesa_loge("kbase: atom %u (submission %" PRIu64 "%s) has not reported; its callback is "
+-                "dropped", an, q->owner[an]->seq, q->is_fence[an] ? ", fence" : "");
+-      q->owner[an]->done = NULL;
++      mesa_loge("kbase: atom %u (submission %" PRIu64 "%s) has not reported yet", an, sub->seq,
++                q->is_fence[an] ? ", fence" : "");
++      /* Its callback runs once, here, and its seq stays open until then: the event thread still
++       * frees its atoms if they report, but runs no callback and leaves the seq open. */
++      sub->abandoned = true;
++      if (sub->seq)
++         seqs[nr_seqs++] = sub->seq;
++      if (sub->done) {
++         fail[nr_fail].done = sub->done;
++         fail[nr_fail++].data = sub->data;
++         sub->done = NULL;
++      }
++   }
++   /* Counted as running callbacks, so that another abandon returns only after them. */
++   q->in_cb += nr_fail;
++   pthread_mutex_unlock(&q->lock);
++
++   /* Outside the lock, and while the submissions are still open: a blocking submit's caller
++    * waits until its callback has run. */
++   for (unsigned i = 0; i < nr_fail; i++)
++      fail[i].done(fail[i].data, false);
++
++   pthread_mutex_lock(&q->lock);
++   for (unsigned i = 0; i < nr_seqs; i++) {
++      for (unsigned k = 0; k < q->nr_open_seq; k++) {
++         if (q->open_seq[k] == seqs[i]) {
++            q->open_seq[k] = q->open_seq[--q->nr_open_seq];
++            break;
++         }
++      }
+    }
++   q->in_cb -= nr_fail;
++   pthread_cond_broadcast(&q->cond);
+    while (q->in_cb)
+       pthread_cond_wait(&q->cond, &q->lock);
+    pthread_mutex_unlock(&q->lock);
+--- a/src/panfrost/lib/kmod/kbase_kmod.h
++++ b/src/panfrost/lib/kmod/kbase_kmod.h
+@@ -64,7 +64,9 @@
+  * fence_fd is not NULL it receives a sync file (the caller owns it) that signals once they have
+  * all run, or -1 when there is nothing to wait for. done, if set, is called on the kmod's event
+  * thread when every atom has reported, with ok false if one faulted. Returns the submission's
+- * sequence number, or 0 when the kernel refused it (done is not called then). */
++ * sequence number, or 0 when it is not sent (done is not called then): the kernel refused it, the
++ * queue was abandoned, or the queue's work sent no event for PAN_KMOD_KBASE_END_QUEUE_TIMEOUT_NS
++ * while the submission waited for free atoms or for the work before it. */
+ typedef void (*pan_kmod_kbase_done_cb)(void *data, bool ok);
+ uint64_t pan_kmod_kbase_submit_async(struct pan_kmod_dev *dev,
+                                      const struct pan_kmod_kbase_atom *atoms, unsigned nr_atoms,
+@@ -74,20 +76,25 @@
+  * waits for everything submitted so far. */
+ void pan_kmod_kbase_wait_seq(struct pan_kmod_dev *dev, uint64_t seq);
+ 
+-/* Wait for submission seq and every one before it, until abs_timeout_ns on CLOCK_MONOTONIC
+- * (INT64_MAX: no limit). True when it has completed. 0 waits for everything submitted so far. */
+-bool pan_kmod_kbase_wait_seq_timeout(struct pan_kmod_dev *dev, uint64_t seq,
+-                                     int64_t abs_timeout_ns);
++/* Wait for submission seq and every one before it, until no event has come for timeout_ns (from
++ * the call or the last event, whichever is later). True when it has completed. 0 waits for
++ * everything submitted so far. */
++bool pan_kmod_kbase_wait_seq_timeout(struct pan_kmod_dev *dev, uint64_t seq, int64_t timeout_ns);
+ 
+-/* The submissions still in flight run no more callback (their command buffers and queue can be
+- * gone); returns once no callback runs. For a queue that ends with work that did not report. */
++/* For a lost queue whose work did not report: the submissions still in flight end as failed (their
++ * callbacks run once, with ok false, so their sync objects are signaled), they are no longer open
++ * once their callbacks have run (waits for them return), and nothing is submitted any more
++ * (submit_async returns 0). Returns once no callback runs, also one that another call of it
++ * runs; none of that work runs a callback after it. A later call has nothing more to end. */
+ void pan_kmod_kbase_abandon(struct pan_kmod_dev *dev);
+ 
+-/* JM: how long a queue waits for its work before it counts the device as lost (vkQueueWaitIdle)
+- * or ends without it (its destroy, which then abandons the callbacks), and how long the event
+- * thread then waits for atoms still in flight before it ends without them. So work that never
+- * reports does not keep a process from ending. */
++/* JM: how long a wait for the queue's work goes on without an event of that work before the
++ * device counts as lost and the work is abandoned (panvk's waits for submitted work, and a
++ * submission's wait for free atoms; a wait on a device that is lost already takes the shorter
++ * time), and how long the event thread then waits for atoms still in flight before it ends
++ * without them. So work that never reports does not keep a process from ending. */
+ #define PAN_KMOD_KBASE_END_QUEUE_TIMEOUT_NS  (10ll * 1000000000ll)
++#define PAN_KMOD_KBASE_END_LOST_TIMEOUT_NS   (1ll * 1000000000ll)
+ #define PAN_KMOD_KBASE_END_THREAD_TIMEOUT_NS (2ll * 1000000000ll)
+ 
+ /* Submit atoms and wait for them. Returns false if the kernel refused the submission or an atom
+--- a/src/panfrost/vulkan/jm/panvk_vX_gpu_queue.c
++++ b/src/panfrost/vulkan/jm/panvk_vX_gpu_queue.c
+@@ -223,9 +223,15 @@
+                       : container_of(submit->command_buffers[j - (refresh ? 1 : 0)],
+                                      struct panvk_cmd_buffer, vk);
+       /* Its batches are reset below if they ran before, which must not happen under a GPU still
+-       * running the previous submission of it (simultaneous use). */
+-      if (d->cmdbufs[j]->kbase_seq)
+-         pan_kmod_kbase_wait_seq(dev->kmod.dev, d->cmdbufs[j]->kbase_seq);
++       * running the previous submission of it (simultaneous use). A previous submission that does
++       * not report is a lost device: then nothing is sent. */
++      if (d->cmdbufs[j]->kbase_seq &&
++          !panvk_kbase_wait_seq(dev, d->cmdbufs[j]->kbase_seq, PAN_KMOD_KBASE_END_QUEUE_TIMEOUT_NS)) {
++         if (refresh)
++            panvk_per_arch(bc_emu_refresh_end)(dev, refresh, 0);
++         panvk_kbase_submit_done(d, false);
++         return;
++      }
+    }
+ 
+    struct pan_kmod_kbase_atom atoms[PAN_KMOD_KBASE_MAX_ATOMS];
+@@ -244,11 +250,16 @@
+                   .syncobj = op->event->syncobj, .reset = op->type == PANVK_EVENT_OP_RESET};
+          }
+ 
+-         /* More than one submission takes: send what there is, the rest runs after it. */
++         /* More than one submission takes: send what there is, the rest runs after it. A part
++          * that is not sent is a lost device, and the work before it ends as failed (nothing
++          * more is sent then). */
+          if (nr_atoms + 2 > PAN_KMOD_KBASE_MAX_ATOMS) {
+             if (!pan_kmod_kbase_submit_async(dev->kmod.dev, atoms, nr_atoms, NULL,
+-                                             panvk_kbase_part_done, queue))
++                                             panvk_kbase_part_done, queue)) {
+                mesa_loge("panvk: the kbase submission was refused");
++               panvk_kbase_part_done(queue, false);
++               pan_kmod_kbase_abandon(dev->kmod.dev);
++            }
+             nr_atoms = 0;
+             last = 0;
+          }
+@@ -286,8 +297,10 @@
+    if (refresh)
+       panvk_per_arch(bc_emu_refresh_end)(dev, refresh, seq);
+    if (!seq) {
+-      /* Signal anyway, so nothing waits forever on work that was never sent. */
++      /* Signal anyway, so nothing waits forever on work that was never sent. The device is lost
++       * then, and the work before it ends as failed, so no wait for that work lasts for ever. */
+       panvk_kbase_submit_done(d, false);
++      pan_kmod_kbase_abandon(dev->kmod.dev);
+       return;
+    }
+ 
+@@ -725,18 +738,15 @@
+    struct panvk_gpu_queue *queue = container_of(vk_queue, struct panvk_gpu_queue, vk);
+    struct panvk_device *dev = to_panvk_device(vk_queue->base.device);
+ 
+-   /* With a time limit (none for a lost queue): work that never reports does not keep the
+-    * process from ending. No callback of that work runs after it (it would use the queue and the
+-    * command buffers that go now); the kmod's event thread names its atoms. */
+-   if (pan_kmod_dev_is_kbase(dev->kmod.dev)) {
+-      const int64_t end = vk_queue_is_lost(&queue->vk)
+-                             ? 0
+-                             : os_time_get_absolute_timeout(PAN_KMOD_KBASE_END_QUEUE_TIMEOUT_NS);
+-      if (!pan_kmod_kbase_wait_seq_timeout(dev->kmod.dev, 0, end)) {
+-         mesa_loge("panvk: the queue's work did not report; the device ends without it");
+-         pan_kmod_kbase_abandon(dev->kmod.dev);
+-      }
+-   }
++   /* With a time limit without an event (a short one on a lost device, whose work can still
++    * report): work that never reports does not keep the process from ending. It ends as failed,
++    * and no callback of it runs after that (it would use the queue and the command buffers that
++    * go now); its atoms are named. */
++   if (pan_kmod_dev_is_kbase(dev->kmod.dev))
++      panvk_kbase_wait_seq(dev, 0,
++                           vk_device_is_lost_no_report(&dev->vk)
++                              ? PAN_KMOD_KBASE_END_LOST_TIMEOUT_NS
++                              : PAN_KMOD_KBASE_END_QUEUE_TIMEOUT_NS);
+    vk_queue_finish(&queue->vk);
+    pan_kmod_sync_destroy(dev->kmod.dev, queue->sync);
+    vk_free(&dev->vk.alloc, queue);
+@@ -758,19 +768,21 @@
+    assert(queue->vk.submit.mode != VK_QUEUE_SUBMIT_MODE_THREADED);
+ 
+    if (vk_device_is_lost(&dev->vk)) {
++      /* kbase: the work can still report; what does not report in the short time ends as
++       * failed, so that the app's other waits for it end too. */
++      if (pan_kmod_dev_is_kbase(dev->kmod.dev))
++         panvk_kbase_wait_seq(dev, 0, PAN_KMOD_KBASE_END_LOST_TIMEOUT_NS);
+       /* Check printf buffer one more time before exiting */
+       u_printf_with_ctx(stdout, &dev->printf.ctx);
+       return VK_ERROR_DEVICE_LOST;
+    }
+ 
+-   /* kbase: everything submitted so far has completed and signaled. Work that does not report
+-    * within PAN_KMOD_KBASE_END_QUEUE_TIMEOUT_NS (longer than kbase's own job time-out) is a lost
+-    * device, so that an app that waits for idle at its end can end. */
++   /* kbase: everything submitted so far has completed and signaled. Work that sends no event
++    * for PAN_KMOD_KBASE_END_QUEUE_TIMEOUT_NS (longer than kbase's own job time-out) is a lost
++    * device, and it ends as failed, so that the app's other waits for it (Zink waits for a
++    * semaphore without a limit) end too, and an app that waits for idle at its end can end. */
+    if (pan_kmod_dev_is_kbase(dev->kmod.dev)) {
+-      const int64_t end = os_time_get_absolute_timeout(PAN_KMOD_KBASE_END_QUEUE_TIMEOUT_NS);
+-      if (!pan_kmod_kbase_wait_seq_timeout(dev->kmod.dev, 0, end))
+-         return vk_queue_set_lost(&queue->vk, "the queue's work did not report in %lld s",
+-                                  (long long)(PAN_KMOD_KBASE_END_QUEUE_TIMEOUT_NS / 1000000000));
++      panvk_kbase_wait_seq(dev, 0, PAN_KMOD_KBASE_END_QUEUE_TIMEOUT_NS);
+       return vk_device_check_status(&dev->vk);
+    }
+ 
+--- a/src/panfrost/vulkan/panvk_vX_cmd_meta.c
++++ b/src/panfrost/vulkan/panvk_vX_cmd_meta.c
+@@ -686,9 +686,11 @@
+    st->refresh_next = (st->refresh_next + 1) % ARRAY_SIZE(st->refresh);
+    VK_FROM_HANDLE(panvk_cmd_buffer, cmdbuf, cmd);
+ 
+-   /* The ring slot's last run, four submissions ago, before it is reset. */
+-   if (cmdbuf->kbase_seq)
+-      pan_kmod_kbase_wait_seq(dev->kmod.dev, cmdbuf->kbase_seq);
++   /* The ring slot's last run, four submissions ago, before it is reset. A run that does not
++    * report is a lost device: then no refresh is recorded. */
++   if (cmdbuf->kbase_seq &&
++       !panvk_kbase_wait_seq(dev, cmdbuf->kbase_seq, PAN_KMOD_KBASE_END_QUEUE_TIMEOUT_NS))
++      goto none;
+    disp->ResetCommandBuffer(cmd, 0);
+    const VkCommandBufferBeginInfo bi = {
+       .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+--- a/src/panfrost/vulkan/panvk_bc_emu.c
++++ b/src/panfrost/vulkan/panvk_bc_emu.c
+@@ -10,6 +10,7 @@
+ 
+ #include <string.h>
+ 
++#include "util/log.h"
+ #include "util/u_debug.h"
+ #include "vk_format.h"
+ #include "vk_meta.h"
+@@ -430,6 +431,19 @@
+    simple_mtx_unlock(&dev->bc_emu.linear_lock);
+ }
+ 
++bool
++panvk_kbase_wait_seq(struct panvk_device *dev, uint64_t seq, int64_t timeout_ns)
++{
++   if (pan_kmod_kbase_wait_seq_timeout(dev->kmod.dev, seq, timeout_ns))
++      return true;
++   const long long s = timeout_ns / 1000000000ll;
++   mesa_loge("panvk: the queue's work did not report in %lld s; it ends as failed", s);
++   /* Lost first: the callbacks that abandon runs then read no command buffer. */
++   vk_device_set_lost(&dev->vk, "the queue's work did not report in %lld s", s);
++   pan_kmod_kbase_abandon(dev->kmod.dev);
++   return false;
++}
++
+ /* Under linear_lock. The refresh that last touched the image may still be on the GPU. */
+ static void
+ bc_emu_delist(struct panvk_device *dev, struct panvk_image *img)
+@@ -437,7 +451,7 @@
+    list_del(&img->bc_emu.link);
+    img->bc_emu.listed = false;
+    if (img->bc_emu.seq && pan_kmod_dev_is_kbase(dev->kmod.dev))
+-      pan_kmod_kbase_wait_seq(dev->kmod.dev, img->bc_emu.seq);
++      panvk_kbase_wait_seq(dev, img->bc_emu.seq, PAN_KMOD_KBASE_END_QUEUE_TIMEOUT_NS);
+    img->bc_emu.seq = 0;
+ }
+ 
+--- a/src/panfrost/vulkan/panvk_bc_emu.h
++++ b/src/panfrost/vulkan/panvk_bc_emu.h
+@@ -123,6 +123,12 @@
+ void panvk_bc_emu_untrack_image(struct panvk_device *dev, struct panvk_image *img);
+ void panvk_bc_emu_untrack_memory(struct panvk_device *dev, const struct panvk_device_memory *mem);
+ 
++/* kbase: wait for submission seq and every one before it (0: everything submitted so far) until
++ * no event of that work has come for timeout_ns. Work that does not report by then is a lost
++ * device, and it ends as failed (pan_kmod_kbase_abandon), so that no wait for it lasts for ever.
++ * True when the work has completed. Here, as the waits of this file need it too. */
++bool panvk_kbase_wait_seq(struct panvk_device *dev, uint64_t seq, int64_t timeout_ns);
++
+ #ifdef PAN_ARCH
+ #include "panvk_macros.h"
+ 

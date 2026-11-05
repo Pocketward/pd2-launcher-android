@@ -11,11 +11,12 @@ import com.pd2launcher.app.control.GraphicsProfile
 object GraphicsProfiles {
     /**
      * Automatic's profile: Performance on the Adrenos up to the 650 and the 7xx entry level ([lowTierAdreno]),
-     * where Project Diablo 2's own D2GL settings are slow, and on a Mali, whose PanVK path is
-     * tuned for it; else (a newer Adreno, or no GPU known) Default.
+     * where Project Diablo 2's own D2GL settings are slow, on a Mali, whose PanVK path is tuned for
+     * it, and on a GPU that only the phone's own driver runs ([SystemDriverGpu]); else (a newer
+     * Adreno, or no GPU known) Default. It follows the GPU, not the driver.
      */
     fun automatic(gpu: HostGpu?): GraphicsProfile = when {
-        gpu is MaliGpu -> GraphicsProfile.PERFORMANCE
+        gpu is MaliGpu || gpu is SystemDriverGpu -> GraphicsProfile.PERFORMANCE
         gpu is KgslGpu && lowTierAdreno(gpu.chipId) -> GraphicsProfile.PERFORMANCE
         else -> GraphicsProfile.DEFAULT
     }

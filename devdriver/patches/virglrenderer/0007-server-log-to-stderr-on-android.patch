@@ -1,0 +1,68 @@
+Subject: [PATCH] server: the render server's log lines also go to stderr on Android
+
+render_log writes through syslog with LOG_PERROR, so that each line also reaches stderr, which the
+render server shares with the vtest server and the app that started it. Not every bionic writes
+that copy: on Android 13 the lines reached only logcat, and the app could not see from the
+server's output that it gave up a client's context ("failed to dispatch context op"), which it
+uses to go back to its own driver.
+
+On Android, render_log writes the line (with a newline) to stderr itself, and render_log_init
+opens syslog without LOG_PERROR, so a bionic that writes the copy does not write it twice.
+render_state's log callback passes the already formatted message as "%s": it was the format
+string, and a message with a '%' (a client's context name) was formatted again.
+
+---
+--- a/server/render_common.c
++++ b/server/render_common.c
+@@ -10,12 +10,18 @@
+ 
+ #include <stdarg.h>
+ #include <stdio.h>
++#include <string.h>
+ #include <syslog.h>
+ 
+ void
+ render_log_init(void)
+ {
++#ifdef __ANDROID__
++   /* render_log writes the stderr copy itself */
++   openlog(NULL, LOG_NDELAY | LOG_PID, LOG_USER);
++#else
+    openlog(NULL, LOG_NDELAY | LOG_PERROR | LOG_PID, LOG_USER);
++#endif
+ }
+ 
+ void
+@@ -24,6 +30,20 @@
+    va_list va;
+ 
+    va_start(va, fmt);
++#if defined(__ANDROID__) && !defined(ENABLE_SAME_PROCESS_RENDER_SERVER)
++   /* Not every bionic writes LOG_PERROR's copy: the line goes to stderr here, which the vtest
++    * server shares with the app that started it */
++   {
++      char line[1024];
++      va_list copy;
++      va_copy(copy, va);
++      vsnprintf(line, sizeof(line), fmt, copy);
++      va_end(copy);
++      const size_t len = strlen(line);
++      fprintf(stderr, "render server: %s%s", line, len && line[len - 1] == '\n' ? "" : "\n");
++      fflush(stderr);
++   }
++#endif
+ #ifdef ENABLE_SAME_PROCESS_RENDER_SERVER
+    virgl_prefixed_logv("server", VIRGL_LOG_LEVEL_INFO, fmt, va);
+ #else
+--- a/server/render_state.c
++++ b/server/render_state.c
+@@ -99,7 +99,8 @@
+                              const char *message,
+                              UNUSED void* user_data)
+ {
+-   render_log(message);
++   /* an already formatted message, never a format */
++   render_log("%s", message);
+ }
+ #endif
+ 

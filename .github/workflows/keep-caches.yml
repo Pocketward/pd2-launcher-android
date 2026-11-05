@@ -72,6 +72,7 @@ jobs:
           newest gradle '^gradle-release-[0-9a-f]{64}$'
           newest engine '^engine-[0-9a-f]{64}$'
           newest engine_image '^engine-image-[0-9a-f]{16}$'
+          newest devdriver '^devdriver-[0-9a-f]{64}$'
           newest image_tools '^image-localhost_pd2-userland-tools_[0-9a-f]{16}$' image-
           newest image_mesa '^image-localhost_pd2-userland-mesa_[0-9a-f]{16}$' image-
           newest image_panvk '^image-localhost_pd2-userland-panvk_[0-9a-f]{16}$' image-
@@ -83,7 +84,9 @@ jobs:
         if: steps.keys.outputs.userland != ''
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: app/src/main/assets/userland
+          path: |
+            app/src/main/assets/userland
+            app/system-driver/assets
           key: ${{ steps.keys.outputs.userland }}
           fail-on-cache-miss: true
 
@@ -145,6 +148,7 @@ jobs:
             ~/.cache/pd2-android/userland/sources
             ~/.cache/pd2-android/userland/mesa-out
             ~/.cache/pd2-android/userland/xvfb-out
+            ~/.cache/pd2-android/userland/sysdrv-out
             ~/.cache/pd2-android/kbase/sources
             ~/.cache/pd2-android/kbase/out
             ~/.cache/pd2-android/kbase/work/host-tools-*
@@ -201,4 +205,12 @@ jobs:
         with:
           path: ~/.cache/pd2-android/images/engine
           key: ${{ steps.keys.outputs.engine_image }}
+          fail-on-cache-miss: true
+
+      - name: Restore the system-driver server
+        if: steps.keys.outputs.devdriver != ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pd2-android/devdriver-out
+          key: ${{ steps.keys.outputs.devdriver }}
           fail-on-cache-miss: true

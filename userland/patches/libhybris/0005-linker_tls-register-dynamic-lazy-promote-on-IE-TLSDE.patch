@@ -1,0 +1,662 @@
+From 589eed0350cfbc2c8a3ae9f5faf43dcafe5d8a6d Mon Sep 17 00:00:00 2001
+From: "Sophie Winter [AI]" <git@phie.me>
+Date: Sat, 9 May 2026 23:33:20 -0700
+Subject: [PATCH 5/9] linker_tls: register dynamic, lazy-promote on IE/TLSDESC,
+ init .tdata per-thread
+
+libhybris's vendored Q-era linker never calls linker_finalize_static_tls
+(linker_main is DISABLED_FOR_HYBRIS_SUPPORT). Three things broke as a
+result: unregister_tls_module aborted on hybris_dlclose because every
+TLS-using .so was registered as static; the TLSDESC dynamic resolver
+routed to host glibc's __tls_get_addr with bionic module ids and
+aborted in _dl_update_slotinfo on devices with enough generation churn
+(Pixel 4a + Adreno + GTK); per-.so __thread initialisers came back
+zero because the patched MRS had no .tdata source.
+
+Fix: register every soinfo as dynamic (SIZE_MAX), lazy-promote to
+static at IE (R_GENERIC_TLS_TPREL) and TLSDESC (R_GENERIC_TLSDESC)
+relocation time, reserve bionic_tcb on the first TLS-using soinfo
+registration so offset_thread_pointer() is stable by the time
+relocate() reads it, hand .tdata through a new
+tls_patcher_funcs.init_static_tls_for_thread callback into hooks.c,
+and replay the registry on each thread's first hooked-libc call. See
+TAWC_FORK.md "Linker bionic-TLS bookkeeping" for the full design.
+---
+ hybris/common/hooks.c          | 235 ++++++++++++++++++++++++++++++---
+ hybris/common/q/linker.cpp     |  86 ++++++------
+ hybris/common/q/linker_tls.cpp | 131 ++++++++++++++++--
+ hybris/common/q/linker_tls.h   |  10 ++
+ hybris/common/tls_patcher.h    |  15 +++
+ 5 files changed, 413 insertions(+), 64 deletions(-)
+
+diff --git a/hybris/common/hooks.c b/hybris/common/hooks.c
+index 0533010..1d00709 100644
+--- a/hybris/common/hooks.c
++++ b/hybris/common/hooks.c
+@@ -2457,15 +2457,70 @@ __THROW int _hybris_hook___snprintf_chk (char *__restrict __s, size_t __n, int _
+     return ret;
+ }
+ 
+-/* bionic_tls compatibility for stock (unpatched) Android firmware.
++/* Bionic TLS compat for stock (unpatched) Android firmware.
+  *
+- * The TLS thunk patcher redirects bionic code's TPIDR_EL0 reads to point
+- * at tls_area.slots[0]. Bionic's TLS_SLOT_BIONIC_TLS (slot -1, at TP-8)
+- * then reads tls_area.bionic_tls_ptr, which we populate with a pointer to
+- * a zero-filled struct. This satisfies bionic's locale/errno/etc accesses
+- * without needing patched firmware.
++ * Layout, per thread (zero-initialised by glibc TLS image init):
++ *
++ *   tls_static_tls[0..7]    = TLS_SLOT_BIONIC_TLS (-> bionic_tls_ptr),
++ *                              the lone bionic negative slot in this Q
++ *                              vendor (MIN_TLS_SLOT = -1, see
++ *                              q/bionic/libc/private/bionic_asm_tls.h).
++ *   tls_static_tls[8]        = bionic THREAD POINTER (= "TPIDR" from bionic's POV)
++ *                              [8..15]  = slot 0 (TLS_SLOT_DTV)
++ *                              [16..23] = slot 1 (TLS_SLOT_THREAD_ID)
++ *                              ...
++ *                              [64..71] = slot 7 (end of bionic_tcb positive slots)
++ *   tls_static_tls[72..]     = per-.so static TLS data (.tdata copied here
++ *                              from promote_tls_module_to_static() at the
++ *                              offsets the bionic linker assigns)
++ *
++ * BIONIC_TPIDR_OFFSET (8) and BIONIC_TLS_PTR_OFFSET (0) are calibrated
++ * to bionic Q's StaticTlsLayout: offset_bionic_tcb_ = 0 after the
++ * initial reserve_exe_segment_and_tcb(nullptr,...), and
++ * offset_thread_pointer() = offset_bionic_tcb_ + (-MIN_TLS_SLOT * 8) =
++ * 0 + 1*8 = 8. linker.cpp's tls_tp_base reads offset_thread_pointer()
++ * dynamically, so it stays in sync if a future bionic vendor changes
++ * MIN_TLS_SLOT (e.g. R+ adds TLS_SLOT_NATIVE_BRIDGE_GUEST_STATE = -2,
++ * pushing TP to offset 16).
++ *
++ * The TLS thunk patcher (tls_patcher_aarch64.c) rewrites bionic code's
++ * `mrs xN, tpidr_el0` to point at &tls_static_tls[BIONIC_TPIDR_OFFSET],
++ * so a bionic instruction `[TPIDR + disp]` (disp = static_offset -
++ * tls_tp_base) reads tls_static_tls[8 + disp] = tls_static_tls[
++ * static_offset], where this hook memcpy'd the .tdata.
++ *
++ * Size constraint: this whole array lives in the static-TLS *initial-exec*
++ * block (required so the patcher can compute a fixed tp-relative offset).
++ * For the main exe the kernel allocates whatever the link map needs; for
++ * libhybris dlopened mid-process (GTK/firefox loading libEGL.so.1 ->
++ * libhybris-common.so.1) the new IE bytes have to fit into glibc's
++ * static_tls_surplus reserve, which varies per process based on what IE
++ * TLS the binary's DT_NEEDED libs already pulled in. firefox's link map
++ * is fatter than gtk3-demo-application's: 1536 bytes loads cleanly into
++ * gtk3 but blows firefox's surplus ("cannot allocate memory in static
++ * TLS block" on dlopen of libhybris-common). 1024 bytes (matching the
++ * original libhybris tls_area struct of `void* + void*[128]`) loads
++ * into every process we test on aarch64 + Arch ARM glibc 2.41, so we
++ * keep that as the ceiling here.
++ *
++ * Cost: the 952 bytes left after subtracting bionic_tcb (72B = 9 slots
++ * * 8) is the total per-process budget for promoted bionic .so .tdata.
++ * apex libc + the Adreno/Mesa/Vulkan vendor TLS in our integration
++ * suite fits well inside that. The libhybris-tls-repro stress test
++ * deliberately leaks per dlopen+dlclose iteration (libhybris's promoted
++ * static_tls slots can't be recycled without risking a static-pointer
++ * free in the dynamic-tls path -- see linker_tls.cpp::get_unused_module_index),
++ * so the test caps at STRESS_ITERATIONS to fit. If a real future
++ * bionic stack actually needs more, the right move is to make
++ * tls_static_tls a small IE-allocated `char* heap_block` and have the
++ * patcher emit one extra LDR in the thunk to dereference it -- that
++ * frees us from the IE-surplus cap entirely, at the cost of growing
++ * the thunk from 16 to 20 bytes and matching count_tls/THUNK_SIZE.
+  */
+-#define BIONIC_TLS_COMPAT_SIZE 16384  /* 16KB, oversized for safety */
++#define BIONIC_STATIC_TLS_SIZE   1024
++#define BIONIC_TPIDR_OFFSET      8    /* matches StaticTlsLayout::offset_thread_pointer() with MIN_TLS_SLOT=-1 (bionic Q) */
++#define BIONIC_TLS_PTR_OFFSET    0    /* slot -1 (TLS_SLOT_BIONIC_TLS) at TP-8 = 0 */
++#define BIONIC_TLS_COMPAT_SIZE   16384
+ 
+ static pthread_key_t bionic_tls_cleanup_key;
+ static pthread_once_t bionic_tls_key_once = PTHREAD_ONCE_INIT;
+@@ -2480,34 +2535,174 @@ static void _bionic_tls_key_init(void)
+     pthread_key_create(&bionic_tls_cleanup_key, _bionic_tls_cleanup);
+ }
+ 
++static __attribute__((tls_model ("initial-exec"), aligned(16)))
++       __thread char tls_static_tls[BIONIC_STATIC_TLS_SIZE];
++/* Per-thread "how many promoted-TLS-module entries from the global
++ * registry have been replayed into this thread's tls_static_tls".
++ * Compared against g_promoted_tls.count on first bionic-side touch
++ * (_hybris_hook___get_tls_hooks) to catch up modules promoted before
++ * this thread first ran any bionic code. */
++static __attribute__((tls_model ("initial-exec")))
++       __thread int  tls_inited;
+ static __attribute__((tls_model ("initial-exec")))
+-       __thread struct {
+-    void *bionic_tls_ptr;   /* maps to bionic slot -1 (TLS_SLOT_BIONIC_TLS) */
+-    void *slots[128];       /* generously sized for forward compat */
+-} tls_area;
++       __thread int  tls_module_init_count;
++
++#define bionic_tls_ptr (*(void**)(tls_static_tls + BIONIC_TLS_PTR_OFFSET))
++
++/* Registry of every TLS-using bionic .so the linker has promoted to a
++ * static-TLS slot. linker_tls.cpp's promote_tls_module_to_static() calls
++ * _hybris_init_static_tls_for_thread() under the libc tls_modules
++ * rwlock, which both appends an entry here and copies .tdata into the
++ * *promoting* thread's tls_static_tls. For threads that are NOT the
++ * promoter (notably glibc-spawned worker threads that later first-touch
++ * bionic state), _hybris_hook___get_tls_hooks() walks this registry
++ * once-per-thread to replay every promote we did before they existed.
++ *
++ * `init_data` is hybris-owned: we malloc + memcpy the .tdata bytes off
++ * the .so segment at promote time. That outlives hybris_dlclose(),
++ * which the post-dlclose-replay regression test exercises directly --
++ * a thread first-touching bionic state after the .so has unmapped will
++ * read these bytes, not the freed segment.
++ *
++ * Append-only: dlclose of a TLS-using bionic .so leaves the entry
++ * orphaned (its `init_data`, `static_offset` etc all stay valid). Slot
++ * leak is the same as the pre-existing static_tls_layout offset leak,
++ * bounded by the count of distinct IE/TLSDESC-using bionic libs ever
++ * loaded. */
++struct hybris_promoted_tls {
++    size_t static_offset;
++    void*  init_data;     /* hybris-owned copy of .tdata, NULL if init_size==0 */
++    size_t init_size;     /* filesz: bytes to memcpy into static-TLS */
++    size_t segment_size;  /* memsz: total reserved range; .tbss tail beyond
++                           * init_size stays as the calling thread's existing
++                           * tls_static_tls bytes (zero-init from glibc TLS
++                           * image init -- safe because reserve_solib_segment
++                           * is monotonic and never overlaps with prior memsz) */
++};
+ 
+-/* Legacy macro so existing code using tls_hooks still works */
+-#define tls_hooks (tls_area.slots)
++static struct {
++    struct hybris_promoted_tls* entries;
++    int count;
++    int capacity;
++    pthread_mutex_t mutex;
++} g_promoted_tls = { NULL, 0, 0, PTHREAD_MUTEX_INITIALIZER };
++
++static void hybris_apply_static_tls_locked(const struct hybris_promoted_tls* e)
++{
++    /* memsz can exceed filesz when the .so has .tbss; bound on the full
++     * segment so a future bionic .so whose .tbss tail would land past
++     * BIONIC_STATIC_TLS_SIZE aborts here, instead of corrupting whatever
++     * IE TLS the host glibc allocated next to tls_static_tls. */
++    if (e->static_offset + e->segment_size > BIONIC_STATIC_TLS_SIZE) {
++        fprintf(stderr, "HYBRIS: fatal: bionic static TLS overflow "
++                        "(offset=%zu memsz=%zu, max=%d). Bump BIONIC_STATIC_TLS_SIZE in hooks.c.\n",
++                e->static_offset, e->segment_size, BIONIC_STATIC_TLS_SIZE);
++        abort();
++    }
++    if (e->init_size > 0) {
++        memcpy(tls_static_tls + e->static_offset, e->init_data, e->init_size);
++    }
++}
++
++/* Linker -> hooks callback: record a promoted TLS module AND copy its
++ * .tdata into the calling thread's tls_static_tls. The caller (the
++ * bionic linker, in promote_tls_module_to_static) already holds the
++ * libc tls_modules rwlock; init_ptr is only valid for the duration of
++ * this call (the source .so may be hybris_dlclose'd later), so we
++ * memdup before stashing in the registry. */
++__attribute__((__visibility__("default")))
++void _hybris_init_static_tls_for_thread(size_t static_offset,
++                                         const void* init_ptr,
++                                         size_t init_size,
++                                         size_t segment_size)
++{
++    void* owned_init = NULL;
++    if (init_size > 0) {
++        owned_init = malloc(init_size);
++        if (!owned_init) {
++            fprintf(stderr, "HYBRIS: fatal: out of memory copying promoted-TLS .tdata (%zu bytes)\n",
++                    init_size);
++            abort();
++        }
++        memcpy(owned_init, init_ptr, init_size);
++    }
++    pthread_mutex_lock(&g_promoted_tls.mutex);
++    if (g_promoted_tls.count == g_promoted_tls.capacity) {
++        int new_cap = g_promoted_tls.capacity == 0 ? 16 : g_promoted_tls.capacity * 2;
++        struct hybris_promoted_tls* grown = realloc(g_promoted_tls.entries,
++                                                    new_cap * sizeof(*grown));
++        if (!grown) {
++            fprintf(stderr, "HYBRIS: fatal: out of memory growing promoted-TLS registry\n");
++            abort();
++        }
++        g_promoted_tls.entries = grown;
++        g_promoted_tls.capacity = new_cap;
++    }
++    struct hybris_promoted_tls* e = &g_promoted_tls.entries[g_promoted_tls.count++];
++    e->static_offset = static_offset;
++    e->init_data     = owned_init;
++    e->init_size     = init_size;
++    e->segment_size  = segment_size;
++    hybris_apply_static_tls_locked(e);
++    /* This thread is now caught up through the entry we just appended. */
++    tls_module_init_count = g_promoted_tls.count;
++    pthread_mutex_unlock(&g_promoted_tls.mutex);
++}
+ 
+ __attribute__((__visibility__("default")))
+ void *_hybris_hook___get_tls_hooks()
+ {
+     TRACE_HOOK("");
+ 
+-    /* Lazily allocate a bionic_tls struct for this thread */
+-    if (__builtin_expect(tls_area.bionic_tls_ptr == NULL, 0)) {
++    /* Lazily allocate a bionic_tls struct for this thread, and replay
++     * any TLS-module .tdata that was promoted to static before this
++     * thread first touched bionic-side state. Modules promoted later
++     * land in this thread only if it happens to be the dlopening
++     * thread (linker_tls.cpp -> _hybris_init_static_tls_for_thread on
++     * the promoter); other threads see zeros for those modules until
++     * they next call back through this function. */
++    if (__builtin_expect(!tls_inited, 0)) {
+         void *btls = calloc(1, BIONIC_TLS_COMPAT_SIZE);
+         if (!btls) {
+             fprintf(stderr, "HYBRIS: fatal: failed to allocate bionic_tls compat struct\n");
+             abort();
+         }
+-        tls_area.bionic_tls_ptr = btls;
++        bionic_tls_ptr = btls;
+ 
+         pthread_once(&bionic_tls_key_once, _bionic_tls_key_init);
+         pthread_setspecific(bionic_tls_cleanup_key, btls);
++        tls_inited = 1;
++    }
++
++    /* Catch up from any promote that happened on another thread since
++     * we last ran. Done outside the !tls_inited gate so a thread that's
++     * already inited still picks up newly-promoted modules on its next
++     * hooked-libc call.
++     *
++     * Take the mutex before reading .count: the writer
++     * (_hybris_init_static_tls_for_thread) mutates count under the same
++     * lock, and an unsynchronised read here is a C data race. Reads of
++     * tls_module_init_count itself need no lock -- it's a per-thread
++     * __thread int with single-writer (this thread).
++     *
++     * Invariant: every thread that ever runs bionic-side TLS-using code
++     * first passes through this hook (bionic .so code paths almost
++     * always interleave TLS access with hooked-libc calls -- errno,
++     * locale, pthread keys, etc.). If a future change makes that no
++     * longer true, glibc-spawned workers that only do TLSDESC reads on
++     * bionic .sos and never call a hooked libc function will read zeros
++     * for non-zero __thread initialisers; the catch-up trigger needs to
++     * move (e.g. hook pthread_create to seed tls_module_init_count). */
++    pthread_mutex_lock(&g_promoted_tls.mutex);
++    if (__builtin_expect(tls_module_init_count < g_promoted_tls.count, 0)) {
++        for (int i = tls_module_init_count; i < g_promoted_tls.count; i++) {
++            hybris_apply_static_tls_locked(&g_promoted_tls.entries[i]);
++        }
++        tls_module_init_count = g_promoted_tls.count;
+     }
++    pthread_mutex_unlock(&g_promoted_tls.mutex);
+ 
+-    return tls_area.slots;
++    return tls_static_tls + BIONIC_TPIDR_OFFSET;
+ }
+ 
+ struct __wrapped_atexit {
+@@ -3809,6 +4004,12 @@ static void __hybris_linker_init()
+     tls_patcher_funcs.register_thunk_region = hybris_register_thunk_region;
+     tls_patcher_funcs.count_tls = hybris_count_tls;
+ #endif
++    /* Wire on every arch: linker_tls.cpp uses this whenever it promotes
++     * a TLS module to a static-TLS slot (IE or TLSDESC reloc), which is
++     * arch-independent. Without this callback the bionic .so's __thread
++     * variables would read zero-init'd memory in tls_static_tls instead
++     * of their declared initial values from .tdata. */
++    tls_patcher_funcs.init_static_tls_for_thread = _hybris_init_static_tls_for_thread;
+ 
+     /* Now its time to setup the linker itself */
+ #ifdef WANT_ARM_TRACING
+diff --git a/hybris/common/q/linker.cpp b/hybris/common/q/linker.cpp
+index bb43299..3682a3e 100644
+--- a/hybris/common/q/linker.cpp
++++ b/hybris/common/q/linker.cpp
+@@ -2909,8 +2909,13 @@ static bool is_tls_reloc(ElfW(Word) type) {
+ template<typename ElfRelIteratorT>
+ bool soinfo::relocate(const VersionTracker& version_tracker, ElfRelIteratorT&& rel_iterator,
+                       const soinfo_list_t& global_group, const soinfo_list_t& local_group) {
+-  const size_t tls_tp_base = 0/*__libc_shared_globals()->static_tls_layout.offset_thread_pointer()*/;
+-  std::vector<std::pair<TlsDescriptor*, size_t>> deferred_tlsdesc_relocs;
++  // register_soinfo_tls reserves bionic_tcb at the very first
++  // TLS-using soinfo registration in this load batch, before any
++  // link_image() calls relocate(). So offset_thread_pointer() is
++  // valid to read here unconditionally; matches BIONIC_TPIDR_OFFSET
++  // in hooks.c by construction (both derive from the same MIN_TLS_SLOT
++  // in q/bionic/libc/private/bionic_asm_tls.h).
++  const size_t tls_tp_base = __libc_shared_globals()->static_tls_layout.offset_thread_pointer();
+ 
+   for (size_t idx = 0; rel_iterator.has_next(); ++idx) {
+     const auto rel = rel_iterator.next();
+@@ -3188,14 +3193,16 @@ bool soinfo::relocate(const VersionTracker& version_tracker, ElfRelIteratorT&& r
+             // &weak_tls_symbol to __get_tls().
+           } else {
+             CHECK(lsi->get_tls() != nullptr); // We rejected a missing TLS segment above.
+-            const TlsModule& mod = get_tls_module(lsi->get_tls()->module_id);
+-            if (mod.static_offset != SIZE_MAX) {
+-              tpoff += mod.static_offset - tls_tp_base;
+-            } else {
+-              DL_ERR("TLS symbol \"%s\" in dlopened \"%s\" referenced from \"%s\" using IE access model",
+-                     sym_name, lsi->get_realpath(), get_realpath());
+-              return false;
++            // libhybris registers every TLS module as dynamic (SIZE_MAX) up
++            // front and lazy-promotes here on first IE-model access. apex
++            // libc.so is the canonical IE user (errno et al.); promoting on
++            // demand keeps the static-TLS layout from leaking a slot for
++            // every dlopen-class load we'll never need to pin.
++            size_t static_offset = get_tls_module(lsi->get_tls()->module_id).static_offset;
++            if (static_offset == SIZE_MAX) {
++              static_offset = promote_tls_module_to_static(lsi);
+             }
++            tpoff += static_offset - tls_tp_base;
+           }
+           tpoff += sym_addr + addend;
+           TRACE_TYPE(RELO, "RELO TLS_TPREL %16p <- %16p %s\n",
+@@ -3250,28 +3257,29 @@ bool soinfo::relocate(const VersionTracker& version_tracker, ElfRelIteratorT&& r
+                        reinterpret_cast<void*>(reloc), static_cast<size_t>(addend), sym_name);
+           } else {
+             CHECK(lsi->get_tls() != nullptr); // We rejected a missing TLS segment above.
+-            size_t module_id = lsi->get_tls()->module_id;
+-            const TlsModule& mod = get_tls_module(module_id);
+-            if (mod.static_offset != SIZE_MAX) {
+-              desc->func = tlsdesc_resolver_static;
+-              desc->arg = mod.static_offset - tls_tp_base + sym_addr + addend;
+-              TRACE_TYPE(RELO, "RELO TLSDESC %16p <- static (0x%zx - 0x%zx + 0x%zx + 0x%zx) %s\n",
+-                         reinterpret_cast<void*>(reloc), mod.static_offset, tls_tp_base,
+-                         static_cast<size_t>(sym_addr), static_cast<size_t>(addend), sym_name);
+-            } else {
+-              TlsDynamicResolverArg arg;
+-              arg.generation = mod.first_generation;
+-              arg.index.module_id = module_id;
+-              arg.index.offset = sym_addr + addend;
+-              tlsdesc_args_.push_back(arg);
+-              // Defer the TLSDESC relocation until the address of the TlsDynamicResolverArg object
+-              // is finalized.
+-              deferred_tlsdesc_relocs.push_back({ desc, tlsdesc_args_.size() - 1 });
+-              const TlsDynamicResolverArg& desc_arg = tlsdesc_args_.back();
+-              TRACE_TYPE(RELO, "RELO TLSDESC %16p <- dynamic (gen %zu, mod %zu, off %zu) %s",
+-                         reinterpret_cast<void*>(reloc), desc_arg.generation,
+-                         desc_arg.index.module_id, desc_arg.index.offset, sym_name);
++            // libhybris: TLSDESC's dynamic slow path (tlsdesc_resolver.S
++            // -> tlsdesc_resolver_dynamic_slow_path -> __tls_get_addr)
++            // resolves __tls_get_addr against the host glibc, since
++            // libhybris_common.so links against host libc. Calling glibc's
++            // __tls_get_addr with a bionic module_id trips
++            // dl-tls.c:_dl_update_slotinfo's `max_modid >= req_modid`
++            // assertion (bionic module ids have no entry in glibc's
++            // slotinfo table). Pin every TLSDESC-using module to a real
++            // static_offset so resolution always takes the static path.
++            // Same lazy-promote machinery as the IE path
++            // (R_GENERIC_TLS_TPREL above) -- one promotion per IE-or-
++            // TLSDESC-using lib for process lifetime, in line with the
++            // pre-promotion behaviour where register_soinfo_tls reserved
++            // a static slot for every TLS-using lib unconditionally.
++            size_t static_offset = get_tls_module(lsi->get_tls()->module_id).static_offset;
++            if (static_offset == SIZE_MAX) {
++              static_offset = promote_tls_module_to_static(lsi);
+             }
++            desc->func = tlsdesc_resolver_static;
++            desc->arg = static_offset - tls_tp_base + sym_addr + addend;
++            TRACE_TYPE(RELO, "RELO TLSDESC %16p <- static (0x%zx - 0x%zx + 0x%zx + 0x%zx) %s\n",
++                       reinterpret_cast<void*>(reloc), static_offset, tls_tp_base,
++                       static_cast<size_t>(sym_addr), static_cast<size_t>(addend), sym_name);
+           }
+         }
+         break;
+@@ -3447,14 +3455,16 @@ bool soinfo::relocate(const VersionTracker& version_tracker, ElfRelIteratorT&& r
+     }
+   }
+ 
+-#if defined(__aarch64__)
+-  // Bionic currently only implements TLSDESC for arm64.
+-  for (const std::pair<TlsDescriptor*, size_t>& pair : deferred_tlsdesc_relocs) {
+-    TlsDescriptor* desc = pair.first;
+-    desc->func = tlsdesc_resolver_dynamic;
+-    desc->arg = reinterpret_cast<size_t>(&tlsdesc_args_[pair.second]);
+-  }
+-#endif
++  // Upstream's deferred-TLSDESC fixup loop used to wire any
++  // module_id-mismatched descriptor to tlsdesc_resolver_dynamic with a
++  // tlsdesc_args_ entry. Under libhybris the dynamic resolver's slow
++  // path calls glibc's __tls_get_addr (libhybris-common.so links
++  // against host glibc) and aborts in _dl_update_slotinfo, so the
++  // R_GENERIC_TLSDESC handler above unconditionally promotes to
++  // static and never defers. The fixup loop is dead code; if a future
++  // change reintroduces the dynamic-resolver branch it must also
++  // restore this loop -- but more importantly explain why glibc's
++  // __tls_get_addr won't trip on bionic module ids any more.
+   return true;
+ }
+ #endif  // !defined(__mips__)
+diff --git a/hybris/common/q/linker_tls.cpp b/hybris/common/q/linker_tls.cpp
+index a014bbb..f558a00 100644
+--- a/hybris/common/q/linker_tls.cpp
++++ b/hybris/common/q/linker_tls.cpp
+@@ -40,8 +40,15 @@
+ #include "private/linker_native_bridge.h"
+ #include "linker_main.h"
+ #include "linker_soinfo.h"
++#include "tls_patcher.h"
+ #include <stdint.h>
+ 
++// Set by linker_main.cpp from android_linker_init(); we read its
++// init_static_tls_for_thread to push .tdata into the promoting thread's
++// tls_static_tls (and to register the module for catch-up replay on
++// later-touched threads -- see hooks.c::g_promoted_tls).
++extern hybris_tls_patcher_funcs_t _tls_patcher_funcs;
++
+ __LIBC_HIDDEN__ _Atomic(size_t) __libc_tls_generation_copy = {SIZE_MAX};
+ 
+ static bool g_static_tls_finished;
+@@ -49,7 +56,17 @@ static std::vector<TlsModule> g_tls_modules;
+ 
+ static size_t get_unused_module_index() {
+   for (size_t i = 0; i < g_tls_modules.size(); ++i) {
+-    if (g_tls_modules[i].soinfo_ptr == nullptr) {
++    // Only recycle slots that unregistered cleanly back to dynamic — never
++    // reuse a slot whose static_offset still holds a real reservation.
++    // unregister_tls_module()'s static path leaves static_offset intact so
++    // any live thread DTV's `static_tls + offset` pointer at this slot
++    // stays valid; if we recycled and a future register dropped the slot
++    // back to SIZE_MAX, that pointer would route through the dynamic-free
++    // path in update_tls_dtv() / __free_dynamic_tls() and be passed to
++    // BionicAllocator::free — heap corruption (the pointer is into TCB
++    // static-TLS memory, not allocator-owned).
++    if (g_tls_modules[i].soinfo_ptr == nullptr &&
++        g_tls_modules[i].static_offset == SIZE_MAX) {
+       return i;
+     }
+   }
+@@ -85,18 +102,49 @@ static void register_tls_module(soinfo* si, size_t static_offset) {
+ }
+ 
+ static void unregister_tls_module(soinfo* si) {
++  TlsModules& libc_modules = __libc_shared_globals()->tls_modules;
++
+   ScopedSignalBlocker ssb;
+-  ScopedWriteLock locker(&__libc_shared_globals()->tls_modules.rwlock);
++  ScopedWriteLock locker(&libc_modules.rwlock);
+ 
+   soinfo_tls* si_tls = si->get_tls();
+   TlsModule& mod = g_tls_modules[__tls_module_id_to_idx(si_tls->module_id)];
+-  CHECK(mod.static_offset == SIZE_MAX);
+   CHECK(mod.soinfo_ptr == si);
+-  mod = {};
++
++  // No generation bump. Upstream bionic doesn't bump here either: the
++  // signal "this slot died" is `mod = {}` setting first_generation =
++  // kTlsGenerationNone (dynamic path) or static_offset staying != SIZE_MAX
++  // (static path); update_tls_dtv reads those, not libc_modules.generation.
++  // Under libhybris there's no consumer at all -- bionic TLS access goes
++  // through the thunk-patched MRS, not __tls_get_addr -> update_tls_dtv.
++  if (mod.static_offset == SIZE_MAX) {
++    // Dynamic: clean fast path. Slot fully recycles in
++    // get_unused_module_index() (gated on static_offset == SIZE_MAX).
++    mod = {};
++  } else {
++    // Promoted to static at IE relocation time. Detach the soinfo and
++    // mark the slot permanent (get_unused_module_index() will skip it),
++    // but keep static_offset/segment/first_generation intact so:
++    //   - update_tls_dtv() keeps treating dtv->modules[i] = static_tls + off
++    //     for any thread that still has a stale DTV; reading stale (but
++    //     mapped) static-TLS bytes is harmless. Recycling and flipping
++    //     back to SIZE_MAX would route a static_tls pointer through the
++    //     dynamic-free path — see get_unused_module_index() comment.
++    //   - __free_dynamic_tls() at thread exit takes its
++    //     "static_offset != SIZE_MAX -> skip free" branch (bionic_elf_tls.cpp).
++    // Cost: the slot index AND the reserved bytes in static_tls_layout
++    // leak. In libhybris this only fires for IE-model libs (apex libc et
++    // al.), which transitively unload at most once per process and are
++    // typically pinned for life.
++    mod.soinfo_ptr = nullptr;
++  }
+   si_tls->module_id = kTlsUninitializedModuleId;
+ }
+ 
+-// The reference is valid until a TLS module is registered or unregistered.
++// The reference is valid until a TLS module is registered, unregistered,
++// or promoted (promote_tls_module_to_static() mutates the entry under
++// rwlock; callers without the lock should copy fields by value, not
++// retain the reference).
+ const TlsModule& get_tls_module(size_t module_id) {
+   size_t module_idx = __tls_module_id_to_idx(module_id);
+   CHECK(module_idx < g_tls_modules.size());
+@@ -136,12 +184,77 @@ void register_soinfo_tls(soinfo* si) {
+   if (si_tls == nullptr || si_tls->module_id != kTlsUninitializedModuleId) {
+     return;
+   }
+-  size_t static_offset = SIZE_MAX;
+-  if (!g_static_tls_finished) {
++  // Reserve bionic_tcb at offset 0 of the static-TLS layout on the first
++  // TLS-using soinfo we ever see, before any link_image() in this batch
++  // calls relocate(). This keeps offset_thread_pointer() stable from
++  // that moment on, so soinfo::relocate can read it into tls_tp_base
++  // unconditionally at the top of the function. Mirrors what
++  // linker_setup_exe_static_tls would do for an exe; libhybris has none.
++  // The reservation holds tls_modules.rwlock briefly, then drops it
++  // before register_tls_module re-takes it. The gap is safe because
++  // the outer g_dl_mutex (held by every hybris_dlopen path that reaches
++  // here) already serialises mutation of the static_tls_layout.
++  StaticTlsLayout& layout = __libc_shared_globals()->static_tls_layout;
++  if (layout.offset_bionic_tcb() == SIZE_MAX) {
++    ScopedSignalBlocker ssb;
++    ScopedWriteLock locker(&__libc_shared_globals()->tls_modules.rwlock);
++    layout.reserve_exe_segment_and_tcb(nullptr, "");
++  }
++  // Always register as dynamic (SIZE_MAX). In standard bionic this branch
++  // would reserve a static-TLS slot for executable bootstrap deps before
++  // linker_finalize_static_tls() flips g_static_tls_finished. libhybris has
++  // no executable, so finalize is never called and EVERY load would otherwise
++  // claim a static slot it can never give back. Instead, the IE TLS
++  // relocation path (linker.cpp:R_GENERIC_TLS_TPREL) lazy-promotes via
++  // promote_tls_module_to_static() the few libs that actually need a fixed
++  // tp-relative offset (apex libc et al.). Everything else stays dynamic
++  // and dlclose() recycles the slot cleanly.
++  register_tls_module(si, SIZE_MAX);
++}
++
++size_t promote_tls_module_to_static(soinfo* si) {
++  ScopedSignalBlocker ssb;
++  ScopedWriteLock locker(&__libc_shared_globals()->tls_modules.rwlock);
++
++  // We're growing the static-TLS layout. linker_finalize_static_tls() is
++  // never called in the libhybris flow today (linker_main is dead code),
++  // but if a future change wires it up, reserving after finalize would
++  // silently corrupt the layout — make it loud instead.
++  CHECK(!g_static_tls_finished);
++
++  soinfo_tls* si_tls = si->get_tls();
++  CHECK(si_tls != nullptr);
++  CHECK(si_tls->module_id != kTlsUninitializedModuleId);
++  TlsModule& mod = g_tls_modules[__tls_module_id_to_idx(si_tls->module_id)];
++  CHECK(mod.soinfo_ptr == si);
++  if (mod.static_offset == SIZE_MAX) {
+     StaticTlsLayout& layout = __libc_shared_globals()->static_tls_layout;
+-    static_offset = layout.reserve_solib_segment(si_tls->segment);
++    mod.static_offset = layout.reserve_solib_segment(si_tls->segment);
++    // Bump generation so threads update their DTV from "dynamic, unallocated"
++    // to "static at this offset" on next access.
++    TlsModules& libc_modules = __libc_shared_globals()->tls_modules;
++    const size_t new_generation = ++libc_modules.generation;
++    __libc_tls_generation_copy = new_generation;
++    if (libc_modules.generation_libc_so != nullptr) {
++      *libc_modules.generation_libc_so = new_generation;
++    }
++    mod.first_generation = new_generation;
++
++    // Hand the (offset, .tdata copy, sizes) tuple to hooks.c: it
++    // memcpy's .tdata into the promoting thread's tls_static_tls and
++    // appends an entry to its registry so any thread that later
++    // first-touches bionic state via _hybris_hook___get_tls_hooks can
++    // replay the init. hooks owns the .tdata bytes after this call --
++    // segment.init_ptr stays valid only while the .so is mapped.
++    if (_tls_patcher_funcs.init_static_tls_for_thread != nullptr) {
++      _tls_patcher_funcs.init_static_tls_for_thread(
++          mod.static_offset,
++          si_tls->segment.init_ptr,
++          si_tls->segment.init_size,
++          si_tls->segment.size);
++    }
+   }
+-  register_tls_module(si, static_offset);
++  return mod.static_offset;
+ }
+ 
+ void unregister_soinfo_tls(soinfo* si) {
+diff --git a/hybris/common/q/linker_tls.h b/hybris/common/q/linker_tls.h
+index 5a20a64..27d2ee0 100644
+--- a/hybris/common/q/linker_tls.h
++++ b/hybris/common/q/linker_tls.h
+@@ -43,6 +43,16 @@ void unregister_soinfo_tls(soinfo* si);
+ 
+ const TlsModule& get_tls_module(size_t module_id);
+ 
++// Lazy-promote an already-registered (and SIZE_MAX) TLS module to a real
++// static-TLS offset. Used by the IE TLS relocation path (R_GENERIC_TLS_TPREL)
++// in libhybris, where register_soinfo_tls() defers the static-vs-dynamic
++// choice until relocation reveals an IE-model access. Returns the
++// resulting static_offset. Idempotent: a second call once the slot is
++// already non-SIZE_MAX is a no-op that returns the existing offset.
++// Takes the libc tls_modules rwlock; serialises with
++// tls_get_addr_slow_path / update_tls_dtv on other threads.
++size_t promote_tls_module_to_static(soinfo* si);
++
+ typedef size_t TlsDescResolverFunc(size_t);
+ 
+ struct TlsDescriptor {
+diff --git a/hybris/common/tls_patcher.h b/hybris/common/tls_patcher.h
+index e2c890e..7ab35c5 100644
+--- a/hybris/common/tls_patcher.h
++++ b/hybris/common/tls_patcher.h
+@@ -27,12 +27,27 @@ extern "C" {
+ typedef void (*hybris_tls_patcher_t)(void* segment_addr, size_t segment_size, const char* library_name);
+ typedef void (*hybris_register_thunk_region_t)(void* start, size_t size);
+ typedef size_t (*hybris_count_tls_t)(void* segment_addr, size_t segment_size);
++/* Record a promoted TLS module and copy its .tdata into the calling
++ * thread's bionic static-TLS area. The linker calls this from
++ * promote_tls_module_to_static() so the registering thread sees the
++ * correct initial values for `__thread` variables in the dlopened
++ * bionic .so. Hooks owns the .tdata copy thereafter; other threads
++ * replay the registry on first hooked-libc call. `segment_size` is
++ * memsz: filesz (`init_size`) bytes get memcpy'd, the trailing
++ * `segment_size - init_size` bytes are .tbss zeros that the static-TLS
++ * area already provides — but the bounds check covers all of memsz so a
++ * future segment that overruns BIONIC_STATIC_TLS_SIZE aborts loudly. */
++typedef void (*hybris_init_static_tls_for_thread_t)(size_t static_offset,
++                                                    const void* init_ptr,
++                                                    size_t init_size,
++                                                    size_t segment_size);
+ 
+ /* Function pointers passed from hooks.c to the Android linker */
+ struct hybris_tls_patcher_funcs {
+     hybris_tls_patcher_t patch_tls;
+     hybris_register_thunk_region_t register_thunk_region;
+     hybris_count_tls_t count_tls;
++    hybris_init_static_tls_for_thread_t init_static_tls_for_thread;
+ };
+ typedef struct hybris_tls_patcher_funcs hybris_tls_patcher_funcs_t;
+ 
+-- 
+2.56.0
+

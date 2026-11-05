@@ -18,10 +18,21 @@
 #   absent    paths that must not exist: glibc reads etc/ld.so.cache from its sysconfdir
 #   version   the first 16 hex digits of a SHA-256 over this directory's inputs (scripts except
 #             mesa-update.sh, pins, package lock, x-input-relay's source and header, patches, our
-#             PanVK backend's files in mesa-kbase/, the opt-in switch, and with glibc its patches and
-#             build files), so equal inputs give an equal version
+#             PanVK backend's files in mesa-kbase/, the compat headers of RADV for Xclipse and
+#             mali-panvk in radv-compat/, the opt-in switch, and with glibc its patches and build
+#             files), so equal inputs give an equal version
 #   glibc     with PD2_USERLAND_WITH_GLIBC=1, the manifest's "glibc" key is build-glibc.sh's record
 #             (BUILDINFO fields, patch SHA-256s, SHA-256 of every installed file)
+#   parts     the tree's files that an APK can leave out, each list in the cache's work/parts/<name>.files
+#             (build-sysdrv.sh --install writes "system-driver": the Venus ICD and the older GL),
+#             go into an archive and manifest of their own, out/parts/<name>/userland.tar.zst and
+#             manifest.json, not into the main ones; copied to
+#             ../app/system-driver/assets/userland-<name>/ (gitignored), which the app build takes
+#             unless built without it (build.sh: PD2_SYSTEM_DRIVER=0). A part holds regular files
+#             only, none critical, in folders of the main tree; its manifest has the main one's
+#             fields with its own entries, no critical or absent path, and a version made from its
+#             entries. The app unpacks the main archive and the parts it carries into one tree
+#             (UserlandAssets).
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -35,6 +46,15 @@ if [[ "${PD2_USERLAND_IN_CONTAINER:-}" != 1 ]]; then
     mkdir -p "$USERLAND_ASSETS"
     cp "$USERLAND_OUT/userland.tar.zst" "$USERLAND_OUT/manifest.json" "$USERLAND_ASSETS/"
     echo "copied to $USERLAND_ASSETS"
+    # The parts: only those of this build stay among the app's assets.
+    rm -rf "$USERLAND_PART_ASSETS"
+    for part in "$USERLAND_OUT"/parts/*/; do
+        [[ -d "$part" ]] || continue
+        name="$(basename "$part")"
+        mkdir -p "$USERLAND_PART_ASSETS/userland-$name"
+        cp "$part/userland.tar.zst" "$part/manifest.json" "$USERLAND_PART_ASSETS/userland-$name/"
+        echo "part $name copied to $USERLAND_PART_ASSETS/userland-$name"
+    done
     exit
 fi
 
@@ -48,7 +68,7 @@ version="$(
         # mesa-update.sh only moves the pin (config.sh and the patches, which count); it builds nothing.
         find . -maxdepth 1 -type f \( -name '*.sh' -o -name '*.in' -o -name '*.c' -o -name '*.h' -o -name 'packages.*' \) \
             ! -name mesa-update.sh
-        find ./containers ./patches ./mesa-kbase -type f
+        find ./containers ./patches ./mesa-kbase ./hybris ./radv-compat -type f
         if [[ "${PD2_USERLAND_WITH_GLIBC:-0}" == 1 ]]; then
             find ./glibc/patches ./glibc/build.sh ./glibc/Containerfile -type f
         fi
@@ -63,16 +83,29 @@ if [[ "${PD2_USERLAND_WITH_GLIBC:-0}" == 1 ]]; then
     [[ -f "$glibc_record" ]] || { echo "no glibc record: run build-glibc.sh first" >&2; exit 1; }
 fi
 
-rm -f "$out/userland.tar.zst" "$out/manifest.json"
+rm -rf "$out/userland.tar.zst" "$out/manifest.json" "$out/parts"
+parts_dir=/cache/work/parts
+mapfile -t parts < <(find "$parts_dir" -maxdepth 1 -name '*.files' -printf '%f\n' 2>/dev/null | sed 's/\.files$//' | LC_ALL=C sort)
+in_parts="$(mktemp)"
+for part in "${parts[@]}"; do cat "$parts_dir/$part.files"; done > "$in_parts"
 mapfile -t top < <(cd "$root" && ls -A | LC_ALL=C sort)
+# The parts' files (exact member names) stay out of the main archive.
 tar --create --file=- --directory="$root" --format=gnu --sort=name \
-    --mtime=@0 --owner=0 --group=0 --numeric-owner --hard-dereference "${top[@]}" \
+    --mtime=@0 --owner=0 --group=0 --numeric-owner --hard-dereference \
+    --anchored --no-wildcards --exclude-from="$in_parts" "${top[@]}" \
     | zstd -19 -T0 -q -o "$out/userland.tar.zst"
+for part in "${parts[@]}"; do
+    mkdir -p "$out/parts/$part"
+    LC_ALL=C sort -c "$parts_dir/$part.files" || { echo "$part.files is not sorted" >&2; exit 1; }
+    tar --create --file=- --directory="$root" --format=gnu --no-recursion --verbatim-files-from \
+        --mtime=@0 --owner=0 --group=0 --numeric-owner --hard-dereference --files-from="$parts_dir/$part.files" \
+        | zstd -19 -T0 -q -o "$out/parts/$part/userland.tar.zst"
+done
 
 python3 - "$root" "$out" "$version" "$DATA_PLACEHOLDER" "$USERLAND" "$glibc_record" \
-    "${ENGINE_NEEDED[*]}" <<'EOF'
+    "${ENGINE_NEEDED[*]}" "$parts_dir" "${parts[*]}" <<'EOF'
 import collections, hashlib, json, os, re, stat, subprocess, sys
-root, out, version, placeholder, prefix, glibc_record, engine_needed = sys.argv[1:]
+root, out, version, placeholder, prefix, glibc_record, engine_needed, parts_dir, part_names = sys.argv[1:]
 P = placeholder.encode()
 # The placeholder's first part: a copy of it that is not the whole placeholder would be left
 # half rewritten.
@@ -177,6 +210,42 @@ for path in critical:
 for path in absent:
     if path in by_path:
         sys.exit(f'{path} is in the tree')
+
+# --- the parts --------------------------------------------------------------------------------
+parts = {}
+for name in part_names.split():
+    paths = [line.rstrip('\n') for line in open(os.path.join(parts_dir, name + '.files')) if line.strip()]
+    for path in paths:
+        e = by_path.get(path)
+        if e is None or e['type'] != 'file':
+            sys.exit(f'part {name}: {path} is not a file of the tree')
+        if path in critical:
+            sys.exit(f'part {name}: {path} is critical')
+        if any(path in other for other in parts.values()):
+            sys.exit(f'part {name}: {path} is in another part too')
+    parts[name] = paths
+in_part = {path for paths in parts.values() for path in paths}
+main_entries = [e for e in entries if e['path'] not in in_part]
+for name, paths in parts.items():
+    part_entries = [by_path[path] for path in sorted(paths, key=str.encode)]
+    part_version = hashlib.sha256(''.join(f"{e['path']} {e['mode']} {e['sha256']}\n" for e in part_entries).encode()).hexdigest()[:16]
+    part_archive = os.path.join(out, 'parts', name, 'userland.tar.zst')
+    part_manifest = {
+        'version': part_version,
+        'part': name,
+        'placeholder': placeholder,
+        'prefix': prefix,
+        'archive': {'name': 'userland.tar.zst', 'size': os.path.getsize(part_archive), 'sha256': sha256(part_archive)},
+        'entries': part_entries,
+        'critical': [],
+        'absent': [],
+    }
+    with open(os.path.join(out, 'parts', name, 'manifest.json'), 'w') as f:
+        json.dump(part_manifest, f, indent=1, sort_keys=True)
+        f.write('\n')
+    print(f"part {name} {part_version}: {len(part_entries)} files, "
+          f"{sum(e['size'] for e in part_entries) / 1048576:.1f} MiB unpacked, archive {part_manifest['archive']['size'] / 1048576:.1f} MiB")
+entries = main_entries
 
 archive = os.path.join(out, 'userland.tar.zst')
 manifest = {

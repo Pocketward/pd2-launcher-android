@@ -1,0 +1,46 @@
+Subject: [PATCH] vrend: per-render-target blend and color-mask calls stop at GL_MAX_DRAW_BUFFERS
+
+vrend sets the blend and color-mask state of each render target with indexed GL calls
+(glBlendFuncSeparateiARB, glBlendEquationSeparateiARB, glEnableIndexedEXT/glDisableIndexedEXT,
+glColorMaskIndexedEXT). Three loops (vrend_hw_emit_blend, and the color-mask set and restore
+around vrend_clear) run over PIPE_MAX_COLOR_BUFS (8) targets. On a GLES driver with
+GL_MAX_DRAW_BUFFERS below 8 (Mali-G52 r26p0 in the Galaxy A32: 4), the calls for the indices
+from GL_MAX_DRAW_BUFFERS up are GL_INVALID_VALUE (OpenGL ES 3.2, the index must be below
+GL_MAX_DRAW_BUFFERS). A draw into 2 or more color buffers sets independent_blend_enable, so it
+runs these loops and fails with error 1281 at DRAW_VBO.
+
+The loops now stop at vrend_state.max_draw_buffers (read from GL_MAX_DRAW_BUFFERS at start-up,
+at most 8). On a host with 8 the loops are the same as before.
+
+Written for virglrenderer e18f8c00 src/vrend/vrend_renderer.c.
+
+---
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -4720,7 +4720,7 @@
+       if (sub_ctx->hw_blend_state.independent_blend_enable &&
+           has_feature(feat_indep_blend)) {
+          int i;
+-         for (i = 0; i < PIPE_MAX_COLOR_BUFS; i++)
++         for (i = 0; i < vrend_state.max_draw_buffers; i++)
+             glColorMaskIndexedEXT(i, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+       } else
+          glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+@@ -4774,7 +4774,7 @@
+       if (sub_ctx->hw_blend_state.independent_blend_enable &&
+           has_feature(feat_indep_blend)) {
+          int i;
+-         for (i = 0; i < PIPE_MAX_COLOR_BUFS; i++) {
++         for (i = 0; i < vrend_state.max_draw_buffers; i++) {
+             struct pipe_blend_state *blend = &sub_ctx->hw_blend_state;
+             glColorMaskIndexedEXT(i, blend->rt[i].colormask & PIPE_MASK_R ? GL_TRUE : GL_FALSE,
+                                   blend->rt[i].colormask & PIPE_MASK_G ? GL_TRUE : GL_FALSE,
+@@ -6436,7 +6436,7 @@
+       /* ARB_draw_buffers_blend is required for this */
+       int i;
+
+-      for (i = 0; i < PIPE_MAX_COLOR_BUFS; i++) {
++      for (i = 0; i < vrend_state.max_draw_buffers; i++) {
+
+          if (state->rt[i].blend_enable) {
+             bool dual_src = util_blend_state_is_dual(&sub_ctx->blend_state, i);

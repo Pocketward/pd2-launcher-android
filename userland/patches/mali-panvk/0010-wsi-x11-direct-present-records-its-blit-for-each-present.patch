@@ -1,0 +1,31 @@
+wsi/x11: the direct present records its blit for each present
+
+The direct present (radv-xclipse/0004) copies a swapchain image into one of the app's buffers with
+a blit, a draw. A draw command buffer that is submitted a second time faults on the job manager
+(DATA_INVALID). So the present frees the command buffers of the chosen image and buffer and
+records them again (sw_direct_record) before it submits them. The image's last blit has completed
+then: the image comes back to the app only after the WSI has waited for its blit.
+
+--- a/src/vulkan/wsi/wsi_common_x11.c
++++ b/src/vulkan/wsi/wsi_common_x11.c
+@@ -2819,6 +2819,20 @@ x11_direct_blit(struct wsi_swapchain *wsi_chain, uint32_t image_index, uint32_t
+       if (chosen >= 0 || u_cnd_monotonic_timedwait(&d->freed, &d->lock, &deadline) != thrd_success)
+          break;
+    }
++   if (chosen >= 0) {
++      /* Recorded again for each present: a draw submitted a second time faults on the job manager
++       * (DATA_INVALID). The last blit of this image is done: the image comes back only after the
++       * WSI has waited for it. */
++      VkCommandBuffer *old = d->cmd_buffers[image_index][chosen];
++      for (uint32_t q = 0; old != NULL && q < d->cmd_buffer_count; q++) {
++         if (old[q] != VK_NULL_HANDLE)
++            chain->base.wsi->FreeCommandBuffers(chain->base.device, chain->base.cmd_pools[q], 1, &old[q]);
++      }
++      vk_free(&chain->base.alloc, old);
++      d->cmd_buffers[image_index][chosen] = NULL;
++      if (!sw_direct_record(chain, d, image_index, (uint32_t)chosen))
++         chosen = -1;
++   }
+    if (chosen >= 0 && d->cmd_buffers[image_index][chosen][queue_family_index] == VK_NULL_HANDLE)
+       chosen = -1;
+    if (chosen >= 0)

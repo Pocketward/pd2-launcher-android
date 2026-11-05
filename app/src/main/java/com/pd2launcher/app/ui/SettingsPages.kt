@@ -194,7 +194,7 @@ enum class SettingsRow {
      */
     fun takesFirstFocus(editable: Boolean): Boolean = when (this) {
         GAME_RESOLUTION, ON_SCREEN_CONTROLS, GAME_FOLDER, UPDATE_CHANNEL, ABOUT, DETAILED_LOGGING -> true
-        // Display's GPU row opens its sub page in every build (the rows there grey with the page's one switch).
+        // Display's GPU row opens its sub page in every build (the rows there take a pick, DriverPage.SELECTABLE).
         GPU -> true
         GAME_UPDATE_CHECKS, SKIP_TO_BNET, SOUND_IN_BACKGROUND -> editable
         else -> false
@@ -290,6 +290,14 @@ class SettingsNav {
         closePopups()
         pageShown = false
         fromPlay = false
+    }
+
+    /** Display's GPU sub page in view ([gpu]): Play's button after a driver failure and the card's Quit. */
+    fun openGpu() {
+        open(SettingsPage.DISPLAY)
+        // Back from the sub page returns to the GPU row.
+        opener = SettingsRow.GPU
+        gpu = true
     }
 
     /** [page] in view: Play's Controls button, a row of the list, L1 and R1. */

@@ -8,6 +8,7 @@ import com.pd2launcher.app.DeviceCheck
 import com.pd2launcher.app.HostGpu
 import com.pd2launcher.app.KgslGpu
 import com.pd2launcher.app.MaliGpu
+import com.pd2launcher.app.SystemDriverGpu
 
 /** What [collect] reports when neither GPU probe can read the GPU. */
 const val GPU_NAME_UNKNOWN: String = "unknown"
@@ -32,6 +33,7 @@ fun HostFacts.Companion.collect(context: Context): HostFacts {
         chipId = when (gpu) {
             is KgslGpu -> gpu.chipId
             is MaliGpu -> gpu.gpuId and 0xFFFFFFFFL
+            is SystemDriverGpu -> CHIP_ID_UNKNOWN
             null -> CHIP_ID_UNKNOWN
         },
         kernelRelease = Os.uname().release,

@@ -54,6 +54,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -74,6 +75,7 @@ import com.pd2launcher.app.AppSettingsStore
 import com.pd2launcher.app.BuildConfig
 import com.pd2launcher.app.DeviceCheck
 import com.pd2launcher.app.DisplayFacts
+import com.pd2launcher.app.DriverPage
 import com.pd2launcher.app.FpsReading
 import com.pd2launcher.app.FrameClock
 import com.pd2launcher.app.FrameCopy
@@ -134,6 +136,7 @@ import java.util.concurrent.Executors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /** What shows over the game: nothing, the in-game menu, the Controls screen, or the on-screen controls editor. */
@@ -224,6 +227,8 @@ fun GameView(
     presentCounter: File? = null,
     preview: GameLayer? = null,
     previewLauncher: Boolean = false,
+    /** The card's Quit: the screens open Settings → Display → GPU ([com.pd2launcher.app.PhoneDriverFailure.asks]). */
+    onRouteQuit: () -> Unit = {},
 ) {
     var header by remember { mutableStateOf<XwdHeader?>(null) }
     LaunchedEffect(running, framebuffer) {
@@ -306,6 +311,30 @@ fun GameView(
         }
         from != null
     }
+    // The card that asks if the game works: over the game only, where the keys reach it.
+    val routeCard = live && status.routeQuestion && layer == GameLayer.NONE && !launcher
+    val answerRoute = { answer: RouteAnswer ->
+        SessionService.send(context, if (answer == RouteAnswer.WORKS) SessionService.ACTION_ROUTE_WORKS else SessionService.ACTION_ROUTE_QUIT)
+        // Quit: the game stops, and the GPU page opens, where the player picks another driver; no driver switches.
+        if (answer == RouteAnswer.QUIT) onRouteQuit()
+    }
+    val cardKeys by rememberUpdatedState(routeCard)
+    val cardHold = remember { RouteCardHold() }
+    LaunchedEffect(routeCard) { cardHold.clear() }
+    val cardScope = rememberCoroutineScope()
+    // A and B answer the card when held, and they do not reach the game while it shows.
+    val cardKey = key@{ event: KeyEvent ->
+        val code = event.keyCode
+        val down = event.action == KeyEvent.ACTION_DOWN
+        if (!cardKeys || !cardHold.key(code, down, event.repeatCount, event.eventTime)) return@key false
+        if (down && event.repeatCount == 0) {
+            cardScope.launch {
+                delay(RouteCardHold.HOLD_MS)
+                cardHold.answer(code, SystemClock.uptimeMillis())?.let(answerRoute)
+            }
+        }
+        true
+    }
     // The controller's mode now (the chord switches it, the Controls screen too).
     var mouseMode by remember { mutableStateOf(false) }
     // The screen's full rate, live: the Game view's measurement can change it ([ScreenRate]).
@@ -385,6 +414,7 @@ fun GameView(
                         it.onMenu = { openMenu("the chord ${SettingsLog.chord(controls.chord)} held ${PadInput.MENU_HOLD_MS} ms") }
                         it.onMouseMode = { on -> mouseMode = on }
                         it.onOverlayKey = shoulder
+                        it.onCardKey = cardKey
                         it.controls = controls
                         it.input = input
                         it.tellBackground = app.lowFrameRateInBackground
@@ -414,8 +444,11 @@ fun GameView(
             val glyphCorner = if (launcher) Alignment.TopStart else Alignment.TopEnd
             if (layer == GameLayer.NONE) MenuGlyph(Modifier.align(glyphCorner).windowInsetsPadding(WindowInsets.safeDrawing)) { openMenu("the menu button") }
             if (layer == GameLayer.NONE && starting != null) LauncherStartingNotice(starting, Modifier.align(Alignment.Center))
+            if (routeCard) {
+                RouteCard(controller, status.graphicsRoute?.let { text(DriverPage.label(it)) }.orEmpty(), answerRoute, Modifier.align(Alignment.Center).windowInsetsPadding(WindowInsets.safeDrawing))
+            }
             // Top centre, clear of the default controls and of the menu; it takes no touch.
-            if (layer.fpsShown(app.showFps, launcher)) FpsCounter({ fps }, Modifier.align(Alignment.TopCenter).windowInsetsPadding(WindowInsets.safeDrawing))
+            if (layer.fpsShown(app.showFps, launcher) && !routeCard) FpsCounter({ fps }, Modifier.align(Alignment.TopCenter).windowInsetsPadding(WindowInsets.safeDrawing))
             if (layer == GameLayer.EDIT) ControlsEditor(sample = preview != null, onClose = { go(GameLayer.NONE) })
             GameMenu(
                 visible = layer == GameLayer.MENU,
@@ -987,6 +1020,9 @@ private class GameSurface(
     /** A key while an overlay shows ([suspended]), before its screens have it; true: it was used. */
     var onOverlayKey: (KeyEvent) -> Boolean = { false }
 
+    /** The card's keys ([RouteCard]) ahead of the game; true: the key was theirs. */
+    var onCardKey: (KeyEvent) -> Boolean = { false }
+
     /** The on-screen controls' custom buttons, let go when the view leaves its window. */
     var customButtons: CustomButtons? = null
 
@@ -1251,7 +1287,7 @@ private class GameSurface(
                             "(${raw.device?.let { PadLayouts.entry(it).pick.layout }})",
                     )
                 }
-                return onGameKey(event) || (suspended && onOverlayKey(event)) || base.dispatchKeyEvent(event)
+                return onCardKey(event) || onGameKey(event) || (suspended && onOverlayKey(event)) || base.dispatchKeyEvent(event)
             }
             override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean =
                 onGameMotion(event) || base.dispatchGenericMotionEvent(event)

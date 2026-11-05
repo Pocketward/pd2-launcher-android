@@ -63,8 +63,17 @@ class SessionPaths(val data: String) {
      */
     val soundRing = File(runtimeDir, "pd2-audio")
     val alsaConfig = File(runtimeDir, "asound.conf")
+    /** The system-driver mode's vtest server socket ([SystemDriver.socket]; userland.env names the same path). */
+    val vtestSocket = SystemDriver.socket(runtimeDir)
+    /**
+     * The libhybris route's status file ([LibhybrisStatus]): the ICD in the game's Wine processes
+     * appends a line when the phone's Vulkan driver made a device or failed; the engine passes its
+     * path as `PD2_HYBRIS_STATUS_FILE` ([engineEnvironment]). Removed before each game environment
+     * ([GameEnvironment.start]).
+     */
+    val hybrisStatus = File(runtimeDir, "hybris-status")
     /** The Unix sockets the session binds below [data]: their paths must fit `sun_path`. */
-    val sockets: List<File> get() = listOf(presentSocket)
+    val sockets: List<File> get() = listOf(presentSocket, vtestSocket)
 
     /** The Launcher's managed root, `<launcher home>/game`. */
     val managedRoot = File(launcherHome, "game")
@@ -182,32 +191,54 @@ class SessionPaths(val data: String) {
      * as `PD2_APP_COMPATIBILITY_<NAME>`, which the engine uses for a Play with that driver), the
      * font and X locale configuration, Box64's quiet settings, the [presentCounter] and the
      * [presentSocket]; and the [receivedBytes] file for the engine itself.
-     * The GPU values are the Adreno's (Turnip) unless [mali] (a Mali GPU, PanVK: [maliValues]);
+     * The GPU values are the Adreno's (Turnip) unless [libhybris] (the phone's own Vulkan driver in
+     * the game's process: [hybrisValues], with the phone's API level [sdk]), [virgl] (the phone's
+     * own OpenGL ES driver through the VirGL route: [virglValues]), [systemDriver] (the phone's own
+     * Vulkan driver through Venus with [zink]: [systemDriverValues]), [radv] (our RADV on a Samsung
+     * Xclipse GPU, the RADV route: [radvValues]), [maliPanvk] (mali-panvk on a Mali of kbase's job
+     * manager, the mali-panvk route: [maliPanvkValues]) or [mali] (a CSF Mali GPU, our PanVK:
+     * [maliValues]), or [software] (the Software driver, [GraphicsRoute.SOFTWARE]: [softwareValues],
+     * no GPU driver);
      * [devDriver] lets a hand-placed Mali driver build replace the bundled one (debug builds only,
-     * [devDriverValues]). On an Adreno, [ubwcFlagHint] (0 or 1, [UbwcFlagHint]) adds Turnip's TP
-     * UBWC flag hint as [FD_DEV_FEATURES], which the engine keeps for the standard and the
-     * Compatibility driver; null adds nothing (Mesa's own value).
+     * [devDriverValues]). With the Adreno's values (Turnip), [ubwcFlagHint] (0 or 1, [UbwcFlagHint])
+     * adds Turnip's TP UBWC flag hint as [FD_DEV_FEATURES], which the engine keeps for the standard
+     * and the Compatibility driver; null adds nothing (Mesa's own value).
      */
     fun engineEnvironment(
         mali: Boolean = false,
         devDriver: Boolean = BuildConfig.DEBUG,
         noconform: Boolean = false,
+        systemDriver: Boolean = false,
+        zink: SystemDriver.Zink = SystemDriver.Zink.OLDER,
+        virgl: Boolean = false,
+        libhybris: Boolean = false,
+        sdk: Int = 0,
+        forcedLibhybrisValues: List<Pair<String, String>> = emptyList(),
+        radv: Boolean = false,
         ubwcFlagHint: Int? = null,
+        maliPanvk: Boolean = false,
+        software: Boolean = false,
     ): List<String> {
         val values = userlandEnvironment()
         val own = values.filter { (key, _) ->
             key.startsWith("LD_") || key == SSL_CERT_FILE || key == "FONTCONFIG_FILE" || key == "XLOCALEDIR"
         }
         val wine = values.filter { (key, _) ->
-            key.startsWith(WINE) && !key.startsWith(MALI) && !key.startsWith(COMPATIBILITY)
+            key.startsWith(WINE) && !key.startsWith(MALI) && !key.startsWith(COMPATIBILITY) && !key.startsWith(SYSDRV) &&
+                !key.startsWith(VIRGL) && !key.startsWith(HYBRIS) && !key.startsWith(RADV)
         }.map { (key, value) -> key.removePrefix(WINE) to value }
         val compatibility = values.filter { (key, _) -> key.startsWith(COMPATIBILITY) }
             .map { (key, value) -> ENGINE_COMPATIBILITY + key.removePrefix(COMPATIBILITY) to value }
             .let { if (noconform) withNoconform(it, ENGINE_COMPATIBILITY + TU_DEBUG) else it }
-        val gpu = if (mali) {
-            maliValues(values, wine, devDriver)
-        } else {
-            (if (noconform) withNoconform(wine, TU_DEBUG) else wine) + compatibility +
+        val gpu = when {
+            software -> softwareValues(wine)
+            libhybris -> hybrisValues(values, wine, devDriver, sdk, forcedLibhybrisValues)
+            virgl -> virglValues(values, wine, devDriver)
+            systemDriver -> systemDriverValues(values, wine, devDriver, zink)
+            radv -> radvValues(values, wine, devDriver)
+            maliPanvk -> maliPanvkValues(values, wine, devDriver)
+            mali -> maliValues(values, wine, devDriver)
+            else -> (if (noconform) withNoconform(wine, TU_DEBUG) else wine) + compatibility +
                 listOfNotNull(ubwcFlagHint?.let { FD_DEV_FEATURES to ubwcFlagHintFeature(it) }) +
                 if (devDriver) debugHostValues() else emptyList()
         }
@@ -220,19 +251,172 @@ class SessionPaths(val data: String) {
     }
 
     /**
-     * On a Mali: userland.env's Mali set (`PD2_APP_WINE_MALI_<NAME>`) as `<NAME>`, each replacing
-     * the [wine] value of its name, without Turnip's own (`TU_DEBUG` and the Compatibility
-     * driver's values, which PanVK does not read); with [devDriver], [devDriverValues] over those
-     * (a later value of a name wins).
+     * [engineEnvironment] on [gpu] for the engine's [route]: a CSF Mali's values (our PanVK),
+     * `noconform` on an Adreno that needs it, and Turnip's UBWC flag hint on an Adreno 740, which
+     * comes from the phone's Vulkan driver ([read], [UbwcFlagHint.choice]; the service reads the
+     * probe, and the JVM tests pass their own reading).
+     */
+    fun engineEnvironmentOn(
+        gpu: HostGpu?,
+        route: GraphicsRoute?,
+        zink: SystemDriver.Zink,
+        sdk: Int,
+        forcedLibhybrisValues: List<Pair<String, String>>,
+        read: () -> VulkanDriverReading,
+    ): List<String> = engineEnvironment(
+        mali = (gpu as? MaliGpu)?.jobManager == false,
+        noconform = (gpu as? KgslGpu)?.let { adrenoWithoutMultiview(it.chipId) } ?: false,
+        systemDriver = route == GraphicsRoute.VENUS,
+        zink = zink,
+        virgl = route == GraphicsRoute.VIRGL,
+        libhybris = route == GraphicsRoute.LIBHYBRIS,
+        sdk = sdk,
+        forcedLibhybrisValues = forcedLibhybrisValues,
+        radv = route == GraphicsRoute.RADV,
+        ubwcFlagHint = UbwcFlagHint.choice(gpu, read = read).hint,
+        maliPanvk = route == GraphicsRoute.MALI_PANVK,
+        software = route == GraphicsRoute.SOFTWARE,
+    )
+
+    /**
+     * On the Software driver: [wine]'s values with no Vulkan driver for the game (the loader finds
+     * no driver file, [NO_VULKAN_DRIVER], in place of Turnip's), without Turnip's own (`TU_DEBUG`, the
+     * Compatibility driver's values and the UBWC hint), and no debug driver or `hostenv` values.
+     * The game draws with GDI, so Wine's OpenGL start fails and nothing opens the GPU (the GDI
+     * local phone check, 2026-11-03: no Vulkan driver and no GPU device in Game.exe, town at
+     * 24 to 26 fps). The display path (Xvfb, the present counter and socket) stays.
+     */
+    private fun softwareValues(wine: List<Pair<String, String>>): List<Pair<String, String>> {
+        val none = listOf("VK_DRIVER_FILES" to NO_VULKAN_DRIVER, "VK_ICD_FILENAMES" to NO_VULKAN_DRIVER)
+        return wine.filterNot { (key, _) -> key == "TU_DEBUG" || none.any { it.first == key } } + none
+    }
+
+    /**
+     * On a Mali: userland.env's Mali set (`PD2_APP_WINE_MALI_<NAME>`, not the mali-panvk route's
+     * `PD2_APP_WINE_MALI_PANVK_<NAME>`) as `<NAME>`, each replacing the [wine] value of its name,
+     * without Turnip's own (`TU_DEBUG` and the Compatibility driver's values, which PanVK does not
+     * read); with [devDriver], [devDriverValues] over those (a later value of a name wins).
      */
     private fun maliValues(
         values: List<Pair<String, String>>,
         wine: List<Pair<String, String>>,
         devDriver: Boolean,
     ): List<Pair<String, String>> {
-        val mali = values.filter { (key, _) -> key.startsWith(MALI) }.map { (key, value) -> key.removePrefix(MALI) to value }
+        val mali = values.filter { (key, _) -> key.startsWith(MALI) && !key.startsWith(MALI_PANVK) }
+            .map { (key, value) -> key.removePrefix(MALI) to value }
         val over = (mali + if (devDriver) devDriverValues() else emptyList()).toMap()
         return wine.filterNot { (key, _) -> key in over || key == "TU_DEBUG" } + over.toList()
+    }
+
+    /**
+     * In the system-driver mode: userland.env's set (`PD2_APP_WINE_SYSDRV_<NAME>`) as `<NAME>`,
+     * each replacing the [wine] value of its name (the Venus ICD in place of Turnip's, the vtest
+     * socket, OpenGL 3.3), and with the [SystemDriver.Zink.OLDER] Zink its own values too
+     * (`PD2_APP_WINE_SYSDRV_OLDER_ZINK_<NAME>`: the second GL stack's glvnd vendor; the
+     * [SystemDriver.Zink.CURRENT] one keeps [wine]'s "mesa"); without Turnip's own (`TU_DEBUG`;
+     * the Compatibility driver's values are left out too); with [devDriver] (debug builds),
+     * `files/kbase/hostenv`'s values over those ([debugHostValues]), for Mesa's and Venus's debug
+     * output in tests.
+     */
+    private fun systemDriverValues(
+        values: List<Pair<String, String>>,
+        wine: List<Pair<String, String>>,
+        devDriver: Boolean,
+        zink: SystemDriver.Zink,
+    ): List<Pair<String, String>> {
+        val own = values.filter { (key, _) -> key.startsWith(SYSDRV) && !key.startsWith(SYSDRV_OLDER_ZINK) }
+            .map { (key, value) -> key.removePrefix(SYSDRV) to value }
+        val older = if (zink == SystemDriver.Zink.OLDER) {
+            values.filter { (key, _) -> key.startsWith(SYSDRV_OLDER_ZINK) }.map { (key, value) -> key.removePrefix(SYSDRV_OLDER_ZINK) to value }
+        } else {
+            emptyList()
+        }
+        val over = (own + older + if (devDriver) debugHostValues() else emptyList()).toMap()
+        return wine.filterNot { (key, _) -> key in over || key == "TU_DEBUG" } + over.toList()
+    }
+
+    /**
+     * On the RADV route: userland.env's set (`PD2_APP_WINE_RADV_<NAME>`) as `<NAME>`, each
+     * replacing the [wine] value of its name (RADV's ICD in place of Turnip's, the product Mesa's
+     * Zink as glvnd vendor "mesa", OpenGL 3.3); without Turnip's own (`TU_DEBUG`; the
+     * Compatibility driver's values are left out too); with [devDriver] (debug builds),
+     * `files/kbase/hostenv`'s values over those ([debugHostValues]), as on the other routes (for
+     * example `RADV_XCLIPSE_LOG=1`, which the engine passes on).
+     */
+    private fun radvValues(
+        values: List<Pair<String, String>>,
+        wine: List<Pair<String, String>>,
+        devDriver: Boolean,
+    ): List<Pair<String, String>> {
+        val own = values.filter { (key, _) -> key.startsWith(RADV) }.map { (key, value) -> key.removePrefix(RADV) to value }
+        val over = (own + if (devDriver) debugHostValues() else emptyList()).toMap()
+        return wine.filterNot { (key, _) -> key in over || key == "TU_DEBUG" } + over.toList()
+    }
+
+    /**
+     * On the mali-panvk route: userland.env's set (`PD2_APP_WINE_MALI_PANVK_<NAME>`) as `<NAME>`,
+     * each replacing the [wine] value of its name (mali-panvk's ICD in place of Turnip's, OpenGL
+     * 3.3); without Turnip's own (`TU_DEBUG`; the Compatibility driver's values and the CSF Mali
+     * values are left out too); with [devDriver] (debug builds), `files/kbase/hostenv`'s values
+     * over those ([debugHostValues]), as on the other routes. The engine's filter passes `PAN_` names to
+     * Wine, not `PANVK_` names.
+     */
+    private fun maliPanvkValues(
+        values: List<Pair<String, String>>,
+        wine: List<Pair<String, String>>,
+        devDriver: Boolean,
+    ): List<Pair<String, String>> {
+        val own = values.filter { (key, _) -> key.startsWith(MALI_PANVK) }.map { (key, value) -> key.removePrefix(MALI_PANVK) to value }
+        val over = (own + if (devDriver) debugHostValues() else emptyList()).toMap()
+        return wine.filterNot { (key, _) -> key in over || key == "TU_DEBUG" } + over.toList()
+    }
+
+    /**
+     * On the VirGL route: userland.env's set (`PD2_APP_WINE_VIRGL_<NAME>`) as `<NAME>`, each
+     * replacing the [wine] value of its name (the virgl driver on the GLX software path, the vtest
+     * socket, OpenGL 3.3), and an empty one of that set leaving `<NAME>` out (Zink's driver
+     * override); without Turnip's own (`TU_DEBUG`; the Compatibility driver's values are left out
+     * too); with [devDriver] (debug builds), `files/kbase/hostenv`'s values over those
+     * ([debugHostValues]), an empty one there given as empty, as on the other routes.
+     */
+    private fun virglValues(
+        values: List<Pair<String, String>>,
+        wine: List<Pair<String, String>>,
+        devDriver: Boolean,
+    ): List<Pair<String, String>> {
+        val own = values.filter { (key, _) -> key.startsWith(VIRGL) }.map { (key, value) -> key.removePrefix(VIRGL) to value }
+        val removed = own.filter { (_, value) -> value.isEmpty() }.map { it.first }.toSet()
+        val over = (own.filter { (_, value) -> value.isNotEmpty() } + if (devDriver) debugHostValues() else emptyList()).toMap()
+        return wine.filterNot { (key, _) -> key in over || key in removed || key == "TU_DEBUG" } + over.toList()
+    }
+
+    /**
+     * On the libhybris route: userland.env's set (`PD2_APP_WINE_HYBRIS_<NAME>`) as `<NAME>`, each
+     * replacing the [wine] value of its name (our ICD in place of Turnip's, libhybris's linker
+     * folder, OpenGL 3.3), an empty one leaving `<NAME>` out (Mesa's WSI value); then the phone's
+     * API level as `HYBRIS_ANDROID_SDK_VERSION` ([sdk]: libhybris's linker and hooks for it; it
+     * reads no property in an app) and the [hybrisStatus] file as `PD2_HYBRIS_STATUS_FILE`;
+     * without Turnip's own (`TU_DEBUG`; the Compatibility driver's values are left out too); with
+     * [devDriver] (debug builds), `files/kbase/hostenv`'s values over those ([debugHostValues]),
+     * and [forced] (the `NAME=value` lines of a debug build's route file,
+     * [SystemDriver.FORCE_LIBHYBRIS_FILE]) last.
+     */
+    private fun hybrisValues(
+        values: List<Pair<String, String>>,
+        wine: List<Pair<String, String>>,
+        devDriver: Boolean,
+        sdk: Int,
+        forced: List<Pair<String, String>>,
+    ): List<Pair<String, String>> {
+        val own = values.filter { (key, _) -> key.startsWith(HYBRIS) }.map { (key, value) -> key.removePrefix(HYBRIS) to value }
+        val removed = own.filter { (_, value) -> value.isEmpty() }.map { it.first }.toSet()
+        val route = listOfNotNull(
+            sdk.takeIf { it > 0 }?.let { "HYBRIS_ANDROID_SDK_VERSION" to it.toString() },
+            "PD2_HYBRIS_STATUS_FILE" to hybrisStatus.path,
+        )
+        val over = (own.filter { (_, value) -> value.isNotEmpty() } + route +
+            (if (devDriver) debugHostValues() else emptyList()) + forced).toMap()
+        return wine.filterNot { (key, _) -> key in over || key in removed || key == "TU_DEBUG" } + over.toList()
     }
 
     /**
@@ -286,11 +470,25 @@ class SessionPaths(val data: String) {
         private const val WINE = "PD2_APP_WINE_"
         /** Such a value for a Mali GPU (PanVK), given as `<NAME>` on a Mali only. */
         private const val MALI = "PD2_APP_WINE_MALI_"
+        /** Such a value for the mali-panvk route ([GraphicsRoute.MALI_PANVK]), given as `<NAME>` on that route only; never a [MALI] one. */
+        private const val MALI_PANVK = "PD2_APP_WINE_MALI_PANVK_"
         /** Such a value of the Compatibility graphics driver (Turnip only). */
         private const val COMPATIBILITY = "PD2_APP_WINE_COMPATIBILITY_"
+        /** Such a value for the system-driver mode, given as `<NAME>` in that mode only. */
+        private const val SYSDRV = "PD2_APP_WINE_SYSDRV_"
+        /** Such a value only with the older Zink ([SystemDriver.Zink.OLDER]). */
+        private const val SYSDRV_OLDER_ZINK = "PD2_APP_WINE_SYSDRV_OLDER_ZINK_"
+        /** Such a value for the VirGL route, given as `<NAME>` on that route only (an empty one: no `<NAME>`). */
+        private const val VIRGL = "PD2_APP_WINE_VIRGL_"
+        /** Such a value for the libhybris route, given as `<NAME>` on that route only (an empty one: no `<NAME>`). */
+        private const val HYBRIS = "PD2_APP_WINE_HYBRIS_"
+        /** Such a value for the RADV route ([GraphicsRoute.RADV]), given as `<NAME>` on that route only. */
+        private const val RADV = "PD2_APP_WINE_RADV_"
         /** How the engine reads a Compatibility driver's value (`PD2_APP_COMPATIBILITY_<NAME>`). */
         private const val ENGINE_COMPATIBILITY = "PD2_APP_COMPATIBILITY_"
         private const val TU_DEBUG = "TU_DEBUG"
+        /** The Software driver's Vulkan driver file: none there, so the game's Vulkan loader finds no driver (the GDI local check's value). */
+        const val NO_VULKAN_DRIVER = "/nonexistent/none.json"
         private const val NOCONFORM = "noconform"
         private const val SSL_CERT_FILE = "SSL_CERT_FILE"
         private val ASSIGNMENT = Regex("""^([A-Za-z_][A-Za-z0-9_]*)=(.*)$""")

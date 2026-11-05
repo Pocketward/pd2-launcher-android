@@ -1,0 +1,86 @@
+From c69b4885a5d43bf05dfc519d8845678a5258d1c2 Mon Sep 17 00:00:00 2001
+From: "Sophie Winter [AI]" <git@phie.me>
+Date: Wed, 29 Apr 2026 16:31:55 -0700
+Subject: [PATCH 4/9] hooks: redirect __cfi_slowpath to no-op stubs for vendor
+ libraries
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Vendor libraries loaded via android_dlopen are CFI-instrumented:
+indirect calls go through bionic libdl.so's __cfi_slowpath{,_diag},
+which validate the target against a sparse shadow table the bionic
+linker built at process start. That shadow only covers system
+libraries — vendor libraries are absent from it, so any CFI-checked
+indirect call into a hybris-loaded vendor library would fault inside
+__cfi_slowpath.
+
+Hook __cfi_slowpath and __cfi_slowpath_diag in hooks_mm to empty
+no-op stubs. The Q linker's relocation pass consults
+_get_hooked_symbol before falling back to bionic libdl, so each
+vendor library's GOT entry for these symbols is wired to the stub
+at link time and the real bionic __cfi_slowpath is never reached.
+Functionally equivalent to the shadow marking each vendor lib's
+range kUncheckedShadow, which is what would happen anyway — vendor
+libraries lack __cfi_check, so a properly initialised shadow would
+pass them through unchecked.
+
+This replaces an earlier approach that patched bionic libdl's
+__cfi_slowpath in place via mprotect(RW) → write 'ret' → mprotect(RX).
+That worked under root (magisk:s0) but failed on stock Android's
+runas_app SELinux domain, where system_file:execmod is denied — the
+post-write PROT_EXEC restore left bionic libdl's page non-executable,
+faulting any later indirect call through the page. The hook approach
+never touches bionic libdl, so it's policy-agnostic and works under
+both proot (runas_app) and chroot (magisk:s0).
+---
+ hybris/common/hooks.c | 26 ++++++++++++++++++++++++++
+ 1 file changed, 26 insertions(+)
+
+diff --git a/hybris/common/hooks.c b/hybris/common/hooks.c
+index f49846d..0533010 100644
+--- a/hybris/common/hooks.c
++++ b/hybris/common/hooks.c
+@@ -3031,6 +3031,29 @@ int _hybris_hook_android_fdsan_close_with_tag(int fd, uint64_t tag)
+     return close(fd);
+ }
+ 
++/* Bionic libdl.so's __cfi_slowpath{,_diag} validate indirect calls against a
++ * sparse shadow table that the bionic linker builds at process start, covering
++ * only system libraries. Vendor libraries we android_dlopen here are absent
++ * from that shadow, so the real __cfi_slowpath would fault on their indirect
++ * calls. Hooking the symbol redirects each loaded vendor library's GOT entry
++ * for __cfi_slowpath{,_diag} at relocation time (linker.cpp:_get_hooked_symbol)
++ * to these no-op stubs, matching kUncheckedShadow semantics — vendor libraries
++ * lack __cfi_check anyway, so a properly initialised shadow would pass them
++ * through unchecked. Avoids ever needing to mprotect bionic libdl.so, which
++ * fails on stock Android's runas_app SELinux domain (no system_file:execmod). */
++static void _hybris_hook___cfi_slowpath(uint64_t CallSiteTypeId, void *TargetAddr)
++{
++    (void)CallSiteTypeId;
++    (void)TargetAddr;
++}
++
++static void _hybris_hook___cfi_slowpath_diag(uint64_t CallSiteTypeId, void *TargetAddr, void *DiagData)
++{
++    (void)CallSiteTypeId;
++    (void)TargetAddr;
++    (void)DiagData;
++}
++
+ // old property hooks for pre-android 8 approach
+ static struct _hook hooks_properties[] = {
+     HOOK_INDIRECT(property_get),
+@@ -3355,6 +3378,9 @@ static struct _hook hooks_common[] = {
+ };
+ 
+ static struct _hook hooks_mm[] = {
++    /* CFI was added in Android M (API 23). See cfi stub definitions above. */
++    HOOK_TO(__cfi_slowpath, _hybris_hook___cfi_slowpath),
++    HOOK_TO(__cfi_slowpath_diag, _hybris_hook___cfi_slowpath_diag),
+     HOOK_DIRECT(strtol),
+     HOOK_DIRECT_NO_DEBUG(strlcat),
+     HOOK_DIRECT_NO_DEBUG(strlcpy),
+-- 
+2.56.0
+

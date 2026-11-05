@@ -1,8 +1,10 @@
 package com.pd2launcher.app.ui
 
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
@@ -10,6 +12,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.pd2launcher.app.DiabloSource
+import com.pd2launcher.app.PhoneDriverAdvice
 import com.pd2launcher.app.R
 import com.pd2launcher.app.SourceChoice
 import com.pd2launcher.app.Tone
@@ -22,7 +25,11 @@ import com.pd2launcher.app.Tone
  * options, what the page must say ([sourceNote]): a folder refused or a copy failed, what a
  * picked folder holds, or why Continue waits. An import keeps the Project Diablo 2 in the folder as
  * it is, whatever Check for game updates says (the owner's rule of 2026-10-26), so the page has no
- * switch for it.
+ * switch for it. [advice]: the game takes a route for a GPU that Turnip and PanVK do not support
+ * ([PhoneDriverAdvice]): the rows stay as on every phone, and Blizzard's installers get a line that
+ * they are not recommended on this phone, as they are the least likely to work there (the owner,
+ * 2026-10-29: Fast download and an import are equal, so no text prefers either; and, when a test
+ * forced the route, that the line comes from it).
  */
 @Composable
 fun SourceScreen(
@@ -31,6 +38,7 @@ fun SourceScreen(
     onPickFolder: () -> Unit,
     onContinue: () -> Unit,
     onBack: () -> Unit,
+    advice: PhoneDriverAdvice? = null,
 ) {
     val focus = remember { FocusRequester() }
     InitialFocus(focus)
@@ -53,6 +61,15 @@ fun SourceScreen(
     ) {
         Option(SourceChoice.FAST, R.string.source_fast, R.string.source_fast_body, view.selected, !copying, onSelect)
         Option(SourceChoice.BLIZZARD, R.string.source_blizzard, R.string.source_blizzard_body, view.selected, !copying, onSelect)
+        if (advice != null) {
+            // In line with the options' words.
+            Column(Modifier.padding(start = 48.dp, bottom = 6.dp)) {
+                Text(stringResource(R.string.source_blizzard_phone_driver), style = Type.Hint, color = Palette.Amber)
+                if (advice == PhoneDriverAdvice.FORCED) {
+                    Text(stringResource(R.string.source_phone_driver_forced), style = Type.Hint, color = Palette.Muted)
+                }
+            }
+        }
         Option(SourceChoice.EXISTING, R.string.source_existing, R.string.source_existing_body, view.selected, !copying, onSelect)
         if (view.selected == SourceChoice.EXISTING) {
             LauncherButton(

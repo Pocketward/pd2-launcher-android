@@ -1,0 +1,23 @@
+Subject: [PATCH] build: build vtest without vrend
+
+Since "build: Add vrend option to allow Vulkan-only builds" (06960f84), -Dvrend=false builds
+virglrenderer without libepoxy and the OpenGL renderer, but it also skips vtest, so a
+Venus-only vtest server cannot be built. vtest needs nothing of vrend: it uses the public
+virglrenderer API, the copied Mesa util code (src/mesa/util) and, when found, libdrm; its
+gallium_dep is the not-found dependency that src/meson.build sets without vrend. Without
+vrend the server runs with --venus --no-virgl only.
+
+Written from virglrenderer e18f8c00 meson.build, vtest/meson.build and src/meson.build.
+
+---
+--- a/meson.build
++++ b/meson.build
+@@ -489,7 +489,7 @@
+ endif
+
+ subdir('src')
+-if with_vrend and not with_host_windows
++if not with_host_windows
+    subdir('vtest')
+ endif
+

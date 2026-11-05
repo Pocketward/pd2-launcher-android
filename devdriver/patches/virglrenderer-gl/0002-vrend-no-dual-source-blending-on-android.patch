@@ -1,0 +1,27 @@
+Subject: [PATCH] vrend: no dual-source blending on Android
+
+With dual-source blending, vrend's fragment shaders declare their outputs with an index, and
+Qualcomm's GLES drivers then fail to link a shader with several color outputs (virglrenderer
+issue #223); D2GL draws to three color attachments at once. vrend_renderer_init clears the
+feature on Android, so the guest gets no ARB_blend_func_extended (D2GL does not use SRC1
+blending; the guest's MESA_GL_VERSION_OVERRIDE=3.3 keeps OpenGL 3.3, which needs it).
+
+Written for virglrenderer e18f8c00 src/vrend/vrend_renderer.c.
+
+---
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -7666,6 +7666,13 @@
+    if (!vrend_winsys_has_gl_colorspace())
+       clear_feature(feat_srgb_write_control) ;
+ 
++#ifdef __ANDROID__
++   /* Dual-source blending makes the fragment shaders declare indexed outputs, and some Android
++    * GLES drivers (Qualcomm's) then fail to link shaders with several color outputs
++    * (virglrenderer issue #223). The guest then has no ARB_blend_func_extended. */
++   clear_feature(feat_dual_src_blend);
++#endif
++
+    glGetIntegerv(GL_MAX_DRAW_BUFFERS, (GLint *) &vrend_state.max_draw_buffers);
+ 
+    /* For testing we need to know maximum */

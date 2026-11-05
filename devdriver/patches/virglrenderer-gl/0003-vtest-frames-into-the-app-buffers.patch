@@ -1,0 +1,702 @@
+Subject: [PATCH] vtest: the VirGL route's frames into the app's buffers (VCMD_PD2_APP_PRESENT)
+
+PD2 Launcher, our code (MIT, as virglrenderer). A new vtest command, VCMD_PD2_APP_PRESENT
+(resource, flags; the answer is one word), and GET_PARAM VCMD_PARAM_PD2_APP_PRESENT, which says
+whether the server can do it: on Android with vrend on EGL, when PD2_PRESENT_SOCKET names the app's
+present socket and PD2_VIRGL_APP_PRESENT is not 0 (the debug switch back to the copy path). The
+guest Mesa (userland/patches/mesa/0012) sends it at each front-buffer flush instead of reading the
+frame back (TRANSFER_GET) for the X screen.
+
+The server's child for that client becomes a client of the app's present server, with the
+protocol of Mesa patch 0004 (HELLO, BUFFERS and the AHardwareBuffers, PRESENT with a fence,
+RELEASE with a release fence; app/src/main/cpp/present_server.cpp). In an EGL context of its own
+in vrend's share group (same config, OpenGL ES 3), it makes an EGLImage of each of the app's 4
+buffers (EGL_ANDROID_get_native_client_buffer, EGL_ANDROID_image_native_buffer,
+GL_OES_EGL_image), a texture and a framebuffer on it; for each frame it waits on the GPU for the
+free buffer's release fence (EGL_KHR_wait_sync, else on the CPU), blits vrend's texture of the
+resource into the buffer, takes an EGL_ANDROID_native_fence_sync fence and sends PRESENT (FIFO)
+with it. A frame the app does not show now (the guest's WANTED flag clear) still sets up the
+connection, so the app has a client. Answers: SHOWN; COPY (not this frame: not wanted, no free
+buffer within 100 ms, a resource that is not 8-bit RGBA or BGRA UNORM, the app closed the
+connection, after which frames of that size are not sent again); OFF (a missing extension or a
+failed step: never again for this client, the connection closed so the app shows the X screen).
+The new code is vtest/vtest_app_present.c; it is built only on Android with vrend and EGL, and
+links libandroid.
+
+---
+--- a/vtest/meson.build
++++ b/vtest/meson.build
+@@ -45,6 +45,13 @@
+ if with_tracing == 'percetto'
+    vtest_depends += [percetto_dep]
+ endif
++
++# PD2 Launcher: the front buffer into the app's AHardwareBuffers (vtest_app_present.c), on Android
++# with vrend on EGL only.
++if host_machine.system() == 'android' and with_vrend and have_egl
++   vtest_sources += ['vtest_app_present.c']
++   vtest_depends += [epoxy_dep, cc.find_library('android')]
++endif
+ libvtest = static_library(
+    'vtest',
+    vtest_sources,
+--- a/vtest/vtest.h
++++ b/vtest/vtest.h
+@@ -113,6 +113,11 @@
+ int vtest_drm_sync_transfer(uint32_t length_dw);
+ int vtest_resource_export_fd(uint32_t length_dw);
+ 
++/* PD2 Launcher (vtest_app_present.c) */
++int vtest_pd2_app_present(uint32_t length_dw);
++bool vtest_app_present_available(void);
++uint32_t vtest_app_present(uint32_t res_id, uint32_t flags, int ctx_id);
++
+ void vtest_set_max_length(uint32_t length);
+ 
+ #endif
+--- a/vtest/vtest_protocol.h
++++ b/vtest/vtest_protocol.h
+@@ -94,6 +94,11 @@
+ #define VCMD_DRM_SYNC_TRANSFER 37
+ #define VCMD_RESOURCE_EXPORT_FD 38
+ 
++/* PD2 Launcher: the server copies a front buffer into the app's buffers (vtest_app_present.c);
++ * GET_PARAM VCMD_PARAM_PD2_APP_PRESENT says whether it can (an old server answers "not valid").
++ * 64 is the Venus server's VCMD_PD2_RESOURCE_IMPORT_FD (virglrenderer/0004). */
++#define VCMD_PD2_APP_PRESENT 65
++
+ #define VCMD_RES_CREATE_SIZE 10
+ #define VCMD_RES_CREATE_RES_HANDLE 0 /* must be 0 since protocol version 3 */
+ #define VCMD_RES_CREATE_TARGET 1
+@@ -163,6 +168,7 @@
+ enum vcmd_param  {
+    VCMD_PARAM_MAX_TIMELINE_COUNT = 1,
+    VCMD_PARAM_HAS_TIMELINE_SYNCOBJ = 2,
++   VCMD_PARAM_PD2_APP_PRESENT = 65,
+ };
+ #define VCMD_GET_PARAM_SIZE 1
+ #define VCMD_GET_PARAM_PARAM 0
+@@ -349,4 +355,13 @@
+ #define VCMD_RESOURCE_EXPORT_FD_RES_HANDLE 0
+ /* rsp fd */
+ 
++/* VCMD_PD2_APP_PRESENT: the resource and flags; the answer is one word */
++#define VCMD_PD2_APP_PRESENT_SIZE 2
++#define VCMD_PD2_APP_PRESENT_RES_HANDLE 0
++#define VCMD_PD2_APP_PRESENT_FLAGS 1
++#define VCMD_PD2_APP_PRESENT_WANTED (1u << 0) /* the app shows its buffers now, not the X screen */
++#define VCMD_PD2_APP_PRESENT_SHOWN 0 /* the frame went to the app */
++#define VCMD_PD2_APP_PRESENT_COPY 1  /* not this frame: the client copies it */
++#define VCMD_PD2_APP_PRESENT_OFF 2   /* never again: the client copies every frame */
++
+ #endif /* VTEST_PROTOCOL */
+--- a/vtest/vtest_renderer.c
++++ b/vtest/vtest_renderer.c
+@@ -958,6 +958,12 @@
+    resp[1] = 0;
+ 
+    switch (param) {
++#ifdef __ANDROID__
++   case VCMD_PARAM_PD2_APP_PRESENT:
++      resp[0] = true;
++      resp[1] = vtest_app_present_available();
++      break;
++#endif
+    case VCMD_PARAM_MAX_TIMELINE_COUNT:
+       resp[0] = true;
+       /* TODO until we have a timerfd */
+@@ -3057,3 +3063,35 @@
+ {
+    renderer.max_length = length;
+ }
++
++/* PD2 Launcher: the client's front buffer [res handle] into the app's buffers
++ * (vtest_app_present.c); the answer is one word, VCMD_PD2_APP_PRESENT_*. */
++int vtest_pd2_app_present(uint32_t length_dw)
++{
++   struct vtest_context *ctx = vtest_get_current_context();
++   uint32_t buf[VCMD_PD2_APP_PRESENT_SIZE];
++   uint32_t resp_buf[VTEST_HDR_SIZE + 1];
++   int ret;
++
++   if (length_dw != VCMD_PD2_APP_PRESENT_SIZE)
++      return -1;
++   ret = ctx->input->read(ctx->input, buf, sizeof(buf));
++   if (ret != sizeof(buf))
++      return -1;
++
++   resp_buf[VTEST_CMD_LEN] = 1;
++   resp_buf[VTEST_CMD_ID] = VCMD_PD2_APP_PRESENT;
++   resp_buf[VTEST_CMD_DATA_START] = VCMD_PD2_APP_PRESENT_OFF;
++#ifdef __ANDROID__
++   struct vtest_resource *res = util_hash_table_get(ctx->resource_table,
++                                                    intptr_to_pointer(buf[VCMD_PD2_APP_PRESENT_RES_HANDLE]));
++   resp_buf[VTEST_CMD_DATA_START] = res ? vtest_app_present(res->res_id, buf[VCMD_PD2_APP_PRESENT_FLAGS], ctx->ctx_id)
++                                        : VCMD_PD2_APP_PRESENT_COPY;
++#endif
++
++   ret = vtest_block_write(ctx->out_fd, resp_buf, sizeof(resp_buf));
++   if (ret < 0)
++      return -1;
++
++   return 0;
++}
+--- a/vtest/vtest_server.c
++++ b/vtest/vtest_server.c
+@@ -730,6 +730,9 @@
+    HANDLER(DRM_SYNC_TRANSFER,           drm_sync_transfer,         true   ),
+ #endif /* ENABLE_DRM */
+    HANDLER(RESOURCE_EXPORT_FD,          resource_export_fd,        true   ),
++
++   /* PD2 Launcher */
++   HANDLER(PD2_APP_PRESENT,             pd2_app_present,           true   ),
+ };
+ 
+ static int vtest_client_dispatch_commands(struct vtest_client *client)
+--- /dev/null
++++ b/vtest/vtest_app_present.c
+@@ -0,0 +1,544 @@
++/*
++ * PD2 Launcher: the VirGL route's frames stay on the GPU (VCMD_PD2_APP_PRESENT).
++ *
++ * The game's virgl driver (the guest Mesa's vtest winsys, PD2 Launcher Mesa patch 0012) asks, at
++ * each front-buffer flush, for its frame (the resource it names) to go to the app's direct
++ * present instead of reading it back (TRANSFER_GET) and putting it on the X screen (XPutImage).
++ * This vtest server's child is then a client of the app's present server, as the Vulkan software
++ * present of the other routes is (Mesa patch 0004; the app's present_server.cpp): it connects to
++ * PD2_PRESENT_SOCKET, says HELLO with the frame's size, receives the app's AHardwareBuffers,
++ * makes an EGLImage of each (EGL_ANDROID_get_native_client_buffer) and a texture and framebuffer
++ * on it in an EGL context of its own in vrend's share group, and for each frame blits vrend's
++ * texture of the resource into a free buffer, takes an EGL_ANDROID_native_fence_sync fence of
++ * the blit and sends PRESENT with that fence. The app gives a buffer back (RELEASE) with a release
++ * fence, which the next blit into that buffer waits for on the GPU (EGL_KHR_wait_sync), else on
++ * the CPU. The answer to the guest:
++ *   VCMD_PD2_APP_PRESENT_SHOWN  the frame went to the app;
++ *   VCMD_PD2_APP_PRESENT_COPY   not this frame (the app shows the X screen now, no free buffer
++ *                               in time, a resource of another kind): the guest copies it;
++ *   VCMD_PD2_APP_PRESENT_OFF    never again for this client (an extension or a step failed):
++ *                               the guest copies every frame from now on.
++ * A guest frame that the app does not want (the WANTED flag clear) still sets up the connection,
++ * so the app has a client and can want the frames.
++ *
++ * vrend's texture is read in another context of its share group, as QEMU's scanout and vrend's
++ * own cursor read do. The client's own vrend context is made current first (an empty submission
++ * to it); a fence sync of it, which our context waits for, puts the frame's draws before the blit,
++ * and a fence sync of the blit, which the client's context then waits for, puts the blit before
++ * the client's next draws into the same texture (two contexts may run on two GPU queues). GLES hosts keep BGRA resources as RGBA8
++ * (vrend_formats.c), so a blit into the R8G8B8A8 buffer keeps the channels; the resource's first
++ * row (GL's row 0) is the picture's top row, which is the buffer's first row, so the blit does not
++ * flip.
++ *
++ * Copyright 2026 PD2 Launcher contributors. MIT (as virglrenderer).
++ */
++#include <android/hardware_buffer.h>
++#include <epoxy/egl.h>
++#include <epoxy/gl.h>
++#include <errno.h>
++#include <poll.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/socket.h>
++#include <sys/un.h>
++#include <time.h>
++#include <unistd.h>
++
++#include "virglrenderer.h"
++#include "virgl_hw.h"
++
++#include "vtest.h"
++#include "vtest_protocol.h"
++
++#define P2_MAGIC 0x50443250u /* "P2DP" in memory */
++#define P2_VERSION 1
++#define P2_HELLO 1
++#define P2_BUFFERS 2
++#define P2_PRESENT 3
++#define P2_RELEASE 4
++#define P2_AHB_R8G8B8A8 1
++/* The app keeps at most three (one on the screen, one on its way, the newest waiting): one more is
++ * always free (the app's MAX_BUFFERS is 5). */
++#define P2_COUNT 4
++/* A frame waits this long at most for a free buffer, as Mesa patch 0004's present does. */
++#define P2_WAIT_NS 100000000LL
++/* PRESENT's count: the present mode + 1. FIFO (vsync on): the GLX software path swaps with a swap
++ * interval, and the guest waits for the app's clock before the swap (Mesa patch 0010). */
++#define P2_MODE_FIFO_PLUS_1 3
++#define P2_STATS_NS 5000000000LL
++
++struct p2_msg {
++   uint32_t magic, version, type, index, width, height, count, format;
++};
++
++static struct {
++   bool off;
++   EGLDisplay dpy;
++   EGLContext ctx;
++   bool wait_sync;
++   GLuint read_fbo;
++   int sock;
++   uint32_t width, height;
++   AHardwareBuffer *ahb[P2_COUNT];
++   EGLImageKHR image[P2_COUNT];
++   GLuint tex[P2_COUNT], fbo[P2_COUNT];
++   bool held[P2_COUNT];
++   int fence[P2_COUNT]; /* the release fence a write into the buffer waits for, or -1 */
++   bool checked;        /* the first blit's GL errors were read */
++   GLsync after;        /* the blit's fence sync, for the client's context to wait for */
++   /* The app closed the connection (another client took its place): no new one for frames of
++    * this size, as a Vulkan swapchain the app replaced stays on the X screen. */
++   uint32_t dropped_width, dropped_height;
++   int64_t stats_ns;
++   uint32_t shown, copied;
++} p2 = {
++   .sock = -1,
++   .fence = { -1, -1, -1, -1 },
++};
++
++static int64_t p2_now(void)
++{
++   struct timespec t;
++   clock_gettime(CLOCK_MONOTONIC, &t);
++   return (int64_t)t.tv_sec * 1000000000LL + t.tv_nsec;
++}
++
++bool vtest_app_present_available(void)
++{
++   const char *path = getenv("PD2_PRESENT_SOCKET");
++   const char *switch_ = getenv("PD2_VIRGL_APP_PRESENT");
++   return path != NULL && path[0] != '\0' && !(switch_ != NULL && strcmp(switch_, "0") == 0);
++}
++
++static bool p2_has(const char *list, const char *name)
++{
++   size_t n = strlen(name);
++   for (const char *p = list; p != NULL && (p = strstr(p, name)) != NULL; p += n) {
++      if ((p == list || p[-1] == ' ') && (p[n] == ' ' || p[n] == '\0'))
++         return true;
++   }
++   return false;
++}
++
++/* Never again for this client, with the reason. */
++static uint32_t p2_off(const char *why)
++{
++   if (!p2.off)
++      fprintf(stderr, "vtest: app present off (%s): the guest copies its frames\n", why);
++   p2.off = true;
++   return VCMD_PD2_APP_PRESENT_OFF;
++}
++
++/* Under our context: the app's buffers and the connection go. */
++static void p2_disconnect(void)
++{
++   for (int b = 0; b < P2_COUNT; b++) {
++      if (p2.fbo[b])
++         glDeleteFramebuffers(1, &p2.fbo[b]);
++      if (p2.tex[b])
++         glDeleteTextures(1, &p2.tex[b]);
++      if (p2.image[b] != EGL_NO_IMAGE_KHR)
++         eglDestroyImageKHR(p2.dpy, p2.image[b]);
++      if (p2.ahb[b] != NULL)
++         AHardwareBuffer_release(p2.ahb[b]);
++      if (p2.fence[b] >= 0)
++         close(p2.fence[b]);
++      p2.fbo[b] = p2.tex[b] = 0;
++      p2.image[b] = EGL_NO_IMAGE_KHR;
++      p2.ahb[b] = NULL;
++      p2.fence[b] = -1;
++      p2.held[b] = false;
++   }
++   if (p2.sock >= 0)
++      close(p2.sock);
++   p2.sock = -1;
++   p2.width = p2.height = 0;
++}
++
++/* Our context in vrend's share group (vrend's context 0 current): its config, OpenGL ES 3. */
++static const char *p2_make_context(EGLDisplay dpy, EGLContext share)
++{
++   const char *egl = eglQueryString(dpy, EGL_EXTENSIONS);
++   static const char *const needed[] = {
++      "EGL_KHR_image_base", "EGL_ANDROID_image_native_buffer",
++      "EGL_ANDROID_get_native_client_buffer", "EGL_KHR_fence_sync",
++      "EGL_ANDROID_native_fence_sync",
++   };
++   for (size_t i = 0; i < sizeof(needed) / sizeof(needed[0]); i++) {
++      if (!p2_has(egl, needed[i]))
++         return needed[i];
++   }
++   if (!p2_has((const char *)glGetString(GL_EXTENSIONS), "GL_OES_EGL_image"))
++      return "GL_OES_EGL_image";
++   EGLint id = 0, count = 0;
++   EGLConfig config;
++   if (!eglQueryContext(dpy, share, EGL_CONFIG_ID, &id))
++      return "the context's config";
++   EGLint config_attribs[] = { EGL_CONFIG_ID, id, EGL_NONE };
++   if (!eglChooseConfig(dpy, config_attribs, &config, 1, &count) || count != 1)
++      return "the context's config";
++   static const EGLint attribs[] = { EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE };
++   eglBindAPI(EGL_OPENGL_ES_API);
++   p2.ctx = eglCreateContext(dpy, config, share, attribs);
++   if (p2.ctx == EGL_NO_CONTEXT)
++      return "an OpenGL ES 3 context";
++   p2.dpy = dpy;
++   p2.wait_sync = p2_has(egl, "EGL_KHR_wait_sync");
++   return NULL;
++}
++
++static bool p2_send(uint32_t type, uint32_t index, uint32_t count, int fd)
++{
++   struct p2_msg m = { P2_MAGIC, P2_VERSION, type, index, p2.width, p2.height, count, 0 };
++   struct iovec iov = { &m, sizeof(m) };
++   union {
++      char buf[CMSG_SPACE(sizeof(int))];
++      struct cmsghdr align;
++   } control;
++   struct msghdr msg = { .msg_iov = &iov, .msg_iovlen = 1 };
++   if (fd >= 0) {
++      msg.msg_control = control.buf;
++      msg.msg_controllen = sizeof(control.buf);
++      struct cmsghdr *c = CMSG_FIRSTHDR(&msg);
++      c->cmsg_level = SOL_SOCKET;
++      c->cmsg_type = SCM_RIGHTS;
++      c->cmsg_len = CMSG_LEN(sizeof(int));
++      memcpy(CMSG_DATA(c), &fd, sizeof(int));
++   }
++   ssize_t n;
++   do {
++      n = sendmsg(p2.sock, &msg, MSG_NOSIGNAL);
++   } while (n < 0 && errno == EINTR);
++   return n == (ssize_t)sizeof(m);
++}
++
++/* Under our context: connects to the app and imports its [width] x [height] buffers. NULL, or why
++ * not (the connection gone again). */
++static const char *p2_connect(uint32_t width, uint32_t height)
++{
++   const char *path = getenv("PD2_PRESENT_SOCKET");
++   p2.sock = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
++   struct sockaddr_un addr = { .sun_family = AF_UNIX };
++   snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path);
++   /* The app answers at once or not at all. */
++   struct timeval timeout = { .tv_sec = 1 };
++   if (p2.sock >= 0) {
++      setsockopt(p2.sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
++      setsockopt(p2.sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
++   }
++   if (p2.sock < 0 || connect(p2.sock, (struct sockaddr *)&addr, sizeof(addr)) != 0)
++      return "no app on the socket";
++   p2.width = width;
++   p2.height = height;
++   if (!p2_send(P2_HELLO, 0, P2_COUNT, -1))
++      return "HELLO";
++   struct p2_msg m;
++   ssize_t n;
++   do {
++      n = recv(p2.sock, &m, sizeof(m), 0);
++   } while (n < 0 && errno == EINTR);
++   if (n != (ssize_t)sizeof(m) || m.magic != P2_MAGIC || m.version != P2_VERSION || m.type != P2_BUFFERS ||
++       m.count != P2_COUNT || m.width != width || m.height != height || m.format != P2_AHB_R8G8B8A8)
++      return "BUFFERS";
++   for (int b = 0; b < P2_COUNT; b++) {
++      if (AHardwareBuffer_recvHandleFromUnixSocket(p2.sock, &p2.ahb[b]) != 0)
++         return "a buffer";
++      AHardwareBuffer_Desc desc;
++      AHardwareBuffer_describe(p2.ahb[b], &desc);
++      if (desc.width != width || desc.height != height || desc.format != AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM)
++         return "a buffer of another size or format";
++      EGLClientBuffer client = eglGetNativeClientBufferANDROID(p2.ahb[b]);
++      static const EGLint image_attribs[] = { EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE };
++      p2.image[b] = client == NULL ? EGL_NO_IMAGE_KHR
++                                   : eglCreateImageKHR(p2.dpy, EGL_NO_CONTEXT, EGL_NATIVE_BUFFER_ANDROID, client, image_attribs);
++      if (p2.image[b] == EGL_NO_IMAGE_KHR)
++         return "an EGLImage of a buffer";
++      glGenTextures(1, &p2.tex[b]);
++      glBindTexture(GL_TEXTURE_2D, p2.tex[b]);
++      glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, (GLeglImageOES)p2.image[b]);
++      glGenFramebuffers(1, &p2.fbo[b]);
++      glBindFramebuffer(GL_DRAW_FRAMEBUFFER, p2.fbo[b]);
++      glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, p2.tex[b], 0);
++      if (glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
++         return "a framebuffer on a buffer";
++   }
++   glBindTexture(GL_TEXTURE_2D, 0);
++   glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
++   if (glGetError() != GL_NO_ERROR)
++      return "a GL error on the buffers";
++   timeout.tv_sec = 0;
++   setsockopt(p2.sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
++   AHardwareBuffer_Desc desc;
++   AHardwareBuffer_describe(p2.ahb[0], &desc);
++   fprintf(stderr, "vtest: app present: %ux%u into %d app buffers (stride %u)\n", width, height, P2_COUNT, desc.stride);
++   return NULL;
++}
++
++/* The app's RELEASE messages that have come; with [wait_ns], waits that long at most for one.
++ * False when the app has gone. */
++static bool p2_take_releases(int64_t wait_ns)
++{
++   int64_t deadline = p2_now() + wait_ns;
++   for (;;) {
++      struct p2_msg m;
++      struct iovec iov = { &m, sizeof(m) };
++      union {
++         char buf[CMSG_SPACE(4 * sizeof(int))];
++         struct cmsghdr align;
++      } control;
++      struct msghdr msg = {
++         .msg_iov = &iov, .msg_iovlen = 1, .msg_control = control.buf, .msg_controllen = sizeof(control.buf),
++      };
++      ssize_t n = recvmsg(p2.sock, &msg, MSG_DONTWAIT | MSG_CMSG_CLOEXEC);
++      if (n < 0 && errno == EINTR)
++         continue;
++      if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
++         int64_t left = deadline - p2_now();
++         if (left <= 0)
++            return true;
++         struct pollfd p = { p2.sock, POLLIN, 0 };
++         if (poll(&p, 1, (int)((left + 999999) / 1000000)) <= 0)
++            return true;
++         continue;
++      }
++      if (n <= 0)
++         return false;
++      int fd = -1;
++      for (struct cmsghdr *c = CMSG_FIRSTHDR(&msg); c != NULL; c = CMSG_NXTHDR(&msg, c)) {
++         /* A header shorter than itself would make CMSG_NXTHDR return it again, for ever. */
++         if (c->cmsg_len < CMSG_LEN(0))
++            break;
++         if (c->cmsg_level != SOL_SOCKET || c->cmsg_type != SCM_RIGHTS)
++            continue;
++         int count = (int)((c->cmsg_len - CMSG_LEN(0)) / sizeof(int));
++         int *got = (int *)CMSG_DATA(c);
++         for (int i = 0; i < count; i++) {
++            if (fd < 0)
++               fd = got[i];
++            else
++               close(got[i]);
++         }
++      }
++      if (n == (ssize_t)sizeof(m) && m.magic == P2_MAGIC && m.type == P2_RELEASE && m.index < P2_COUNT &&
++          p2.held[m.index]) {
++         p2.held[m.index] = false;
++         if (p2.fence[m.index] >= 0)
++            close(p2.fence[m.index]);
++         p2.fence[m.index] = fd;
++         /* One is free now: no more waiting. */
++         deadline = 0;
++      } else if (fd >= 0) {
++         close(fd);
++      }
++   }
++}
++
++static int p2_free_buffer(void)
++{
++   for (int b = 0; b < P2_COUNT; b++) {
++      if (!p2.held[b])
++         return b;
++   }
++   return -1;
++}
++
++/* Under our context: the next GPU work waits for buffer [b]'s release fence. */
++static void p2_wait_release(int b)
++{
++   int fd = p2.fence[b];
++   p2.fence[b] = -1;
++   if (fd < 0)
++      return;
++   if (p2.wait_sync) {
++      EGLint attribs[] = { EGL_SYNC_NATIVE_FENCE_FD_ANDROID, fd, EGL_NONE };
++      EGLSyncKHR sync = eglCreateSyncKHR(p2.dpy, EGL_SYNC_NATIVE_FENCE_ANDROID, attribs);
++      if (sync != EGL_NO_SYNC_KHR) {
++         /* EGL owns the descriptor now; a failed GPU wait waits on the CPU (1 s at most). */
++         if (eglWaitSyncKHR(p2.dpy, sync, 0) != EGL_TRUE)
++            eglClientWaitSyncKHR(p2.dpy, sync, 0, 1000000000ull);
++         eglDestroySyncKHR(p2.dpy, sync);
++         return;
++      }
++   }
++   struct pollfd p = { fd, POLLIN, 0 };
++   poll(&p, 1, 1000);
++   close(fd);
++}
++
++static bool p2_format(uint32_t format)
++{
++   return format == VIRGL_FORMAT_B8G8R8A8_UNORM || format == VIRGL_FORMAT_B8G8R8X8_UNORM ||
++          format == VIRGL_FORMAT_R8G8B8A8_UNORM || format == VIRGL_FORMAT_R8G8B8X8_UNORM;
++}
++
++static void p2_stats(void)
++{
++   int64_t now = p2_now();
++   if (p2.stats_ns == 0) {
++      p2.stats_ns = now;
++   } else if (now - p2.stats_ns >= P2_STATS_NS) {
++      if (p2.shown + p2.copied > 0)
++         fprintf(stderr, "vtest: app present: %.1f frames/s to the app, %.1f/s copied\n",
++                 p2.shown * 1e9 / (now - p2.stats_ns), p2.copied * 1e9 / (now - p2.stats_ns));
++      p2.shown = p2.copied = 0;
++      p2.stats_ns = now;
++   }
++}
++
++/* Under our context: the frame (vrend's texture [tex], [width] x [height]) into a free buffer and
++ * to the app. */
++static uint32_t p2_present(GLuint tex, uint32_t width, uint32_t height)
++{
++   bool alive = p2_take_releases(0);
++   int b = alive ? p2_free_buffer() : -1;
++   if (alive && b < 0) {
++      alive = p2_take_releases(P2_WAIT_NS);
++      b = alive ? p2_free_buffer() : -1;
++   }
++   if (!alive) {
++      /* The app closed the connection. */
++      p2.dropped_width = p2.width;
++      p2.dropped_height = p2.height;
++      fprintf(stderr, "vtest: app present: the app closed the connection: the guest copies frames of this size\n");
++      p2_disconnect();
++      return VCMD_PD2_APP_PRESENT_COPY;
++   }
++   if (b < 0)
++      return VCMD_PD2_APP_PRESENT_COPY;
++
++   p2_wait_release(b);
++   glBindFramebuffer(GL_READ_FRAMEBUFFER, p2.read_fbo);
++   glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
++   if (glCheckFramebufferStatus(GL_READ_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
++      glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
++      glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
++      return p2_off("the frame's texture cannot be read");
++   }
++   glBindFramebuffer(GL_DRAW_FRAMEBUFFER, p2.fbo[b]);
++   glBlitFramebuffer(0, 0, (GLint)width, (GLint)height, 0, 0, (GLint)width, (GLint)height, GL_COLOR_BUFFER_BIT,
++                     GL_NEAREST);
++   /* The texture is vrend's: no attachment keeps it after vrend deletes it. */
++   glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
++   glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
++   glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
++   if (!p2.checked) {
++      p2.checked = true;
++      GLenum error = glGetError();
++      if (error != GL_NO_ERROR) {
++         fprintf(stderr, "vtest: app present: GL error 0x%x on the first blit\n", error);
++         return p2_off("the blit failed");
++      }
++   }
++   p2.after = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
++   EGLSyncKHR sync = eglCreateSyncKHR(p2.dpy, EGL_SYNC_NATIVE_FENCE_ANDROID, NULL);
++   glFlush();
++   int fd = EGL_NO_NATIVE_FENCE_FD_ANDROID;
++   if (sync != EGL_NO_SYNC_KHR) {
++      fd = eglDupNativeFenceFDANDROID(p2.dpy, sync);
++      eglDestroySyncKHR(p2.dpy, sync);
++   }
++   /* No fence: the blit is done before the app gets the buffer. */
++   if (fd < 0)
++      glFinish();
++   bool sent = p2_send(P2_PRESENT, (uint32_t)b, P2_MODE_FIFO_PLUS_1, fd);
++   if (fd >= 0)
++      close(fd);
++   if (!sent) {
++      /* The app has gone or cannot be told: a later frame connects again. */
++      p2_disconnect();
++      return VCMD_PD2_APP_PRESENT_COPY;
++   }
++   p2.held[b] = true;
++   return VCMD_PD2_APP_PRESENT_SHOWN;
++}
++
++uint32_t vtest_app_present(uint32_t res_id, uint32_t flags, int ctx_id)
++{
++   if (p2.off)
++      return VCMD_PD2_APP_PRESENT_OFF;
++   if (!vtest_app_present_available())
++      return p2_off("no app socket");
++   struct virgl_renderer_resource_info info;
++   memset(&info, 0, sizeof(info));
++   if (virgl_renderer_resource_get_info((int)res_id, &info) != 0 || info.tex_id == 0 || info.depth > 1 ||
++       info.width == 0 || info.height == 0 || info.width > 8192 || info.height > 8192 || !p2_format(info.virgl_format)) {
++      p2.copied++;
++      p2_stats();
++      return VCMD_PD2_APP_PRESENT_COPY;
++   }
++   bool wanted = (flags & VCMD_PD2_APP_PRESENT_WANTED) != 0;
++   bool connected = p2.sock >= 0 && p2.width == info.width && p2.height == info.height;
++   bool dropped = p2.sock < 0 && p2.dropped_width == info.width && p2.dropped_height == info.height;
++   if ((connected && !wanted) || dropped) {
++      p2.copied++;
++      p2_stats();
++      return VCMD_PD2_APP_PRESENT_COPY;
++   }
++
++   /* The client's vrend context current: an empty submission switches to it and runs nothing.
++    * Else vrend's current context, else its context 0. */
++   static uint32_t nothing;
++   virgl_renderer_submit_cmd(&nothing, ctx_id, 0);
++   EGLContext vrend_ctx = eglGetCurrentContext();
++   if (vrend_ctx == EGL_NO_CONTEXT) {
++      virgl_renderer_force_ctx_0();
++      vrend_ctx = eglGetCurrentContext();
++   }
++   EGLDisplay dpy = eglGetCurrentDisplay();
++   if (dpy == EGL_NO_DISPLAY || vrend_ctx == EGL_NO_CONTEXT)
++      return p2_off("no current EGL context");
++   if (p2.ctx == EGL_NO_CONTEXT) {
++      const char *missing = p2_make_context(dpy, vrend_ctx);
++      if (missing != NULL)
++         return p2_off(missing);
++   }
++   /* The client's draws so far before ours (making ours current also flushes them). */
++   GLsync before = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
++   if (!eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, p2.ctx)) {
++      if (before)
++         glDeleteSync(before);
++      /* The app no longer waits for this client (its buffers stay until the process ends). */
++      if (p2.sock >= 0)
++         close(p2.sock);
++      p2.sock = -1;
++      return p2_off("our context cannot be made current");
++   }
++   if (before) {
++      glWaitSync(before, 0, GL_TIMEOUT_IGNORED);
++      glDeleteSync(before);
++   }
++   uint32_t result = VCMD_PD2_APP_PRESENT_COPY;
++   if (!p2.read_fbo)
++      glGenFramebuffers(1, &p2.read_fbo);
++   if (!connected) {
++      p2_disconnect();
++      const char *why = p2_connect(info.width, info.height);
++      if (why != NULL)
++         result = p2_off(why);
++   }
++   if (p2.sock >= 0 && wanted && result != VCMD_PD2_APP_PRESENT_OFF)
++      result = p2_present(info.tex_id, info.width, info.height);
++   /* Off: the app no longer waits for this client's frames (it shows the X screen again). */
++   if (result == VCMD_PD2_APP_PRESENT_OFF)
++      p2_disconnect();
++   /* vrend's context again, where vrend believes it is (else its context 0, which vrend then
++    * knows), and its next draws after the blit. */
++   if (eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, vrend_ctx) != EGL_TRUE) {
++      fprintf(stderr, "vtest: app present: vrend's context cannot be made current again\n");
++      virgl_renderer_force_ctx_0();
++   }
++   if (p2.after) {
++      glWaitSync(p2.after, 0, GL_TIMEOUT_IGNORED);
++      glDeleteSync(p2.after);
++      p2.after = 0;
++   }
++   if (result == VCMD_PD2_APP_PRESENT_SHOWN)
++      p2.shown++;
++   else
++      p2.copied++;
++   p2_stats();
++   return result;
++}

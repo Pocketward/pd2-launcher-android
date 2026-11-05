@@ -223,6 +223,7 @@ jobs:
         ~/.cache/pd2-android/userland/sources
         ~/.cache/pd2-android/userland/mesa-out
         ~/.cache/pd2-android/userland/xvfb-out
+        ~/.cache/pd2-android/userland/sysdrv-out
         ~/.cache/pd2-android/kbase/sources
         ~/.cache/pd2-android/kbase/out
         ~/.cache/pd2-android/kbase/work/host-tools-*
@@ -235,7 +236,9 @@ jobs:
         id: userland
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: app/src/main/assets/userland
+          path: |
+            app/src/main/assets/userland
+            app/system-driver/assets
           key: ${{ needs.tag.outputs.userland }}
 
       # In the background: deleting is slow, and the room is needed only later.
@@ -322,13 +325,16 @@ jobs:
           # Nor Mesa archives of another pin (mesa-update.sh moves it; each is about 130 MB), nor any
           # in PanVK's cache: build-panvk.sh takes the userland cache's archive. Nor a download that
           # stopped part way (*.part).
+          # The system-driver mode's older Mesa release (MESA_SYSDRV_URL) stays.
           for f in "$USERLAND_CACHE"/sources/mesa-[0-9a-f]*.tar.gz "$USERLAND_CACHE"/sources/mesa-[0-9]*.tar.xz; do
-            if [[ -f $f && $(basename "$f") != "$(basename "$MESA_URL")" ]]; then rm -f "$f"; fi
+            if [[ -f $f && $(basename "$f") != "$(basename "$MESA_URL")" && $(basename "$f") != "$(basename "$MESA_SYSDRV_URL")" ]]; then
+              rm -f "$f"
+            fi
           done
           rm -f "$PANVK_CACHE"/sources/mesa-* "$USERLAND_CACHE"/sources/*.part
           key=$({
             cat userland/glibc/out/BUILDINFO \
-              "$USERLAND_CACHE"/mesa-out/BUILDINFO "$USERLAND_CACHE"/xvfb-out/BUILDINFO \
+              "$USERLAND_CACHE"/mesa-out/BUILDINFO "$USERLAND_CACHE"/xvfb-out/BUILDINFO "$USERLAND_CACHE"/sysdrv-out/BUILDINFO \
               "$PANVK_CACHE"/out/BUILDINFO "$PANVK_CACHE"/work/host-tools-*/IMAGE 2>/dev/null || true
             find "$USERLAND_CACHE"/debs "$USERLAND_CACHE"/sources "$PANVK_CACHE"/sources \
               -type f -printf '%P %s\n' 2>/dev/null | sort
@@ -395,7 +401,9 @@ jobs:
         if: steps.userland.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: app/src/main/assets/userland
+          path: |
+            app/src/main/assets/userland
+            app/system-driver/assets
           key: ${{ needs.tag.outputs.userland }}
 
   # Beside the userland job: the runtime's parts that do not need the userland, Wine, Box64's
@@ -583,7 +591,9 @@ jobs:
         if: steps.runtime.outputs.cache-hit != 'true'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: app/src/main/assets/userland
+          path: |
+            app/src/main/assets/userland
+            app/system-driver/assets
           key: ${{ needs.tag.outputs.userland }}
           fail-on-cache-miss: true
 
@@ -743,7 +753,9 @@ jobs:
       - name: Restore the userland
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: app/src/main/assets/userland
+          path: |
+            app/src/main/assets/userland
+            app/system-driver/assets
           key: ${{ needs.tag.outputs.userland }}
           fail-on-cache-miss: true
 
@@ -806,8 +818,25 @@ jobs:
           [[ $(cat "$RUNNER_TEMP/image-load.status" 2>/dev/null) == 0 ]] ||
             { echo "::error::the build image did not load"; exit 1; }
 
+      # The system-driver mode's server (devdriver/build.sh), which build.sh release builds when its
+      # folder does not hold today's identity: kept under a key made from its inputs.
+      - name: Restore the system-driver server
+        id: devdriver
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pd2-android/devdriver-out
+          key: devdriver-${{ hashFiles('devdriver/**', 'containers/Containerfile') }}
+
       - name: Build the signed release APK
         run: PD2_TEST_BUILD=$LABEL ./build.sh release
+
+      - name: Save the system-driver server
+        if: ${{ success() && steps.devdriver.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pd2-android/devdriver-out
+          key: devdriver-${{ hashFiles('devdriver/**', 'containers/Containerfile') }}
 
       - name: Remove the release key
         if: always()

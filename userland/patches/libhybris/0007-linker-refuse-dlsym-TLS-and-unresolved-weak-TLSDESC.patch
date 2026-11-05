@@ -1,0 +1,136 @@
+From a8536be56d7437ac8a801e8892cededdc651ef67 Mon Sep 17 00:00:00 2001
+From: "Sophie Winter [AI]" <git@phie.me>
+Date: Sun, 10 May 2026 05:02:45 -0700
+Subject: [PATCH 7/9] linker: refuse dlsym(TLS) and unresolved-weak TLSDESC
+
+Two latent paths in q linker still read raw tpidr_el0 (running thread's
+register, which under libhybris is glibc's TP) instead of the patched
+bionic TP, neither covered by the bionic_tcb-reserve / lazy-promote /
+.tdata-init machinery:
+
+- do_dlsym of a __thread symbol routed through q.so's __tls_get_addr,
+  silently returning a glibc-TLS-relative pointer. Reads yielded random
+  glibc TLS data, writes corrupted unrelated state.
+- The unresolved-weak R_AARCH64_TLSDESC resolver in tlsdesc_resolver.S
+  returned addend - glibc_tp; the bionic-patched caller added the
+  bionic TP, yielding a non-NULL nonsense pointer where ELF mandates
+  NULL.
+
+Neither is reached by today's tawc workload (audited: no
+hybris_dlsym(TLS) call sites; zero unresolved-weak TLSDESC across the
+Pixel-4a GPU stack), but both were silent corruption hazards waiting
+for a future workload. Replaced both with DL_ERR guards: do_dlsym
+returns NULL, R_GENERIC_TLSDESC fails the relocation when lsi==nullptr,
+both with stderr messages naming the symbol.
+
+The unused tlsdesc_resolver_unresolved_weak asm + linker_tls.h declaration
+are removed in the same commit.
+---
+ hybris/common/q/linker.cpp         | 44 ++++++++++++++++++------------
+ hybris/common/q/linker_tls.h       |  1 -
+ hybris/common/q/tlsdesc_resolver.S | 21 ++++----------
+ 3 files changed, 32 insertions(+), 34 deletions(-)
+
+diff --git a/hybris/common/q/linker.cpp b/hybris/common/q/linker.cpp
+index 3682a3e..60a03b8 100644
+--- a/hybris/common/q/linker.cpp
++++ b/hybris/common/q/linker.cpp
+@@ -2426,19 +2426,19 @@ bool do_dlsym(void* handle,
+ 
+     if ((bind == STB_GLOBAL || bind == STB_WEAK) && sym->st_shndx != 0) {
+       if (type == STT_TLS) {
+-        // For a TLS symbol, dlsym returns the address of the current thread's
+-        // copy of the symbol. This function may allocate a DTV and/or storage
+-        // for the source TLS module. (Allocating a DTV isn't necessary if the
+-        // symbol is part of static TLS, but it's simpler to reuse
+-        // __tls_get_addr.)
+-        soinfo_tls* tls_module = found->get_tls();
+-        if (tls_module == nullptr) {
+-          DL_ERR("TLS symbol \"%s\" in solib \"%s\" with no TLS segment",
+-                 sym_name, found->get_realpath());
+-          return false;
+-        }
+-        const TlsIndex ti { tls_module->module_id, sym->st_value };
+-        *symbol = TLS_GET_ADDR(&ti);
++        // libhybris: refuse rather than route through q.so's __tls_get_addr,
++        // whose `mrs tpidr_el0` reads the running thread's TP register —
++        // which is glibc's, not the patched bionic TP. Returning that
++        // pointer would silently corrupt: the caller would read/write at
++        // a glibc-TLS address instead of the bionic .so's static-TLS slot.
++        // Loud guard so a regression here surfaces at the dlsym call site
++        // with a useful message rather than as random memory damage
++        // somewhere downstream.
++        DL_ERR("dlsym of TLS symbol \"%s\" in \"%s\" not supported by libhybris "
++               "(would read raw tpidr_el0 / glibc TP — see "
++               "issues/libhybris-tls-dlsym-and-weak-tlsdesc.md history)",
++               sym_name, found->get_realpath());
++        return false;
+       } else {
+ #ifdef WANT_ARM_TRACING
+         if (_wrapping_enabled) {
+@@ -3250,11 +3250,19 @@ bool soinfo::relocate(const VersionTracker& version_tracker, ElfRelIteratorT&& r
+         {
+           TlsDescriptor* desc = reinterpret_cast<TlsDescriptor*>(reloc);
+           if (lsi == nullptr) {
+-            // Unresolved weak relocation.
+-            desc->func = tlsdesc_resolver_unresolved_weak;
+-            desc->arg = addend;
+-            TRACE_TYPE(RELO, "RELO TLSDESC %16p <- unresolved weak 0x%zx %s\n",
+-                       reinterpret_cast<void*>(reloc), static_cast<size_t>(addend), sym_name);
++            // libhybris: unresolved-weak resolver in tlsdesc_resolver.S
++            // does `mrs tpidr_el0` (glibc TP) and expects the caller to
++            // add the same TP back — but the bionic-patched caller adds
++            // the patched bionic TP, so the result is bionic_tp - glibc_tp
++            // (a non-NULL nonsense pointer), not the ELF-mandated NULL.
++            // Loud guard so a vendor blob with this idiom fails at dlopen
++            // with a clear message instead of segfaulting deep inside the
++            // driver. See issues/libhybris-tls-dlsym-and-weak-tlsdesc.md
++            // history.
++            DL_ERR("unresolved weak __thread \"%s\" not supported by libhybris "
++                   "(weak TLSDESC resolver reads raw tpidr_el0 / glibc TP)",
++                   sym_name);
++            return false;
+           } else {
+             CHECK(lsi->get_tls() != nullptr); // We rejected a missing TLS segment above.
+             // libhybris: TLSDESC's dynamic slow path (tlsdesc_resolver.S
+diff --git a/hybris/common/q/linker_tls.h b/hybris/common/q/linker_tls.h
+index 27d2ee0..a5bb482 100644
+--- a/hybris/common/q/linker_tls.h
++++ b/hybris/common/q/linker_tls.h
+@@ -72,4 +72,3 @@ struct TlsDynamicResolverArg {
+ 
+ extern "C" size_t tlsdesc_resolver_static(size_t);
+ extern "C" size_t tlsdesc_resolver_dynamic(size_t);
+-extern "C" size_t tlsdesc_resolver_unresolved_weak(size_t);
+diff --git a/hybris/common/q/tlsdesc_resolver.S b/hybris/common/q/tlsdesc_resolver.S
+index ad155e2..a8423d4 100644
+--- a/hybris/common/q/tlsdesc_resolver.S
++++ b/hybris/common/q/tlsdesc_resolver.S
+@@ -186,18 +186,9 @@ ENTRY_PRIVATE(tlsdesc_resolver_dynamic_slow_path)
+   ret
+ END(tlsdesc_resolver_dynamic_slow_path)
+ 
+-// The address of an unresolved weak TLS symbol evaluates to NULL with TLSDESC.
+-// The value returned by this function is added to the thread pointer, so return
+-// a negated thread pointer to cancel it out.
+-ENTRY_PRIVATE(tlsdesc_resolver_unresolved_weak)
+-  str x19, [sp, #-16]!
+-  .cfi_def_cfa_offset 16
+-  .cfi_rel_offset x19, 0
+-  ldr x19, [x0, #8]
+-  mrs x0, tpidr_el0             // __get_tls()
+-  sub x0, x19, x0
+-  ldr x19, [sp], #16
+-  .cfi_def_cfa_offset 0
+-  .cfi_restore x19
+-  ret
+-END(tlsdesc_resolver_unresolved_weak)
++// libhybris removed the upstream tlsdesc_resolver_unresolved_weak: the
++// resolver's `mrs tpidr_el0` returns glibc's TP, but the bionic-patched
++// caller adds the bionic TP, yielding a non-NULL nonsense pointer
++// instead of the ELF-mandated NULL. Unresolved-weak TLSDESC relocations
++// are now refused at hybris_dlopen time in linker.cpp's R_GENERIC_TLSDESC
++// handler.
+-- 
+2.56.0
+

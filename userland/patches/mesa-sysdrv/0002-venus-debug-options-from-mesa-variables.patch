@@ -1,0 +1,31 @@
+Subject: [PATCH] venus: also take VN_DEBUG and VN_PERF from MESA_VN_DEBUG and MESA_VN_PERF
+
+As patch 0001: the Launcher engine passes MESA_* variables to Wine processes, not VN_*, so
+Venus's debug and performance options never reach the game's Venus. When VN_DEBUG or VN_PERF
+is not set, take MESA_VN_DEBUG or MESA_VN_PERF.
+
+Applied by build-sysdrv.sh to its Venus build of Mesa main (config.sh MESA_COMMIT) only.
+
+---
+--- a/src/virtio/vulkan/vn_common.c
++++ b/src/virtio/vulkan/vn_common.c
+@@ -67,10 +67,15 @@ struct vn_env vn_env;
+ static void
+ vn_env_init_once(void)
+ {
+-   vn_env.debug =
+-      parse_debug_string(os_get_option("VN_DEBUG"), vn_debug_options);
+-   vn_env.perf =
+-      parse_debug_string(os_get_option("VN_PERF"), vn_perf_options);
++   /* PD2 Launcher: the engine passes MESA_* variables to Wine processes, not VN_* */
++   const char *debug = os_get_option("VN_DEBUG");
++   const char *perf = os_get_option("VN_PERF");
++   if (!debug)
++      debug = os_get_option("MESA_VN_DEBUG");
++   if (!perf)
++      perf = os_get_option("MESA_VN_PERF");
++   vn_env.debug = parse_debug_string(debug, vn_debug_options);
++   vn_env.perf = parse_debug_string(perf, vn_perf_options);
+ }
+ 
+ void

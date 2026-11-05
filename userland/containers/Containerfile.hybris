@@ -1,0 +1,20 @@
+# Image for build-hybris.sh: the Mesa cross-build image (Containerfile.mesa: gcc/g++ for aarch64,
+# the arm64 X11/xcb headers) plus autotools for libhybris and the arm64 Vulkan headers for our
+# ICD. Every package pinned by exact version from the same Debian snapshot (config.sh); versions
+# resolved with dpkg-query against it.
+ARG MESA_IMAGE
+FROM ${MESA_IMAGE}
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        autoconf=2.72-3.1 \
+        automake=1:1.17-4 \
+        autotools-dev=20240727.1 \
+        libtool=2.5.4-4 \
+        m4=1.4.19-8 \
+        make=4.4.1-2 \
+        libvulkan-dev:arm64=1.4.309.0-1 \
+        libx11-dev:arm64=2:1.8.12-1 \
+        libx11-xcb-dev:arm64=2:1.8.12-1 \
+        libxcb1-dev:arm64=1.17.0-2+b1 \
+    && rm -rf /var/lib/apt/lists/*

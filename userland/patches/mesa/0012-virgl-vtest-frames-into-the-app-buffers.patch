@@ -1,0 +1,337 @@
+Subject: [PATCH] virgl/vtest, glx/drisw: the VirGL route's frames into the app's buffers
+
+The VirGL route read each frame back from the vtest server (TRANSFER_GET) and put it on the X
+screen (XPutImage), which the Game view then copied. With this patch the frames stay on the GPU:
+- the vtest winsys asks the server once (GET_PARAM VCMD_PARAM_PD2_APP_PRESENT, 65, protocol
+  version 3 or later) whether it can copy front buffers into the app's buffers (our server's
+  patch virglrenderer-gl/0003), when PD2_PRESENT_SOCKET names the app's socket and
+  PD2_PRESENT_COUNTER its page. The constants are in virgl_vtest_winsys.h, not in
+  src/virtio/vtest/vtest_protocol.h, which mesa-sysdrv/0004 changes for the Venus build (its
+  VCMD_PD2_RESOURCE_IMPORT_FD is 64);
+- then each front-buffer flush of a whole frame sends VCMD_PD2_APP_PRESENT (65) with the resource and
+  whether the app shows its buffers now (the word at byte 192 of the counter's page, as patch
+  0004 reads it). The server blits the frame into a free AHardwareBuffer of the app and sends it
+  to the app's present server with a fence; the answer SHOWN ends the flush. COPY (the app shows
+  the X screen now, no free buffer in time) puts this frame on the X screen as before; OFF (an
+  extension or a step failed in the server) puts every later frame there;
+- a GLX window, at its first swap on the software path (not Zink's kopper), names itself in its
+  root window's _PD2_PRESENT_WINDOW property, as a swapchain of patch 0004 does, so that
+  x-input-relay tells the app where the game's window is and whether it is alone. Only when
+  PD2_PRESENT_SOCKET is set and GALLIUM_DRIVER is virpipe (the VirGL route), so that no other
+  software-drawn window takes the name from a Vulkan direct present.
+Patch 0010's clock wait and frame count stay as they are: the frame count still follows each swap.
+
+---
+--- a/src/gallium/winsys/virgl/vtest/virgl_vtest_winsys.h
++++ b/src/gallium/winsys/virgl/vtest/virgl_vtest_winsys.h
+@@ -34,6 +34,21 @@
+ #include "vtest/vtest_protocol.h"
+ #include "virgl_resource_cache.h"
+ 
++/* PD2 Launcher: the server copies a front buffer into the app's buffers (its
++ * patch virglrenderer-gl/0003). GET_PARAM VCMD_PARAM_PD2_APP_PRESENT says
++ * whether it can (an older server answers "not valid"); VCMD_PD2_APP_PRESENT
++ * takes the resource and flags, and the answer is one word. 64 is the Venus
++ * server's VCMD_PD2_RESOURCE_IMPORT_FD (mesa-sysdrv/0004). */
++#define VCMD_PARAM_PD2_APP_PRESENT 65
++#define VCMD_PD2_APP_PRESENT 65
++#define VCMD_PD2_APP_PRESENT_SIZE 2
++#define VCMD_PD2_APP_PRESENT_RES_HANDLE 0
++#define VCMD_PD2_APP_PRESENT_FLAGS 1
++#define VCMD_PD2_APP_PRESENT_WANTED (1u << 0) /* the app shows its buffers now, not the X screen */
++#define VCMD_PD2_APP_PRESENT_SHOWN 0 /* the frame went to the app */
++#define VCMD_PD2_APP_PRESENT_COPY 1  /* not this frame: the X screen */
++#define VCMD_PD2_APP_PRESENT_OFF 2   /* never again: the X screen for every frame */
++
+ struct pipe_fence_handle;
+ struct sw_winsys;
+ struct sw_displaytarget;
+@@ -51,6 +66,13 @@
+ 
+    int32_t blob_id;
+    unsigned protocol_version;
++
++   /* PD2 Launcher: the server copies front buffers into the app's buffers
++    * (VCMD_PD2_APP_PRESENT); the present counter's page, whose word at byte
++    * 192 says whether the app shows them now, or NULL. */
++   bool app_present;
++   bool app_present_shown;
++   const uint32_t *app_present_page;
+ };
+ 
+ struct virgl_hw_res {
+@@ -151,6 +173,10 @@
+                                        const struct pipe_box *box,
+                                        uint32_t format);
+ 
++bool virgl_vtest_has_app_present(struct virgl_vtest_winsys *vws);
++uint32_t virgl_vtest_send_app_present(struct virgl_vtest_winsys *vws,
++                                      uint32_t handle, uint32_t flags);
++
+ int virgl_vtest_busy_wait(struct virgl_vtest_winsys *vws, int handle,
+                           int flags);
+ 
+--- a/src/gallium/winsys/virgl/vtest/virgl_vtest_socket.c
++++ b/src/gallium/winsys/virgl/vtest/virgl_vtest_socket.c
+@@ -542,6 +542,56 @@
+    return 0;
+ }
+ 
++/* PD2 Launcher: whether the server copies front buffers into the app's
++ * buffers (GET_PARAM VCMD_PARAM_PD2_APP_PRESENT; a server without it answers
++ * "not valid"). */
++bool virgl_vtest_has_app_present(struct virgl_vtest_winsys *vws)
++{
++   uint32_t vtest_hdr[VTEST_HDR_SIZE];
++   uint32_t param[VCMD_GET_PARAM_SIZE];
++   uint32_t result[2];
++   ASSERTED int ret;
++
++   /* GET_PARAM came with protocol version 3. */
++   if (vws->protocol_version < 3)
++      return false;
++   vtest_hdr[VTEST_CMD_LEN] = VCMD_GET_PARAM_SIZE;
++   vtest_hdr[VTEST_CMD_ID] = VCMD_GET_PARAM;
++   param[VCMD_GET_PARAM_PARAM] = VCMD_PARAM_PD2_APP_PRESENT;
++   virgl_block_write(vws->sock_fd, &vtest_hdr, sizeof(vtest_hdr));
++   virgl_block_write(vws->sock_fd, &param, sizeof(param));
++
++   ret = virgl_block_read(vws->sock_fd, vtest_hdr, sizeof(vtest_hdr));
++   assert(ret);
++   ret = virgl_block_read(vws->sock_fd, result, sizeof(result));
++   assert(ret);
++   return result[0] && result[1];
++}
++
++/* PD2 Launcher: the server copies front buffer [handle] into the app's
++ * buffers; its answer, VCMD_PD2_APP_PRESENT_SHOWN, _COPY or _OFF. */
++uint32_t virgl_vtest_send_app_present(struct virgl_vtest_winsys *vws,
++                                      uint32_t handle, uint32_t flags)
++{
++   uint32_t vtest_hdr[VTEST_HDR_SIZE];
++   uint32_t cmd[VCMD_PD2_APP_PRESENT_SIZE];
++   uint32_t result[1];
++   ASSERTED int ret;
++
++   vtest_hdr[VTEST_CMD_LEN] = VCMD_PD2_APP_PRESENT_SIZE;
++   vtest_hdr[VTEST_CMD_ID] = VCMD_PD2_APP_PRESENT;
++   cmd[VCMD_PD2_APP_PRESENT_RES_HANDLE] = handle;
++   cmd[VCMD_PD2_APP_PRESENT_FLAGS] = flags;
++   virgl_block_write(vws->sock_fd, &vtest_hdr, sizeof(vtest_hdr));
++   virgl_block_write(vws->sock_fd, &cmd, sizeof(cmd));
++
++   ret = virgl_block_read(vws->sock_fd, vtest_hdr, sizeof(vtest_hdr));
++   assert(ret);
++   ret = virgl_block_read(vws->sock_fd, result, sizeof(result));
++   assert(ret);
++   return result[0];
++}
++
+ int virgl_vtest_busy_wait(struct virgl_vtest_winsys *vws, int handle,
+                           int flags)
+ {
+--- a/src/gallium/winsys/virgl/vtest/virgl_vtest_winsys.c
++++ b/src/gallium/winsys/virgl/vtest/virgl_vtest_winsys.c
+@@ -28,6 +28,13 @@
+ #include "util/u_inlines.h"
+ #include "util/os_time.h"
+ #include "frontend/sw_winsys.h"
++#ifdef __linux__
++#include <fcntl.h>
++#include <stdlib.h>
++#include <sys/mman.h>
++#include <sys/stat.h>
++#include <unistd.h>
++#endif
+ #include "util/os_mman.h"
+ 
+ #include "virgl_vtest_winsys.h"
+@@ -680,6 +687,67 @@
+                                   virgl_hw_res(src));
+ }
+ 
++#ifdef __linux__
++/* PD2 Launcher: the VirGL route's frames stay on the GPU. When
++ * PD2_PRESENT_SOCKET names the app's socket (the app's direct present, Mesa
++ * patch 0004's) and the server can (VCMD_PARAM_PD2_APP_PRESENT), a front
++ * buffer flush asks the server to copy the frame on the GPU into one of the
++ * app's buffers and give it to the app with a fence
++ * (VCMD_PD2_APP_PRESENT), instead of reading it back and putting it on the X
++ * screen. The word at byte 192 of PD2_PRESENT_COUNTER's page says whether
++ * the app shows its buffers now; a frame it does not want, one the server
++ * does not copy (_COPY) and every frame after _OFF go to the X screen as
++ * before. */
++#define VTEST_APP_PRESENT_PAGE 4096
++#define VTEST_APP_PRESENT_WANTED_WORD (192 / sizeof(uint32_t))
++
++static void
++virgl_vtest_app_present_open(struct virgl_vtest_winsys *vtws)
++{
++   const char *socket_path = getenv("PD2_PRESENT_SOCKET");
++   const char *counter = getenv("PD2_PRESENT_COUNTER");
++   if (socket_path == NULL || socket_path[0] == '\0' || counter == NULL || counter[0] == '\0')
++      return;
++   int fd = open(counter, O_RDONLY | O_CLOEXEC);
++   if (fd < 0)
++      return;
++   struct stat st;
++   if (fstat(fd, &st) == 0 && st.st_size >= VTEST_APP_PRESENT_PAGE) {
++      void *map = mmap(NULL, VTEST_APP_PRESENT_PAGE, PROT_READ, MAP_SHARED, fd, 0);
++      if (map != MAP_FAILED)
++         vtws->app_present_page = map;
++   }
++   close(fd);
++   if (vtws->app_present_page == NULL)
++      return;
++   vtws->app_present = virgl_vtest_has_app_present(vtws);
++   if (!vtws->app_present) {
++      munmap((void *)vtws->app_present_page, VTEST_APP_PRESENT_PAGE);
++      vtws->app_present_page = NULL;
++   }
++}
++
++/* Whether the frame went to the app (else it goes to the X screen). */
++static bool
++virgl_vtest_app_present(struct virgl_vtest_winsys *vtws, struct virgl_hw_res *res)
++{
++   uint32_t wanted = __atomic_load_n(&vtws->app_present_page[VTEST_APP_PRESENT_WANTED_WORD], __ATOMIC_ACQUIRE);
++   uint32_t answer = virgl_vtest_send_app_present(vtws, res->res_handle,
++                                                  wanted ? VCMD_PD2_APP_PRESENT_WANTED : 0);
++   if (answer == VCMD_PD2_APP_PRESENT_SHOWN) {
++      if (!vtws->app_present_shown)
++         fprintf(stderr, "MESA: virgl direct present: %ux%u into the app's buffers\n", res->width, res->height);
++      vtws->app_present_shown = true;
++      return true;
++   }
++   if (answer == VCMD_PD2_APP_PRESENT_OFF) {
++      fprintf(stderr, "MESA: virgl direct present off: the X screen\n");
++      vtws->app_present = false;
++   }
++   return false;
++}
++#endif
++
+ static void virgl_vtest_flush_frontbuffer(struct virgl_winsys *vws,
+                                           UNUSED struct virgl_cmd_buf *cmdbuf,
+                                           struct virgl_hw_res *res,
+@@ -693,6 +761,11 @@
+    if (!res->dt)
+       return;
+ 
++#ifdef __linux__
++   if (vtws->app_present && !sub_box && level == 0 && layer == 0 && virgl_vtest_app_present(vtws, res))
++      return;
++#endif
++
+    memset(&box, 0, sizeof(box));
+ 
+    if (sub_box) {
+@@ -722,6 +795,10 @@
+    virgl_resource_cache_flush(&vtws->cache);
+ 
+    mtx_destroy(&vtws->mutex);
++#ifdef __linux__
++   if (vtws->app_present_page != NULL)
++      munmap((void *)vtws->app_present_page, VTEST_APP_PRESENT_PAGE);
++#endif
+    FREE(vtws);
+ }
+ 
+@@ -757,6 +834,9 @@
+ 
+    virgl_vtest_connect(vtws);
+    vtws->sws = sws;
++#ifdef __linux__
++   virgl_vtest_app_present_open(vtws);
++#endif
+ 
+    virgl_resource_cache_init(&vtws->cache, CACHE_TIMEOUT_USEC,
+                              virgl_vtest_resource_cache_entry_is_busy,
+--- a/src/glx/drisw_priv.h
++++ b/src/glx/drisw_priv.h
+@@ -50,6 +50,8 @@
+    XShmSegmentInfo shminfo;
+    int xDepth;
+    int swapInterval;
++   /* PD2 Launcher: a window, not yet named in _PD2_PRESENT_WINDOW (drisw_glx.c). */
++   bool pd2_to_name;
+ };
+ 
+ #endif
+--- a/src/glx/drisw_glx.c
++++ b/src/glx/drisw_glx.c
+@@ -532,6 +532,7 @@
+    }
+ 
+    pdp->swapInterval = dri_get_initial_swap_interval(psc->base.frontend_screen);
++   pdp->pd2_to_name = (type & GLX_WINDOW_BIT) != 0;
+    /* Create a new drawable */
+    pdp->base.dri_drawable = dri_create_drawable(psc->base.frontend_screen, config->driConfig, !(type & GLX_WINDOW_BIT), pdp);
+    if (psc->kopper)
+@@ -631,6 +632,45 @@
+ #endif
+ }
+ 
++/* The VirGL route's direct present (patch 0012: the vtest server copies the
++ * frames into the app's buffers): at its first swap, a window names itself
++ * in its root window's _PD2_PRESENT_WINDOW property (one WINDOW), from which
++ * x-input-relay tells the app where it is on the X screen and whether
++ * anything else shows there, as a swapchain of the Vulkan direct present
++ * does (patch 0004). Only when PD2_PRESENT_SOCKET names the app's socket
++ * and GALLIUM_DRIVER is virpipe (the VirGL route), so that no other
++ * software-drawn window takes the name from a Vulkan direct present. A
++ * newer window names itself; the property is never removed. */
++static void
++drisw_present_name_window(struct drisw_drawable *pdp)
++{
++   static const char name[] = "_PD2_PRESENT_WINDOW";
++   if (!pdp->pd2_to_name)
++      return;
++   pdp->pd2_to_name = false;
++   const char *path = getenv("PD2_PRESENT_SOCKET");
++   const char *driver = getenv("GALLIUM_DRIVER");
++   if (path == NULL || path[0] == '\0' || driver == NULL || strcmp(driver, "virpipe") != 0)
++      return;
++   xcb_connection_t *conn = XGetXCBConnection(pdp->base.psc->dpy);
++   xcb_window_t window = (xcb_window_t) pdp->base.xDrawable;
++   xcb_intern_atom_cookie_t atom_cookie = xcb_intern_atom(conn, 0, strlen(name), name);
++   xcb_get_geometry_cookie_t geom_cookie = xcb_get_geometry(conn, window);
++   xcb_generic_error_t *error = NULL;
++   xcb_intern_atom_reply_t *atom = xcb_intern_atom_reply(conn, atom_cookie, &error);
++   free(error);
++   error = NULL;
++   xcb_get_geometry_reply_t *geom = xcb_get_geometry_reply(conn, geom_cookie, &error);
++   free(error);
++   if (atom != NULL && geom != NULL) {
++      /* Checked: an error stays here, never reaching the game's own error handler. */
++      free(xcb_request_check(conn, xcb_change_property_checked(conn, XCB_PROP_MODE_REPLACE, geom->root, atom->atom,
++                                                               XCB_ATOM_WINDOW, 32, 1, &window)));
++   }
++   free(atom);
++   free(geom);
++}
++
+ static void
+ drisw_present_counted(Display *dpy)
+ {
+@@ -643,6 +683,12 @@
+ }
+ #else
+ static void
++drisw_present_name_window(struct drisw_drawable *pdp)
++{
++   (void) pdp;
++}
++
++static void
+ drisw_present_counted(Display *dpy)
+ {
+    (void) dpy;
+@@ -673,6 +719,7 @@
+       CALL_Flush(GET_DISPATCH(), ());
+    }
+ 
++   drisw_present_name_window((struct drisw_drawable *) pdraw);
+    drisw_present_clock(((struct drisw_drawable *) pdraw)->swapInterval);
+    driSwapBuffers(pdraw->dri_drawable, 0, NULL);
+    drisw_present_counted(pdraw->psc->dpy);

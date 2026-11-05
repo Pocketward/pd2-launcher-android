@@ -11,6 +11,10 @@
 # (lintVitalRelease), which must pass before either check or release succeeds.
 # `build.sh mockup` and `build.sh spike` build development apps that are not part of the
 # public source.
+# PD2_SYSTEM_DRIVER=0 builds the APK without the system-driver mode's parts (the game on the
+# phone's own Vulkan driver): no virglrenderer server and no userland part
+# app/system-driver/assets/userland-system-driver (Gradle property pd2.systemDriver=false). The
+# default (1) builds the server (devdriver/build.sh) when needed and includes both.
 # `build.sh verification-metadata` writes gradle/verification-metadata.xml again (after a
 # dependency or plugin changes): the SHA-256 of everything Gradle downloads for the debug and
 # release builds and the tests (and the mock-up and spike, where present), which Gradle checks on
@@ -58,6 +62,13 @@ fi
 # build always does, for device tests of the shrunk code (app/build.gradle.kts, pd2.devR8).
 if [[ "${PD2_DEV_R8:-}" == 1 ]]; then
     tasks="-Ppd2.devR8=true $tasks"
+fi
+
+# PD2_SYSTEM_DRIVER=0: no system-driver parts in the APK (app/build.gradle.kts, pd2.systemDriver).
+system_driver="${PD2_SYSTEM_DRIVER:-1}"
+[[ "$system_driver" == 0 || "$system_driver" == 1 ]] || { echo "PD2_SYSTEM_DRIVER must be 0 or 1" >&2; exit 2; }
+if [[ "$system_driver" == 0 ]]; then
+    tasks="-Ppd2.systemDriver=false $tasks"
 fi
 
 # PD2_TEST_BUILD=<label>: a test build, shown as "<version> (test <label>)" with the version's own
@@ -172,6 +183,57 @@ if [[ -n "$engine_binary" && -f "$engine_binary" ]]; then
 else
     rm -f "$engine_staged"
     echo "warning: no engine binary (build one with engine/build.sh, or set PD2_ENGINE_BINARY); the APK has no engine" >&2
+fi
+
+# The system-driver mode's servers (devdriver/build.sh <dir>), bionic: virgl_test_server and
+# virgl_render_server (the Venus route) and virgl_test_server_gl (the VirGL route) go into the APK
+# as native libraries beside the engine (staged in
+# app/system-driver/jniLibs, which the APK takes unless PD2_SYSTEM_DRIVER=0), so they are extracted
+# executable into nativeLibraryDir. PD2_DEVDRIVER_OUT names their folder; the default is
+# $cache/devdriver-out. They are built there again when the folder's SHA256SUMS does not match
+# its binaries or its BUILDINFO is not the identity of today's sources (`devdriver/build.sh
+# --identity`: the pins, the patches, the scripts), also in a folder that PD2_DEVDRIVER_OUT names
+# (its binaries are then replaced). Without them the APK has no system-driver mode: the device
+# check refuses GPUs that Turnip and PanVK do not drive. Only the app and release targets build
+# them (not check, which runs no APK, nor PD2_SYSTEM_DRIVER=0); a release refuses the servers
+# without the userland part, or the opposite.
+rm -f "$here/app/engine/arm64-v8a/libvirgl_"*.so # where builds before the parts' folder put them
+if [[ "$system_driver" == 1 && ("$target" == app || "$target" == release) ]]; then
+    devdriver_out="${PD2_DEVDRIVER_OUT:-$cache/devdriver-out}"
+    if ! (cd "$devdriver_out" 2>/dev/null && sha256sum -c --quiet SHA256SUMS 2>/dev/null) ||
+        [[ "$(cat "$devdriver_out/BUILDINFO" 2>/dev/null)" != "$("$here/devdriver/build.sh" --identity)" ]]; then
+        echo "building the system-driver server into $devdriver_out (devdriver/build.sh)"
+        PD2_DEVDRIVER_SRC="${PD2_DEVDRIVER_SRC:-$cache/devdriver/src}" PD2_DEVDRIVER_WORK="${PD2_DEVDRIVER_WORK:-$cache/devdriver/build}" \
+            "$here/devdriver/build.sh" "$devdriver_out"
+    fi
+    for server in virgl_test_server virgl_render_server virgl_test_server_gl; do
+        staged="$here/app/system-driver/jniLibs/arm64-v8a/lib$server.so"
+        if [[ -f "$devdriver_out/$server" ]]; then
+            mkdir -p "$(dirname "$staged")"
+            cp "$devdriver_out/$server" "$staged"
+            echo "system driver: $devdriver_out/$server"
+        else
+            rm -f "$staged"
+            echo "warning: no $devdriver_out/$server (devdriver/build.sh); the APK has no system-driver mode" >&2
+        fi
+    done
+    servers=0
+    for server in virgl_test_server virgl_render_server virgl_test_server_gl; do
+        [[ -f "$here/app/system-driver/jniLibs/arm64-v8a/lib$server.so" ]] && servers=$((servers + 1))
+    done
+    part=0
+    [[ -f "$here/app/system-driver/assets/userland-system-driver/manifest.json" ]] && part=1
+    if [[ "$servers" != 3 || "$part" != 1 ]]; then
+        # One without the other is no system-driver mode (SystemDriver.inApk): a release takes both or neither.
+        if [[ "$target" == release ]]; then
+            echo "refusing: the system-driver mode needs its three servers and the userland part (servers: $servers of 3," \
+                "part: $part; userland/build.sh, devdriver/build.sh), or PD2_SYSTEM_DRIVER=0" >&2
+            exit 1
+        fi
+        echo "warning: the system-driver mode is incomplete (servers: $servers of 3, userland part: $part); the APK has no such mode" >&2
+    fi
+elif [[ "$system_driver" == 0 ]]; then
+    echo "system driver: left out (PD2_SYSTEM_DRIVER=0)"
 fi
 
 # The App userland is built for userland/config.sh's placeholder data folder, which the app

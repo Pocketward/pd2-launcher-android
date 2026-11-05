@@ -143,8 +143,20 @@ sealed interface Screen {
     /** The first-start check runs (before anything is unpacked). */
     data object CheckingDevice : Screen
 
-    /** The device check refused this device; [problems] say why, [warnings] what else it found. */
-    data class NotSupported(val problems: List<Line>, val warnings: List<Line>) : Screen
+    /**
+     * The device check refused this device; [problems] say why, [warnings] what else it found.
+     * [tryAnyway]: only the phone's own driver can run the game here; the screen asks whether to
+     * try it ([DeviceCheckResult.tryAnyway]), and its findings are all [warnings].
+     */
+    data class NotSupported(
+        val problems: List<Line>,
+        val warnings: List<Line>,
+        val tryAnyway: Boolean = false,
+        /** The question comes from a debug build's forced route ([PhoneDriverAdvice.FORCED]): it says so. */
+        val forced: Boolean = false,
+        /** PD2 Launcher's RADV, mali-panvk or libhybris tries first ([DriverOptions.newLauncherDriver]): the question says that its driver for the chip is new. */
+        val newLauncherDriver: Boolean = false,
+    ) : Screen
 
     /**
      * Step 1, Check: the device, notifications, the App userland ("Game support files") and the
@@ -356,6 +368,15 @@ object Onboarding {
         is DeviceCheckState.Failed -> Screen.NotSupported(listOf(Line(R.string.device_check_failed, device.reason)), emptyList())
         is DeviceCheckState.Done -> if (device.result.passed) {
             null
+        } else if (device.result.tryAnyway) {
+            // The phone's own driver can try: what the check found is a warning, not a refusal.
+            Screen.NotSupported(
+                emptyList(),
+                device.result.findings.sortedByDescending { it.kind.acceptable }.map { deviceFinding(it, device.facts) },
+                tryAnyway = true,
+                forced = device.facts.advice == PhoneDriverAdvice.FORCED,
+                newLauncherDriver = device.facts.driverOptions.newLauncherDriver,
+            )
         } else {
             Screen.NotSupported(
                 device.result.findings.filter { it.kind.blocks }.map { deviceFinding(it, device.facts) },
@@ -690,6 +711,18 @@ object Onboarding {
         Finding.Kind.GPU_NOT_SUPPORTED ->
             if (finding.subject.isEmpty()) Line(R.string.device_gpu_unknown) else Line(R.string.device_gpu_not_supported, finding.subject)
         Finding.Kind.GPU_UNKNOWN_TO_DRIVER -> Line(R.string.device_gpu_unknown_to_driver, finding.subject)
+        Finding.Kind.SOFTWARE_ONLY ->
+            if (finding.subject.isEmpty()) Line(R.string.device_software_only_unknown) else Line(R.string.device_software_only, finding.subject)
+        // The GPU page's text for a chip with no route (decision 25): the stored pick stays.
+        Finding.Kind.PICK_HAS_NO_ROUTE -> Line(R.string.driver_no_gpu_driver)
+        Finding.Kind.PHONE_DRIVER_ONLY ->
+            if (facts.advice == PhoneDriverAdvice.FORCED) {
+                Line(R.string.device_phone_driver_forced, finding.subject)
+            } else if (facts.driverOptions.newLauncherDriver) {
+                Line(R.string.device_phone_driver_launcher, finding.subject)
+            } else {
+                Line(R.string.device_phone_driver_only, finding.subject)
+            }
         Finding.Kind.PAGE_SIZE -> Line(R.string.device_page_size, facts.pageSize)
         Finding.Kind.DATA_FOLDER -> Line(R.string.device_data_folder)
         Finding.Kind.NO_SPACE -> Line(R.string.device_no_space, facts.freeBytes shr 20, facts.requiredBytes shr 20)

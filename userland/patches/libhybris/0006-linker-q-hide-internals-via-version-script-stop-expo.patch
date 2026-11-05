@@ -1,0 +1,81 @@
+From fb9654ad60d08861577b893d21c6a7057bed2db2 Mon Sep 17 00:00:00 2001
+From: "Sophie Winter [AI]" <git@phie.me>
+Date: Sun, 10 May 2026 03:07:26 -0700
+Subject: [PATCH 6/9] linker/q: hide internals via version script, stop
+ exporting __tls_get_addr
+
+q.so was exporting ~527 default-visibility symbols, including
+__tls_get_addr / strlcpy / strlcat -- names that collide with host
+glibc/ld.so. A self-PLT __tls_get_addr inside q.so would bind to
+glibc's resolver and abort with a bionic module id glibc has never
+heard of. The IE/TLSDESC always-promote-to-static fix makes that call
+site unreachable today, but hiding the symbol closes the same failure
+class at the link level.
+
+Add hybris/common/q/q.ver: only `android_*` global, everything else
+local. Vendor libraries loaded via hybris_dlopen don't bind against
+q.so directly -- their unresolved references go through libhybris-
+common's _get_hooked_symbol table -- so __loader_* and __linker_*
+exports were unreachable too. Wired through q_la_LDFLAGS. Exported
+set drops 527 -> 19; nm -D --defined-only no longer lists
+__tls_get_addr.
+---
+ hybris/common/q/Makefile.am |  5 ++++-
+ hybris/common/q/q.ver       | 29 +++++++++++++++++++++++++++++
+ 2 files changed, 33 insertions(+), 1 deletion(-)
+ create mode 100644 hybris/common/q/q.ver
+
+diff --git a/hybris/common/q/Makefile.am b/hybris/common/q/Makefile.am
+index 8b23d0f..68f3923 100644
+--- a/hybris/common/q/Makefile.am
++++ b/hybris/common/q/Makefile.am
+@@ -69,7 +69,10 @@ q_la_LDFLAGS = \
+ 	-lpthread \
+ 	-lsupc++ \
+ 	-module \
+-	-avoid-version
++	-avoid-version \
++	-Wl,--version-script,$(srcdir)/q.ver
++
++EXTRA_DIST = q.ver
+ 
+ if WANT_DEBUG
+ q_la_CPPFLAGS += \
+diff --git a/hybris/common/q/q.ver b/hybris/common/q/q.ver
+new file mode 100644
+index 0000000..70de651
+--- /dev/null
++++ b/hybris/common/q/q.ver
+@@ -0,0 +1,29 @@
++/* Version script for q.so (the bionic Q linker plugin loaded by
++ * libhybris-common.so). Without this, q.so exported ~527 default-
++ * visibility symbols including `__tls_get_addr`, `strlcpy`, `strlcat`
++ * -- names that collide with host glibc/ld.so. The actual public ABI
++ * is just `android_*`: entry points the libhybris-common dlopen/dlsym
++ * shim looks up via dlsym(linker_handle, ...) in
++ * hooks.c::__hybris_load_linker. Vendor libraries loaded via
++ * hybris_dlopen don't link against q.so directly -- their unresolved
++ * symbols (including all libdl ABI like __loader_dlopen,
++ * __loader_dlsym, __loader_shared_globals) are resolved through
++ * libhybris-common's _get_hooked_symbol table, never via dlsym
++ * against q.so, so the historical __loader_ and __linker_ exports
++ * were unreachable dead weight.
++ *
++ * Everything else (linker internals, bionic libc helpers, the TLSDESC
++ * resolver, exception-handling glue, std::string / std::vector
++ * instantiations) becomes local. Hiding `__tls_get_addr` specifically
++ * closes the
++ *   "self-PLT call inside q.so accidentally binds to glibc's
++ *    __tls_get_addr because libhybris-common links against glibc"
++ * failure class at the link level instead of relying on us never
++ * regressing the TLSDESC-always-promote-to-static fix in linker.cpp.
++ */
++{
++  global:
++    android_*;
++  local:
++    *;
++};
+-- 
+2.56.0
+

@@ -1,0 +1,29 @@
+Subject: [PATCH] venus: destroy the context's ring mutex after the ring monitor
+
+vkr_context_destroy destroyed ctx->ring_mutex before it stopped the ring monitor, whose thread
+locks that mutex (vkr_context_ring_monitor_thread). On bionic a lock of a destroyed mutex aborts
+the render server ("FORTIFY: pthread_mutex_lock called on a destroyed mutex"), as in patch 0006;
+only at teardown, but with a tombstone.
+
+Destroy the mutex after the ring monitor's end.
+
+---
+--- a/src/venus/vkr_context.c
++++ b/src/venus/vkr_context.c
+@@ -623,13 +623,15 @@
+       vkr_ring_stop(ring);
+       vkr_ring_destroy(ring);
+    }
+-   mtx_destroy(&ctx->ring_mutex);
+ 
+    vkr_context_wait_ring_fini(ctx);
+ 
+    if (ctx->ring_monitor.started)
+       vkr_context_ring_monitor_fini(ctx);
+ 
++   /* after the ring monitor, whose thread locks it */
++   mtx_destroy(&ctx->ring_mutex);
++
+    if (ctx->instance) {
+       vkr_log("destroying context %d (%s) with a valid instance", ctx->ctx_id,
+               vkr_context_get_name(ctx));

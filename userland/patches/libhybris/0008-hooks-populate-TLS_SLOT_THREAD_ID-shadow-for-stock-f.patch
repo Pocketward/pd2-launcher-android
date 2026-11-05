@@ -1,0 +1,110 @@
+From c5a4fab2dde84c5ae68da72b37a5bced988b12ca Mon Sep 17 00:00:00 2001
+From: "Sophie Winter [AI]" <git@phie.me>
+Date: Mon, 11 May 2026 19:52:49 -0700
+Subject: [PATCH 8/9] hooks: populate TLS_SLOT_THREAD_ID shadow for
+ stock-firmware libc
+
+Stock bionic libc reads TLS_SLOT_THREAD_ID (slot 1, at TPIDR_EL0 + 8)
+in every syscall wrapper's errno-set path: `__set_errno_internal`
+does `ldr x8, [tp, #8]` followed by `str w9, [x8, #776]`, where 776 =
+pthread_internal_t::errno_value. Same shape as the slot -1 problem
+that the "bionic_tls compat" commit solved, but for a different
+slot: even with the TLS thunk patcher redirecting reads to
+tls_static_tls, slot 1 (tls_static_tls + 16) was left zero-init'd
+and any libc syscall that returned -1 dereferenced through NULL +
+0x308 and SIGSEGV'd.
+
+Pixel-only in practice on today's tested devices: Adreno/Mali
+gralloc HALs don't go through bionic libc's __set_errno_internal in
+the buffer-import path, but Pixel's mapper.pixel.so on Tensor G5
+does -- every wl_egl_window-backed surface creation crashes here.
+weston-simple-egl was the smallest reproducer; lxterminal hit it via
+GTK's GL renderer.
+
+Fix: in `_hybris_hook___get_tls_hooks`'s lazy per-thread init, allocate
+an 8 KiB zero-filled pthread_internal_t shadow next to the existing
+bionic_tls allocation and write its pointer into
+`tls_static_tls + BIONIC_THREAD_ID_PTR_OFFSET`. Sized to comfortably
+cover Q's pthread_internal_t (~2 KiB) plus headroom for future
+bionic versions. A second pthread_key_t with the same destructor
+reaps the shadow on thread exit.
+
+Other slots bionic libc reads (audited via objdump of apex libc.so):
+slot 5 is the stack canary, read-as-value and benign at zero; slot 0
+backs __tls_get_addr's DTV and gwp_asan PRNG; slot 6 is scudo's
+thread-local cache, only reached if scudo malloc fires (libhybris
+funnels visible malloc through glibc, so it doesn't in today's
+workloads). Those are out of scope here -- this commit is just the
+fix for the slot bionic libc dereferences as a pointer on every
+syscall failure.
+---
+ hybris/common/hooks.c | 28 ++++++++++++++++++++++++++++
+ 1 file changed, 28 insertions(+)
+
+diff --git a/hybris/common/hooks.c b/hybris/common/hooks.c
+index 1d00709..a73973b 100644
+--- a/hybris/common/hooks.c
++++ b/hybris/common/hooks.c
+@@ -2521,8 +2521,20 @@ __THROW int _hybris_hook___snprintf_chk (char *__restrict __s, size_t __n, int _
+ #define BIONIC_TPIDR_OFFSET      8    /* matches StaticTlsLayout::offset_thread_pointer() with MIN_TLS_SLOT=-1 (bionic Q) */
+ #define BIONIC_TLS_PTR_OFFSET    0    /* slot -1 (TLS_SLOT_BIONIC_TLS) at TP-8 = 0 */
+ #define BIONIC_TLS_COMPAT_SIZE   16384
++/* slot 1 (TLS_SLOT_THREAD_ID) at TP+8: bionic libc dereferences this
++ * as a pthread_internal_t* in every syscall wrapper's errno-set path
++ * (__set_errno_internal does `str w9, [x8, #776]` after loading slot 1,
++ * where 776 = pthread_internal_t::errno_value), and in __cxa_thread_*
++ * for per-thread atexit lists. Without a populated shadow, vendors
++ * whose code paths hit a libc syscall failure (e.g. Pixel's
++ * mapper.pixel.so mmap'ing a gralloc buffer fd) NULL-deref at +0x308.
++ * Shadow size chosen to comfortably cover Q's pthread_internal_t
++ * (~2 KiB) plus headroom for future bionic versions that grow it. */
++#define BIONIC_THREAD_ID_PTR_OFFSET  (BIONIC_TPIDR_OFFSET + 8)  /* TP+8 = 16 */
++#define BIONIC_PTHREAD_SHADOW_SIZE   8192
+ 
+ static pthread_key_t bionic_tls_cleanup_key;
++static pthread_key_t pthread_shadow_cleanup_key;
+ static pthread_once_t bionic_tls_key_once = PTHREAD_ONCE_INIT;
+ 
+ static void _bionic_tls_cleanup(void *ptr)
+@@ -2533,6 +2545,7 @@ static void _bionic_tls_cleanup(void *ptr)
+ static void _bionic_tls_key_init(void)
+ {
+     pthread_key_create(&bionic_tls_cleanup_key, _bionic_tls_cleanup);
++    pthread_key_create(&pthread_shadow_cleanup_key, _bionic_tls_cleanup);
+ }
+ 
+ static __attribute__((tls_model ("initial-exec"), aligned(16)))
+@@ -2548,6 +2561,8 @@ static __attribute__((tls_model ("initial-exec")))
+        __thread int  tls_module_init_count;
+ 
+ #define bionic_tls_ptr (*(void**)(tls_static_tls + BIONIC_TLS_PTR_OFFSET))
++#define pthread_internal_shadow_ptr \
++    (*(void**)(tls_static_tls + BIONIC_THREAD_ID_PTR_OFFSET))
+ 
+ /* Registry of every TLS-using bionic .so the linker has promoted to a
+  * static-TLS slot. linker_tls.cpp's promote_tls_module_to_static() calls
+@@ -2669,8 +2684,21 @@ void *_hybris_hook___get_tls_hooks()
+         }
+         bionic_tls_ptr = btls;
+ 
++        /* slot 1 (TLS_SLOT_THREAD_ID) shadow: zero-init'd buffer the
++         * bionic libc syscall wrappers and __cxa_thread_* helpers
++         * dereference. See BIONIC_THREAD_ID_PTR_OFFSET above for the
++         * mechanism. Vendors whose code paths set errno (e.g. Pixel's
++         * mapper.pixel.so on Tensor G5) crash without this. */
++        void *pthread_shadow = calloc(1, BIONIC_PTHREAD_SHADOW_SIZE);
++        if (!pthread_shadow) {
++            fprintf(stderr, "HYBRIS: fatal: failed to allocate pthread_internal_t shadow\n");
++            abort();
++        }
++        pthread_internal_shadow_ptr = pthread_shadow;
++
+         pthread_once(&bionic_tls_key_once, _bionic_tls_key_init);
+         pthread_setspecific(bionic_tls_cleanup_key, btls);
++        pthread_setspecific(pthread_shadow_cleanup_key, pthread_shadow);
+         tls_inited = 1;
+     }
+ 
+-- 
+2.56.0
+

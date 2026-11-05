@@ -1,9 +1,13 @@
 // The device check's Mali probe: reads the GPU id from Arm's mali_kbase driver, before anything
-// is unpacked, as our PanVK backend opens it
-// (userland/mesa-kbase/src/panfrost/lib/kmod/kbase_kmod.c, kbase_kmod_dev_create). kbase
-// answers GET_GPUPROPS only on a set-up context, so the probe does the CSF handshake first
-// (VERSION_CHECK, SET_FLAGS). A job-manager (pre-CSF) kbase has its handshake under another
-// number (0, which CSF reserves) and answers uAPI major 11, so the probe fails there: not CSF.
+// is unpacked, as the App userland's PanVK drivers open it. kbase answers GET_GPUPROPS only on a
+// set-up context, so the probe does the handshake first (VERSION_CHECK, SET_FLAGS). The CSF
+// handshake comes first, as our PanVK backend makes it
+// (userland/mesa-kbase/src/panfrost/lib/kmod/kbase_kmod.c, kbase_kmod_dev_create). A job-manager
+// (pre-CSF) kbase refuses that number before its own handshake (EPERM) or answers it with its own
+// major 11; the probe then makes the job-manager handshake as the mali-panvk tree's kbase backend,
+// the driver of the job-manager Malis, makes it (src/panfrost/lib/kmod/kbase_kmod.c at config.sh's
+// MALI_PANVK_COMMIT, kbase_kmod_dev_create: number 0, 11.31, after a refused CSF one). A CSF kbase
+// that answers the CSF handshake never gets the second one.
 #include <errno.h>
 #include <fcntl.h>
 #include <jni.h>
@@ -16,8 +20,9 @@
 // The interface, from Arm's kbase uAPI headers as the PanVK build fetches them (KBASE_UAPI_* in
 // userland/config.sh): mali_kbase_ioctl.h (KBASE_IOCTL_TYPE,
 // struct kbase_ioctl_set_flags and KBASE_IOCTL_SET_FLAGS, struct kbase_ioctl_get_gpuprops and
-// KBASE_IOCTL_GET_GPUPROPS, KBASE_GPUPROP_RAW_GPU_ID), csf/mali_kbase_csf_ioctl.h
-// (struct kbase_ioctl_version_check, KBASE_IOCTL_VERSION_CHECK, BASE_UK_VERSION_MAJOR/MINOR).
+// KBASE_IOCTL_GET_GPUPROPS, KBASE_GPUPROP_*), csf/mali_kbase_csf_ioctl.h
+// (struct kbase_ioctl_version_check, KBASE_IOCTL_VERSION_CHECK, BASE_UK_VERSION_MAJOR/MINOR, and
+// KBASE_IOCTL_VERSION_CHECK_RESERVED: number 0, the job manager's handshake).
 #define KBASE_IOCTL_TYPE 0x80
 
 struct kbase_ioctl_version_check {
@@ -25,6 +30,7 @@ struct kbase_ioctl_version_check {
     uint16_t minor;
 };
 #define KBASE_IOCTL_VERSION_CHECK _IOWR(KBASE_IOCTL_TYPE, 52, struct kbase_ioctl_version_check)
+#define KBASE_IOCTL_JM_VERSION_CHECK _IOWR(KBASE_IOCTL_TYPE, 0, struct kbase_ioctl_version_check)
 
 struct kbase_ioctl_set_flags {
     uint32_t create_flags;
@@ -37,16 +43,24 @@ struct kbase_ioctl_get_gpuprops {
     uint32_t flags;
 };
 #define KBASE_IOCTL_GET_GPUPROPS _IOW(KBASE_IOCTL_TYPE, 3, struct kbase_ioctl_get_gpuprops)
+#define KBASE_GPUPROP_PRODUCT_ID 1
+#define KBASE_GPUPROP_VERSION_STATUS 2
+#define KBASE_GPUPROP_MINOR_REVISION 3
+#define KBASE_GPUPROP_MAJOR_REVISION 4
 #define KBASE_GPUPROP_RAW_GPU_ID 55
 
 // The uAPI the probe offers (BASE_UK_VERSION_*): kbase answers the lower minor of its own and this
 // one, or its own version when the major differs.
 #define CSF_UAPI_MAJOR 1
 #define CSF_UAPI_MINOR 38
+// The job manager's, as mali-panvk offers it.
+#define JM_UAPI_MAJOR 11
+#define JM_UAPI_MINOR 31
 
-// The GPU id in a kbase property blob: (key << 2 | size code) words, each followed by its value of
-// 1 << size code bytes, as our backend reads them (kbase_kmod.c, kbase_read_props).
-static uint64_t gpu_id_from(const uint8_t *buf, int len) {
+// One property of a kbase property blob: (key << 2 | size code) words, each followed by its value
+// of 1 << size code bytes, as our backend reads them (kbase_kmod.c, kbase_read_props); 0 when the
+// blob does not have it.
+static uint64_t prop_from(const uint8_t *buf, int len, uint32_t want) {
     for (int off = 0; off + 4 <= len;) {
         uint32_t key;
         memcpy(&key, buf + off, 4);
@@ -56,12 +70,24 @@ static uint64_t gpu_id_from(const uint8_t *buf, int len) {
         uint64_t value = 0;
         memcpy(&value, buf + off, bytes);
         off += bytes;
-        if ((key >> 2) == KBASE_GPUPROP_RAW_GPU_ID) return value;
+        if ((key >> 2) == want) return value;
     }
     return 0;
 }
 
-// Returns {errno (0 on success; ENOTTY: not a CSF kbase), gpu_id, uapi major, uapi minor}.
+// The GPU id on the job manager as mali-panvk makes it (kbase_kmod_query_props): the GPU_ID
+// register from its parts, with the product id in bits 16 to 31 (Bifrost and Valhall: arch major,
+// arch minor, arch rev, product major), so that the arch and the model read as on CSF.
+static uint64_t jm_gpu_id_from(const uint8_t *buf, int len) {
+    uint64_t product = prop_from(buf, len, KBASE_GPUPROP_PRODUCT_ID);
+    if (product == 0) return 0;
+    return (product << 16) | ((prop_from(buf, len, KBASE_GPUPROP_MAJOR_REVISION) & 0xf) << 12) |
+        ((prop_from(buf, len, KBASE_GPUPROP_MINOR_REVISION) & 0xff) << 4) |
+        (prop_from(buf, len, KBASE_GPUPROP_VERSION_STATUS) & 0xf);
+}
+
+// Returns {errno (0 on success; ENOTTY: neither a CSF nor a job-manager kbase), gpu_id, uapi major
+// (1: CSF, 11: the job manager), uapi minor}.
 JNIEXPORT jlongArray JNICALL Java_com_pd2launcher_app_MaliProbe_nativeProbe(JNIEnv *env, jclass cls) {
     (void)cls;
     jlong result[4] = {0, 0, 0, 0};
@@ -72,12 +98,17 @@ JNIEXPORT jlongArray JNICALL Java_com_pd2launcher_app_MaliProbe_nativeProbe(JNIE
     }
     struct kbase_ioctl_version_check version = {.major = CSF_UAPI_MAJOR, .minor = CSF_UAPI_MINOR};
     if (ioctl(fd, KBASE_IOCTL_VERSION_CHECK, &version) < 0) {
-        result[0] = errno;
-        goto close;
+        // Not a CSF kbase: the job manager's handshake. When that fails too, the CSF one's errno.
+        int csf_errno = errno;
+        version = (struct kbase_ioctl_version_check){.major = JM_UAPI_MAJOR, .minor = JM_UAPI_MINOR};
+        if (ioctl(fd, KBASE_IOCTL_JM_VERSION_CHECK, &version) < 0) {
+            result[0] = csf_errno;
+            goto close;
+        }
     }
     result[2] = version.major;
     result[3] = version.minor;
-    if (version.major != CSF_UAPI_MAJOR) {
+    if (version.major != CSF_UAPI_MAJOR && version.major != JM_UAPI_MAJOR) {
         result[0] = ENOTTY;
         goto close;
     }
@@ -103,8 +134,9 @@ JNIEXPORT jlongArray JNICALL Java_com_pd2launcher_app_MaliProbe_nativeProbe(JNIE
     if (got < 0) {
         result[0] = errno;
     } else {
-        result[1] = (jlong)gpu_id_from(buf, got);
-        if (result[1] == 0) result[0] = EIO;
+        uint64_t id = version.major == JM_UAPI_MAJOR ? jm_gpu_id_from(buf, got) : prop_from(buf, got, KBASE_GPUPROP_RAW_GPU_ID);
+        result[1] = (jlong)id;
+        if (id == 0) result[0] = EIO;
     }
     free(buf);
 close:

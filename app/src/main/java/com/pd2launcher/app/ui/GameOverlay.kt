@@ -13,6 +13,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.interaction.InteractionSource
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.PressInteraction
@@ -78,10 +79,13 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -116,6 +120,141 @@ internal fun MenuGlyph(modifier: Modifier, onClick: () -> Unit) {
             listOf(0.22f, 0.5f, 0.78f).forEach { y ->
                 drawLine(Palette.Text, Offset(size.width * 0.12f, size.height * y), Offset(size.width * 0.88f, size.height * y), 2f * density, StrokeCap.Square)
             }
+        }
+    }
+}
+
+/** An answer on [RouteCard]. */
+internal enum class RouteAnswer {
+    WORKS,
+    QUIT,
+    ;
+
+    companion object {
+        /** A controller's key on the card: A says It works, B says Quit. */
+        fun ofKey(keyCode: Int): RouteAnswer? = when (keyCode) {
+            KeyEvent.KEYCODE_BUTTON_A -> WORKS
+            KeyEvent.KEYCODE_BUTTON_B -> QUIT
+            else -> null
+        }
+
+        /** Quit's text: with a [controller] the mark says what to hold; else the text does, so that a short tap is no dead end. */
+        fun quitLabel(controller: Boolean): Int = if (controller) R.string.route_card_quit else R.string.route_card_hold_quit
+    }
+}
+
+/**
+ * The card's keys while it shows ([RouteCard]): an answer takes a hold of [HOLD_MS], as A and B are
+ * the game's buttons too, and a shorter press does nothing. Pure, so the JVM tests check it.
+ */
+internal class RouteCardHold(private val holdMs: Long = HOLD_MS) {
+    private val since = mutableMapOf<Int, Long>()
+
+    /**
+     * One key event at [timeMs]; true: it is the card's, and it does not reach the game. A and B from
+     * their press on; a press from before the card stays the game's, with its release.
+     */
+    fun key(keyCode: Int, down: Boolean, repeatCount: Int, timeMs: Long): Boolean {
+        if (RouteAnswer.ofKey(keyCode) == null) return false
+        if (!down) return since.remove(keyCode) != null
+        if (repeatCount == 0) since[keyCode] = timeMs
+        return keyCode in since
+    }
+
+    /** The answer of [keyCode] where it has been held for [holdMs] at [nowMs]; null: released, or not yet. */
+    fun answer(keyCode: Int, nowMs: Long): RouteAnswer? =
+        since[keyCode]?.takeIf { nowMs - it >= holdMs }?.let { RouteAnswer.ofKey(keyCode) }
+
+    /** The card came or went: no press counts from before. */
+    fun clear() = since.clear()
+
+    companion object {
+        const val HOLD_MS = 500L
+    }
+}
+
+/**
+ * A small card in the middle of the Game view on the first game on a new driver until the player
+ * answers ([com.pd2launcher.app.PhoneDriverFailure.asks]): does the game work? It names the
+ * [driver] as Play's label does. No scrim: the rest of the Game view takes its input as ever, and
+ * it shows over a game that drew no frame too. One tap answers It works; Quit, which stops the
+ * game and opens Settings → Display → GPU, takes a press of [RouteCardHold.HOLD_MS]. It switches
+ * no driver. With a [controller] the buttons say which key to hold ([RouteCardHold]).
+ */
+@Composable
+internal fun RouteCard(controller: Boolean, driver: String, onAnswer: (RouteAnswer) -> Unit, modifier: Modifier) {
+    val shape = RoundedCornerShape(14.dp)
+    Row(
+        modifier.padding(horizontal = 12.dp).widthIn(max = 520.dp).clip(shape)
+            .background(Palette.Surface.copy(alpha = 0.94f)).border(1.dp, Palette.Edge, shape).padding(start = 16.dp, end = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        Column(Modifier.weight(1f, fill = false).padding(vertical = 8.dp)) {
+            Text(stringResource(R.string.route_card_title), style = Type.Body.copy(fontWeight = FontWeight.SemiBold), color = Palette.Text, maxLines = 1)
+            Text(stringResource(R.string.route_card_body, driver), style = Type.Hint, color = Palette.Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            RouteCardButton(stringResource(R.string.route_card_works), stringResource(R.string.route_card_hold, "A").takeIf { controller }, primary = true) {
+                onAnswer(RouteAnswer.WORKS)
+            }
+            RouteCardButton(stringResource(RouteAnswer.quitLabel(controller)), stringResource(R.string.route_card_hold, "B").takeIf { controller }, primary = false, held = true) {
+                onAnswer(RouteAnswer.QUIT)
+            }
+        }
+    }
+}
+
+/**
+ * A slim button of [RouteCard]: 30 dp to see, 48 dp to touch; filled teal or an outline, with the
+ * controller's [hold] mark if any. [held]: a press ([pressed]), not a tap.
+ */
+@Composable
+private fun RouteCardButton(label: String, hold: String?, primary: Boolean, held: Boolean = false, onAnswer: () -> Unit) {
+    val pill = RoundedCornerShape(15.dp)
+    val touch = if (held) Modifier.pressed(stringResource(R.string.route_card_quit), onAnswer) else Modifier.clickable(role = Role.Button, onClick = onAnswer)
+    Box(Modifier.heightIn(min = 48.dp).then(touch), contentAlignment = Alignment.Center) {
+        Row(
+            Modifier.height(30.dp).clip(pill).then(if (primary) Modifier.background(Palette.Teal) else Modifier.border(1.dp, Palette.Edge, pill))
+                .padding(horizontal = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (hold != null) {
+                Box(
+                    Modifier.padding(end = 6.dp).height(18.dp).clip(RoundedCornerShape(9.dp))
+                        .background(if (primary) Palette.OnTeal.copy(alpha = 0.25f) else Palette.Raised).padding(horizontal = 6.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(hold, style = Type.Glyph, color = if (primary) Palette.OnTeal else Palette.Text, maxLines = 1, softWrap = false)
+                }
+            }
+            Text(label, style = Type.Hint.copy(fontWeight = FontWeight.SemiBold), color = if (primary) Palette.OnTeal else Palette.Text, maxLines = 1, softWrap = false)
+        }
+    }
+}
+
+/**
+ * Answers after a press of [RouteCardHold.HOLD_MS], as the controller's hold; a shorter touch does
+ * nothing. A screen reader's click answers at once, as it has no press.
+ */
+@Composable
+private fun Modifier.pressed(action: String, onAnswer: () -> Unit): Modifier {
+    val answer by rememberUpdatedState(onAnswer)
+    return semantics(mergeDescendants = true) {
+        role = Role.Button
+        onClick(action) {
+            answer()
+            true
+        }
+    }.pointerInput(Unit) {
+        awaitEachGesture {
+            awaitFirstDown()
+            // Null: the time ran out with the finger still down.
+            val ended = withTimeoutOrNull(RouteCardHold.HOLD_MS) {
+                waitForUpOrCancellation()
+                true
+            }
+            if (ended == null) answer()
         }
     }
 }

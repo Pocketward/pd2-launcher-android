@@ -21,10 +21,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.pd2launcher.app.BuildConfig
 import com.pd2launcher.app.R
+import com.pd2launcher.app.UserlandAssets
 
 /**
  * About, from Settings → App: what PD2 Launcher is, the non-affiliation notice, the major
@@ -55,6 +57,12 @@ fun AboutScreen(onBack: () -> Unit, runtime: String? = null) {
                 Text(stringResource(R.string.about_built_wine), style = Type.Body, color = Palette.Text)
                 Text(stringResource(R.string.about_built_box64), style = Type.Body, color = Palette.Text)
                 Text(stringResource(R.string.about_built_mesa), style = Type.Body, color = Palette.Text)
+                // RADV for Xclipse and mali-panvk are in the system-driver part, which an APK can leave out.
+                val context = LocalContext.current
+                if (remember { UserlandAssets.carries(context, UserlandAssets.SYSTEM_DRIVER) }) {
+                    Text(stringResource(R.string.about_built_radv), style = Type.Body, color = Palette.Text)
+                    Text(stringResource(R.string.about_built_mali_panvk), style = Type.Body, color = Palette.Text)
+                }
                 Text(stringResource(R.string.about_built_dotnet), style = Type.Body, color = Palette.Text)
                 if (runtime != null) Text(stringResource(R.string.about_runtime, runtime), style = Type.Hint, color = Palette.Muted)
                 Text(stringResource(R.string.about_end), style = Type.Hint, color = Palette.Muted, modifier = Modifier.padding(top = 16.dp))

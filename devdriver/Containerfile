@@ -1,0 +1,11 @@
+# The system-driver bridge's build image: the Android build image (containers/Containerfile:
+# JDK, SDK, NDK r27c, all pinned) plus the build tools of Mesa-style meson projects (virglrenderer
+# and its venus-protocol subproject, which generates its headers with python3-mako). The base is
+# passed as BASE (android/devdriver/build.sh); Debian's packages come from the base image's own
+# Debian release.
+ARG BASE
+FROM ${BASE}
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends meson ninja-build pkgconf python3 python3-mako \
+       python3-yaml patch xz-utils \
+    && rm -rf /var/lib/apt/lists/*

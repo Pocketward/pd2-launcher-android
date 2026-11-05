@@ -1,0 +1,387 @@
+--- a/src/vulkan/wsi/wsi_common_x11.c
++++ b/src/vulkan/wsi/wsi_common_x11.c
+@@ -1230,6 +1230,15 @@ struct x11_image_pending_completion {
+    uint64_t timing_serial;
+ };
+ 
++/* Detailed logging's times of a frame of the software present (sw_stamp). */
++enum sw_stamp {
++   SW_STAMP_ACQUIRED,  /* the game's acquire gave it the image */
++   SW_STAMP_PRESENTED, /* vkQueuePresentKHR queued the image */
++   SW_STAMP_GPU_DONE,  /* the queue thread's wait for the image's fence ended */
++   SW_STAMP_CLOCK,     /* the queue thread's wait for the app's clock ended */
++   SW_STAMPS,
++};
++
+ struct x11_image {
+    struct wsi_image                          base;
+    xcb_pixmap_t                              pixmap;
+@@ -1245,6 +1254,8 @@ struct x11_image {
+    xcb_rectangle_t                           rects[MAX_DAMAGE_RECTS];
+    int                                       rectangle_count;
+    struct wsi_image_timing_request           timing_request;
++   /* This frame's times (CLOCK_MONOTONIC ns, 0: not taken; sw_stamp). */
++   uint64_t                                  sw_stamps[SW_STAMPS];
+ 
+    /* In IMMEDIATE and MAILBOX modes, we can have multiple pending presentations per image.
+     * We need to keep track of them when considering present ID. */
+@@ -1270,6 +1281,13 @@ struct x11_present_timing_entry {
+ 
+ struct sw_direct;
+ 
++/* The app's clock's tick at this swapchain's last present, and whether the clock had stalled
++ * then (sw_present_clock). */
++struct sw_clock_seen {
++   uint32_t tick;
++   bool stalled;
++};
++
+ struct x11_swapchain {
+    struct wsi_swapchain                        base;
+ 
+@@ -1292,6 +1310,10 @@ struct x11_swapchain {
+    bool                                         sw_copy_pending;
+    int                                          sw_copy_rect_count;
+    xcb_rectangle_t                              sw_copy_rects[MAX_DAMAGE_RECTS];
++   /* The app's clock as this swapchain last saw it (sw_present_clock). */
++   struct sw_clock_seen                         sw_clock;
++   /* The presented images that have not passed the app's clock yet (sw_clock_acquire). */
++   uint32_t                                     sw_clock_waiting;
+    xcb_gc_t                                     gc;
+    uint32_t                                     depth;
+    VkExtent2D                                   extent;
+@@ -1987,6 +2009,172 @@ sw_present_paced(void)
+    }
+ #endif
+ }
++
++/* The app's clock: the virtual display's vertical blank. The app counts its ticks in the 32-bit
++ * word at byte 256 of the present counter's page (and wakes its futex waiters) at the rate the
++ * player picked (Settings, Frame rate; Full: the panel's highest rate), and keeps the word at
++ * byte 320 non-zero while it ticks. A present of every mode (FIFO and FIFO_RELAXED: vsync on;
++ * IMMEDIATE and MAILBOX: vsync off) waits until a tick has come since this swapchain's present
++ * before, so the game shows at most one frame a tick, whatever rate the phone's screen runs at,
++ * and a late frame goes at once. The game is held at its acquire: while the clock ticks, the
++ * acquire waits until the game's last presented image has passed this wait (sw_clock_acquire), so
++ * at most one image waits for a tick (this present replaces no queued image, for MAILBOX too). A
++ * clock that has not ticked for SW_PACING_TIMEOUT_NS is not waited for again until it ticks: a
++ * stalled app never holds the game up. Every software present waits here, the app's buffers' and
++ * the X screen's alike.
++ */
++#define SW_TICK_WORD (256 / sizeof(uint32_t))
++#define SW_CLOCK_WORD (320 / sizeof(uint32_t))
++
++static void
++sw_present_clock(struct sw_clock_seen *seen)
++{
++#if UTIL_FUTEX_SUPPORTED
++   call_once(&sw_present_counter_once, sw_present_counter_open);
++   if (!sw_pacing_mapped)
++      return;
++   uint32_t *tick = &sw_present_counter[SW_TICK_WORD];
++   const uint32_t *running = &sw_present_counter[SW_CLOCK_WORD];
++   uint32_t now = __atomic_load_n(tick, __ATOMIC_ACQUIRE);
++   if (now != seen->tick)
++      seen->stalled = false;
++   if (!seen->stalled && now == seen->tick) {
++      struct timespec deadline;
++      clock_gettime(CLOCK_MONOTONIC, &deadline);
++      timespec_add_nsec(&deadline, &deadline, SW_PACING_TIMEOUT_NS);
++      while (now == seen->tick && __atomic_load_n(running, __ATOMIC_ACQUIRE)) {
++         if (futex_wait(tick, now, &deadline) != 0 && errno != EAGAIN && errno != EINTR) {
++            seen->stalled = true; /* the deadline, or a futex that fails: no spin */
++            break;
++         }
++         now = __atomic_load_n(tick, __ATOMIC_ACQUIRE);
++      }
++   }
++   seen->tick = now;
++#endif
++}
++
++/* At most one presented image waits for the app's clock. While the clock ticks, the game's acquire
++ * waits until each image it presented has passed sw_present_clock (sw_clock_waiting: counted by
++ * x11_queue_present, let go by the queue thread, sw_clock_passed). Then the game draws its next
++ * frame after the tick that shows its last frame, and that next frame shows at the next tick: the
++ * frame on the screen is at most about one tick old. Without this wait a game faster than the
++ * clock drew into each free image, and the presented images waited in the present queue, one
++ * tick each: with three images the newest frame showed about three ticks after the game drew it.
++ * The game still draws at most one frame a tick. An acquire that has no time to wait (timeout 0)
++ * does not wait here. [timeout] becomes the time that is left of it; VK_TIMEOUT when it ends
++ * first.
++ */
++static VkResult
++sw_clock_acquire(struct x11_swapchain *chain, uint64_t *timeout)
++{
++#if UTIL_FUTEX_SUPPORTED
++   if (!chain->base.sw || chain->has_mit_shm || *timeout == 0)
++      return VK_SUCCESS;
++   call_once(&sw_present_counter_once, sw_present_counter_open);
++   if (!sw_pacing_mapped || !__atomic_load_n(&sw_present_counter[SW_CLOCK_WORD], __ATOMIC_ACQUIRE))
++      return VK_SUCCESS;
++   int64_t until = os_time_get_absolute_timeout(*timeout);
++   bool forever = until == (int64_t)OS_TIMEOUT_INFINITE;
++   struct timespec deadline;
++   timespec_from_nsec(&deadline, (uint64_t)until);
++   VkResult result = VK_SUCCESS;
++   uint32_t waiting;
++   while ((waiting = __atomic_load_n(&chain->sw_clock_waiting, __ATOMIC_ACQUIRE)) != 0 &&
++          chain->status >= 0) {
++      if (futex_wait(&chain->sw_clock_waiting, (int32_t)waiting, forever ? NULL : &deadline) != 0 &&
++          errno != EAGAIN && errno != EINTR) {
++         if (errno == ETIMEDOUT)
++            result = VK_TIMEOUT;
++         break; /* the deadline, or a futex that fails: no spin */
++      }
++   }
++   if (!forever) {
++      int64_t left = until - os_time_get_nano();
++      *timeout = left > 0 ? (uint64_t)left : 0;
++   }
++   return result;
++#else
++   (void)chain;
++   (void)timeout;
++   return VK_SUCCESS;
++#endif
++}
++
++/* One presented image has passed the app's clock ([all]: the queue thread has stopped, none waits
++ * any more); when none waits, the game's acquire goes on (sw_clock_acquire). */
++static void
++sw_clock_passed(struct x11_swapchain *chain, bool all)
++{
++   uint32_t left = 0;
++   if (all)
++      __atomic_store_n(&chain->sw_clock_waiting, 0, __ATOMIC_RELEASE);
++   else
++      left = __atomic_sub_fetch(&chain->sw_clock_waiting, 1, __ATOMIC_RELEASE);
++#if UTIL_FUTEX_SUPPORTED
++   if (left == 0)
++      futex_wake(&chain->sw_clock_waiting, INT32_MAX);
++#else
++   (void)left;
++#endif
++}
++
++/* Detailed logging's frame times, for the app's split of the pointer's delay (its
++ * pointer_split.h). While the app keeps the word at byte 384 of the present counter's page
++ * non-zero, the software present takes four CLOCK_MONOTONIC times of each frame (enum sw_stamp):
++ * the game's acquire gives it the image, vkQueuePresentKHR queues the image, the queue thread's
++ * wait for the image's fence ends (the GPU has done the frame), and its wait for the app's clock
++ * ends (sw_present_clock). A frame for the app's buffers gets the next serial from the word at
++ * byte 448 (never 0), and x11_present_direct writes its times into slot [serial % 16] of a ring of
++ * 16 slots of 64 bytes from byte 512, before it sends the PRESENT with that serial in its last
++ * word. A slot: the serial (32 bits; 0 while the slot is written), 4 bytes not used, then the
++ * four times (64 bits each). The app reads the slot when it shows the frame. Nothing while the
++ * word is 0; no allocation and no system call other than clock_gettime.
++ */
++#define SW_STAMPS_WORD (384 / sizeof(uint32_t))
++#define SW_STAMPS_SERIAL_WORD (448 / sizeof(uint32_t))
++#define SW_STAMPS_RING 512
++#define SW_STAMPS_SLOT 64
++#define SW_STAMPS_SLOTS 16
++
++static void
++sw_stamp(struct x11_swapchain *chain, uint32_t image_index, enum sw_stamp which)
++{
++   uint64_t *stamp = &chain->images[image_index].sw_stamps[which];
++   *stamp = 0;
++   call_once(&sw_present_counter_once, sw_present_counter_open);
++   if (!sw_pacing_mapped || !__atomic_load_n(&sw_present_counter[SW_STAMPS_WORD], __ATOMIC_RELAXED))
++      return;
++   struct timespec now;
++   clock_gettime(CLOCK_MONOTONIC, &now);
++   *stamp = (uint64_t)now.tv_sec * 1000000000u + (uint64_t)now.tv_nsec;
++}
++
++/* Writes a frame's times [stamps] into the ring (sw_stamp); its serial, 0 when a time is missing. */
++static uint32_t
++sw_stamps_publish(const uint64_t *stamps)
++{
++   if (!sw_pacing_mapped)
++      return 0;
++   for (unsigned i = 0; i < SW_STAMPS; i++) {
++      if (stamps[i] == 0)
++         return 0;
++   }
++   uint32_t *next = &sw_present_counter[SW_STAMPS_SERIAL_WORD];
++   uint32_t serial = __atomic_add_fetch(next, 1, __ATOMIC_RELAXED);
++   if (serial == 0)
++      serial = __atomic_add_fetch(next, 1, __ATOMIC_RELAXED);
++   uint8_t *slot = (uint8_t *)sw_present_counter + SW_STAMPS_RING + (serial % SW_STAMPS_SLOTS) * SW_STAMPS_SLOT;
++   uint32_t *slot_serial = (uint32_t *)slot;
++   uint64_t *times = (uint64_t *)(slot + 8);
++   /* A reader that sees the same serial before and after its copy has all four times. */
++   __atomic_store_n(slot_serial, 0, __ATOMIC_RELAXED);
++   __atomic_thread_fence(__ATOMIC_RELEASE);
++   for (unsigned i = 0; i < SW_STAMPS; i++)
++      __atomic_store_n(&times[i], stamps[i], __ATOMIC_RELAXED);
++   __atomic_store_n(slot_serial, serial, __ATOMIC_RELEASE);
++   return serial;
++}
+ #else
+ static void
+ sw_present_counted(void)
+@@ -1997,6 +2185,33 @@ static void
+ sw_present_paced(void)
+ {
+ }
++
++static void
++sw_present_clock(struct sw_clock_seen *seen)
++{
++   (void)seen;
++}
++
++static VkResult
++sw_clock_acquire(struct x11_swapchain *chain, uint64_t *timeout)
++{
++   (void)chain;
++   (void)timeout;
++   return VK_SUCCESS;
++}
++
++static void
++sw_clock_passed(struct x11_swapchain *chain, bool all)
++{
++   (void)chain;
++   (void)all;
++}
++
++static void
++sw_stamp(struct x11_swapchain *chain, uint32_t image_index, enum sw_stamp which)
++{
++   chain->images[image_index].sw_stamps[which] = 0;
++}
+ #endif
+ 
+ #ifdef __linux__
+@@ -2031,7 +2246,7 @@ sw_present_paced(void)
+ #define SW_DIRECT_MAGIC 0x50443250u /* "P2DP" in memory */
+ #define SW_DIRECT_VERSION 1
+ #define SW_DIRECT_MAX_IMAGES 4
+-#define SW_DIRECT_MAX_BUFFERS 4
++#define SW_DIRECT_MAX_BUFFERS 5
+ #define SW_DIRECT_WAIT_NS (100 * 1000 * 1000)
+ #define SW_DIRECT_WANTED_WORD (192 / sizeof(uint32_t))
+ /* GraphicBuffer's flattened form ('GB01'), AOSP libs/ui GraphicBuffer::flatten. */
+@@ -2053,7 +2268,8 @@ sw_present_paced(void)
+ enum sw_direct_type {
+    SW_DIRECT_HELLO = 1,   /* to the app: width, height, count */
+    SW_DIRECT_BUFFERS = 2, /* from the app: width, height, count, format; then the buffers */
+-   SW_DIRECT_PRESENT = 3, /* to the app: index (the buffer is ready), count: present mode + 1 */
++   SW_DIRECT_PRESENT = 3, /* to the app: index (the buffer is ready), count: present mode + 1,
++                           * format: the frame's times' serial (sw_stamp; 0: none) */
+    SW_DIRECT_RELEASE = 4, /* from the app: index, + release fence */
+ };
+ 
+@@ -2086,9 +2302,10 @@ struct sw_direct {
+ };
+ 
+ static bool
+-sw_direct_send(int sock, uint32_t type, uint32_t index, uint32_t width, uint32_t height, uint32_t count)
++sw_direct_send(int sock, uint32_t type, uint32_t index, uint32_t width, uint32_t height, uint32_t count,
++               uint32_t format)
+ {
+-   struct sw_direct_msg m = { SW_DIRECT_MAGIC, SW_DIRECT_VERSION, type, index, width, height, count, 0 };
++   struct sw_direct_msg m = { SW_DIRECT_MAGIC, SW_DIRECT_VERSION, type, index, width, height, count, format };
+    ssize_t n;
+    do {
+       n = send(sock, &m, sizeof(m), MSG_NOSIGNAL);
+@@ -2465,7 +2682,10 @@ sw_direct_open(struct x11_swapchain *chain)
+    if (d == NULL)
+       return;
+    d->sock = -1;
+-   d->count = MIN2(chain->base.image_count, SW_DIRECT_MAX_BUFFERS);
++   /* One buffer more than the images: with one on the screen, one going there and one waiting in
++    * the app (the newest frame wins there), the game always has a free buffer to blit into: it
++    * waits for the app's clock (sw_present_clock), never for the app. */
++   d->count = MIN2(chain->base.image_count + 1, SW_DIRECT_MAX_BUFFERS);
+    d->cmd_buffer_count = wsi->queue_family_count;
+    for (uint32_t i = 0; i < SW_DIRECT_MAX_IMAGES; i++)
+       d->chosen[i] = -1;
+@@ -2489,7 +2709,7 @@ sw_direct_open(struct x11_swapchain *chain)
+       goto fail;
+    }
+    setsockopt(d->sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+-   if (!sw_direct_send(d->sock, SW_DIRECT_HELLO, 0, chain->extent.width, chain->extent.height, d->count)) {
++   if (!sw_direct_send(d->sock, SW_DIRECT_HELLO, 0, chain->extent.width, chain->extent.height, d->count, 0)) {
+       why = "HELLO";
+       goto fail;
+    }
+@@ -2633,7 +2853,8 @@ x11_present_direct(struct x11_swapchain *chain, uint32_t image_index)
+    d->chosen[image_index] = -1;
+    d->state[b] = SW_DIRECT_HELD;
+    mtx_unlock(&d->lock);
+-   if (!sw_direct_send(d->sock, SW_DIRECT_PRESENT, (uint32_t)b, chain->extent.width, chain->extent.height, (uint32_t)chain->images[image_index].present_mode + 1)) {
++   uint32_t serial = sw_stamps_publish(chain->images[image_index].sw_stamps);
++   if (!sw_direct_send(d->sock, SW_DIRECT_PRESENT, (uint32_t)b, chain->extent.width, chain->extent.height, (uint32_t)chain->images[image_index].present_mode + 1, serial)) {
+       /* The app has gone, or cannot be told: the next presents use PutImage.
+        * The shutdown ends the reader and tells an app still there to stop
+        * showing its buffers. */
+@@ -3106,8 +3327,11 @@ x11_acquire_next_image(struct wsi_swapchain *wsi_chain,
+       result = x11_wait_for_explicit_sync_release_submission(chain, timeout,
+                                                              image_index);
+    } else {
+-      result = wsi_queue_pull(&chain->acquire_queue,
+-                              image_index, timeout);
++      /* At most one presented image waits for the app's clock (sw_clock_acquire). */
++      result = sw_clock_acquire(chain, &timeout);
++      if (result == VK_SUCCESS)
++         result = wsi_queue_pull(&chain->acquire_queue,
++                                 image_index, timeout);
+ 
+       /* x11_wait_for_explicit_sync_release_submission() is smart enough to do
+        * this for us but wsi_queue_pull() isn't.
+@@ -3137,6 +3361,8 @@ x11_acquire_next_image(struct wsi_swapchain *wsi_chain,
+       xshmfence_await(chain->images[*image_index].shm_fence);
+ #endif
+ 
++   if (chain->base.sw && !chain->has_mit_shm)
++      sw_stamp(chain, *image_index, SW_STAMP_ACQUIRED);
+    return result;
+ }
+ 
+@@ -3187,6 +3413,11 @@ x11_queue_present(struct wsi_swapchain *wsi_chain,
+    chain->images[image_index].timing_request = chain->timing_request;
+    memset(&chain->timing_request, 0, sizeof(chain->timing_request));
+ 
++   /* The image waits for the app's clock until the queue thread lets it go (sw_clock_passed). */
++   if (chain->base.sw && !chain->has_mit_shm) {
++      sw_stamp(chain, image_index, SW_STAMP_PRESENTED);
++      __atomic_fetch_add(&chain->sw_clock_waiting, 1, __ATOMIC_RELEASE);
++   }
+    wsi_queue_push(&chain->present_queue, image_index);
+    return x11_swapchain_read_status_atomic(chain);
+ }
+@@ -3484,10 +3715,16 @@ x11_manage_present_queue(void *state)
+          }
+       }
+ 
+-      /* A frame for the app's buffer is paced by the app giving buffers back. A frame for the
+-       * back pixmap waits for the Game view's take later, once the image is the game's again
+-       * (x11_sw_back_prepare). */
++      /* Every frame waits for the app's clock, whatever its present mode (sw_present_clock). A
++       * frame for the app's buffer goes then; a frame for the back pixmap waits for the Game
++       * view's take later, once the image is the game's again (x11_sw_back_prepare). */
+       chain->sw_frame_to_back = false;
++      if (chain->base.sw && !chain->has_mit_shm) {
++         sw_stamp(chain, image_index, SW_STAMP_GPU_DONE);
++         sw_present_clock(&chain->sw_clock);
++         sw_stamp(chain, image_index, SW_STAMP_CLOCK);
++         sw_clock_passed(chain, false);
++      }
+       if (chain->base.sw && !chain->has_mit_shm && !sw_direct_chosen(chain, image_index)) {
+          chain->sw_frame_to_back = x11_sw_back_wanted(chain);
+          if (!chain->sw_frame_to_back)
+@@ -3546,6 +3783,9 @@ x11_manage_present_queue(void *state)
+    if (!chain->base.image_info.explicit_sync)
+       wsi_queue_push(&chain->acquire_queue, UINT32_MAX);
+    mtx_unlock(&chain->thread_state_lock);
++   /* No image passes the clock any more: an acquire that waits for one goes on and sees the
++    * swapchain's status. */
++   sw_clock_passed(chain, true);
+ 
+    return 0;
+ }

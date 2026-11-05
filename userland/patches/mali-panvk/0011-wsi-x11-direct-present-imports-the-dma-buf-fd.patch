@@ -1,0 +1,46 @@
+wsi/x11: the direct present imports the dma-buf fd of the app's buffer
+
+A buffer's handle can carry more fds than its dma-buf: a MediaTek gralloc's handle starts with
+anon_inode:gralloc_extra (no size), then the dma-buf, then an ashmem region. kbase refuses an fd
+that is no dma-buf. So the direct present takes the first fd that is as large as the picture
+(stride x height x 4 bytes, by lseek), else the first.
+
+--- a/src/vulkan/wsi/wsi_common_x11.c
++++ b/src/vulkan/wsi/wsi_common_x11.c
+@@ -2738,8 +2738,20 @@ sw_direct_open(struct x11_swapchain *chain)
+                 (uint32_t)words[SW_DIRECT_GB01_HEIGHT] == chain->extent.height &&
+                 (uint32_t)words[SW_DIRECT_GB01_STRIDE] >= chain->extent.width &&
+                 (uint32_t)words[SW_DIRECT_GB01_STRIDE] <= SW_DIRECT_MAX_STRIDE;
+-      for (int f = ok ? 1 : 0; f < nfds; f++)
+-         close(fds[f]);
++      /* The pixels' dma-buf: the first fd as large as the picture, else the first. A MediaTek
++       * gralloc's handle starts with an fd that is no dma-buf (anon_inode:gralloc_extra). */
++      int keep = 0;
++      for (int f = 0; ok && f < nfds; f++) {
++         if (lseek(fds[f], 0, SEEK_END) >=
++             (off_t)words[SW_DIRECT_GB01_STRIDE] * words[SW_DIRECT_GB01_HEIGHT] * 4) {
++            keep = f;
++            break;
++         }
++      }
++      for (int f = 0; f < nfds; f++) {
++         if (!ok || f != keep)
++            close(fds[f]);
++      }
+       if (!ok) {
+          why = "a buffer";
+          goto fail;
+@@ -2747,11 +2759,11 @@ sw_direct_open(struct x11_swapchain *chain)
+       const int32_t *ints = words + SW_DIRECT_GB01_HEADER;
+       if (words[SW_DIRECT_GB01_NUM_INTS] >= 2 && ints[0] == SW_DIRECT_QCOM_MAGIC &&
+           (ints[1] & SW_DIRECT_QCOM_UBWC)) {
+-         close(fds[0]);
++         close(fds[keep]);
+          why = "a compressed (UBWC) buffer";
+          goto fail;
+       }
+-      buffer_fds[received] = fds[0];
++      buffer_fds[received] = fds[keep];
+       strides[received] = (uint32_t)words[SW_DIRECT_GB01_STRIDE];
+    }
+    timeout.tv_sec = 0;

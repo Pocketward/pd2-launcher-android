@@ -70,6 +70,11 @@ data class AppSettings(
      */
     val syncFolder: String? = null,
     /**
+     * The player chose Try anyway on the device check for a GPU that only the phone's own driver
+     * can run ([Finding.Kind.PHONE_DRIVER_ONLY]): the check lets the app go on from then on.
+     */
+    val phoneDriverAccepted: Boolean = false,
+    /**
      * The source page's row the player last selected (Fast download, Blizzard's installers or
      * Use files you have): the page selects it again after a restart, before the engine's own
      * default ([DiabloSource.pageChoice]); null: none selected yet (Fast download shows).
@@ -82,19 +87,31 @@ data class AppSettings(
      */
     val touchMode: TouchMode = TouchMode.TRACKPAD,
     /**
-     * The driver the player picked on Settings → App → Graphics driver ([DriverPage]); null: none
-     * yet (the page shows the route in use). In 0.3.8 the page is a placeholder: only the page
-     * reads this, and no route code does (the game always runs on today's route).
+     * The driver on Settings → Display → GPU ([DriverPage]), the route of every Play
+     * ([DriverPage.route]): the device check stores the default for the GPU ([DriverPage.withDefault]),
+     * and then only the player changes it (the owner, 2026-11-04: no automatic change after errors);
+     * null: none stored yet (the app's own order). Start over keeps it.
      */
-    val driverPagePick: PlayerDriver? = null,
-    /** The Phone driver's way picked on the same page (VirGL or Venus); null: the chip's first. UI only, as [driverPagePick]. */
-    val driverPageWay: PhoneWay? = null,
+    val driverPick: PlayerDriver? = null,
+    /** The Phone driver's way picked on the same page (VirGL or Venus); null: the chip's first. */
+    val driverWay: PhoneWay? = null,
+    /** The GPU's name ([HostGpu.name]) when [driverPick] was stored: another GPU (a restore on another phone) gets its own default. */
+    val driverGpu: String? = null,
+    /**
+     * [driverPick] is the default that the device check stored while no GPU answered (re-review
+     * MED-A): the first start where a GPU answers computes the default again
+     * ([DriverPage.withDefault]); a pick of the player ([withPick]) clears it.
+     */
+    val driverDefaultNoGpu: Boolean = false,
 ) {
+    /** The player's pick on Settings → Display → GPU: [pick] with [way]; it is no default any more ([driverDefaultNoGpu]). */
+    fun withPick(pick: PlayerDriver, way: PhoneWay? = driverWay): AppSettings = copy(driverPick = pick, driverWay = way, driverDefaultNoGpu = false)
+
     /**
      * Start over took the installation ([SetupRecord.NONE]): the downloads notice belongs to it,
      * so it waits for the next installation's first game session again.
      */
-    fun afterStartOver(): AppSettings = copy(downloadsNoticeAnswered = false, gamePlayed = false)
+    fun afterStartOver(): AppSettings = copy(downloadsNoticeAnswered = false, gamePlayed = false, phoneDriverAccepted = false)
 
     /**
      * The graphics driver every Play uses: the App userland's standard Turnip. The Compatibility
@@ -133,10 +150,18 @@ data class AppSettings(
             UPDATE_CHANNEL to updateChannel?.name,
             DETAILED_LOGGING to detailedLogging,
             SYNC_FOLDER to syncFolder,
+            PHONE_DRIVER_ACCEPTED to phoneDriverAccepted,
             SOURCE_CHOICE to sourceChoice?.name,
             TOUCH_MODE to touchMode.takeIf { it != TouchMode.TRACKPAD }?.name,
-            DRIVER_PAGE_PICK to driverPagePick?.name,
-            DRIVER_PAGE_WAY to driverPageWay?.name,
+            // The testers' menu pick and 0.3.8's placeholder pick (a pick "to look", with no effect):
+            // not read, so no earlier pick becomes a real driver; removed at the first save.
+            GRAPHICS_ROUTE to null,
+            DRIVER_PAGE_PICK to null,
+            DRIVER_PAGE_WAY to null,
+            DRIVER_PICK to driverPick?.name,
+            DRIVER_WAY to driverWay?.name,
+            DRIVER_GPU to driverGpu,
+            DRIVER_DEFAULT_NO_GPU to driverDefaultNoGpu.takeIf { it },
         )
 
     companion object {
@@ -171,18 +196,28 @@ data class AppSettings(
         const val DETAILED_LOGGING = "detailed_logging"
         /** [syncFolder]'s URI; none: the sync is off. */
         const val SYNC_FOLDER = "sync_folder"
+        const val PHONE_DRIVER_ACCEPTED = "phone_driver_accepted"
         /** [sourceChoice]'s name; none: no row selected yet. */
         const val SOURCE_CHOICE = "source_choice"
         /** [touchMode]'s name; none: [TouchMode.TRACKPAD]. */
         const val TOUCH_MODE = "touch_mode"
+        /** The testers' Graphics driver (testing) menu's route (a route's name): not read, removed at the first save. */
+        const val GRAPHICS_ROUTE = "graphics_route"
         /**
-         * [driverPagePick]'s name; none: no pick yet. The two driver page keys are 0.3.8's
-         * placeholder: a pick there was only "to look", so the 0.4.0 wiring must not take it as a
-         * real route: it drops these two keys once (review M4) and keeps its own pick.
+         * 0.3.8's placeholder pick on the GPU page (a driver's and a way's name): a pick there had no
+         * effect, so the line does not take it as a real driver (review M4): not read, removed at the
+         * first save.
          */
         const val DRIVER_PAGE_PICK = "driver_page_pick"
-        /** [driverPageWay]'s name; none: the chip's first way. */
         const val DRIVER_PAGE_WAY = "driver_page_way"
+        /** [driverPick]'s name; none: no pick stored yet. */
+        const val DRIVER_PICK = "driver_pick"
+        /** [driverWay]'s name; none: the chip's first way. */
+        const val DRIVER_WAY = "driver_way"
+        /** [driverGpu]; none: no GPU stored with the pick yet. */
+        const val DRIVER_GPU = "driver_gpu"
+        /** [driverDefaultNoGpu]; none: false. */
+        const val DRIVER_DEFAULT_NO_GPU = "driver_default_no_gpu"
 
         /** "<width>x<height>" of positive whole numbers, else null. */
         private fun parseSize(text: String): Pair<Int, Int>? {
@@ -207,10 +242,13 @@ data class AppSettings(
                 updateChannel = UpdateChannel.entries.firstOrNull { it.name == values[UPDATE_CHANNEL] },
                 detailedLogging = values[DETAILED_LOGGING] as? Boolean ?: defaults.detailedLogging,
                 syncFolder = (values[SYNC_FOLDER] as? String)?.takeIf { it.isNotEmpty() },
+                phoneDriverAccepted = values[PHONE_DRIVER_ACCEPTED] as? Boolean ?: defaults.phoneDriverAccepted,
                 sourceChoice = SourceChoice.named(values[SOURCE_CHOICE] as? String),
                 touchMode = TouchMode.entries.firstOrNull { it.name == values[TOUCH_MODE] } ?: defaults.touchMode,
-                driverPagePick = PlayerDriver.entries.firstOrNull { it.name == values[DRIVER_PAGE_PICK] },
-                driverPageWay = PhoneWay.entries.firstOrNull { it.name == values[DRIVER_PAGE_WAY] },
+                driverPick = PlayerDriver.entries.firstOrNull { it.name == values[DRIVER_PICK] },
+                driverWay = PhoneWay.entries.firstOrNull { it.name == values[DRIVER_WAY] },
+                driverGpu = (values[DRIVER_GPU] as? String)?.takeIf { it.isNotEmpty() },
+                driverDefaultNoGpu = values[DRIVER_DEFAULT_NO_GPU] as? Boolean ?: false,
             )
         }
     }
@@ -231,7 +269,12 @@ object AppSettingsStore {
     fun load(context: Context): AppSettings = load(preferences(context))
 
     internal fun load(preferences: SharedPreferences): AppSettings = synchronized(lock) {
-        AppSettings.fromPreferences(preferences.all).also { _current.value = it }
+        AppSettings.fromPreferences(preferences.all).also { settings ->
+            // Keys that are no longer read (0.3.8's placeholder pick, the testers' menu pick, and the
+            // other older keys) go at once, not only at the next change of a setting.
+            if (settings.toPreferences().any { (key, value) -> value == null && preferences.contains(key) }) save(preferences, settings)
+            _current.value = settings
+        }
     }
 
     /** Apply a field change to the latest settings and publish the persisted result as one operation. */

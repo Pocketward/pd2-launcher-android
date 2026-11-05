@@ -7,7 +7,6 @@ import androidx.compose.foundation.focusable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -17,7 +16,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
@@ -48,14 +46,19 @@ import com.pd2launcher.app.HostGpu
 import com.pd2launcher.app.PlayerDriver
 import com.pd2launcher.app.R
 
-/** The page model of [app]'s pick for [gpu], with a debug build's chip ([DriverPage.debugChip]); and the chip's name. */
+/**
+ * The page model of [app]'s pick for [gpu], with a debug build's chip ([DriverPage.debugChip]), or
+ * else the route in use ([inUse], [DriverPage.onRoute]); and the chip's name.
+ */
 @Composable
-internal fun driverPage(app: AppSettings, gpu: HostGpu?): Pair<DriverPage.Page, String?> {
+internal fun driverPage(app: AppSettings, gpu: HostGpu?, inUse: DriverPage.InUse? = null): Pair<DriverPage.Page, String?> {
     val context = LocalContext.current
     val debugChip = remember { DriverPage.debugChip(context.filesDir) }
     val chip = DriverPage.chip(gpu, debugChip?.first)
     val orderGpu = DriverPage.orderGpu(gpu, debugChip?.first)
-    return DriverPage.page(chip, app.driverPagePick, app.driverPageWay, orderGpu) to (debugChip?.second ?: gpu?.name)
+    val grey = remember { DriverPage.debugGrey(context.filesDir) }
+    val onRoute = inUse?.takeIf { debugChip == null }?.greyed(grey)
+    return DriverPage.page(chip, app.driverPick, app.driverWay, orderGpu, onRoute = onRoute) to (debugChip?.second ?: gpu?.name)
 }
 
 /** Display's GPU row value: "App driver", "Phone driver · VirGL", "Software driver" ([DriverPage.value]); null: none in use. */
@@ -75,16 +78,23 @@ private fun driverTitle(driver: PlayerDriver): Int = when (driver) {
  * Settings → Display → GPU (decision 23, the Buttons and About sub page pattern; decision 33, the
  * mock's version 3): "‹ Display" and the title GPU, then the DRIVER group: the chip's line and one
  * list of the App driver, the Phone driver (with its VirGL and Venus rows under it while it is in
- * use and the chip has both) and the Software driver ([DriverPage]). "In use" sits beside the
- * driver in use, or beside the picked way; the chip's better way says so. In 0.3.8 the rows are
- * grey and take no pick ([DriverPage.SELECTABLE]); from the 0.4.0 beta a pick is kept
- * ([AppSettings.driverPagePick]). The focus starts on the
- * first row that takes a pick, else on "‹ Display"; [onBack] returns to Display's GPU row.
+ * use and the chip has both; a way that cannot give the game OpenGL 3.3, or a Venus without
+ * Zink's base requirements, is a grey row, [DriverPage.Page.greyWays]) and the Software driver ([DriverPage]). "In use" sits beside the
+ * driver in use, or beside the picked way; the chip's better way says so. A pick
+ * ([AppSettings.driverPick], [AppSettings.driverWay]) is the route of the next Play
+ * ([DriverPage.route]); the rows show the route that it takes ([inUse]). The focus starts on
+ * the first row that takes a pick, else on "‹ Display"; [onBack] returns to Display's GPU row.
  */
 @Composable
-fun GpuPage(app: AppSettings, gpu: HostGpu?, onAppChange: ((AppSettings) -> AppSettings) -> Unit, onBack: () -> Unit) {
+fun GpuPage(
+    app: AppSettings,
+    gpu: HostGpu?,
+    onAppChange: ((AppSettings) -> AppSettings) -> Unit,
+    inUse: DriverPage.InUse? = null,
+    onBack: () -> Unit,
+) {
     BackHandler(onBack = onBack)
-    val (page, name) = driverPage(app, gpu)
+    val (page, name) = driverPage(app, gpu, inUse)
     val back = remember { FocusRequester() }
     val first = remember { FocusRequester() }
     val firstRow = page.rows.firstOrNull { it.enabled }?.driver
@@ -110,14 +120,13 @@ fun GpuPage(app: AppSettings, gpu: HostGpu?, onAppChange: ((AppSettings) -> AppS
                 Column(Modifier.selectableGroup()) {
                     page.rows.forEachIndexed { index, row ->
                         if (index > 0) Rule(Modifier.padding(horizontal = 14.dp))
-                        if (row.retry) {
-                            RetryRow(row, onRetry = { onAppChange { it.copy(driverPagePick = PlayerDriver.APP) } })
-                            return@forEachIndexed
-                        }
                         val parent = row.driver == PlayerDriver.PHONE && page.ways.isNotEmpty()
                         DriverRadio(
                             stringResource(driverTitle(row.driver)), stringResource(row.body), row.selected, row.tag, row.enabled, row.focusable,
-                            { if (!row.selected) onAppChange { it.copy(driverPagePick = row.driver) } },
+                            {
+                                // Review LOW-1: a row also stores its driver where the stored pick gave no route (that row shows in use then).
+                                if (!row.selected || app.driverPick != row.driver) onAppChange { it.withPick(row.driver) }
+                            },
                             focusRequester = first.takeIf { row.driver == firstRow },
                             modifier = if (parent) Modifier.focusProperties { down = way } else Modifier,
                             minHeight = 60.dp, padding = PaddingValues(start = 14.dp, end = 14.dp, top = 10.dp, bottom = if (parent) 4.dp else 10.dp),
@@ -129,8 +138,17 @@ fun GpuPage(app: AppSettings, gpu: HostGpu?, onAppChange: ((AppSettings) -> AppS
                                     DriverRadio(
                                         stringResource(w.label), stringResource(R.string.driver_way_better).takeIf { w == page.better },
                                         w == page.way, w == page.way, enabled = true, focusable = true,
-                                        { if (w != page.way) onAppChange { it.copy(driverPagePick = PlayerDriver.PHONE, driverPageWay = w) } },
+                                        { if (w != page.way) onAppChange { it.withPick(PlayerDriver.PHONE, w) } },
                                         focusRequester = way.takeIf { w == page.way },
+                                        minHeight = 48.dp, padding = PaddingValues(horizontal = 14.dp, vertical = 4.dp),
+                                    )
+                                }
+                                // A way that cannot run here by its own rule (VirGL: OpenGL 3.3; Venus: Zink's base requirements): grey, with the reason (DriverPage.greyWays).
+                                page.greyWays.forEach { w ->
+                                    DriverRadio(
+                                        stringResource(w.label), stringResource(R.string.driver_phone_none),
+                                        selected = false, tag = false, enabled = false, focusable = true, onSelect = {},
+                                        focusRequester = null,
                                         minHeight = 48.dp, padding = PaddingValues(horizontal = 14.dp, vertical = 4.dp),
                                     )
                                 }
@@ -202,35 +220,4 @@ private fun InUseTag(enabled: Boolean) {
         stringResource(R.string.driver_in_use), style = Type.Label, color = color,
         modifier = Modifier.clip(Pill).background(color.copy(alpha = 0.16f)).padding(horizontal = 8.dp, vertical = 1.dp),
     )
-}
-
-/**
- * The failed App driver ([com.pd2launcher.app.DriverChip.APP_FAILED]): an amber dot where its radio was, its full line,
- * and "Try again" (in 0.3.8 it keeps the App driver as the pick, as a placeholder). Greyed like Loot
- * filters, the button is grey and takes no focus.
- */
-@Composable
-private fun RetryRow(row: DriverPage.Row, onRetry: () -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().heightIn(min = 60.dp).padding(horizontal = 14.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(14.dp),
-    ) {
-        // The dot and the words: one node for TalkBack; Try again is its own.
-        Row(
-            Modifier.weight(1f).semantics(mergeDescendants = true) {},
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            Box(Modifier.size(20.dp), contentAlignment = Alignment.Center) { Dot(if (row.focusable) Palette.Amber else Palette.Faint) }
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(stringResource(R.string.driver_app), style = Type.Body, color = if (row.focusable) Palette.Text else Palette.Faint)
-                Text(stringResource(row.body), style = Type.Hint, color = if (row.focusable) Palette.Muted else Palette.Faint)
-            }
-        }
-        SlimButton(
-            stringResource(R.string.action_try_again), onRetry,
-            if (row.focusable) Modifier else Modifier.focusProperties { canFocus = false }, enabled = row.focusable,
-        )
-    }
 }

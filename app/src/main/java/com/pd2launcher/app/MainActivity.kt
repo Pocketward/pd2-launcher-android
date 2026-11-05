@@ -401,6 +401,8 @@ class MainActivity : ComponentActivity() {
 
         @Composable
         fun Source(onBack: () -> Unit = back, onPreviewContinue: (() -> Unit)? = null) {
+            // The game takes a route for a GPU that Turnip and PanVK do not support: Blizzard's installers say that they are not recommended.
+            val advice = sourceAdvice()
             // The row the player last selected, kept over a restart (AppSettings.sourceChoice).
             val saved = AppSettingsStore.current.collectAsState().value.sourceChoice
             val choice = DiabloSource.pageChoice(sourceChoice.value, status.snapshot, saved)
@@ -448,6 +450,7 @@ class MainActivity : ComponentActivity() {
                     }
                 },
                 onBack = onBack,
+                advice = advice,
             )
         }
 
@@ -496,7 +499,11 @@ class MainActivity : ComponentActivity() {
             )
         } else if (showGameView && !settingsOpen.value) {
             // Settings, when open (the in-game menu has no way there now), show over the running game; back returns to it.
-            GameView(framebuffer, status.gameEnvironment, presentCounter = paths.presentCounter, preview = gamePreview, previewLauncher = DebugPreview.gameLauncher(previewName))
+            // The card's Quit opens Settings → Display → GPU over the game, which then stops.
+            GameView(
+                framebuffer, status.gameEnvironment, presentCounter = paths.presentCounter, preview = gamePreview,
+                previewLauncher = DebugPreview.gameLauncher(previewName), onRouteQuit = ::openGpuPage,
+            )
         } else if (settingsOpen.value) {
             DisposableEffect(Unit) {
                 settingsShown = true
@@ -513,6 +520,16 @@ class MainActivity : ComponentActivity() {
                 fullFrameRate = fullFrameRate,
                 // The device check's probe, not another on the main thread (its ioctls) each time.
                 gpu = (device as? DeviceCheckState.Done)?.facts?.gpu,
+                // The GPU page shows the route that the next Play takes, as Play's label does.
+                gpuInUse = (device as? DeviceCheckState.Done)?.facts?.let { facts ->
+                    val forcedRoute = remember { SystemDriver.forced(filesDir) }
+                    val chosen = DriverPage.route(facts.driverOptions, app.driverPick, app.driverWay, software = status.softwareDriver)
+                    DriverPage.onRoute(
+                        facts.driverOptions, DriverChoice.route(facts.driverOptions, forcedRoute, chosen),
+                        phoneRead = facts.phoneRead, software = status.softwareDriver,
+                        greyWays = DriverPage.greyWays(facts.phoneGles, facts.glServer, facts.phoneDriver, facts.systemDriverServer),
+                    )
+                },
                 system = SystemState(batteryRestricted.value, notificationsOff.value),
                 nav = settingsNav,
                 back = Onboarding.settingsBack(showGameView, previewName == DebugPreview.REPAIR || repairOpen.value || installed == Installed.Repair),
@@ -528,7 +545,7 @@ class MainActivity : ComponentActivity() {
                 // The app's own Play and the official launcher (and a game it starts) use the game resolution.
                 running = runningScreen.takeIf { playing },
             )
-        } else if (previewName == DebugPreview.SOURCE) {
+        } else if (previewName == DebugPreview.SOURCE || DebugPreview.sourceAdvice(previewName) != null) {
             // Continue sends nothing here: the running Download preview shows what follows.
             Source(onBack = leavePreview, onPreviewContinue = { preview.value = DebugPreview.DOWNLOAD })
         } else if (previewName == DebugPreview.KEYS || previewName == DebugPreview.KEYS_TYPING) {
@@ -549,7 +566,9 @@ class MainActivity : ComponentActivity() {
         } else if (previewName == DebugPreview.REPAIR) {
             // As where the app holds Repair on screen: with the logs, and no way to Settings.
             RepairScreen(status, onCheckAgain = {}, onStartOver = {}, onBack = leavePreview, logs = true)
-        } else if (previewName == DebugPreview.PLAY || DebugPreview.notice(previewName) != null || DebugPreview.playUpdate(previewName, status) != null) Box(Modifier.fillMaxSize()) {
+        } else if (previewName == DebugPreview.PLAY || DebugPreview.notice(previewName) != null || DebugPreview.playUpdate(previewName, status) != null ||
+            DebugPreview.driverOptions(previewName) != null
+        ) Box(Modifier.fillMaxSize()) {
             val shown = DebugPreview.playUpdate(previewName, status) ?: status
             PlayScreen(
                 facts = Play.facts(shown.snapshot, (device as? DeviceCheckState.Done)?.facts?.gpu?.name),
@@ -558,6 +577,8 @@ class MainActivity : ComponentActivity() {
                 destinations = PlayDestinations({ openSettings(null) }, { openSettings(SettingsPage.CONTROLS) }, {}, ::openAppPage),
                 update = Play.update(shown),
                 newVersion = appUpdate.newVersionDot(),
+                // The driver previews' route and notice.
+                driver = Play.driverView(DebugPreview.driverOptions(previewName), failed = DebugPreview.driverFailed(previewName)),
             )
             // Its answers save nothing here.
             DebugPreview.notice(previewName)?.let { DownloadsNotice(it, onRemove = leavePreview, onLater = leavePreview) }
@@ -617,7 +638,7 @@ class MainActivity : ComponentActivity() {
                 },
             )
         } else if (installed is Installed.Refused) {
-            NotSupportedScreen(installed.screen, onClose = ::finish)
+            NotSupportedScreen(installed.screen, onClose = ::finish, onTryAnyway = { DeviceCheckRun.tryAnyway(this@MainActivity) })
         } else if (installed is Installed.Play || play == Play.Mode.PLAY) Box(Modifier.fillMaxSize()) {
             // Back on Play closes the app (the notice below takes Back first while it shows).
             BackHandler {
@@ -628,9 +649,20 @@ class MainActivity : ComponentActivity() {
                 SessionService.dismissRefusal()
                 launchPress.value = Play.LaunchPress(SystemClock.elapsedRealtime(), status.gameEnvironmentFailure)
             }
+            val picked = AppSettingsStore.current.collectAsState().value
+            // The route of the next Play: the pick on Settings → Display → GPU, a debug build's forced route.
+            val deviceFacts = (device as? DeviceCheckState.Done)?.facts
+            val forcedRoute = remember { SystemDriver.forced(filesDir) }
+            val routeOptions = deviceFacts?.driverOptions
+            val chosenRoute = deviceFacts?.let { DriverPage.route(it.driverOptions, picked.driverPick, picked.driverWay, software = status.softwareDriver) }
+            // Review LOW-6: the facts line follows the route of the next Play, not the pick.
+            val playRoute = routeOptions?.let { DriverChoice.route(it, forcedRoute, chosenRoute) }
             PlayScreen(
                 // The engine's placeholder before its audit names no renderer or update yet.
-                facts = Play.facts(status.snapshot?.takeIf(Onboarding::audited), (device as? DeviceCheckState.Done)?.facts?.gpu?.name),
+                facts = Play.facts(
+                    status.snapshot?.takeIf(Onboarding::audited), (device as? DeviceCheckState.Done)?.facts?.gpu?.name,
+                    software = playRoute == GraphicsRoute.SOFTWARE,
+                ),
                 problem = (installed as? Installed.Play)?.problem?.let { text(it) }
                     ?: status.gameEnvironmentFailure ?: Play.officialLauncherProblem(status)?.let { getString(it) },
                 // Play's look for a new version says what it does, over the engine's own audit
@@ -663,6 +695,11 @@ class MainActivity : ComponentActivity() {
                 // Also after Play's check, until the game shows.
                 launching = launching || status.playCheck is PlayCheck.State.Starting,
                 onTryAgain = { SessionService.send(this@MainActivity, SessionService.ACTION_RETRY) }.takeIf { Onboarding.failed(status) },
+                // The route's amber line; after a failure, the line that names the driver and a button
+                // to Settings → Display → GPU. The pick stays (the owner, 2026-11-04).
+                driver = Play.driverView(routeOptions, forcedRoute, chosen = chosenRoute, failed = status.driverFailed, software = status.softwareDriver, picked = picked.driverPick),
+                onOpenGpu = ::openGpuPage,
+                driverLabel = Play.driverLabel(routeOptions, forcedRoute, chosenRoute)?.let { text(it) },
                 destinations = PlayDestinations(
                     onSettings = { openSettings(null) },
                     onControls = { openSettings(SettingsPage.CONTROLS) },
@@ -713,7 +750,7 @@ class MainActivity : ComponentActivity() {
             )
         ) {
             Screen.CheckingDevice -> CheckingDeviceScreen()
-            is Screen.NotSupported -> NotSupportedScreen(screen, onClose = ::finish)
+            is Screen.NotSupported -> NotSupportedScreen(screen, onClose = ::finish, onTryAnyway = { DeviceCheckRun.tryAnyway(this@MainActivity) })
             is Screen.Check -> {
                 // The first network check, once Check shows; onResume runs it again on each return.
                 LaunchedEffect(Unit) { if (networkCheck.state == null) checkNetwork() }
@@ -890,6 +927,10 @@ class MainActivity : ComponentActivity() {
     private fun installSource(status: SessionStatus): SourceChoice =
         status.snapshot?.let(DiabloSource::choiceOf) ?: sourceChoice.value ?: SourceChoice.DEFAULT
 
+    /** Whether the game takes the phone's own driver here ([PhoneDriverAdvice]), or a source preview says so. */
+    private fun sourceAdvice(): PhoneDriverAdvice? =
+        DebugPreview.sourceAdvice(preview.value) ?: (DeviceCheckRun.state.value as? DeviceCheckState.Done)?.facts?.advice
+
     /** The task names for the player's source (an installed Diablo II is copied or adopted). */
     private fun taskLabels(status: SessionStatus): InstallProgress.TaskLabels {
         val existing = status.snapshot?.installer as? Installer.Existing
@@ -1047,8 +1088,13 @@ class MainActivity : ComponentActivity() {
                     Build.MANUFACTURER, Build.BRAND, Build.FINGERPRINT, Build.DISPLAY, Build.VERSION.INCREMENTAL, Build.VERSION.SECURITY_PATCH,
                 ),
                 "GPU" to (facts?.gpu?.name ?: "not found"),
+                "Graphics route" to "${status.graphicsRoute ?: "none"} (can run: ${facts?.driverOptions?.routes ?: "unknown"}; " +
+                    "phone's own driver: ${facts?.phoneDriver?.let { "${it.name}, Vulkan ${it.apiVersion.first}.${it.apiVersion.second}, Zink ${it.zink}, memory ${it.memory}" } ?: "not probed"}" +
+                    "${SystemDriver.forced(filesDir)?.let { "; forced by the debug file: $it" } ?: ""}" +
+                    "${if (status.routeChosen) "; chosen in Settings: ${status.graphicsRoute}" else ""}" +
+                    "${status.driverFailed?.let { "; last failure: $it" } ?: ""})",
                 // Turnip's TP UBWC flag hint: on an Adreno 740, from the phone's Vulkan driver.
-                "UBWC flag hint" to UbwcFlagHint.choice(facts?.gpu, read = { VulkanDriverProbe.read(paths.vulkanProbeMarker) }).describe(),
+                "UBWC flag hint" to UbwcFlagHint.choice(facts?.gpu, read = { VulkanDriverProbe.read(paths.vulkanProbeMarker) }).describeOn(status.graphicsRoute),
                 // The phone's own Vulkan driver, on every GPU; the probe is guarded by a marker file.
                 "Vulkan driver" to VulkanDriverProbe.read(paths.vulkanProbeMarker).describe(),
                 "Page size" to (facts?.pageSize?.toString() ?: "unknown"),
@@ -1237,6 +1283,19 @@ class MainActivity : ComponentActivity() {
         buttonsOpen.value = false
         editorOpen.value = false
         settingsNav.openVersion(fromPlay)
+        settingsOpen.value = true
+    }
+
+    /**
+     * Settings → Display → GPU: Play's button under the error line after a driver failure, and the
+     * "Does the game work?" card's Quit (the owner, 2026-11-04: the recovery screen takes the player
+     * back to Settings to switch the driver). It changes no driver.
+     */
+    private fun openGpuPage() {
+        aboutOpen.value = false
+        buttonsOpen.value = false
+        editorOpen.value = false
+        settingsNav.openGpu()
         settingsOpen.value = true
     }
 

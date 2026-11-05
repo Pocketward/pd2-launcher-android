@@ -18,7 +18,7 @@
     <string name="not_supported_close">Close</string>
     <string name="device_check_failed">The device check could not run: %1$s</string>
     <string name="device_gpu_not_supported">%1$s is not supported. An Adreno 6xx, 7xx or 8xx or a Mali-G310, G610, G710, G615, G715, G720 or G725 GPU is needed.</string>
-    <string name="device_gpu_unknown_to_driver">%1$s is not known to the bundled graphics driver. PD2 may not start on it.</string>
+    <string name="device_gpu_unknown_to_driver">%1$s is not known to the app driver. PD2 may not start on it.</string>
     <string name="device_gpu_unknown">This GPU is not supported. An Adreno 6xx, 7xx or 8xx or a Mali-G310, G610, G710, G615, G715, G720 or G725 GPU is needed.</string>
     <string name="device_page_size">Memory pages are %1$d bytes. 4096 is needed.</string>
     <string name="device_data_folder">Android keeps this app\'s files in a folder PD2 Launcher cannot use.</string>

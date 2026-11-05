@@ -1,0 +1,204 @@
+Subject: [PATCH] venus: import a dma-buf over vtest when the server can (VCMD_PD2_RESOURCE_IMPORT_FD)
+
+Venus over vtest has no dma-buf import (create_from_dma_buf NULL, has_dma_buf_import false),
+so the PD2 Launcher's direct present (WSI patch 0004: the app's AHardwareBuffers, imported as
+dma-bufs, as the blit targets) could not work in the system-driver mode, and every frame went
+through PutImage and Xvfb.
+
+With the Launcher's virglrenderer patch 0004 the server takes a dma-buf with
+VCMD_PD2_RESOURCE_IMPORT_FD and makes it a resource of our context. Here: at init, ask
+VCMD_GET_PARAM VCMD_PARAM_PD2_RESOURCE_IMPORT_FD (an older server answers 0); when the server
+has it, report dma-buf import (has_dma_buf_import) and set bo_ops.create_from_dma_buf to a
+function that sends the fd (SCM_RIGHTS, as vdrm's vpipe sends sync files) and keeps a duplicate
+for mapping and export. Venus's own import path (vn_device_memory_import_dma_buf,
+vn_get_memory_dma_buf_properties: VkImportMemoryResourceInfoMESA,
+vkGetMemoryResourcePropertiesMESA) then works as over virtio-gpu. Without the server command,
+patch 0003's guard keeps the import failing cleanly.
+
+Applied by build-sysdrv.sh to its Venus build of Mesa main (config.sh MESA_COMMIT) only, after 0001-0003.
+
+---
+--- a/src/virtio/vtest/vtest_protocol.h
++++ b/src/virtio/vtest/vtest_protocol.h
+@@ -163,6 +163,8 @@
+ enum vcmd_param  {
+    VCMD_PARAM_MAX_TIMELINE_COUNT = 1,
+    VCMD_PARAM_HAS_TIMELINE_SYNCOBJ = 2,
++   /* PD2 Launcher: the server has VCMD_PD2_RESOURCE_IMPORT_FD */
++   VCMD_PARAM_PD2_RESOURCE_IMPORT_FD = 64,
+ };
+ #define VCMD_GET_PARAM_SIZE 1
+ #define VCMD_GET_PARAM_PARAM 0
+@@ -349,4 +351,13 @@ struct vcmd_submit_cmd2_batch {
+ #define VCMD_RESOURCE_EXPORT_FD_RES_HANDLE 0
+ /* rsp fd */
+ 
++/* PD2 Launcher (its virglrenderer patch 0004): a dma-buf of the client (sent with SCM_RIGHTS
++ * after the command) becomes a HOST3D blob resource attached to the client's context. Size 0
++ * means the dma-buf's own size. */
++#define VCMD_PD2_RESOURCE_IMPORT_FD 64
++#define VCMD_PD2_RESOURCE_IMPORT_FD_SIZE 2
++#define VCMD_PD2_RESOURCE_IMPORT_FD_SIZE_LO 0
++#define VCMD_PD2_RESOURCE_IMPORT_FD_SIZE_HI 1
++/* resp res_id, 0 when the import failed */
++
+ #endif /* VTEST_PROTOCOL */
+--- a/src/virtio/vulkan/vn_renderer_vtest.c
++++ b/src/virtio/vulkan/vn_renderer_vtest.c
+@@ -56,6 +56,8 @@ struct vtest {
+ 
+    uint32_t protocol_version;
+    uint32_t max_timeline_count;
++   /* PD2 Launcher: the server imports dma-bufs (VCMD_PD2_RESOURCE_IMPORT_FD) */
++   bool has_import_fd;
+ 
+    struct {
+       uint32_t id;
+@@ -355,6 +357,62 @@ vtest_vcmd_resource_create_blob(struct v
+    return res_id;
+ }
+ 
++/* PD2 Launcher: sends [fd] with SCM_RIGHTS (and one byte), as the server's
++ * vtest_receive_fd takes it. */
++static void
++vtest_send_fd(struct vtest *vtest, int fd)
++{
++   char cmsg_buf[CMSG_SPACE(sizeof(int))];
++   char dummy = 0;
++   struct msghdr msg = {
++      .msg_iov =
++         &(struct iovec){
++            .iov_base = &dummy,
++            .iov_len = sizeof(dummy),
++         },
++      .msg_iovlen = 1,
++      .msg_control = cmsg_buf,
++      .msg_controllen = sizeof(cmsg_buf),
++   };
++   memset(cmsg_buf, 0, sizeof(cmsg_buf));
++   struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
++   cmsg->cmsg_level = SOL_SOCKET;
++   cmsg->cmsg_type = SCM_RIGHTS;
++   cmsg->cmsg_len = CMSG_LEN(sizeof(int));
++   memcpy(CMSG_DATA(cmsg), &fd, sizeof(int));
++
++   if (sendmsg(vtest->sock_fd, &msg, 0) < 0) {
++      vn_log(vtest->instance, "sendmsg failed: %s", strerror(errno));
++      abort();
++   }
++}
++
++/* PD2 Launcher: the dma-buf [fd] as a resource of our context; 0 when the server refuses it. */
++static uint32_t
++vtest_vcmd_pd2_resource_import_fd(struct vtest *vtest, int fd, uint64_t size)
++{
++   uint32_t vtest_hdr[VTEST_HDR_SIZE];
++   uint32_t vcmd_import[VCMD_PD2_RESOURCE_IMPORT_FD_SIZE];
++
++   vtest_hdr[VTEST_CMD_LEN] = VCMD_PD2_RESOURCE_IMPORT_FD_SIZE;
++   vtest_hdr[VTEST_CMD_ID] = VCMD_PD2_RESOURCE_IMPORT_FD;
++   vcmd_import[VCMD_PD2_RESOURCE_IMPORT_FD_SIZE_LO] = (uint32_t)size;
++   vcmd_import[VCMD_PD2_RESOURCE_IMPORT_FD_SIZE_HI] = (uint32_t)(size >> 32);
++
++   vtest_write(vtest, vtest_hdr, sizeof(vtest_hdr));
++   vtest_write(vtest, vcmd_import, sizeof(vcmd_import));
++   vtest_send_fd(vtest, fd);
++
++   vtest_read(vtest, vtest_hdr, sizeof(vtest_hdr));
++   assert(vtest_hdr[VTEST_CMD_LEN] == 1);
++   assert(vtest_hdr[VTEST_CMD_ID] == VCMD_PD2_RESOURCE_IMPORT_FD);
++
++   uint32_t res_id;
++   vtest_read(vtest, &res_id, sizeof(res_id));
++
++   return res_id;
++}
++
+ static void
+ vtest_vcmd_resource_unref(struct vtest *vtest, uint32_t res_id)
+ {
+@@ -744,6 +802,54 @@ vtest_bo_create_from_device_memory(
+    return VK_SUCCESS;
+ }
+ 
++/* PD2 Launcher: a dma-buf import (VkImportMemoryFdInfoKHR, vkGetMemoryFdPropertiesKHR) through
++ * the server's VCMD_PD2_RESOURCE_IMPORT_FD; only set as the op when the server has it. */
++static VkResult
++vtest_bo_create_from_dma_buf(struct vn_renderer *renderer,
++                             VkDeviceSize size,
++                             int fd,
++                             VkMemoryPropertyFlags flags,
++                             struct vn_renderer_bo **out_bo)
++{
++   struct vtest *vtest = (struct vtest *)renderer;
++
++   const off_t fd_size = lseek(fd, 0, SEEK_END);
++   lseek(fd, 0, SEEK_SET);
++   if (fd_size <= 0 || (VkDeviceSize)fd_size < size)
++      return VK_ERROR_INVALID_EXTERNAL_HANDLE;
++
++   const uint32_t blob_flags = vtest_bo_blob_flags(
++      flags, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT);
++   /* ours, for vtest_bo_map and vtest_bo_export_dma_buf; the caller keeps [fd] */
++   const int res_fd = os_dupfd_cloexec(fd);
++   if (res_fd < 0)
++      return VK_ERROR_TOO_MANY_OBJECTS;
++
++   mtx_lock(&vtest->sock_mutex);
++   const uint32_t res_id =
++      vtest_vcmd_pd2_resource_import_fd(vtest, fd, (uint64_t)fd_size);
++   mtx_unlock(&vtest->sock_mutex);
++   if (!res_id) {
++      close(res_fd);
++      return VK_ERROR_INVALID_EXTERNAL_HANDLE;
++   }
++
++   struct vtest_bo *bo = util_sparse_array_get(&vtest->bo_array, res_id);
++   *bo = (struct vtest_bo){
++      .base = {
++         .refcount = VN_REFCOUNT_INIT(1),
++         .res_id = res_id,
++         .mmap_size = (blob_flags & VCMD_BLOB_FLAG_MAPPABLE) ? (size_t)fd_size : 0,
++      },
++      .res_fd = res_fd,
++      .blob_flags = blob_flags,
++   };
++
++   *out_bo = &bo->base;
++
++   return VK_SUCCESS;
++}
++
+ static void
+ vtest_shmem_destroy_now(struct vn_renderer *renderer,
+                         struct vn_renderer_shmem *_shmem)
+@@ -886,7 +992,7 @@ vtest_init_renderer_info(struct vtest *v
+    info->pci.vendor_id = VTEST_PCI_VENDOR_ID;
+    info->pci.device_id = VTEST_PCI_DEVICE_ID;
+ 
+-   info->has_dma_buf_import = false;
++   info->has_dma_buf_import = vtest->has_import_fd;
+    info->has_external_sync = false;
+    info->has_timeline_sync = !VN_PERF(NO_TIMELINE_SYNC);
+    info->has_implicit_fencing = false;
+@@ -958,6 +1064,10 @@ vtest_init_params(struct vtest *vtest)
+    }
+    vtest->max_timeline_count = val;
+ 
++   /* PD2 Launcher: an older server answers "no such parameter", that is 0 */
++   vtest->has_import_fd =
++      vtest_vcmd_get_param(vtest, VCMD_PARAM_PD2_RESOURCE_IMPORT_FD) != 0;
++
+    return VK_SUCCESS;
+ }
+ 
+@@ -1035,7 +1145,8 @@ vtest_init(struct vtest *vtest)
+ 
+    vtest->base.bo_ops.create_from_device_memory =
+       vtest_bo_create_from_device_memory;
+-   vtest->base.bo_ops.create_from_dma_buf = NULL;
++   vtest->base.bo_ops.create_from_dma_buf =
++      vtest->has_import_fd ? vtest_bo_create_from_dma_buf : NULL;
+    vtest->base.bo_ops.destroy = vtest_bo_destroy;
+    vtest->base.bo_ops.export_dma_buf = vtest_bo_export_dma_buf;
+    vtest->base.bo_ops.export_sync_file =

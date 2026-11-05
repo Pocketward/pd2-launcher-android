@@ -1,0 +1,49 @@
+Subject: [PATCH] vrend: integer GLSL types for integer attributes on every host
+
+vrend gives an integer vertex attribute (glVertexAttribIPointer) and an integer color buffer
+their integer GLSL types (ivec4/uvec4) only where GL_VENDOR is "ARM", or with
+VIRGL_USE_INTEGER. Elsewhere it declares them as vec4 and reads the bits back with
+floatBitsToUint/floatBitsToInt, which is undefined behaviour (upstream a861e9d, "Since the old
+way works fine on other GPU, only enable this fix for ARM MALI for now. The plan is to enable
+this for other GPU also with auto detection").
+
+With the float types, a flat uvec4 from an integer attribute with the value 200 reaches the
+shader as 255 or more:
+- ANGLE (OpenGL ES on Vulkan; the Galaxy S24 Exynos's GLES driver): for GL_UNSIGNED_BYTE and
+  GL_UNSIGNED_SHORT, not for GL_UNSIGNED_INT (also with ANGLE on a desktop Vulkan driver);
+- Qualcomm's Adreno 650 GLES driver: for all three.
+D2GL's text shader takes its layer (GL_UNSIGNED_SHORT x2) and flags (GL_UNSIGNED_BYTE x4) from
+such attributes. With the integer types, every integer attribute reads correctly on both.
+
+use_integer() is now true on every host; VIRGL_USE_INTEGER=0 keeps the float types (for tests).
+Only the declared types of integer inputs and outputs change; no data is converted.
+
+Written for virglrenderer e18f8c00 src/vrend/vrend_renderer.c.
+
+---
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -7553,16 +7553,14 @@
+    return &callbacks;
+ }
+ 
++/* Integer vertex inputs and integer color outputs get their integer GLSL types on every host
++ * (upstream: only on Arm's driver, or with VIRGL_USE_INTEGER). The float types that upstream
++ * keeps elsewhere are undefined behaviour (upstream a861e9d): with them, the shader reads integer
++ * attributes wrongly on ANGLE (8-bit and 16-bit ones) and on Qualcomm's Adreno 650 driver (also
++ * 32-bit ones). VIRGL_USE_INTEGER=0 keeps the float types, for tests. */
+ static bool use_integer(void) {
+-   if (getenv("VIRGL_USE_INTEGER"))
+-      return true;
+-
+-   const char * a = (const char *) glGetString(GL_VENDOR);
+-   if (!a)
+-       return false;
+-   if (strcmp(a, "ARM") == 0)
+-      return true;
+-   return false;
++   const char *value = getenv("VIRGL_USE_INTEGER");
++   return !value || strcmp(value, "0") != 0;
+ }
+ 
+ static bool vrend_use_gbm_layout_feature(UNUSED uint32_t flags)

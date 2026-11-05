@@ -1,0 +1,223 @@
+panvk/kmod: a JM submission's callback keeps what it needs, and reads its command buffers only for the first failure
+
+With our patch 0005 a GPU fault on the job manager is a lost device, and with 0006 the queue's
+waits have a time limit; other paths of the tree lose the device too (a query time-out, no memory
+at submit). Once the device is lost, the app's waits answer VK_ERROR_DEVICE_LOST, and the app can
+free the command buffers and the VkEvents of submissions that report later. In the tree their
+callback on the kmod's event thread reads them: the command buffers' batches and jobs
+(panvk_kbase_report_faults) and the batches' event operations with their events
+(panvk_signal_event_syncobjs, op->event).
+
+This patch:
+- A submission takes the sync objects of its vkCmdSetEvent and vkCmdResetEvent at submit, in
+  order, and its callback signals and resets those.
+- The callback reads the command buffers (the fault report, and its log line "panvk: the kbase
+  submission did not complete") only while the device is not lost yet: for the first failure
+  only. The blocking path and the callback for a part of a large submission (0005) log that line
+  in the same way, so a fault in any part of a submission gives the line once.
+- A sync object's handle carries a generation in bits 20-30, above the table's index + 1 in bits
+  0-19 (so the table takes up to 524288 objects). A handle that is freed is refused (-EINVAL), also
+  once its slot holds a new object: a late signal or reset of a freed object reads no freed memory
+  and changes no other object. Every user of the handles in the tree keeps them as uint32_t values
+  and only gives them back to the sync provider, and a handle is never 0.
+
+--- a/src/panfrost/lib/kmod/kbase_kmod.c
++++ b/src/panfrost/lib/kmod/kbase_kmod.c
+@@ -907,6 +907,7 @@
+ 
+ struct ks_obj {
+    uint8_t state;
++   uint16_t gen; /* the handle's high bits: one more each time the slot is freed */
+    /* KS_SUBMITTED from an import: nothing here signals it, the sync file below does. */
+    bool external;
+    int fd; /* KS_SUBMITTED: a sync file signaling with it, or -1 */
+@@ -922,6 +923,15 @@
+ static struct ks_obj *ks_objs;
+ static uint32_t ks_cap, ks_hint;
+ 
++/* A handle is the slot's index + 1 in its low KS_INDEX_BITS bits and the slot's generation in the
++ * KS_GEN_BITS above them (bit 31 stays clear, and a handle is never 0). So a handle that is freed
++ * stays refused once its slot holds a new object, as a late signal of work that was abandoned
++ * (pan_kmod_kbase_abandon) must not signal or reset another object. */
++#define KS_INDEX_BITS 20
++#define KS_INDEX_MASK ((1u << KS_INDEX_BITS) - 1)
++#define KS_GEN_BITS 11
++#define KS_GEN_MASK ((1u << KS_GEN_BITS) - 1)
++
+ /* The runtime (vk_drm_syncobj.c) tells a timeout from an error by errno == ETIME, the way
+  * libdrm's wrappers leave it: every failure here sets errno too. Without it, a fence that was
+  * merely not signaled yet read as a lost device -- which never happened while every submission
+@@ -947,7 +957,11 @@
+ static struct ks_obj *
+ ks_get(uint32_t h)
+ {
+-   return h && h <= ks_cap && ks_objs[h - 1].state != KS_FREE ? &ks_objs[h - 1] : NULL;
++   const uint32_t i = h & KS_INDEX_MASK;
++   return i && i <= ks_cap && ks_objs[i - 1].state != KS_FREE &&
++                ks_objs[i - 1].gen == h >> KS_INDEX_BITS
++             ? &ks_objs[i - 1]
++             : NULL;
+ }
+ 
+ static void
+@@ -974,7 +988,7 @@
+    }
+    if (i >= ks_cap) {
+       const uint32_t cap = ks_cap ? ks_cap * 2 : 256;
+-      struct ks_obj *o = realloc(ks_objs, cap * sizeof(*o));
++      struct ks_obj *o = cap <= KS_INDEX_MASK ? realloc(ks_objs, cap * sizeof(*o)) : NULL;
+       if (!o) {
+          pthread_mutex_unlock(&ks_lock);
+          return ks_ret(-ENOMEM);
+@@ -986,9 +1000,10 @@
+       ks_cap = cap;
+    }
+    ks_objs[i] = (struct ks_obj){
+-      .state = (flags & DRM_SYNCOBJ_CREATE_SIGNALED) ? KS_SIGNALED : KS_UNSIGNALED, .fd = -1};
++      .state = (flags & DRM_SYNCOBJ_CREATE_SIGNALED) ? KS_SIGNALED : KS_UNSIGNALED,
++      .gen = ks_objs[i].gen, .fd = -1};
+    ks_hint = i + 1;
+-   *handle = i + 1;
++   *handle = ((uint32_t)ks_objs[i].gen << KS_INDEX_BITS) | (i + 1);
+    pthread_mutex_unlock(&ks_lock);
+    return 0;
+ }
+@@ -1000,7 +1015,8 @@
+    struct ks_obj *o = ks_get(handle);
+    if (o) {
+       ks_set_state(o, KS_FREE, -1);
+-      ks_hint = MIN2(ks_hint, handle - 1);
++      o->gen = (o->gen + 1) & KS_GEN_MASK;
++      ks_hint = MIN2(ks_hint, (handle & KS_INDEX_MASK) - 1);
+    }
+    pthread_mutex_unlock(&ks_lock);
+    return ks_ret(o ? 0 : -EINVAL);
+--- a/src/panfrost/vulkan/jm/panvk_vX_gpu_queue.c
++++ b/src/panfrost/vulkan/jm/panvk_vX_gpu_queue.c
+@@ -98,16 +98,36 @@
+    }
+ }
+ 
++/* A vkCmdSetEvent or vkCmdResetEvent of a submission, as its sync object. */
++struct panvk_kbase_event_op {
++   uint32_t syncobj;
++   bool reset;
++};
++
++static uint32_t
++panvk_kbase_event_op_count(struct panvk_cmd_buffer *cmdbuf)
++{
++   uint32_t n = 0;
++   list_for_each_entry(struct panvk_batch, batch, &cmdbuf->batches, node) {
++      util_dynarray_foreach(&batch->event_ops, struct panvk_cmd_event_op, op)
++         n += op->type != PANVK_EVENT_OP_WAIT;
++   }
++   return n;
++}
++
+ /* What a kbase submission still has to do once the GPU is done with it. */
+ struct panvk_kbase_done {
+    struct panvk_gpu_queue *queue;
+-   uint32_t nr_cmdbufs, nr_signals;
++   uint32_t nr_cmdbufs, nr_signals, nr_event_ops;
+    struct panvk_cmd_buffer **cmdbufs;
+    uint32_t *signals;
++   struct panvk_kbase_event_op *event_ops;
+ };
+ 
+ /* On the kmod's event thread, when every atom of the submission has reported. The command
+- * buffers cannot have been reset or freed yet: they are pending until the signals below. */
++ * buffers and events are pending until the signals below, but only while the device is not lost:
++ * once it is, the app's waits answer VK_ERROR_DEVICE_LOST, and it can free them. So they are read
++ * only for the first failure, and the events' sync objects were taken at submit. */
+ static void
+ panvk_kbase_submit_done(void *data, bool ok)
+ {
+@@ -115,15 +135,19 @@
+    struct panvk_device *dev = to_panvk_device(d->queue->vk.base.device);
+ 
+    if (!ok) {
+-      mesa_loge("panvk: the kbase submission did not complete");
+-      panvk_kbase_report_faults(dev, d->cmdbufs, d->nr_cmdbufs);
++      if (!vk_device_is_lost_no_report(&dev->vk)) {
++         mesa_loge("panvk: the kbase submission did not complete");
++         panvk_kbase_report_faults(dev, d->cmdbufs, d->nr_cmdbufs);
++      }
+       /* Before the signals below, so that a wait they end sees the lost device. */
+       vk_queue_set_lost(&d->queue->vk, "a kbase submission did not complete");
+    }
+ 
+-   for (uint32_t j = 0; j < d->nr_cmdbufs; ++j) {
+-      list_for_each_entry(struct panvk_batch, batch, &d->cmdbufs[j]->batches, node)
+-         panvk_signal_event_syncobjs(d->queue, batch);
++   for (uint32_t i = 0; i < d->nr_event_ops; i++) {
++      if (d->event_ops[i].reset)
++         dev->vk.sync->reset(dev->vk.sync, &d->event_ops[i].syncobj, 1);
++      else
++         dev->vk.sync->signal(dev->vk.sync, &d->event_ops[i].syncobj, 1);
+    }
+ 
+    if (d->nr_signals)
+@@ -139,8 +163,11 @@
+ {
+    struct panvk_gpu_queue *queue = data;
+ 
+-   if (!ok)
++   if (!ok) {
++      if (!vk_device_is_lost_no_report(queue->vk.base.device))
++         mesa_loge("panvk: the kbase submission did not complete");
+       vk_queue_set_lost(&queue->vk, "a kbase submission did not complete");
++   }
+ }
+ 
+ /*
+@@ -162,10 +189,14 @@
+       submit->command_buffer_count ? panvk_per_arch(bc_emu_refresh_begin)(dev) : NULL;
+    const uint32_t nr_cmdbufs = submit->command_buffer_count + (refresh ? 1 : 0);
+    const uint32_t nr_signals = submit->signal_count;
++   uint32_t nr_event_ops = refresh ? panvk_kbase_event_op_count(refresh) : 0;
++   for (uint32_t j = 0; j < submit->command_buffer_count; ++j)
++      nr_event_ops += panvk_kbase_event_op_count(
++         container_of(submit->command_buffers[j], struct panvk_cmd_buffer, vk));
+ 
+    struct panvk_kbase_done *d =
+       malloc(sizeof(*d) + nr_cmdbufs * sizeof(struct panvk_cmd_buffer *) +
+-             nr_signals * sizeof(uint32_t));
++             nr_signals * sizeof(uint32_t) + nr_event_ops * sizeof(struct panvk_kbase_event_op));
+    if (!d) {
+       if (refresh)
+          panvk_per_arch(bc_emu_refresh_end)(dev, refresh, 0);
+@@ -175,8 +206,10 @@
+    d->queue = queue;
+    d->nr_cmdbufs = nr_cmdbufs;
+    d->nr_signals = nr_signals;
++   d->nr_event_ops = 0;
+    d->cmdbufs = (struct panvk_cmd_buffer **)(d + 1);
+    d->signals = (uint32_t *)(d->cmdbufs + nr_cmdbufs);
++   d->event_ops = (struct panvk_kbase_event_op *)(d->signals + nr_signals);
+ 
+    /* Kept here too: d belongs to the event thread once submitted. */
+    uint32_t signals[MAX2(nr_signals, 1)];
+@@ -205,6 +238,12 @@
+       list_for_each_entry(struct panvk_batch, batch, &cmdbuf->batches, node) {
+          panvk_queue_prepare_batch(dev, cmdbuf, batch);
+ 
++         util_dynarray_foreach(&batch->event_ops, struct panvk_cmd_event_op, op) {
++            if (op->type != PANVK_EVENT_OP_WAIT)
++               d->event_ops[d->nr_event_ops++] = (struct panvk_kbase_event_op){
++                  .syncobj = op->event->syncobj, .reset = op->type == PANVK_EVENT_OP_RESET};
++         }
++
+          /* More than one submission takes: send what there is, the rest runs after it. */
+          if (nr_atoms + 2 > PAN_KMOD_KBASE_MAX_ATOMS) {
+             if (!pan_kmod_kbase_submit_async(dev->kmod.dev, atoms, nr_atoms, NULL,
+@@ -334,7 +373,8 @@
+          }
+          panvk_gs_dbg_pos_cpu = NULL;
+       } else if (nr_atoms && !pan_kmod_kbase_submit(dev->kmod.dev, atoms, nr_atoms)) {
+-         mesa_loge("panvk: the kbase submission did not complete");
++         if (!vk_device_is_lost_no_report(&dev->vk))
++            mesa_loge("panvk: the kbase submission did not complete");
+          vk_queue_set_lost(&queue->vk, "a kbase submission did not complete");
+       }
+ 
