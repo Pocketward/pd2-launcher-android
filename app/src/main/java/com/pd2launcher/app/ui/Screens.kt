@@ -20,6 +20,7 @@ import com.pd2launcher.app.Tone
 fun CheckingDeviceScreen() {
     FlowShell(
         step = FlowStep.CHECK,
+        busy = true,
         title = stringResource(R.string.device_checking_title),
         intro = stringResource(R.string.device_checking_body),
         action = { CornerPill(stringResource(R.string.action_continue), {}, Kind.PRIMARY, enabled = false) },
@@ -88,6 +89,8 @@ fun DownloadScreen(
     FlowShell(
         step = FlowStep.DOWNLOAD,
         failed = state == DownloadState.FAILED,
+        // WAITING: the Launcher has not started yet, so the app works, not the player.
+        busy = working || state == DownloadState.WAITING,
         title = stringResource(title),
         intro = stringResource(intro),
         onBack = onBack,

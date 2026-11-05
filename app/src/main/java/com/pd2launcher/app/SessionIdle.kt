@@ -50,14 +50,14 @@ object SessionIdle {
             AppUpdate.waitFor(status, copying, now) == null
 
     /**
-     * Whether the app update [state] needs the session: a check, a download or the download's
-     * checks run, or Android's install window waits for the player. A new session at the
-     * player's return would start the engine, and the update would be taken back
+     * Whether the app update needs the session: a [check] the player asked for, a download or the
+     * download's checks run ([work]), or Android's install window waits for the player. A new
+     * session at the player's return would start the engine, and the update would be taken back
      * ([AppUpdate.waitFor]).
      */
-    fun updating(state: AppUpdate.State): Boolean =
-        state is AppUpdate.State.Checking || state is AppUpdate.State.Downloading ||
-            state is AppUpdate.State.Verifying || state is AppUpdate.State.Installing
+    fun updating(check: AppUpdate.Check, work: AppUpdate.Work?): Boolean =
+        check is AppUpdate.Check.Running || work is AppUpdate.Work.Downloading ||
+            work is AppUpdate.Work.Verifying || work is AppUpdate.Work.Installing
 
     /**
      * When the idle time began, at [now], with [idle] as it is now: null while not idle; else the

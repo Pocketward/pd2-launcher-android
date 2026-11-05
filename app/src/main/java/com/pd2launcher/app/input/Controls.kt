@@ -169,10 +169,6 @@ data class Controls(
             return ((grid + steps) * step).coerceIn(range.start, range.endInclusive).let { Math.round(it * 1000f) / 1000f }
         }
 
-        /** How far [value] is along [range], 0..1, for the stepper's bar. */
-        fun fraction(value: Float, range: ClosedFloatingPointRange<Float>): Float =
-            ((value - range.start) / (range.endInclusive - range.start)).coerceIn(0f, 1f)
-
         /** Pad mode: every button is the game's. */
         val DEFAULT_PAD: Map<PadButton, PadAction> = PadButton.entries.associateWith { PadAction.Pad }
 

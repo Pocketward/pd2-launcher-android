@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The Controls screen: keybinds, the chord, pointer speed and on-screen controls. -->
+<!-- The Controls screen, from the in-game menu and from Settings → Controls → Buttons; the Controls page of Settings: keybinds, the chord, pointer speed and on-screen controls. -->
 <resources>
     <string name="controls_title">Controls</string>
     <string name="controls_section_controller">Controller</string>
@@ -8,17 +8,18 @@
     <string name="controls_chord_thumbs">L3 + R3</string>
     <string name="controls_chord_body">Press briefly: mouse mode on or off. Hold: the game menu.</string>
     <string name="controls_factor">%1$s×</string>
-    <!-- Pointer speed (the in-game Controls screen, its input and Settings → Controller): what it sets, the range, the step and the default. -->
+    <!-- Pointer speed (the Controls screen, its input and Settings → Controls): what it sets, the range, the step and the default. -->
     <string name="controls_pointer_speed_title">Pointer speed</string>
-    <string name="controls_pointer_speed_body">For mouse mode and Trackpad.</string>
     <string name="controls_factor_unit">×</string>
     <string name="controls_pointer_speed_help">For mouse mode and Trackpad. %1$s–%2$s×, in steps of %3$s. Default: %4$s×.</string>
     <string name="controls_pointer_speed_wrong">Type a number from %1$s to %2$s.</string>
-    <!-- Touch, on the in-game Controls screen and in Settings → Controller: how touch on the game moves the pointer (Trackpad, the default, or Direct). -->
+    <!-- Touch, on the Controls screen and in Settings → Controls: how touch on the game moves the pointer (Trackpad, the default, or Direct). -->
     <string name="controls_touch">Touch</string>
     <string name="controls_touch_trackpad">Trackpad</string>
     <string name="controls_touch_direct">Direct</string>
     <string name="controls_section_buttons">Buttons</string>
+    <!-- Settings → Controls → Buttons, which opens the Controls screen. -->
+    <string name="settings_buttons_body">What each controller button does.</string>
     <string name="controls_pad_mode">Pad mode</string>
     <string name="controls_mouse_mode">Mouse mode</string>
     <string name="controls_pad_mode_body">The game sees an Xbox controller. A button may type a key or click instead.</string>
@@ -27,11 +28,6 @@
     <string name="controls_in_use">In use</string>
     <string name="controls_use_pad">Use pad mode</string>
     <string name="controls_use_mouse">Use mouse mode</string>
-    <string name="controls_chord_button">Chord · acts when pressed alone</string>
-    <string name="controls_reset">Reset %1$s to defaults</string>
-    <string name="controls_reset_confirm">Reset all %1$d buttons in %2$s?</string>
-    <string name="controls_reset_cancel">Cancel</string>
-    <string name="controls_reset_do">Reset</string>
     <string name="controls_picker_done">Done</string>
     <string name="controls_picker_general">General</string>
     <string name="controls_picker_keys">Keys</string>

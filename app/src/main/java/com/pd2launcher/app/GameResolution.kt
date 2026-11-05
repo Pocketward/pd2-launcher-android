@@ -8,7 +8,7 @@ import androidx.annotation.StringRes
 import kotlin.math.roundToInt
 
 /**
- * The game's resolution and how the Game view shows it (Settings → Game).
+ * The game's resolution and how the Game view shows it (Settings → Display).
  *
  * Game resolution is the X screen's size for the app's own Play and for the official PD2 launcher
  * ([forPlay]; a game the launcher starts runs on its X screen): the game's own size ([ownSize]:
@@ -240,7 +240,7 @@ object GameResolution {
 
 /**
  * How the Game view shows the X screen, the same for the game and the official launcher's window
- * (Settings → Game → Display, the in-game menu; [AppSettings.gameDisplay]): [title] and [body] as
+ * (Settings → Display → Display, the in-game menu; [AppSettings.gameDisplay]): [title] and [body] as
  * Settings says them.
  */
 enum class GameDisplay(@param:StringRes val title: Int, @param:StringRes val body: Int) {

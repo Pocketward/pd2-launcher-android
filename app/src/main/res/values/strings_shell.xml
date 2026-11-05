@@ -3,12 +3,13 @@
 <resources>
     <string name="brand_name">Project Diablo 2</string>
     <string name="percent">%1$d%%</string>
-    <string name="stepper_less">−</string>
-    <string name="stepper_more">+</string>
     <string name="back_to_play">‹ Play</string>
     <string name="back_to_game">‹ Game</string>
     <string name="back_to_repair">‹ Repair</string>
     <string name="back_to_menu">‹ Menu</string>
+    <!-- On a phone, from a page of Settings back to its list of pages. -->
+    <string name="back_to_settings">‹ Settings</string>
+    <string name="back_to_display">‹ Display</string>
 
     <string name="action_resume">Resume</string>
     <string name="action_try_again">Try again</string>
@@ -74,8 +75,24 @@
     <string name="play_settings">Settings</string>
     <string name="play_controls">Controls</string>
     <string name="play_repair">Repair</string>
-    <string name="play_about">About</string>
+    <string name="play_version">Version</string>
     <string name="play_official_launcher">Official PD2 launcher</string>
+    <!-- Play's stats line above the foot: the PD2 server's status from api.projectdiablo2.com, and the players in game. -->
+    <string name="play_stats_online">Server online</string>
+    <string name="play_stats_slow">Server slow</string>
+    <string name="play_stats_down">Server down</string>
+    <string name="play_stats_unknown">Server status unknown</string>
+    <!-- After the count, for example "3,613 in game". -->
+    <string name="play_stats_in_game">in game</string>
+    <!-- TalkBack: the whole line as one sentence. %1$s: the count with the locale's thousands separator. -->
+    <plurals name="play_stats_said_online">
+        <item quantity="one">Server online, %1$s player in game</item>
+        <item quantity="other">Server online, %1$s players in game</item>
+    </plurals>
+    <plurals name="play_stats_said_slow">
+        <item quantity="one">Server slow, %1$s player in game</item>
+        <item quantity="other">Server slow, %1$s players in game</item>
+    </plurals>
     <string name="play_official_launcher_failed">The official PD2 launcher didn\'t open. Try again, or check the game in Repair.</string>
     <string name="play_official_launcher_missing">The official PD2 launcher is not in your game folder (ProjectD2\\PD2Launcher.exe is missing). If you imported the folder, check that your PC copy is complete, then import it again. If the app installed the game, use Repair → Start over.</string>
     <string name="update_up_to_date">Up to date</string>

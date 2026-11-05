@@ -35,9 +35,12 @@ fun SourceScreen(
     val focus = remember { FocusRequester() }
     InitialFocus(focus)
     val progress = view.progress
-    val copying = progress != null
+    // A copy runs from its start, also before the size is known (no progress yet).
+    val copying = view.tone == Tone.WORKING
     FlowShell(
         step = FlowStep.DOWNLOAD,
+        // Also while the page waits for the Launcher to start (not for the player's pick).
+        busy = copying || view.status.id == R.string.source_waiting,
         title = stringResource(R.string.source_title),
         intro = stringResource(R.string.source_intro),
         // Not while a pick is copied in.

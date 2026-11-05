@@ -380,10 +380,11 @@ jobs:
             digest=$(jq -r --arg name "$MAPPING" '.assets[] | select(.name == $name) | .digest // empty' <<<"$release")
             [[ $digest == "sha256:$mapping_sum" ]] || { echo "the draft's $MAPPING is not the mapping its notes record"; return; }
           }
-          APK=pd2-launcher-android-${TAG#v}.apk
           MAPPING=pd2-launcher-android-${TAG#v}-mapping.txt
           reuse=false
           if [[ $CANDIDATE == true ]]; then
+            # Only a candidate has the checkout, and only a candidate reads this name.
+            APK=$(./apk-name.sh "${TAG#v}")
             head=$(git ls-remote origin refs/heads/main | cut -f1)
             [[ $head == "$COMMIT" ]] ||
               { echo "::error::a newer export replaced this candidate: main's head is ${head:-unknown}, not $COMMIT; nothing is built and the draft $TAG is not changed"; exit 1; }
@@ -1130,6 +1131,7 @@ jobs:
         env:
           COMMIT: ${{ needs.tag.outputs.commit }}
           IMAGE: ${{ steps.image.outputs.name }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           tools() { podman run --rm -v "$PWD/build/outputs:/apk:ro" "$IMAGE" "$@"; }
           badging=$(tools aapt2 dump badging /apk/app-release.apk | head -n 1)
@@ -1141,7 +1143,17 @@ jobs:
           [[ -n $version_name && -n $version_code && -n $certificate ]]
           [[ v$version_name == "$TAG" ]] ||
             { echo "::error::the APK's versionName is $version_name, not the tag's ${TAG#v}"; exit 1; }
-          apk=pd2-launcher-android-$version_name.apk
+          # A beta's name carries its code, and the app reads that code from the name (apk-name.sh).
+          apk=$(./apk-name.sh "$version_name")
+          [[ $version_name != *-* || $apk == "pd2-launcher-android-$version_name-$version_code.apk" ]] ||
+            { echo "::error::the APK's versionCode is $version_code, not the one in its name $apk"; exit 1; }
+          # A beta takes the code of the newest published Stable (betaBase), so that they replace each
+          # other in place: an older base is refused (beta-base-gate.sh). A Stable is not checked.
+          if [[ $version_name == *-* ]]; then
+            stables=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --paginate \
+              --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name')
+            ./beta-base-gate.sh "$version_name" "$version_code" <<<"$stables"
+          fi
           mkdir -p release
           cp build/outputs/app-release.apk "release/$apk"
           (cd release && sha256sum "$apk" > "$apk.sha256")
@@ -1259,6 +1271,12 @@ jobs:
             if [[ -n $release ]]; then
               [[ $(jq -r .isDraft <<<"$release") == true ]] ||
                 { echo "::error::the release $TAG is published; a candidate replaces the files of a draft only"; exit 1; }
+              # A beta's name carries its code, so a changed betaBase gives a new name, and the app
+              # offers no beta with two APKs: the old pair goes.
+              for old in $(jq -r --arg apk "${files[0]#release/}" \
+                '.assets[].name | select(endswith(".apk") or endswith(".apk.sha256")) | select(. != $apk and . != $apk + ".sha256")' <<<"$release"); do
+                gh release delete-asset "$TAG" "$old" --repo "$GITHUB_REPOSITORY" --yes
+              done
               gh release upload "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --clobber
               release=$(view)
               [[ -n $release ]] || { echo "::error::the draft $TAG went away during the upload"; exit 1; }

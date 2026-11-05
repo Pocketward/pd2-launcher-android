@@ -91,8 +91,7 @@ object BackgroundWork {
      * Whether the app's update is at work that must go on in the background: its download or the
      * download's checks. A check is short, and Android's install window is the player's.
      */
-    fun appUpdating(state: AppUpdate.State): Boolean =
-        state is AppUpdate.State.Downloading || state is AppUpdate.State.Verifying
+    fun appUpdating(work: AppUpdate.Work?): Boolean = work is AppUpdate.Work.Downloading || work is AppUpdate.Work.Verifying
 
     /**
      * Whether the session must go on in the background at [now], so it is a foreground service

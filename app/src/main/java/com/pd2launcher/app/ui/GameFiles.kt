@@ -17,29 +17,29 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.pd2launcher.app.GameFilesProvider
 import com.pd2launcher.app.R
 
 /**
- * Settings → App → Game files: where the game folder is, with Open in Files (the Files app at
- * the "PD2 Launcher" root, [GameFilesProvider]; the system file picker there when no Files app
- * opens it). The player puts mods and loot filters there with the Files app; the characters
- * reach another folder through Save sync ([SaveSyncRows]).
+ * Settings → Files and saves → Game files: the game folder, for mods and loot filters, with Open
+ * in Files (the Files app at the "PD2 Launcher" root, [GameFilesProvider]; the system file picker
+ * there when no Files app opens it). The player puts them there with the Files app; the
+ * characters reach another folder through Save sync ([SaveSyncRows]). [focus] goes on Open in Files.
  */
 @Composable
-fun ColumnScope.GameFilesRows() {
+fun ColumnScope.GameFilesRows(focus: FocusRequester?) {
     val context = LocalContext.current
     // The fallback opens the system file picker at the game folder; what is picked there is not used.
     val browse = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {}
     ActionRow(
         stringResource(R.string.settings_open_files),
-        // Any file can go in the game folder, programs and libraries too: the row says so, as they run with the game.
         stringResource(R.string.settings_open_files_body),
         stringResource(R.string.settings_open_files_action),
+        focus,
     ) {
         if (!openFilesApp(context)) {
             browse.launch(
@@ -65,20 +65,18 @@ private fun openFilesApp(context: Context): Boolean = try {
 
 /** A title, what it does, and its button (below the words on phones). */
 @Composable
-private fun ActionRow(title: String, body: String, action: String, onClick: () -> Unit) {
+private fun ActionRow(title: String, body: String, action: String, focus: FocusRequester?, onClick: () -> Unit) {
     val phone = LocalFormFactor.current == FormFactor.PHONE
-    val button = @Composable { modifier: Modifier ->
-        LauncherButton(action, onClick, modifier, height = 48.dp, padding = 16.dp, style = Type.Hint.copy(fontWeight = FontWeight.SemiBold))
-    }
+    val button = @Composable { modifier: Modifier -> SlimButton(action, onClick, modifier, focusRequester = focus) }
     Row(
-        Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(horizontal = 14.dp, vertical = 10.dp),
+        Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 14.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(title, style = Type.Body, color = Palette.Text)
             Text(body, style = Type.Hint, color = Palette.Muted)
-            if (phone) button(Modifier.padding(top = 8.dp))
+            if (phone) button(Modifier.padding(top = 1.dp))
         }
         if (!phone) button(Modifier)
     }

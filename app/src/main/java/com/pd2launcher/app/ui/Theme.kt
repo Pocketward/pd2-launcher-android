@@ -12,8 +12,9 @@ import androidx.compose.ui.unit.sp
 
 /**
  * The native screens' tokens: the desktop launcher's look on a dark handheld panel. Teal marks only the main action (and Play without updating under Update), the current step and focus; amber and red
- * mean warning and error. The brand mark's gold ([Gold]) belongs to the brand and to one mark:
- * the new-version dot. Every text colour reaches 4.5:1 on [Background] and [Surface]
+ * mean warning and error; the small amber dot also marks a new app version in Settings (the owner,
+ * 2026-11-03), as every attention dot does: "we want the same color dot everywhere in our app".
+ * The brand's gold is the brand mark's alone (its drawables); no dot uses it. Every text colour reaches 4.5:1 on [Background] and [Surface]
  * (PaletteContrastTest).
  */
 object Palette {
@@ -40,19 +41,20 @@ object Palette {
     val Pressed = Text.copy(alpha = 0.1f)
     val Teal = Color(0xFF34B8A7)
     val OnTeal = Color(0xFF05201C)
-    /** Warnings: an amber-orange between the brand's gold and [Red]. */
-    val Amber = Color(0xFFEE8A3A)
     /**
-     * The brand's gold, the "II" in ic_brand_mark and the launcher icon: only for the dot on Play's
-     * About while a new version of the app is out ([LauncherButton]'s dot). No text and no warning.
+     * Warnings, and the attention dot of a warning or a new version ([StatusMark] WARNING, the App
+     * line, the chip, Play's Version): an amber-orange between the brand's gold (#E3AA3E, the "II"
+     * of ic_brand_mark and the launcher icon, which only those drawables use) and [Red].
      */
-    val Gold = Color(0xFFE3AA3E)
+    val Amber = Color(0xFFEE8A3A)
     val Red = Color(0xFFE5644F)
 }
 
 object Type {
     private val sans = FontFamily.SansSerif
     val Title = TextStyle(fontFamily = sans, fontWeight = FontWeight.SemiBold, fontSize = 22.sp, lineHeight = 28.sp, letterSpacing = (-0.2).sp)
+    /** A page's title beside the list of Settings' pages. */
+    val PageTitle = Title.copy(fontSize = 18.sp, lineHeight = 24.sp)
     val Intro = TextStyle(fontFamily = sans, fontSize = 14.sp, lineHeight = 19.sp)
     val Body = TextStyle(fontFamily = sans, fontSize = 14.sp, lineHeight = 19.sp)
     val Hint = TextStyle(fontFamily = sans, fontSize = 13.sp, lineHeight = 17.sp)

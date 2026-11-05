@@ -13,7 +13,6 @@
     <!-- The App userland's version: Check calls it "Game support files". -->
     <string name="about_runtime">Runtime build %1$s</string>
     <string name="about_end">qbzWmZ79geA</string>
-    <string name="settings_section_about">About</string>
+    <!-- Settings → App: the row shows the version (about_version). -->
     <string name="settings_about">About PD2 Launcher</string>
-    <string name="settings_about_body">What it is and what it is built with</string>
 </resources>

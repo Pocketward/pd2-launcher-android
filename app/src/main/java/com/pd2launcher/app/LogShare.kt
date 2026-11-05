@@ -21,7 +21,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * Share logs (Settings → App, and beside a failure on Check, Download and Install): one zip with
+ * Share logs and Save logs (Save logs in Settings → Help, both beside a failure on Check, Download and Install): one zip with
  * `device.txt` (what the app knows about this device and the installation), the logs of the
  * processes the app starts and its own (`files/logs`, under `app/`, the official PD2 launcher's
  * runs among them: [OfficialLauncherLog]), the official launcher's own logs from the game folder

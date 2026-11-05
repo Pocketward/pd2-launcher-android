@@ -79,7 +79,7 @@ class GameEnvironment(
         }
         // Before the game: its Mesa asks for the app's buffers when it makes its swapchain.
         if (PresentServer.start(paths.presentSocket, paths.presentCounter) == null) log("no direct present: the X screen only")
-        // The virtual display's vertical blank at the player's frame rate (Settings, Game) on the
+        // The virtual display's vertical blank at the player's frame rate (Settings → Display) on the
         // screen's full rate ([ScreenRate]); the Game view sets it again for its screen.
         val clockRate = FrameRateVote.rate(ScreenRate.read(context), AppSettingsStore.load(context).frameRate)
         if (!FrameClock.start(paths.presentCounter, clockRate)) log("no frame clock: the game draws as fast as it can")
@@ -94,18 +94,22 @@ class GameEnvironment(
                 "-xkbdir", File(paths.userland, "usr/share/X11/xkb").path,
             )
             // On the little cores (Android's taskset sets its own affinity, which Xvfb keeps):
-            // copying every frame there leaves the big cores' cache to the game.
+            // copying every frame there leaves the big cores' cache to the game. Some firmware
+            // refuses taskset that affinity: then Xvfb starts without it ([LittleCoresStart]).
             val littleCores = LittleCores.mask(LittleCores.ofDevice())
-            val (program, arguments) = if (littleCores != null && File(TASKSET).canExecute()) {
-                TASKSET to listOf("taskset", littleCores, File(bin, "Xvfb").path) + xvfbArguments.drop(1)
-            } else {
-                File(bin, "Xvfb").path to xvfbArguments
+            val xvfbPath = File(bin, "Xvfb").path
+            val pinned = when {
+                littleCores == null || !File(TASKSET).canExecute() -> null
+                // Debug builds: with this file "taskset" fails at once, as on that firmware.
+                BuildConfig.DEBUG && paths.tasksetFailsForTest.exists() ->
+                    SHELL to listOf("sh", "-c", TASKSET_FAILS_FOR_TEST, "taskset", littleCores, xvfbPath) + xvfbArguments.drop(1)
+                else -> TASKSET to listOf("taskset", littleCores, xvfbPath) + xvfbArguments.drop(1)
             }
-            val x = starter.start("xvfb", program, arguments, env, fd3 = memory, rewrite = XvfbListenerLines()::rewrite) { process, _ ->
-                if (xvfb == process) xvfb = null
-            }
-            xvfb = x
-            awaitFramebuffer(x, framebuffer)
+            val x = littleCoresStart.start(pinned, xvfbPath to xvfbArguments, log, start = { program, arguments ->
+                starter.start("xvfb", program, arguments, env, fd3 = memory, rewrite = XvfbListenerLines()::rewrite) { process, _ ->
+                    if (xvfb == process) xvfb = null
+                }.also { xvfb = it }
+            }) { awaitFramebuffer(it, framebuffer) }
             _framebuffer.value = framebuffer
 
             // Before any Wine process of the game: Wine's ALSA output finds its configuration and the ring.
@@ -259,7 +263,7 @@ class GameEnvironment(
     private fun awaitFramebuffer(process: OwnedProcess, framebuffer: Framebuffer) {
         val deadline = System.nanoTime() + READY_TIMEOUT_MS * 1_000_000
         while (framebuffer.header() == null) {
-            if (!OwnedProcesses.isRunning(process.pid)) throw IOException("${process.name} ended before its framebuffer was written")
+            if (!OwnedProcesses.isRunning(process.pid)) throw EndedEarly("${process.name} ended before its framebuffer was written")
             if (System.nanoTime() > deadline) throw IOException("Xvfb's framebuffer was not written within $READY_TIMEOUT_MS ms")
             Thread.sleep(50)
         }
@@ -273,6 +277,11 @@ class GameEnvironment(
          */
         const val DISPLAY = BuildConfig.X_DISPLAY
         private const val TASKSET = "/system/bin/taskset"
+        /** Debug builds' failing taskset ([SessionPaths.tasksetFailsForTest]): a shell that writes toybox's line and exits 1. */
+        private const val SHELL = "/system/bin/sh"
+        private const val TASKSET_FAILS_FOR_TEST = "echo \"taskset: failed to set pid \$\$'s affinity: Operation not permitted (debug switch)\" >&2; exit 1"
+        /** For the app's process: after one refusal of taskset, Xvfb starts without it. */
+        private val littleCoresStart = LittleCoresStart()
         private const val READY_TIMEOUT_MS = 15_000L
 
         private val _input = MutableStateFlow<GameInput?>(null)

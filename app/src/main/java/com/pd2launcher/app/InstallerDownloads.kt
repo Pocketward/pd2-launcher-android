@@ -18,7 +18,7 @@ import java.util.Locale
  * The game downloads the player may remove once the game works:
  * the game files Blizzard's downloaders fetched and the Project Diablo 2 client download cache.
  * Kept, they let a reinstall reuse them. Nothing removes them by itself: the one-time notice on
- * Play and Settings → App → Storage run the engine's `--remove-downloads`, which removes these
+ * Play and Settings → Files and saves → Storage run the engine's `--remove-downloads`, which removes these
  * folders (the engine's `INSTALLER_DOWNLOADS`); the notice waits for the first game
  * session to end ([showNotice]). The prefix's Windows Installer cache is not here: the app
  * removes it by itself ([InstallerCache]). After an import from Android's own storage the notice
@@ -84,7 +84,7 @@ object InstallerDownloads {
         client = treeBytes(File(managedRoot, CLIENT).toPath()),
     )
 
-    /** Settings → App → Storage's words: the row's [title], its line with the size ([body]) and the question before Remove ([confirm]). */
+    /** Settings → Files and saves → Storage's words: the row's [title], its line with the size ([body]) and the question before Remove ([confirm]). */
     data class Words(@param:StringRes val title: Int, @param:StringRes val body: Int, @param:StringRes val confirm: Int)
 
     /**
@@ -155,7 +155,7 @@ object InstallerDownloads {
     private val LITE_FOLDERS = setOf("com.pd2launcher.lite.documents", "com.pd2launcher.lite.dev.documents")
 
     /**
-     * Whether the notice and Settings → App → Storage speak of the imported folder: only after an
+     * Whether the notice and Settings → Files and saves → Storage speak of the imported folder: only after an
      * import ([imported]) from Android's own storage or from Lite ([from]). After an import from
      * another app's folder they say nothing about it: the notice shows only for downloads to free.
      */
@@ -190,7 +190,7 @@ object InstallerDownloads {
     }
 
     /**
-     * Settings → App → Storage's line for an imported installation: a folder from Android's own
+     * Settings → Files and saves → Storage's line for an imported installation: a folder from Android's own
      * storage can be deleted; for Lite's folder, Lite still has its own copy; for another app's
      * folder, none ([importedFolderShown], [from]).
      */

@@ -37,7 +37,6 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.pd2launcher.app.DeviceCheck
 import com.pd2launcher.app.GameFilesProvider
@@ -144,8 +143,8 @@ fun DownloadsNotice(notice: InstallerDownloads.Notice, onRemove: () -> Unit, onL
 }
 
 /**
- * Settings → App → Storage: the installer downloads' size and Remove, with a confirmation in
- * place; after an import from Android's own storage, that the copied Diablo II folder can go, and
+ * Settings → Files and saves → Storage: the installer downloads' size and Remove, with a
+ * confirmation in place, which says that a reinstall downloads them again; after an import from Android's own storage, that the copied Diablo II folder can go, and
  * after an import of Lite's game folder, that Lite still has its own copy.
  */
 @Composable
@@ -187,7 +186,7 @@ fun ColumnScope.StorageRows() {
         }
     }
     Row(
-        Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(horizontal = 14.dp, vertical = 10.dp),
+        Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 14.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
@@ -204,10 +203,7 @@ fun ColumnScope.StorageRows() {
             )
         }
         if (known != null && known > 0 && !working && !confirm && canRemove) {
-            LauncherButton(
-                stringResource(R.string.settings_downloads_remove), { message = null; confirm = true },
-                height = 48.dp, padding = 16.dp, style = Type.Hint.copy(fontWeight = FontWeight.SemiBold),
-            )
+            SlimButton(stringResource(R.string.settings_downloads_remove), { message = null; confirm = true })
         }
     }
     if (confirm && known != null) {

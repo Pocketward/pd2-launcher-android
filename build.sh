@@ -60,6 +60,16 @@ if [[ "${PD2_DEV_R8:-}" == 1 ]]; then
     tasks="-Ppd2.devR8=true $tasks"
 fi
 
+# PD2_TEST_BUILD=<label>: a test build, shown as "<version> (test <label>)" with the version's own
+# versionCode, and this tree's commit in device.txt (app/build.gradle.kts, pd2.testBuild).
+if [[ -n "${PD2_TEST_BUILD:-}" ]]; then
+    [[ "$PD2_TEST_BUILD" =~ ^[0-9A-Za-z.-]{1,32}$ ]] ||
+        { echo "refusing: PD2_TEST_BUILD $PD2_TEST_BUILD is not 1 to 32 of 0-9, A-Z, a-z, '.' and '-'" >&2; exit 1; }
+    commit="$(git -C "$here" rev-parse HEAD 2>/dev/null)" ||
+        { echo "refusing: PD2_TEST_BUILD names the commit, but $here is not in a git checkout" >&2; exit 1; }
+    [[ -z "$(git -C "$here" status --porcelain -- .)" ]] || commit+="-dirty"
+    tasks="-Ppd2.testBuild=$PD2_TEST_BUILD -Ppd2.testCommit=$commit $tasks"
+fi
 # Without unit tests the test task would only compile the debug variant again.
 [[ -d "$here/app/src/test" ]] || tasks="${tasks/ :app:testDebugUnitTest/}"
 if [[ "$target" == verification-metadata ]]; then
@@ -75,8 +85,19 @@ if [[ "${PD2_ANDROID_IN_CONTAINER:-}" == 1 ]]; then
     exit 1
 fi
 
+# test-build.yml is written from release.yml (test-build-workflow.py): a change of one without the
+# other fails here.
+if [[ "$target" == check && -f "$here/test-build-workflow.py" ]]; then
+    python3 "$here/test-build-workflow.py" --check
+fi
 if [[ "$target" == check && -f "$here/app/src/test/scripts/release-gate-test.sh" ]]; then
     bash "$here/app/src/test/scripts/release-gate-test.sh"
+fi
+if [[ "$target" == check && -f "$here/app/src/test/scripts/apk-name-test.sh" ]]; then
+    bash "$here/app/src/test/scripts/apk-name-test.sh"
+fi
+if [[ "$target" == check && -f "$here/app/src/test/scripts/beta-base-gate-test.sh" ]]; then
+    bash "$here/app/src/test/scripts/beta-base-gate-test.sh"
 fi
 
 if command -v podman >/dev/null 2>&1; then

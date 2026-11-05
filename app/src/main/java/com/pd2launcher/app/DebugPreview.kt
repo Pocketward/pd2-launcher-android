@@ -60,7 +60,7 @@ object DebugPreview {
      * Continue sends nothing and opens the running [DOWNLOAD] preview instead.
      */
     const val SOURCE = "source"
-    /** Settings over the live session; `--ei tab`, `--es picker`, `--ez mouse` pick where. */
+    /** Settings over the live session; `--es page <name>` picks the page, `--ez buttons true` opens the Controls screen over it. */
     const val SETTINGS = "settings"
     /** Repair over the live session, as where the app holds it on screen; its actions do nothing here. */
     const val REPAIR = "repair"

@@ -79,22 +79,18 @@ fun ShareLogsLink(modifier: Modifier = Modifier) {
 }
 
 /**
- * Share logs or Save logs ([action]) in Settings → App: a row that says what it does, or how it went
- * last; while either is prepared, both rows say so, as neither starts meanwhile.
+ * Save logs in Settings → Help: a row that says what it does, or how the last save or share went;
+ * while either is prepared, it says so, as neither starts meanwhile.
  */
 @Composable
-fun ShareLogsRow(action: LogShareUi.Action) {
+fun SaveLogsRow() {
     val share = LocalLogShare.current ?: return
     ForgetEndOnLeave(share)
-    val (title, body, onClick) = when (action) {
-        LogShareUi.Action.SHARE -> Triple(R.string.share_logs, R.string.share_logs_body, share.onShare)
-        LogShareUi.Action.SAVE -> Triple(R.string.save_logs, R.string.save_logs_body, share.onSave)
-    }
-    val note = if (share.action == action || share.state == LogShareUi.State.WORKING) share.note() else null
-    FocusRow(onClick) {
+    val note = if (share.action == LogShareUi.Action.SAVE || share.state == LogShareUi.State.WORKING) share.note() else null
+    FocusRow(share.onSave, minHeight = 52.dp) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(stringResource(title), style = Type.Body, color = Palette.Text)
-            Text(stringResource(note ?: body), style = Type.Hint, color = if (note != null) share.noteColor() else Palette.Muted)
+            Text(stringResource(R.string.save_logs), style = Type.Body, color = Palette.Text)
+            Text(stringResource(note ?: R.string.save_logs_body), style = Type.Hint, color = if (note != null) share.noteColor() else Palette.Muted)
         }
         Text("›", style = Type.Title, color = Palette.Teal)
     }

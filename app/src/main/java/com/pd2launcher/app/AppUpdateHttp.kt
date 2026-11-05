@@ -18,7 +18,7 @@ import kotlinx.serialization.json.Json
 object AppUpdateHttp {
     private const val TIMEOUT_MS = 20_000
     private const val HTTP_RANGE_NOT_SATISFIABLE = 416
-    /** The most a check reads of the feed's answer: ten releases with long notes stay well below it. */
+    /** The most a check reads of the feed's answer: thirty releases with long notes stay well below it. */
     const val FEED_LIMIT = 4 shl 20
     /** The download's progress is reported each time this much more came in. */
     private const val PROGRESS_STEP = 512L shl 10
@@ -32,7 +32,7 @@ object AppUpdateHttp {
     const val STALL_TIME_MS = 60_000L
     const val STALL_BYTES = 64L shl 10
 
-    /** How the app names itself to GitHub: its own name and version, not the phone's model or build. */
+    /** How the app names itself to GitHub and to PD2's API ([PlayStats]): its own name and version, not the phone's model or build. */
     val userAgent = "PD2LauncherAndroid/${BuildConfig.VERSION_NAME}"
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -54,18 +54,16 @@ object AppUpdateHttp {
         /** The ETag sent still names the same list (HTTP 304). */
         data object NotModified : Answer
 
-        /** No published release (HTTP 404). */
-        data object NoRelease : Answer
-
-        /** GitHub refused the check: no request before [until] ([AppUpdate.retryAt]). */
+        /** The server refused the check: no request before [until] ([AppUpdate.retryAt]). */
         data class Wait(val until: Long) : Answer
     }
 
     /**
      * One request to the releases [feed] (GitHub's list of a repository's releases, API version
-     * 2022-11-28) with the [etag] of the last answer. Any other answer, an answer that does not
-     * read as a list of releases, and one whose body is still coming about [timeLimitMs] after the
-     * request's start (checked after each read; [ANSWER_TIME_MS]), is an error.
+     * 2022-11-28) with the [etag] of the last answer. Any other answer, no list (HTTP 404) among
+     * them, an answer that does not read as a list of releases, and one whose body is still coming
+     * about [timeLimitMs] after the request's start (checked after each read; [ANSWER_TIME_MS]), is
+     * an error.
      */
     fun ask(feed: String, etag: String?, now: Long, timeLimitMs: Long = ANSWER_TIME_MS): Answer {
         val deadline = System.nanoTime() + timeLimitMs * 1_000_000
@@ -82,7 +80,6 @@ object AppUpdateHttp {
                     connection.getHeaderField("ETag"),
                 )
                 HttpURLConnection.HTTP_NOT_MODIFIED -> Answer.NotModified
-                HttpURLConnection.HTTP_NOT_FOUND -> Answer.NoRelease
                 else -> throw Status(code, "the release feed")
             }
         } finally {
@@ -138,7 +135,9 @@ object AppUpdateHttp {
         if (have > 0) connection.setRequestProperty("Range", "bytes=$have-")
         try {
             val code = connection.responseCode
-            answered("HTTP $code from ${connection.url.host}${connection.getHeaderField("Content-Range")?.let { " ($it)" }.orEmpty()}")
+            // A server with no Range sends the whole file, so the bytes in hand go.
+            val again = if (code == HttpURLConnection.HTTP_OK && have > 0) ": the whole file, from 0 bytes" else ""
+            answered("HTTP $code from ${connection.url.host}${connection.getHeaderField("Content-Range")?.let { " ($it)" }.orEmpty()}$again")
             val append = when (code) {
                 HttpURLConnection.HTTP_OK -> {
                     val length = connection.contentLengthLong

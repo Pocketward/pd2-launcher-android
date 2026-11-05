@@ -55,6 +55,8 @@ fun CheckScreen(
     FlowShell(
         step = FlowStep.CHECK,
         failed = tone == Tone.ERROR,
+        // A check still runs (the rows pending or working).
+        busy = tone == Tone.PENDING,
         title = text(screen.title),
         intro = stringResource(screen.intro),
         action = {

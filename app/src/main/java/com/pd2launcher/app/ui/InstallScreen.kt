@@ -810,6 +810,7 @@ fun InstallScreen(
     FlowShell(
         step = FlowStep.INSTALL,
         failed = view.state == InstallState.FAILED,
+        busy = working,
         title = title,
         intro = stringResource(if (working) R.string.install_intro_running else R.string.install_intro),
         onBack = onBack.takeUnless { working },
@@ -889,9 +890,10 @@ fun installNote(view: InstallView): Note? = when {
  * what goes and what is kept. From the press of Start over until its reset ends or is refused,
  * nothing can be pressed again. [onImport]: after an update in place whose moved game the engine
  * rejected, Import of that game comes first (the corner Check again takes otherwise; Check again
- * moves under the rows), and Start over second. [onSettings]: on every Repair of an installed game
+ * moves under the rows), and Start over second. [logs]: on every Repair of an installed game
  * ([Onboarding.repairLinks]: held on screen, where its Back leaves the app, opened from Play, or
- * through Check again), Settings and Share logs and Save logs under the rows.
+ * through Check again), Share logs and Save logs under the rows. No Settings link (the owner,
+ * 2026-11-04: "in the repair section, there's a settings link. We should remove that.").
  */
 @Composable
 fun RepairScreen(
@@ -900,7 +902,7 @@ fun RepairScreen(
     onStartOver: () -> Unit,
     onBack: () -> Unit,
     onImport: (() -> Unit)? = null,
-    onSettings: (() -> Unit)? = null,
+    logs: Boolean = false,
 ) {
     val snapshot = session.snapshot
     val focus = remember { FocusRequester() }
@@ -1007,9 +1009,8 @@ fun RepairScreen(
             ),
         )
         repairWaits(resetting, checking)?.let { WaitNote(stringResource(it)) }
-        if (onSettings != null) {
+        if (logs) {
             Rule()
-            TextLink(stringResource(R.string.play_settings), onSettings, Modifier.padding(top = 4.dp))
             ShareLogsLink()
         }
     }

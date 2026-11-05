@@ -6,7 +6,7 @@
     <!-- Held only while the engine-exit cleanup runs (at most 30 s). -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- The engine's own downloads (Download, updates); the app follows the default network's
-         DNS servers and warns on a metered one. -->
+         DNS servers. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Check's grant buttons: Android's own prompt to stop optimising the app's battery use,

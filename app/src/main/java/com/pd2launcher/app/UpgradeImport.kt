@@ -62,7 +62,7 @@ object UpgradeImport {
 
     /**
      * Whether an imported installation's game came from a folder the player picked, so the notice
-     * after the first game and Settings → App → Storage speak of it (one from Android's own storage
+     * after the first game and Settings → Files and saves → Storage speak of it (one from Android's own storage
      * can go; for Lite's folder, Lite still has its own copy; [InstallerDownloads.importedFolderShown]): not
      * when the game in use is the waiting folder [kept] and the player never picked a folder
      * ([picked], [SourceImport.pickedFolder]): that game is the older app's own install, and

@@ -209,7 +209,7 @@ enum class GameLayer {
  * elsewhere on the game closes it. Its gamepad opens the Controls screen ([ControlsScreen]).
  * Android's keyboard never pushes the game up; the menu keeps it as it is (its Keyboard tile
  * shows the real state), the Controls screen and the editor close it ([GameLayer.keepsKeyboard]).
- * The screen stays on as Settings → Keep the screen on says (MainActivity sets the window's flag;
+ * The screen stays on as Settings → Display → Keep the screen on during play says (MainActivity sets the window's flag;
  * a view of its own would keep it on whatever the setting).
  *
  * [presentCounter]: the game's present counter, for the fps counter ([SessionPaths.presentCounter]).
@@ -737,7 +737,7 @@ private class GameSurface(
     private val screen: XwdHeader,
 ) : SurfaceView(context) {
     /**
-     * Settings → Slower game in the background, followed live: while the view does not show (the
+     * Settings → Display → Slower game in the background, followed live: while the view does not show (the
      * app in the background, the screen off, the app's own screens over the game) and while an
      * overlay shows ([suspended]: the in-game menu, the Controls screen, their inputs, the editor),
      * the game's window loses the focus, so the game uses its own background frame rate
@@ -878,7 +878,7 @@ private class GameSurface(
     private var touch: TouchMouse? = null
 
     /**
-     * Touch ([AppSettings.touchMode]; the Controls screen and Settings → Controller), followed live:
+     * Touch ([AppSettings.touchMode]; the Controls screen and Settings → Controls), followed live:
      * the next touch goes through [TrackpadGestures] (Trackpad) or [TouchGestures] (Direct); a
      * gesture under way is let go.
      */

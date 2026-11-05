@@ -1,15 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Share logs and Save logs: Settings → App → Help, and beside a failure on Check, Download and Install (LogShare.kt). -->
-    <string name="settings_section_help">Help</string>
+    <!-- Settings → Help → Problem reports: its note, Detailed logging and Save logs. Save logs and Share logs also beside a failure on Check, Download and Install (LogShare.kt). -->
+    <string name="settings_section_problem_reports">Problem reports</string>
+    <string name="settings_logs_note">Logs hold no CD keys. They can show character names and network addresses.</string>
+    <!-- Help's line in the list of pages. -->
+    <string name="settings_section_logs">Logs</string>
     <string name="share_logs">Share logs</string>
     <string name="settings_detailed_logging">Detailed logging</string>
-    <string name="settings_detailed_logging_body">The logs record more for a problem report: the controller\'s buttons, how long the pointer takes to follow your input, the game\'s frames, each file that save sync copies, the game\'s network connections and the server addresses, the program files the game loads, crashes, and the official launcher\'s full output. The app\'s own records start at once; the game\'s start at the next Play or official launcher. The logs then fill up faster, so turn it off after you send them.</string>
-    <string name="share_logs_body">Sends the app\'s logs as one file, for example with a problem report. They hold no CD keys, but they can show your character names and network addresses.</string>
+    <string name="settings_detailed_logging_body">Records more. Turn it off after you send the logs.</string>
     <string name="share_logs_working">Preparing the logs…</string>
     <string name="share_logs_failed">The logs couldn\'t be prepared. Try again.</string>
     <string name="save_logs">Save logs</string>
-    <string name="save_logs_body">Saves the same file on this device, for example in Downloads, so you can send it later.</string>
+    <string name="save_logs_body">Saves the logs as one file in a folder that you pick.</string>
     <string name="save_logs_saved">The logs are saved.</string>
     <string name="save_logs_failed">The logs couldn\'t be saved. Try again.</string>
     <!-- The share sheet: its title, and the subject an email app gets. -->

@@ -29,6 +29,8 @@ import com.pd2launcher.app.control.HostFacts
 import com.pd2launcher.app.control.Installation
 import com.pd2launcher.app.control.Operation
 import com.pd2launcher.app.control.OperationStatus
+import com.pd2launcher.app.control.Renderer
+import com.pd2launcher.app.control.Settings
 import com.pd2launcher.app.control.Snapshot
 import com.pd2launcher.app.control.collect
 import com.pd2launcher.app.input.ControlsStore
@@ -343,7 +345,7 @@ class SessionService : Service() {
         // In the foreground with the notification while something must go on in the background:
         // each change of the session, the folder copy or the app update.
         scope.launch {
-            combine(_status, SourceImport.copy, AppUpdater.state) { status, copy, update ->
+            combine(_status, SourceImport.copy, AppUpdater.work) { status, copy, update ->
                 BackgroundWork.keeps(
                     status, installEnvironment, copy is SourceCopy.Copying, BackgroundWork.appUpdating(update), SystemClock.elapsedRealtime(),
                 )
@@ -397,7 +399,7 @@ class SessionService : Service() {
     /** Whether the session may end now ([SessionIdle.idle]). */
     private fun idle(now: Long): Boolean = SessionIdle.idle(
         _status.value, appForeground, installEnvironment, SourceImport.copy.value is SourceCopy.Copying,
-        SessionIdle.updating(AppUpdater.state.value), now,
+        SessionIdle.updating(AppUpdater.check.value, AppUpdater.work.value), now,
     )
 
     /**
@@ -965,6 +967,11 @@ class SessionService : Service() {
         }
         log("engine command error: seq ${error.seq}: ${error.reason}")
         launcherLog.refused(error.seq, error.reason)
+        // Play's Glide command was refused: the launch goes on at once with the stored renderer ([GlideFirst]).
+        if (error.seq == glideSeq && glideAskedAt != null) {
+            glideRefused = true
+            glideAnswered()
+        }
         // The removal for a picked folder was refused (another job runs): the downloads' files
         // stay, and the player asked for nothing that did not start.
         if (error.reason == DiabloSource.DISCARD_REFUSED) return
@@ -1209,6 +1216,8 @@ class SessionService : Service() {
         val pending = pendingStart
         if (pending != null && pending.observe(connection, message.seq, next)) pendingStart = null
         followPlayCheck()
+        // Play's wait for Glide: this snapshot may have it.
+        glideAnswered(next.settings)
     }
 
     /** Closing the channel makes the engine stop safely and exit; SIGKILL if it does not in time. */
@@ -1576,7 +1585,39 @@ class SessionService : Service() {
             _status.update { if (it.playCheck is PlayCheck.State.Starting) it.copy(playCheck = null) else it }
             return
         }
-        launchRequested(SystemClock.elapsedRealtime())
+        // Glide for every Play (GlideFirst): a stored DirectDraw goes to Glide first, and Play waits for the engine.
+        val now = SystemClock.elapsedRealtime()
+        when (GlideFirst.step(_status.value.snapshot?.settings, glideAskedAt, now, glideRefused)) {
+            GlideFirst.Step.SET_GLIDE -> {
+                val seq = sendCommand(GlideFirst.command)
+                if (seq != null) {
+                    log("Play: the stored Renderer is DirectDraw; set to Glide first (seq $seq), the game starts once the engine has it")
+                    glideAskedAt = now
+                    glideSeq = seq
+                    glideRefused = false
+                    launchRequested(now)
+                    scope.launch {
+                        delay(GlideFirst.WAIT_MS)
+                        post { glideAnswered() }
+                    }
+                    return
+                }
+                log("Play: the stored Renderer is DirectDraw, and Glide could not be sent; the game starts as it is")
+            }
+            GlideFirst.Step.WAIT -> return
+            GlideFirst.Step.LAUNCH -> if (glideAskedAt != null) {
+                val why = when {
+                    _status.value.snapshot?.settings?.renderer == Renderer.GLIDE -> "the engine has Glide"
+                    glideRefused -> "the engine refused Glide"
+                    else -> "no answer for Glide in ${GlideFirst.WAIT_MS} ms"
+                }
+                log("Play: $why; the game starts")
+            }
+        }
+        glideAskedAt = null
+        glideSeq = null
+        glideRefused = false
+        launchRequested(now)
         val settings = AppSettingsStore.load(this)
         stopAtOtherSize()
         if (!game.running) startGameEnvironment(null)
@@ -1607,6 +1648,25 @@ class SessionService : Service() {
             // launcher session must not stop it ([launcherSent]).
             if (launchSent != null) launcherSent = null
         }
+    }
+
+    /** When Play asked the engine for Glide first ([GlideFirst]); null: no such wait. Worker thread only. */
+    private var glideAskedAt: Long? = null
+
+    /** The seq of that Glide command, and whether the engine refused it ([onCommandError]): then Play goes on at once. */
+    private var glideSeq: Long? = null
+    private var glideRefused = false
+
+    /**
+     * Play's wait for Glide ([GlideFirst]): once the engine's snapshot has it, or the wait is over,
+     * the launch goes on. Worker thread only.
+     */
+    private fun glideAnswered(settings: Settings? = _status.value.snapshot?.settings) {
+        if (glideAskedAt == null) return
+        if (GlideFirst.step(settings, glideAskedAt, SystemClock.elapsedRealtime(), glideRefused) == GlideFirst.Step.WAIT) return
+        // The launch that waited holds launchRequestedAt: free it for launch() itself.
+        launchRequested(null)
+        launch()
     }
 
     /**
@@ -2139,8 +2199,8 @@ class SessionService : Service() {
             it.acquire(wait + BackgroundWork.COPY_STOP_MS + ENGINE_STOP_TIMEOUT_MS + WINESERVER_TIMEOUT_MS + CLOSE_WAKE_MARGIN_MS)
         }
         followForeground()
-        if (AppUpdater.state.value is AppUpdate.State.Downloading) {
-            log("Close: the app update's download stops; Resume continues it")
+        if (AppUpdater.work.value is AppUpdate.Work.Downloading) {
+            log("Close: the app update's download stops; Try again continues it")
             AppUpdater.stop()
         }
         // Also when none runs: none starts from here on, until the next session start.
@@ -2238,7 +2298,7 @@ class SessionService : Service() {
         if (stopping || stopAsked) return
         val wanted = closing || BackgroundWork.keeps(
             _status.value, installEnvironment, SourceImport.copy.value is SourceCopy.Copying,
-            BackgroundWork.appUpdating(AppUpdater.state.value), SystemClock.elapsedRealtime(),
+            BackgroundWork.appUpdating(AppUpdater.work.value), SystemClock.elapsedRealtime(),
         )
         if (wanted && (!inForeground || notificationClosing != closing)) {
             startForeground(NOTIFICATION_ID, notification(closing))
@@ -2477,7 +2537,7 @@ class SessionService : Service() {
         const val ACTION_INSTALL_PD2 = "com.pd2launcher.app.action.INSTALL_PD2"
         /** The notification's Close: what runs stops safely, then the session and the app's screens ([close]). */
         const val ACTION_CLOSE = "com.pd2launcher.app.action.CLOSE"
-        /** Settings → App → Game files → Save sync: a sync now ([syncSavesSoon]), named by [EXTRA_SYNC_WHY]. */
+        /** Settings → Files and saves → Game files → Save sync: a sync now ([syncSavesSoon]), named by [EXTRA_SYNC_WHY]. */
         const val ACTION_SYNC_SAVES = "com.pd2launcher.app.action.SYNC_SAVES"
         /** Debug builds: the X screen's size for [ACTION_GAME_START], `<width>x<height>`. */
         const val EXTRA_X_SCREEN = "xscreen"
@@ -2659,7 +2719,7 @@ class SessionService : Service() {
         }
 
         /**
-         * Removes the installer downloads (the notice on Play, Settings → App → Storage); [done]
+         * Removes the installer downloads (the notice on Play, Settings → Files and saves → Storage); [done]
          * gets the outcome on the session's worker thread.
          */
         fun removeInstallerDownloads(done: (InstallerDownloads.Outcome) -> Unit) {

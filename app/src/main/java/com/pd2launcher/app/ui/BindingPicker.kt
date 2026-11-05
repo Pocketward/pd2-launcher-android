@@ -47,11 +47,11 @@ import com.pd2launcher.app.input.PadAction
 import com.pd2launcher.app.input.PadButton
 
 /**
- * The binding picker for one controller [button] in one mode ([mouse]), from Settings →
- * Controller and from the in-game Controls screen: what the button may do (the game pad in pad
- * mode, nothing, the mouse, then Diablo II's keys), the current choice selected and focused. A
- * sheet from the right ([side]: handhelds, and the game, which is always landscape) or from the
- * bottom (phones in Settings), the rest dimmed. A pick saves at once ([save]) and closes it;
+ * The binding picker for one controller [button] in one mode ([mouse]), from the Controls screen
+ * (in the game and from Settings → Controls → Buttons): what the button may do (the game pad in
+ * pad mode, nothing, the mouse, then Diablo II's keys), the current choice selected and focused.
+ * A sheet from the right (the Controls screen is always landscape), the rest dimmed. A pick saves
+ * at once ([save]) and closes it;
  * Done, Back or a tap on the dim closes it unchanged ([onClose]).
  */
 @Composable
@@ -59,7 +59,6 @@ internal fun BoxScope.BindingPicker(
     controls: Controls,
     button: PadButton,
     mouse: Boolean,
-    side: Boolean,
     save: (Controls) -> Unit,
     onClose: () -> Unit,
 ) {
@@ -67,11 +66,7 @@ internal fun BoxScope.BindingPicker(
     // A tap on the dim closes the sheet; the dim takes no focus.
     val close by rememberUpdatedState(onClose)
     Box(Modifier.matchParentSize().background(Color.Black.copy(alpha = 0.5f)).pointerInput(Unit) { detectTapGestures { close() } })
-    val sheet = if (side) {
-        Modifier.align(Alignment.CenterEnd).width(SIDE_SHEET).fillMaxHeight()
-    } else {
-        Modifier.align(Alignment.BottomCenter).fillMaxWidth().fillMaxHeight(0.72f)
-    }
+    val sheet = Modifier.align(Alignment.CenterEnd).width(SIDE_SHEET).fillMaxHeight()
     val current = controls.action(button, mouse)
     val first = remember { FocusRequester() }
     LaunchedEffect(button, mouse) { runCatching { first.requestFocus() } }

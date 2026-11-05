@@ -163,7 +163,7 @@ class FrameCopy private constructor(private var handle: Long) {
 }
 
 /**
- * The frame rate the player picks (Settings, Game): the screen's full rate, or a reduced frame
+ * The frame rate the player picks (Settings → Display): the screen's full rate, or a reduced frame
  * rate where the screen is faster. The full rate is the rate the screen really shows when the
  * Game view asks it for its highest mode ([ScreenRate]); a phone's settings can hold it below the
  * highest mode (for example, Smooth Display off: 120 Hz modes, 60 frames a second shown). It

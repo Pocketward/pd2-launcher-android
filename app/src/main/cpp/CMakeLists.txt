@@ -1,10 +1,10 @@
 cmake_minimum_required(VERSION 3.22.1)
 project(seccompprobe C CXX)
 
-# Every library's LOAD segments are aligned for 4 KB memory pages, the page size that the app's
-# Wine and Box64 need. NDK r27 does this by default, but r28 and later align for 16 KB, so the
-# option is explicit.
-add_link_options("LINKER:-z,max-page-size=4096")
+# Every library's LOAD segments are aligned for 16 KB memory pages, which is what Android's check of
+# 16 KB compatibility reads. This is the alignment only: the app's Wine and Box64 still need 4 KB
+# pages. NDK r27 aligns for 4 KB by default, so the option is explicit.
+add_link_options("LINKER:-z,max-page-size=16384")
 
 # minSdk is 30 (Android 11): an NDK function from a later API level is a weak reference, and each
 # call of one must check the API level first (__builtin_available), or the build stops.

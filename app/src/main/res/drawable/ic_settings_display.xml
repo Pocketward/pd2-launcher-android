@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Material Symbols Outlined "display_settings" (Google, Apache License 2.0), weight 400, not filled. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="960"
+    android:viewportHeight="960">
+    <group android:translateY="960">
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M300 -360H360V-520H300V-470H240V-410H300ZM400 -410H720V-470H400ZM600 -520H660V-570H720V-630H660V-680H600ZM240 -570H560V-630H240ZM320 -120V-200H160Q127 -200 103.5 -223.5Q80 -247 80 -280V-760Q80 -793 103.5 -816.5Q127 -840 160 -840H800Q833 -840 856.5 -816.5Q880 -793 880 -760V-280Q880 -247 856.5 -223.5Q833 -200 800 -200H640V-120ZM160 -280H800Q800 -280 800.0 -280.0Q800 -280 800 -280V-760Q800 -760 800.0 -760.0Q800 -760 800 -760H160Q160 -760 160.0 -760.0Q160 -760 160 -760V-280Q160 -280 160.0 -280.0Q160 -280 160 -280ZM160 -280Q160 -280 160.0 -280.0Q160 -280 160 -280V-760Q160 -760 160.0 -760.0Q160 -760 160 -760Q160 -760 160.0 -760.0Q160 -760 160 -760V-280Q160 -280 160.0 -280.0Q160 -280 160 -280Z" />
+    </group>
+</vector>

@@ -8,10 +8,10 @@
     <string name="game_menu_settings">Settings</string>
     <string name="game_menu_l1">L1</string>
     <string name="game_menu_r1">R1</string>
-    <!-- The Quick tab's tiles: each shows its state word; Display switches between Fit to screen and Center (Settings, Game, Display). -->
+    <!-- The Quick tab's tiles: each shows its state word; Display switches between Fit to screen and Center (Settings → Display → Display). The FPS counter's name is also its row's in Settings → Display. -->
     <string name="on_screen_controls">On-screen controls</string>
     <string name="game_menu_fps_counter">FPS counter</string>
-    <string name="game_menu_display">Display</string>
+    <string name="game_menu_display">Picture size</string>
     <string name="game_view_keyboard">Keyboard</string>
     <string name="game_menu_on">On</string>
     <string name="game_menu_off">Off</string>

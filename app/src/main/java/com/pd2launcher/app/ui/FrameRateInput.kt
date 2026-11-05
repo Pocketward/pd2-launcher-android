@@ -79,10 +79,10 @@ import java.util.Locale
  * most as its number, [FrameRateVote.typed]) and gives [onSet] the value to store; any other
  * number turns the help line into what to type, and the dialog stays. While it shows it measures
  * the full rate again ([ScreenRateProbe]): the caller gives the live [full], so the limit and the
- * help line follow that measurement.
+ * help line follow that measurement. [intro]: what the setting does, under the title (Settings).
  */
 @Composable
-internal fun FrameRateInput(current: Int, full: Float, onSet: (Int) -> Unit, onClose: () -> Unit) {
+internal fun FrameRateInput(current: Int, full: Float, onSet: (Int) -> Unit, intro: String? = null, onClose: () -> Unit) {
     val context = LocalContext.current
     val highest = remember { FrameRateVote.highest(context) }
     val most = FrameRateVote.most(full)
@@ -91,6 +91,7 @@ internal fun FrameRateInput(current: Int, full: Float, onSet: (Int) -> Unit, onC
     val opened = remember { start }
     NumberInput(
         title = stringResource(R.string.settings_frame_rate),
+        intro = intro,
         start = start.toString(),
         suffix = stringResource(R.string.frame_rate_unit),
         decimal = false,
@@ -106,7 +107,7 @@ internal fun FrameRateInput(current: Int, full: Float, onSet: (Int) -> Unit, onC
 }
 
 /**
- * The Pointer speed input, from the in-game Controls screen: mouse mode's and Trackpad's pointer
+ * The Pointer speed input, from the Controls screen and Settings → Controls: mouse mode's and Trackpad's pointer
  * speed in a field ([current]), "×" after it, in the Frame rate input's style. The D-pad's up and
  * down change it by [PointerSpeed.STEP]. OK takes a number inside [PointerSpeed.RANGE], put on the
  * step grid ([PointerSpeed.typed]), and gives [onSet] the value to store.
@@ -116,6 +117,7 @@ internal fun PointerSpeedInput(current: Float, onSet: (Float) -> Unit, onClose: 
     val range = PointerSpeed.RANGE
     NumberInput(
         title = stringResource(R.string.controls_pointer_speed_title),
+        intro = null,
         start = speedText(current),
         suffix = stringResource(R.string.controls_factor_unit),
         decimal = true,
@@ -139,8 +141,9 @@ internal fun PointerSpeedInput(current: Float, onSet: (Float) -> Unit, onClose: 
 internal fun speedText(value: Float): String = String.format(Locale.ROOT, "%.2f", value)
 
 /**
- * A dialog for one number: [title], a field with [start] in it and [suffix] after it, one help
- * line ([help], or [wrong] after a number OK refused), and Cancel and OK. The field has the focus
+ * A dialog for one number: [title], what it sets ([intro], where given; not where the room is
+ * short), a field with [start] in it and [suffix] after it, one help line ([help], or [wrong] after
+ * a number OK refused), and Cancel and OK. The field has the focus
  * with the whole number selected, so a number typed replaces it. Opened by a touch, Android's
  * number keyboard opens at once; opened with a controller or keys (out of touch mode), the
  * keyboard stays closed: the D-pad's up and down change the number ([step]: the text after that
@@ -154,6 +157,7 @@ internal fun speedText(value: Float): String = String.format(Locale.ROOT, "%.2f"
 @Composable
 private fun NumberInput(
     title: String,
+    intro: String?,
     start: String,
     suffix: String,
     decimal: Boolean,
@@ -224,6 +228,7 @@ private fun NumberInput(
                     }
                 } else {
                     Text(title, style = Type.Title, color = Palette.Text)
+                    if (intro != null) Text(intro, style = Type.Hint, color = Palette.Muted, modifier = Modifier.padding(top = 6.dp))
                 }
                 Spacer(Modifier.height(if (compact) 8.dp else 12.dp))
                 // The same call in both shapes, so the field (and the keyboard on it) stays.

@@ -100,6 +100,13 @@ class SessionPaths(val data: String) {
     val emptyDnsForTest = File(files, "debug-empty-dns")
 
     /**
+     * Debug builds only: with this file the start of Xvfb through taskset fails at once, as on
+     * firmware that refuses taskset's affinity (issue #13); Xvfb then starts without taskset
+     * ([LittleCoresStart]). Read at each start of the game environment while taskset was not refused.
+     */
+    val tasksetFailsForTest = File(files, "debug-taskset-fails")
+
+    /**
      * Debug builds only: with this file the Game view keeps Android's buffered input dispatch
      * ([InputDispatch]); it looks each time it opens.
      */

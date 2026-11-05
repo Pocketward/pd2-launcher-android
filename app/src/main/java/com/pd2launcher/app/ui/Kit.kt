@@ -7,6 +7,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.indication
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -16,7 +17,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
-import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -75,14 +76,14 @@ import kotlin.math.max
 /** The radius family: 8 dp controls, 12 dp rows and panels, pills for buttons. */
 val Small = RoundedCornerShape(8.dp)
 val RowShape = RoundedCornerShape(12.dp)
-private val Pill = RoundedCornerShape(percent = 50)
+internal val Pill = RoundedCornerShape(percent = 50)
 
 /** A [Line] as text. */
 @Composable
 fun text(line: Line): String = stringResource(line.id, *line.args.toTypedArray())
 
 fun toneColor(tone: Tone): Color = when (tone) {
-    Tone.OK, Tone.WORKING -> Palette.Teal
+    Tone.OK, Tone.WORKING, Tone.WAITING -> Palette.Teal
     Tone.WARNING -> Palette.Amber
     Tone.ERROR -> Palette.Red
     Tone.PENDING -> Palette.Muted
@@ -152,10 +153,10 @@ fun ScreenTitle(text: String, modifier: Modifier = Modifier, style: TextStyle = 
     Text(text, style = style, color = Palette.Text, modifier = modifier.semantics { heading() })
 }
 
-/** A teal overline that starts a group. */
+/** A teal overline that starts a group, [top] under what comes before it. */
 @Composable
-fun GroupLabel(text: String, modifier: Modifier = Modifier) {
-    Text(text.uppercase(), style = Type.Label, color = Palette.Teal, modifier = modifier.padding(top = 16.dp, bottom = 6.dp).semantics { heading() })
+fun GroupLabel(text: String, modifier: Modifier = Modifier, top: Dp = 16.dp) {
+    Text(text.uppercase(), style = Type.Label, color = Palette.Teal, modifier = modifier.padding(top = top, bottom = 6.dp).semantics { heading() })
 }
 
 /**
@@ -190,7 +191,7 @@ private val MARK_GAP = 10.dp
 /** A status dot: the save state's, "Game running". */
 @Composable
 fun Dot(color: Color, modifier: Modifier = Modifier) {
-    Box(modifier.size(8.dp).clip(CircleShape).background(color))
+    Box(modifier.size(DOT_SIZE).clip(CircleShape).background(color))
 }
 
 // ---------------------------------------------------------------- controls
@@ -218,9 +219,10 @@ fun LauncherButton(
     padding: Dp = 22.dp,
     floating: Boolean = false,
     /**
-     * A small [Palette.Gold] dot at the label's top-right corner, as mobile games mark an icon that
-     * has news (Play's About while a new version is out), and these words for TalkBack after the
-     * label. Null: none. Only drawn: the layout and the focus stay as they are.
+     * The app's attention dot ([Dot]: 8 dp, [Palette.Amber]; the owner, 2026-11-03: "we want the same
+     * color dot everywhere in our app") at the label's top-right corner, as mobile games mark an icon
+     * that has news (Play's Version while a new version is out), and these words for TalkBack after
+     * the label. Null: none. Only drawn: the layout and the focus stay as they are.
      */
     dot: String? = null,
 ) {
@@ -274,13 +276,14 @@ fun LauncherButton(
     }
 }
 
-/** [LauncherButton]'s dot: [DOT_SIZE] across, [DOT_GAP] right of the label, its top on the label's top. */
+/** [LauncherButton]'s dot, the same as [Dot] (size and colour): [DOT_SIZE] across, [DOT_GAP] right of the label, its top on the label's top. */
 private fun DrawScope.drawDot() {
     val radius = DOT_SIZE.toPx() / 2
-    drawCircle(Palette.Gold, radius, Offset(size.width + DOT_GAP.toPx() + radius, radius))
+    drawCircle(Palette.Amber, radius, Offset(size.width + DOT_GAP.toPx() + radius, radius))
 }
 
-private val DOT_SIZE = 7.dp
+/** [Dot]'s size. */
+private val DOT_SIZE = 8.dp
 private val DOT_GAP = 2.dp
 
 /** [requester] on this element, when there is one. */
@@ -331,27 +334,31 @@ fun FocusRow(
     )
 }
 
-/** The launcher's toggle: a squared track and knob, teal when on. */
+/** The launcher's toggle: a slim round pill, an outline when off, teal when on. */
 @Composable
 fun Toggle(checked: Boolean, modifier: Modifier = Modifier) {
-    Canvas(modifier.size(width = 42.dp, height = 24.dp)) {
-        val r = CornerRadius(7f * density)
+    Canvas(modifier.size(width = 36.dp, height = 20.dp)) {
+        val r = CornerRadius(size.height / 2)
         if (checked) {
             drawRoundRect(Palette.Teal, cornerRadius = r)
         } else {
-            drawRoundRect(Palette.Raised, cornerRadius = r)
-            drawRoundRect(Palette.Rule, cornerRadius = r, style = Stroke(1.5f * density))
+            val line = 1.5f * density
+            drawRoundRect(
+                Palette.Edge, Offset(line / 2, line / 2), Size(size.width - line, size.height - line),
+                CornerRadius(r.x - line / 2), style = Stroke(line),
+            )
         }
-        val k = 16f * density
+        val k = 6f * density
         val inset = 4f * density
-        val x = if (checked) size.width - inset - k else inset
-        drawRoundRect(if (checked) Palette.OnTeal else Palette.Muted, Offset(x, (size.height - k) / 2), Size(k, k), CornerRadius(4f * density))
+        val x = if (checked) size.width - inset - k else inset + k
+        drawCircle(if (checked) Palette.OnTeal else Palette.Muted, k, Offset(x, size.height / 2))
     }
 }
 
 /**
  * A row with a title, a supporting line and the toggle; the whole row toggles. Disabled rows
- * stay focusable so the controller can reach them and read why.
+ * stay focusable so the controller can reach them and read why. [prominent]: the row stands apart
+ * on a raised surface, its title in bold.
  */
 @Composable
 fun ToggleRow(
@@ -361,11 +368,21 @@ fun ToggleRow(
     onChange: (Boolean) -> Unit,
     enabled: Boolean = true,
     focusRequester: FocusRequester? = null,
+    prominent: Boolean = false,
 ) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
     Row(
         Modifier
+            .then(
+                if (prominent) {
+                    // An outer border draws over the ring of focusMark, so it goes while the ring shows.
+                    Modifier.padding(top = 6.dp, bottom = 4.dp).clip(RowShape).background(Palette.Surface)
+                        .border(1.dp, if (focused) Color.Transparent else Palette.Rule, RowShape)
+                } else {
+                    Modifier
+                },
+            )
             .focusOn(focusRequester)
             .fillMaxWidth().heightIn(min = 60.dp).focusMark(focused)
             .then(
@@ -380,15 +397,30 @@ fun ToggleRow(
         horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(title, style = Type.Body, color = if (enabled) Palette.Text else Palette.Faint)
+            Text(
+                title, style = Type.Body.copy(fontWeight = if (prominent) FontWeight.SemiBold else null),
+                color = if (enabled) Palette.Text else Palette.Faint,
+            )
             if (supporting.isNotEmpty()) Text(supporting, style = Type.Hint, color = if (enabled) Palette.Muted else Palette.Faint)
         }
         Toggle(checked)
     }
 }
 
+/** A radio button's mark: a teal ring and dot. [ring]: the ring when it is not teal (the GPU page's is clearer). */
+@Composable
+fun RadioMark(selected: Boolean, modifier: Modifier = Modifier, enabled: Boolean = true, ring: Color = Palette.Rule) {
+    Box(
+        modifier.size(20.dp).clip(CircleShape).border(1.5.dp, if (selected && enabled) Palette.Teal else ring, CircleShape),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (selected) Box(Modifier.size(10.dp).clip(CircleShape).background(if (enabled) Palette.Teal else Palette.Faint))
+    }
+}
+
 /**
- * One of a single choice, with its explanation: a teal ring and dot; the whole row selects.
+ * One of a single choice, with its explanation: a teal ring and dot; the whole row selects. A grey
+ * row ([enabled] false) stays focusable so the controller can reach it, unless [focusable] is false.
  * [tinted]: the selected row also gets the teal tint, and the rows are tighter, so three fit a
  * handheld's screen at a large font (the Diablo II source page).
  */
@@ -401,27 +433,28 @@ fun OptionRow(
     enabled: Boolean = true,
     focusRequester: FocusRequester? = null,
     tinted: Boolean = false,
+    focusable: Boolean = true,
+    modifier: Modifier = Modifier,
 ) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
     Row(
-        Modifier
+        modifier
             .focusOn(focusRequester)
             .fillMaxWidth().heightIn(min = if (tinted) 52.dp else 60.dp).focusMark(focused, selected = tinted && selected)
             .then(
-                if (enabled) {
-                    Modifier.selectable(selected, interaction, LocalIndication.current, role = Role.RadioButton, onClick = onSelect)
-                } else {
-                    Modifier.semantics { disabled() }.focusable(interactionSource = interaction)
+                when {
+                    enabled -> Modifier.selectable(selected, interaction, LocalIndication.current, role = Role.RadioButton, onClick = onSelect)
+                    // A grey row that takes no focus either, as Loot filters ([focusable] false).
+                    !focusable -> Modifier.semantics { disabled() }
+                    else -> Modifier.semantics { disabled() }.focusable(interactionSource = interaction)
                 },
             )
             .padding(horizontal = 14.dp, vertical = if (tinted) 3.dp else 10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Box(Modifier.size(20.dp).clip(CircleShape).border(1.5.dp, if (selected && enabled) Palette.Teal else Palette.Rule, CircleShape), contentAlignment = Alignment.Center) {
-            if (selected) Box(Modifier.size(10.dp).clip(CircleShape).background(if (enabled) Palette.Teal else Palette.Faint))
-        }
+        RadioMark(selected, enabled = enabled)
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(if (tinted) 0.dp else 2.dp)) {
             Text(title, style = Type.Body, color = if (enabled) Palette.Text else Palette.Faint)
             if (body != null) Text(body, style = Type.Hint, color = if (enabled) Palette.Muted else Palette.Faint)
@@ -430,9 +463,90 @@ fun OptionRow(
 }
 
 /**
+ * A slim button of a row: 30 dp to see and 48 dp to touch, so the row stays lean. A disabled one
+ * stays focusable, as [LauncherButton], unless its [modifier] says `canFocus = false` (Check now
+ * during a check, Manage): that node's change loses the focus it holds, so the caller hands it on.
+ */
+@Composable
+fun SlimButton(
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    focusRequester: FocusRequester? = null,
+) {
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+    val action = if (enabled) {
+        Modifier.clickable(interactionSource = interaction, indication = null, role = Role.Button, onClick = onClick)
+    } else {
+        Modifier.semantics { disabled(); role = Role.Button }.focusable(interactionSource = interaction)
+    }
+    Box(modifier.focusOn(focusRequester).heightIn(min = 48.dp).widthIn(min = 48.dp).then(action), contentAlignment = Alignment.Center) {
+        Box(
+            Modifier.height(30.dp).border(if (focused) 2.dp else 1.dp, if (focused) Palette.Teal else if (enabled) Palette.Edge else Palette.Rule, Pill)
+                .clip(Pill).background(if (focused) Palette.Raised else Color.Transparent)
+                .indication(interaction, LocalIndication.current).padding(horizontal = 14.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                label, style = Type.Hint.copy(fontWeight = FontWeight.SemiBold), color = if (enabled) Palette.Text else Palette.Faint,
+                maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+/**
+ * A slim switch between [options]: one line in a pill, 34 dp to see and 48 dp to touch, the
+ * chosen option filled. Each option is its own focus stop; [selectedFocus] is the chosen one's, so
+ * a row above can send the d-pad there.
+ */
+@Composable
+fun SlimSwitch(options: List<String>, selected: Int, onSelect: (Int) -> Unit, modifier: Modifier = Modifier, selectedFocus: FocusRequester? = null) {
+    Row(
+        modifier.height(48.dp).drawBehind {
+            val high = SLIM_SWITCH_HIGH.toPx()
+            val line = 1.dp.toPx()
+            drawRoundRect(
+                Palette.Edge, Offset(line / 2, (size.height - high + line) / 2), Size(size.width - line, high - line),
+                CornerRadius(high / 2), style = Stroke(line),
+            )
+        }.padding(horizontal = 3.dp),
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        options.forEachIndexed { i, label ->
+            val interaction = remember { MutableInteractionSource() }
+            val focused by interaction.collectIsFocusedAsState()
+            val on = i == selected
+            Box(
+                Modifier.fillMaxHeight()
+                    .then(if (on && selectedFocus != null) Modifier.focusRequester(selectedFocus) else Modifier)
+                    .selectable(on, interaction, null, role = Role.RadioButton) { onSelect(i) },
+                contentAlignment = Alignment.Center,
+            ) {
+                Box(
+                    Modifier.height(28.dp).clip(Pill).background(if (on || focused) Palette.Raised else Color.Transparent)
+                        .border(if (focused) 2.dp else 0.dp, if (focused) Palette.Teal else Color.Transparent, Pill)
+                        .indication(interaction, LocalIndication.current).padding(horizontal = 12.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        label, style = Type.Hint.copy(fontWeight = if (on) FontWeight.SemiBold else FontWeight.Medium),
+                        color = if (on) Palette.Teal else Palette.Muted, maxLines = 1, softWrap = false,
+                    )
+                }
+            }
+        }
+    }
+}
+
+private val SLIM_SWITCH_HIGH = 34.dp
+
+/**
  * A segmented choice: the options in one hairline slot, the chosen one teal-tinted. Each option
- * is its own 48 dp focus stop. [compact]: the control of a row, beside the row's label (Touch):
- * each option only as wide as its word and 40 dp high.
+ * is its own focus stop, at least 48 dp high. [compact]: the control of a row, beside the row's
+ * label (Touch): each option only as wide as its word, at least 48 dp.
  */
 @Composable
 fun Segmented(options: List<String>, selected: Int, onSelect: (Int) -> Unit, modifier: Modifier = Modifier, compact: Boolean = false) {
@@ -446,7 +560,7 @@ fun Segmented(options: List<String>, selected: Int, onSelect: (Int) -> Unit, mod
             val focused by interaction.collectIsFocusedAsState()
             val on = i == selected
             Box(
-                (if (compact) Modifier.heightIn(min = 40.dp) else Modifier.weight(1f).heightIn(min = 46.dp))
+                (if (compact) Modifier.widthIn(min = 48.dp) else Modifier.weight(1f)).heightIn(min = 48.dp)
                     .focusMark(focused, selected = on, shape = Small)
                     .selectable(on, interaction, LocalIndication.current, role = Role.RadioButton) { onSelect(i) }
                     .padding(horizontal = 8.dp),
@@ -458,36 +572,6 @@ fun Segmented(options: List<String>, selected: Int, onSelect: (Int) -> Unit, mod
                 )
             }
         }
-    }
-}
-
-/** A value with − and +: pointer speed, opacity, size; [supporting]: a quiet line under the title. */
-@Composable
-fun StepperRow(
-    title: String,
-    value: String,
-    fraction: Float,
-    onMinus: () -> Unit,
-    onPlus: () -> Unit,
-    enabled: Boolean = true,
-    supporting: String? = null,
-) {
-    Row(
-        Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(horizontal = 14.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Row {
-                Text(title, style = Type.Body, color = if (enabled) Palette.Text else Palette.Faint, modifier = Modifier.weight(1f))
-                Text(value, style = Type.Body, color = if (enabled) Palette.Teal else Palette.Faint)
-            }
-            if (supporting != null) Text(supporting, style = Type.Hint, color = if (enabled) Palette.Muted else Palette.Faint)
-            Bar(fraction, height = 3.dp, color = if (enabled) Palette.Teal else Palette.Faint)
-        }
-        Spacer(Modifier.width(4.dp))
-        LauncherButton(stringResource(R.string.stepper_less), onMinus, Modifier.width(52.dp), enabled = enabled, height = 48.dp, padding = 0.dp)
-        LauncherButton(stringResource(R.string.stepper_more), onPlus, Modifier.width(52.dp), enabled = enabled, height = 48.dp, padding = 0.dp)
     }
 }
 
@@ -506,7 +590,13 @@ fun Bar(progress: Float?, modifier: Modifier = Modifier, height: Dp = 6.dp, colo
     }
 }
 
-/** ✓, !, a spinner or an empty ring, with the state in words for TalkBack. [dim]: not reached yet. */
+/**
+ * A state's small mark, with the state in words for TalkBack: a dot of 8 dp (the size of Settings'
+ * save-state [Dot]) in teal (OK), amber (a warning) or red (an error), a small spinner (10 dp)
+ * while work runs, a teal ring with a dot when it waits for the player ([Tone.WAITING]), or a faint
+ * empty ring not reached yet ([dim]). The owner, 2026-11-03: "we don't have to use such
+ * huge yellow warning icons" ("yes all of it"): no large mark anywhere.
+ */
 @Composable
 fun StatusMark(tone: Tone, modifier: Modifier = Modifier, dim: Boolean = false) {
     val words = stringResource(
@@ -515,20 +605,21 @@ fun StatusMark(tone: Tone, modifier: Modifier = Modifier, dim: Boolean = false) 
             Tone.WARNING -> R.string.status_warning
             Tone.ERROR -> R.string.status_error
             Tone.PENDING, Tone.WORKING -> R.string.status_pending
+            Tone.WAITING -> R.string.status_waiting
         },
     )
-    Box(modifier.size(20.dp).semantics { contentDescription = words }, contentAlignment = Alignment.Center) {
+    Box(modifier.size(10.dp).semantics { contentDescription = words }, contentAlignment = Alignment.Center) {
         when {
             tone == Tone.WORKING || (tone == Tone.PENDING && !dim) ->
-                CircularProgressIndicator(Modifier.size(15.dp), strokeWidth = 2.dp, color = Palette.Teal, trackColor = Palette.Rule)
-            tone == Tone.PENDING -> Box(Modifier.size(20.dp).clip(CircleShape).border(1.5.dp, Palette.Rule, CircleShape))
-            tone == Tone.OK -> Box(Modifier.size(20.dp).clip(CircleShape).border(1.5.dp, Palette.Teal, CircleShape), contentAlignment = Alignment.Center) {
-                Text("✓", style = Type.Glyph, color = Palette.Teal)
+                CircularProgressIndicator(Modifier.size(10.dp), strokeWidth = 1.5.dp, color = Palette.Teal, trackColor = Palette.Rule)
+            tone == Tone.PENDING -> Box(Modifier.size(8.dp).clip(CircleShape).border(1.dp, Palette.Faint, CircleShape))
+            // Waiting for the player: a teal ring with a small teal dot, not the filled dot (done) or the empty ring (ahead).
+            tone == Tone.WAITING -> Box(Modifier.size(8.dp).clip(CircleShape).border(1.dp, Palette.Teal, CircleShape), contentAlignment = Alignment.Center) {
+                Box(Modifier.size(4.dp).clip(CircleShape).background(Palette.Teal))
             }
-            else -> Box(
-                Modifier.size(20.dp).clip(CircleShape).background(if (tone == Tone.WARNING) Palette.Amber else Palette.Red),
-                contentAlignment = Alignment.Center,
-            ) { Text("!", style = Type.Glyph, color = Palette.Background) }
+            tone == Tone.OK -> Dot(Palette.Teal)
+            tone == Tone.WARNING -> Dot(Palette.Amber)
+            else -> Dot(Palette.Red)
         }
     }
 }

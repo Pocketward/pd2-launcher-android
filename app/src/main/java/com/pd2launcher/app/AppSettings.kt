@@ -50,17 +50,21 @@ data class AppSettings(
      * installed: that notice waits for it.
      */
     val gamePlayed: Boolean = false,
-    /** The app looks for a newer release of itself each hour while it is open ([AppUpdater]); off: only About's Check now. */
-    val updateChecks: Boolean = true,
     /**
-     * Detailed logging (Settings → App → Help): the game's and the official launcher's Wine
+     * The update channel the player picked in Settings → App ([UpdateChannel]). Null: no pick yet,
+     * and the app follows this build's own channel ([AppUpdate.channel]); only the player's pick is
+     * stored.
+     */
+    val updateChannel: UpdateChannel? = null,
+    /**
+     * Detailed logging (Settings → Help): the game's and the official launcher's Wine
      * processes log more from their next start (their network connects and closes, every
      * exception, Box64's own log), for a problem report; off by default, and it stays as the
      * player set it. Sent with each Play and each press of the official launcher.
      */
     val detailedLogging: Boolean = false,
     /**
-     * Save sync (Settings → App → Game files, [SaveSyncFolder]): the
+     * Save sync (Settings → Files and saves → Game files, [SaveSyncFolder]): the
      * folder the player picked, as its document tree's URI, which the app holds a lasting grant
      * for; null: off (the default).
      */
@@ -74,9 +78,17 @@ data class AppSettings(
     /**
      * How touch on the game moves the pointer ([TouchMode]): Trackpad, by the finger's moves (the
      * default, also for a player who never picked one), or Direct, to the finger. The in-game
-     * Controls screen and Settings → Controller set it; the Game view follows it live.
+     * Controls screen and Settings → Controls set it; the Game view follows it live.
      */
     val touchMode: TouchMode = TouchMode.TRACKPAD,
+    /**
+     * The driver the player picked on Settings → App → Graphics driver ([DriverPage]); null: none
+     * yet (the page shows the route in use). In 0.3.8 the page is a placeholder: only the page
+     * reads this, and no route code does (the game always runs on today's route).
+     */
+    val driverPagePick: PlayerDriver? = null,
+    /** The Phone driver's way picked on the same page (VirGL or Venus); null: the chip's first. UI only, as [driverPagePick]. */
+    val driverPageWay: PhoneWay? = null,
 ) {
     /**
      * Start over took the installation ([SetupRecord.NONE]): the downloads notice belongs to it,
@@ -115,11 +127,16 @@ data class AppSettings(
             LAUNCHER_RESOLUTION to null,
             DOWNLOADS_NOTICE_ANSWERED to downloadsNoticeAnswered,
             GAME_PLAYED to gamePlayed,
-            UPDATE_CHECKS to updateChecks,
+            // The older "Look for new versions" switch: the hourly check has no switch now; removed
+            // at the first save.
+            UPDATE_CHECKS to null,
+            UPDATE_CHANNEL to updateChannel?.name,
             DETAILED_LOGGING to detailedLogging,
             SYNC_FOLDER to syncFolder,
             SOURCE_CHOICE to sourceChoice?.name,
             TOUCH_MODE to touchMode.takeIf { it != TouchMode.TRACKPAD }?.name,
+            DRIVER_PAGE_PICK to driverPagePick?.name,
+            DRIVER_PAGE_WAY to driverPageWay?.name,
         )
 
     companion object {
@@ -147,7 +164,10 @@ data class AppSettings(
         const val LAUNCHER_RESOLUTION = "launcher_resolution"
         const val DOWNLOADS_NOTICE_ANSWERED = "downloads_notice_answered"
         const val GAME_PLAYED = "game_played"
+        /** The older "Look for new versions" switch (a Boolean): not read, removed at the first save. */
         const val UPDATE_CHECKS = "update_checks"
+        /** [updateChannel]'s name; none: no pick yet (this build's own channel). */
+        const val UPDATE_CHANNEL = "update_channel"
         const val DETAILED_LOGGING = "detailed_logging"
         /** [syncFolder]'s URI; none: the sync is off. */
         const val SYNC_FOLDER = "sync_folder"
@@ -155,6 +175,14 @@ data class AppSettings(
         const val SOURCE_CHOICE = "source_choice"
         /** [touchMode]'s name; none: [TouchMode.TRACKPAD]. */
         const val TOUCH_MODE = "touch_mode"
+        /**
+         * [driverPagePick]'s name; none: no pick yet. The two driver page keys are 0.3.8's
+         * placeholder: a pick there was only "to look", so the 0.4.0 wiring must not take it as a
+         * real route: it drops these two keys once (review M4) and keeps its own pick.
+         */
+        const val DRIVER_PAGE_PICK = "driver_page_pick"
+        /** [driverPageWay]'s name; none: the chip's first way. */
+        const val DRIVER_PAGE_WAY = "driver_page_way"
 
         /** "<width>x<height>" of positive whole numbers, else null. */
         private fun parseSize(text: String): Pair<Int, Int>? {
@@ -176,11 +204,13 @@ data class AppSettings(
                 lowFrameRateInBackground = values[LOW_FRAME_RATE_IN_BACKGROUND] as? Boolean ?: defaults.lowFrameRateInBackground,
                 downloadsNoticeAnswered = values[DOWNLOADS_NOTICE_ANSWERED] as? Boolean ?: defaults.downloadsNoticeAnswered,
                 gamePlayed = values[GAME_PLAYED] as? Boolean ?: defaults.gamePlayed,
-                updateChecks = values[UPDATE_CHECKS] as? Boolean ?: defaults.updateChecks,
+                updateChannel = UpdateChannel.entries.firstOrNull { it.name == values[UPDATE_CHANNEL] },
                 detailedLogging = values[DETAILED_LOGGING] as? Boolean ?: defaults.detailedLogging,
                 syncFolder = (values[SYNC_FOLDER] as? String)?.takeIf { it.isNotEmpty() },
                 sourceChoice = SourceChoice.named(values[SOURCE_CHOICE] as? String),
                 touchMode = TouchMode.entries.firstOrNull { it.name == values[TOUCH_MODE] } ?: defaults.touchMode,
+                driverPagePick = PlayerDriver.entries.firstOrNull { it.name == values[DRIVER_PAGE_PICK] },
+                driverPageWay = PhoneWay.entries.firstOrNull { it.name == values[DRIVER_PAGE_WAY] },
             )
         }
     }

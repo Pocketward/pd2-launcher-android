@@ -88,6 +88,7 @@
     <string name="status_warning">warning</string>
     <string name="status_error">problem</string>
     <string name="status_pending">in progress</string>
+    <string name="status_waiting">waiting for you</string>
 
     <!-- The Launcher's host findings in plain words (the desktop's step 1 list, for Android). -->
     <string name="missing_display_session">A screen for Windows programs (the X screen)</string>

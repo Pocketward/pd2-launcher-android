@@ -53,6 +53,8 @@ sealed class EngineMessage {
     data class Welcome(
         val protocol: Int,
         @SerialName("launcher_version") val launcherVersion: String,
+        /** What the engine can do beyond its protocol (`gdi_adjmouse`: the Software driver); an engine without the field has none. */
+        val capabilities: List<String> = emptyList(),
     ) : EngineMessage()
 
     @Serializable

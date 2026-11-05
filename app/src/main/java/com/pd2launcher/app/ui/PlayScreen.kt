@@ -21,17 +21,26 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.layoutId
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -42,8 +51,10 @@ import com.pd2launcher.app.Line
 import com.pd2launcher.app.Onboarding
 import com.pd2launcher.app.OperationStart
 import com.pd2launcher.app.PlayCheck
+import com.pd2launcher.app.PlayStats
 import com.pd2launcher.app.R
 import com.pd2launcher.app.SessionStatus
+import com.pd2launcher.app.Tone
 import com.pd2launcher.app.control.Command
 import com.pd2launcher.app.control.Game
 import com.pd2launcher.app.control.Host
@@ -52,7 +63,6 @@ import com.pd2launcher.app.control.Job
 import com.pd2launcher.app.control.Operation
 import com.pd2launcher.app.control.OperationStatus
 import com.pd2launcher.app.control.Phase
-import com.pd2launcher.app.control.Renderer
 import com.pd2launcher.app.control.Snapshot
 import com.pd2launcher.app.control.Update
 
@@ -374,6 +384,14 @@ object Play {
     fun stageTop(height: Int, above: Int, middle: Int, below: Int, extra: Int = 0): Int =
         ((height - middle + extra) / 2).coerceAtMost(height - middle - below).coerceAtLeast(above)
 
+    /**
+     * Play's stats line may ask ([PlayStats.run]): the activity is [started], no launch is pending
+     * ([launching], or Play's check starts the game), and the [engine] is connected (after an
+     * engine disconnect Play shows while the game can still run, until the cleanup ends it).
+     */
+    fun statsActive(started: Boolean, launching: Boolean, playCheck: PlayCheck.State?, engine: SessionStatus.Engine): Boolean =
+        started && !launching && playCheck !is PlayCheck.State.Starting && engine == SessionStatus.Engine.CONNECTED
+
     /** The main button takes a press (as far as the update goes; "Getting ready…" disables it too). */
     fun primaryEnabled(update: UpdateView): Boolean = when (update.state) {
         UpdateState.NONE, UpdateState.RUNNING -> true
@@ -382,15 +400,14 @@ object Play {
     }
 
     /**
-     * The one line of facts under Play: the renderer the next launch uses, the GPU it runs on,
+     * The one line of facts under Play: the renderer the next launch uses (Glide: every Play from
+     * the app runs Glide, [com.pd2launcher.app.GlideFirst], also over a stored DirectDraw), the GPU it runs on,
      * and Project Diablo 2's update state once the engine has checked, or that its update checks
      * are off. Only what is known; no update state while the game files wait for their check
      * ([clientDiffers]), which comes first.
      */
     fun facts(snapshot: Snapshot?, gpu: String?): List<Line> = buildList {
-        snapshot?.settings?.renderer?.let {
-            add(Line(if (it == Renderer.GLIDE) R.string.play_fact_glide else R.string.play_fact_direct_draw))
-        }
+        if (snapshot?.settings != null) add(Line(R.string.play_fact_glide))
         if (!gpu.isNullOrBlank()) add(Line(R.string.play_fact_plain, gpu))
         if (snapshot != null && clientDiffers(snapshot)) return@buildList
         if (snapshot?.settings?.updateChecks == false) {
@@ -429,13 +446,13 @@ class PlayDestinations(
     val onSettings: () -> Unit,
     val onControls: () -> Unit,
     val onRepair: () -> Unit,
-    val onAbout: () -> Unit,
+    val onVersion: () -> Unit,
 )
 
 /**
  * Play: alone in the middle of a quiet field, the official PD2 launcher as a tool button (a filled
  * pill, [Kind.TONAL]) at Play's width under it, one line of facts beneath, the destinations
- * (Settings, Controls, Repair, About) along the foot. More tools go under the launcher, as the same
+ * (Settings, Controls, Repair, Version) along the foot. More tools go under the launcher, as the same
  * pill. [problem]: why the last Play or official launcher did not start.
  * [onOfficialLauncher] null: its button is disabled (an install, the game, a check or the update runs).
  * [waiting]: why Play cannot start yet ("Getting ready…"), shown where "Ready to play" goes; both
@@ -450,7 +467,9 @@ class PlayDestinations(
  * [launching]: Play or the official PD2 launcher was pressed and the engine has not shown it yet
  * ([Play.launchPending]): both buttons and "Play without updating" wait.
  * [newVersion]: a newer version of this app is out ([com.pd2launcher.app.AppUpdate.newVersionDot]):
- * a gold dot on About until it is installed.
+ * an amber dot on Version until it is installed.
+ * [stats]: the PD2 server's status and the players in game ([PlayStats]), one centred line above
+ * the foot's rule; null: no line.
  */
 @Composable
 fun PlayScreen(
@@ -470,6 +489,7 @@ fun PlayScreen(
     /** The running update was started by the question after a press of Play: the game starts when it is done. */
     playAfterUpdate: Boolean = false,
     newVersion: Boolean = false,
+    stats: PlayStats.Stats? = null,
 ) {
     val focus = remember { FocusRequester() }
     InitialFocus(focus, waiting == null)
@@ -558,6 +578,9 @@ fun PlayScreen(
                     }
                 },
             )
+            // Hidden, the line keeps its height (drawn clear, with no semantics), so Play's buttons do
+            // not move when it first shows.
+            StatsLine(stats ?: PlayStats.Stats.UNKNOWN, shown = stats != null)
             Rule(Modifier.widthIn(max = 460.dp))
             val link = Type.Hint.copy(fontWeight = FontWeight.Medium)
             Row(Modifier.widthIn(max = 460.dp).fillMaxWidth().padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -566,11 +589,11 @@ fun PlayScreen(
                     R.string.play_settings to destinations.onSettings,
                     R.string.play_controls to destinations.onControls,
                     R.string.play_repair to destinations.onRepair,
-                    R.string.play_about to destinations.onAbout,
+                    R.string.play_version to destinations.onVersion,
                 ).forEach { (label, go) ->
                     LauncherButton(
                         stringResource(label), go, Modifier.weight(1f), Kind.QUIET, height = 48.dp, style = link, padding = 8.dp,
-                        dot = dot.takeIf { label == R.string.play_about },
+                        dot = dot.takeIf { label == R.string.play_version },
                     )
                 }
             }
@@ -646,6 +669,42 @@ private fun UpdateFigure(update: Play.UpdateView, modifier: Modifier = Modifier)
             Spacer(Modifier.height(8.dp))
             Text(caption, style = Type.Hint, color = Palette.Muted, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
+    }
+}
+
+/**
+ * Play's stats line (owner, 2026-11-03, look c): the status dot (teal online, amber slow, red
+ * down, a faint ring unknown) and its words; while the server is online or slow and the count is
+ * known, a thin rule, the people icon in teal, the count with the locale's thousands separator, and
+ * "in game". One node for TalkBack ([PlayStats.spoken]).
+ */
+@Composable
+private fun StatsLine(stats: PlayStats.Stats, shown: Boolean = true) {
+    val locale = LocalConfiguration.current.locales[0]
+    val spoken = PlayStats.spoken(stats, locale)
+    val said = spoken.plural?.let { pluralStringResource(it, spoken.quantity, spoken.count.orEmpty()) } ?: stringResource(spoken.words)
+    Row(
+        Modifier.padding(bottom = 12.dp).alpha(if (shown) 1f else 0f)
+            .clearAndSetSemantics { if (shown) contentDescription = said },
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        when (stats.realm) {
+            PlayStats.Realm.ONLINE -> StatusMark(Tone.OK)
+            PlayStats.Realm.SLOW -> StatusMark(Tone.WARNING)
+            PlayStats.Realm.DOWN -> StatusMark(Tone.ERROR)
+            PlayStats.Realm.UNKNOWN -> StatusMark(Tone.PENDING, dim = true)
+        }
+        Text(stringResource(PlayStats.words(stats.realm)), style = Type.Hint, color = Palette.Text, maxLines = 1)
+        val players = stats.shownPlayers ?: return@Row
+        Box(Modifier.padding(horizontal = 8.dp).width(1.dp).height(14.dp).background(Palette.Rule))
+        // The icon follows the font scale, as the text beside it.
+        Icon(painterResource(R.drawable.ic_people), null, Modifier.size(with(LocalDensity.current) { 16.sp.toDp() }), tint = Palette.Teal)
+        Text(
+            PlayStats.count(players, locale), maxLines = 1, color = Palette.Text,
+            style = Type.Hint.copy(fontWeight = FontWeight.SemiBold, fontFeatureSettings = "tnum"),
+        )
+        Text(stringResource(R.string.play_stats_in_game), style = Type.Hint, color = Palette.Muted, maxLines = 1)
     }
 }
 

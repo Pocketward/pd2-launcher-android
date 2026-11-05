@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The install sign (our own drawing): a phone with an arrow down into it, so it is not the link glyph (ic_open_in_new). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="960"
+    android:viewportHeight="960">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M320,80L640,80Q720,80 720,160L720,800Q720,880 640,880L320,880Q240,880 240,800L240,160Q240,80 320,80ZM320,150Q310,150 310,160L310,800Q310,810 320,810L640,810Q650,810 650,800L650,160Q650,150 640,150Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M450,260L510,260L510,520L572,458L614,500L480,634L346,500L388,458L450,520Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M390,690L570,690L570,740L390,740Z" />
+</vector>

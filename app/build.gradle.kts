@@ -8,15 +8,49 @@ plugins {
 }
 
 /**
- * The versionCode of a versionName MAJOR.MINOR.PATCH[-betaN]: ((MAJOR * 100 + MINOR) * 100 +
- * PATCH) * 100 + N, with 99 for the release itself, so every later version has a higher code:
- * 0.1.0-beta1 is 10001, 0.1.0-beta2 10002, 0.1.0 10099, 0.1.1-beta1 10101.
+ * The versionCode of a Stable's name MAJOR.MINOR.PATCH: ((MAJOR * 100 + MINOR) * 100 + PATCH) * 100
+ * + 99, so every later Stable has a higher code: 0.3.8 is 30899.
  */
-fun versionCodeOf(name: String): Int {
-    val match = Regex("""(\d+)\.(\d{1,2})\.(\d{1,2})(?:-beta([1-9]|[1-8]\d|9[0-8]))?""").matchEntire(name)
-        ?: error("versionName $name is not MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-betaN")
-    val (major, minor, patch, beta) = match.destructured.toList().map { it.toIntOrNull() ?: 99 }
-    return ((major * 100 + minor) * 100 + patch) * 100 + beta
+fun stableCodeOf(name: String): Int {
+    val match = Regex("""(\d+)\.(\d{1,2})\.(\d{1,2})""").matchEntire(name)
+        ?: error("$name is not MAJOR.MINOR.PATCH")
+    val (major, minor, patch) = match.destructured.toList().map { it.toInt() }
+    return ((major * 100 + minor) * 100 + patch) * 100 + 99
+}
+
+/**
+ * The versionCode of a versionName: a Stable's own ([stableCodeOf]), and for MAJOR.MINOR.PATCH-betaN
+ * the code of the Stable it was made after, [betaBase], which a beta must name and a Stable must
+ * not. So a beta and its Stable replace each other in place: Android refuses only a lower code.
+ * The name still orders the betas of one Stable: 0.4.0-beta2 comes after 0.4.0-beta1.
+ */
+fun versionCodeOf(name: String, betaBase: String?): Int {
+    val beta = Regex("""(\d+\.\d{1,2}\.\d{1,2})-beta([1-9]|[1-8]\d|9[0-8])""").matchEntire(name)
+    if (beta == null) {
+        check(betaBase == null) { "versionName $name is a Stable, so betaBase must be null, not $betaBase" }
+        return stableCodeOf(name)
+    }
+    checkNotNull(betaBase) { "versionName $name is a beta, so betaBase must name the Stable it was made after" }
+    val base = stableCodeOf(betaBase)
+    check(base < stableCodeOf(beta.groupValues[1])) { "betaBase $betaBase is not older than the beta $name" }
+    return base
+}
+
+// This file has no unit tests, so each build checks versionCodeOf's rules.
+check(versionCodeOf("0.3.8", null) == 30899 && versionCodeOf("0.4.0-beta2", "0.3.8") == 30899) { "versionCodeOf gives wrong codes" }
+listOf("0.3.8" to "0.3.7", "0.4.0-beta1" to null, "0.4.0-beta1" to "0.4.0", "0.4.0-beta1" to "0.4.1").forEach { (name, base) ->
+    check(runCatching { versionCodeOf(name, base) }.isFailure) { "versionCodeOf takes $name with betaBase $base" }
+}
+
+// A test build (build.sh: PD2_TEST_BUILD=<label>): `-Ppd2.testBuild=<label>` shows the version as
+// "<versionName> (test <label>)" in About and device.txt (SHOWN_VERSION); the versionName and
+// versionCode stay the version's own, which the updater reads. `-Ppd2.testCommit=<commit>` names
+// the commit it was built from in device.txt.
+val testBuild: String? = providers.gradleProperty("pd2.testBuild").orNull?.also {
+    require(Regex("[0-9A-Za-z.-]{1,32}").matches(it)) { "pd2.testBuild $it is not 1 to 32 of 0-9, A-Z, a-z, '.' and '-'" }
+}
+val testCommit: String = providers.gradleProperty("pd2.testCommit").orNull.orEmpty().also {
+    require(it.isEmpty() || Regex("[0-9a-f]{40}(-dirty)?").matches(it)) { "pd2.testCommit $it is not a commit" }
 }
 
 // Release signing (docs/BUILDING.md): the key stays outside the repository.
@@ -58,14 +92,19 @@ android {
         // "not compatible" refusal at install. abiFilters limits our own CMake libraries and the
         // libraries inside dependencies (zstd-jni, androidx.graphics.path) alike.
         ndk { abiFilters += "arm64-v8a" }
-        versionName = "0.3.7"
-        versionCode = versionCodeOf(versionName!!)
-        // App updates (AppUpdater): the public releases the app looks at (the newest 10; it takes
-        // the highest version that is not a pre-release), where their files must be, the name its
-        // APKs have there (the release workflow's), and the SHA-256 of the certificate they are
-        // signed with (the release workflow's key). A debug build looks only at a test feed, whose
-        // files may be anywhere, and takes its own certificate.
-        buildConfigField("String", "UPDATE_FEED", "\"https://api.github.com/repos/Pocketward/pd2-launcher-android/releases?per_page=10\"")
+        versionName = "0.3.8"
+        // A beta build names here the Stable it was made after ("0.3.8" for 0.4.0-beta1 after 0.3.8),
+        // and takes its versionCode; a Stable leaves it null ([versionCodeOf]).
+        val betaBase: String? = null
+        versionCode = versionCodeOf(versionName!!, betaBase)
+        buildConfigField("String", "SHOWN_VERSION", "\"$versionName${testBuild?.let { " (test $it)" }.orEmpty()}\"")
+        buildConfigField("String", "TEST_COMMIT", "\"$testCommit\"")
+        // App updates (AppUpdater): the public releases the app reads (the newest 30, so that betas
+        // cannot hide a Stable), where their files must be, the name its APKs have there (the release
+        // workflow's), and the SHA-256 of the certificate they are signed with (the release workflow's
+        // key). A debug build looks only at a test feed, whose files may be anywhere, and takes its own
+        // certificate.
+        buildConfigField("String", "UPDATE_FEED", "\"https://api.github.com/repos/Pocketward/pd2-launcher-android/releases?per_page=30\"")
         buildConfigField("String", "UPDATE_RELEASES", "\"https://github.com/Pocketward/pd2-launcher-android/releases/\"")
         buildConfigField("String", "UPDATE_APK_PREFIX", "\"pd2-launcher-android-\"")
         buildConfigField("String", "UPDATE_CERTIFICATE", "\"90b7d9adf3f0c2c1bac5351f8cc972c9f984704c181f03f8cc206d2711a2972d\"")

@@ -1,10 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Settings → App → Game files → Save sync (SaveSyncFolder): the game's Save folder and a folder the player picked, kept the same. -->
+    <!-- Settings → Files and saves → Game files → Save sync (SaveSyncFolder): the game's Save folder and a folder the player picked, kept the same. -->
     <string name="sync_switch">Save sync</string>
-    <string name="sync_help">Keeps the game\'s Save folder and a folder that you pick the same. Use it with a sync app such as Syncthing.</string>
+    <string name="sync_help">Keeps your characters the same in a folder that you pick.</string>
     <!-- A row that shows or hides the lines below it. -->
     <string name="sync_how">How it works</string>
+    <string name="sync_how_app">Use it with a sync app such as Syncthing.</string>
     <string name="sync_how_in">Before Play and before the official launcher, the app copies changes from the folder into the game.</string>
     <string name="sync_how_out">After the game and after the official launcher, the app copies changes from the game to the folder.</string>
     <string name="sync_how_never">The app never copies while the game runs.</string>

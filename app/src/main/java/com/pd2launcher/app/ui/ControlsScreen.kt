@@ -120,43 +120,46 @@ internal enum class ModeHeader {
 internal fun modeTextsFitLeft(rows: Int, texts: Int, gap: Int, room: Int): Boolean = rows + gap + texts <= room
 
 /**
- * The in-game Controls screen, over the live game, about the physical controller: the whole
- * screen inside the menu's margin, with the menu's strip ([TabStrip]) on its right edge where the
- * menu shows it ([menuHeight]: the menu's panel's height in px; else at the top), the gamepad
- * selected. The strip's ✕ goes back to the game ([onClose]), its Quick and Settings to those tabs
- * ([onStop]; L1 and R1 too, the Game view), Back to the menu. Left:
- * the two modes to view and change, the one the controller is in ([activeMouse]) with an "In use"
- * badge; Pointer speed (its input, [PointerSpeedInput]); Touch, Trackpad or Direct ([TouchRow],
- * [touch]; a press changes it at once, [onTouch]); Edit on-screen layout ([onEditOnScreen]); then
- * what the viewed mode does and how the chord switches it, where the pane has the height
- * ([modeTextsFitLeft]). Right: the viewed mode's name and "In use", or a
- * button that switches the controller to it at once ([onUseMode], as the chord does); then every
- * button by where it sits ([Cluster]; the d-pad's four directions one by one), in as many columns
- * (one to three) as fit with no word cut, scrolling where they need more height. Each row is the
- * button's cap and what it does, changed ones in the text colour; a press opens the binding
- * picker ([BindingPicker]) and the change applies in the game at once ([save]). It opens on the
- * mode in use. [canUseMode]: the game takes the controller now (else the Use button waits).
- * [onPopup]: the action picker or the Pointer speed input shows (the shoulder buttons do not step).
+ * The Controls screen, about the physical controller: over the live game from the in-game menu,
+ * and outside the game from Settings → Controls → Buttons, the one place for the bindings. The
+ * whole screen inside the menu's margin, with the menu's strip ([TabStrip]) on its right edge
+ * where the menu shows it ([menuHeight]: the menu's panel's height in px; else at the top), the
+ * gamepad selected. The strip's ✕ goes back to the game ([onClose]), its Quick and Settings to
+ * those tabs ([onStop]; L1 and R1 too, the Game view), Back to the menu. Outside the game
+ * ([onStop] null) the strip is only ✕, which goes back to Settings, as Back does. Left:
+ * the two modes to view and change, the one the controller is in ([activeMouse]; null outside
+ * the game, where none is) with an "In use" badge; Pointer speed (its input,
+ * [PointerSpeedInput]); Touch, Trackpad or Direct ([TouchRow], [touch]; a press changes it at
+ * once, [onTouch]); Edit on-screen layout ([onEditOnScreen]); then what the viewed mode does and
+ * how the chord switches it, where the pane has the height ([modeTextsFitLeft]). Right: the
+ * viewed mode's name and "In use", or a button that switches the controller to it at once
+ * ([onUseMode], as the chord does); then every button by where it sits ([Cluster]; the d-pad's
+ * four directions one by one), in as many columns (one to three) as fit with no word cut,
+ * scrolling where they need more height. Each row is the button's cap and what it does, changed
+ * ones in the text colour; a press opens the binding picker ([BindingPicker]) and the change
+ * applies in the game at once ([save]). It opens on the mode in use (pad mode outside the game).
+ * [canUseMode]: the game takes the controller now (else the Use button waits). [onPopup]: the
+ * action picker or the Pointer speed input shows (the shoulder buttons do not step).
  */
 @Composable
 internal fun BoxScope.ControlsScreen(
     visible: Boolean,
     controls: Controls,
-    activeMouse: Boolean,
+    activeMouse: Boolean?,
     canUseMode: Boolean,
     save: (Controls) -> Unit,
     touch: TouchMode,
     onTouch: (TouchMode) -> Unit,
     onUseMode: (mouse: Boolean) -> Unit,
     menuHeight: Int?,
-    onStop: (MenuStop) -> Unit,
+    onStop: ((MenuStop) -> Unit)?,
     onClose: () -> Unit,
     onPopup: (Boolean) -> Unit,
     onEditOnScreen: () -> Unit,
 ) {
     // Composed while visible only, so it shows and goes in the frame that changes the layer.
     if (visible) {
-        var mouse by remember { mutableStateOf(activeMouse) }
+        var mouse by remember { mutableStateOf(activeMouse == true) }
         var picker by remember { mutableStateOf<PadButton?>(null) }
         var speedInput by remember { mutableStateOf(false) }
         val popup by rememberUpdatedState(onPopup)
@@ -206,10 +209,16 @@ internal fun BoxScope.ControlsScreen(
                         }
                     }
                     Rule(Modifier.padding(start = 8.dp, end = 4.dp, top = MenuSize.PADDING, bottom = MenuSize.PADDING).fillMaxHeight(), vertical = true)
-                    StripAt(menuHeight) { TabStrip(MenuStop.CONTROLS, controls = true, onStop = onStop, onClose = onClose) }
+                    StripAt(menuHeight) {
+                        if (onStop != null) {
+                            TabStrip(MenuStop.CONTROLS, controls = true, onStop = onStop, onClose = onClose)
+                        } else {
+                            IconTarget(R.drawable.ic_close, stringResource(R.string.game_menu_close), onClose)
+                        }
+                    }
                 }
             }
-            picker?.let { button -> BindingPicker(controls, button, mouse, side = true, save) { picker = null } }
+            picker?.let { button -> BindingPicker(controls, button, mouse, save) { picker = null } }
         }
         if (speedInput) {
             PointerSpeedInput(controls.pointerSpeed, { save(controls.copy(pointerSpeed = it)) }) { speedInput = false }
@@ -226,7 +235,7 @@ internal fun BoxScope.ControlsScreen(
 private fun ColumnScope.ControlsBody(
     controls: Controls,
     mouse: Boolean,
-    activeMouse: Boolean,
+    activeMouse: Boolean?,
     canUseMode: Boolean,
     rows: Map<PadButton, FocusRequester>,
     onView: (Boolean) -> Unit,
@@ -316,12 +325,12 @@ private fun StripAt(menuHeight: Int?, strip: @Composable () -> Unit) {
 
 private val PillShape = RoundedCornerShape(percent = 50)
 
-/** The left pane's rows: the two modes, Pointer speed, Touch and Edit on-screen layout. */
+/** The left pane's rows: the two modes (the one in use, [activeMouse], with its badge), Pointer speed, Touch and Edit on-screen layout. */
 @Composable
 private fun ModesPane(
     controls: Controls,
     mouse: Boolean,
-    activeMouse: Boolean,
+    activeMouse: Boolean?,
     onMode: (Boolean) -> Unit,
     first: FocusRequester,
     onPointerSpeed: () -> Unit,
@@ -331,8 +340,8 @@ private fun ModesPane(
 ) {
     Column {
         PaneLabel(stringResource(R.string.controls_section_buttons), top = 8.dp)
-        ModeItem(stringResource(R.string.controls_pad_mode), !mouse, !activeMouse, if (!mouse) first else null) { onMode(false) }
-        ModeItem(stringResource(R.string.controls_mouse_mode), mouse, activeMouse, if (mouse) first else null) { onMode(true) }
+        ModeItem(stringResource(R.string.controls_pad_mode), !mouse, activeMouse == false, if (!mouse) first else null) { onMode(false) }
+        ModeItem(stringResource(R.string.controls_mouse_mode), mouse, activeMouse == true, if (mouse) first else null) { onMode(true) }
         Rule(Modifier.padding(vertical = 6.dp))
         LinkRow(stringResource(R.string.controls_pointer_speed_title), stringResource(R.string.controls_factor, speedText(controls.pointerSpeed)), onPointerSpeed)
         // As high as the rows around it, its control where their values and chevrons are.
@@ -344,8 +353,8 @@ private fun ModesPane(
 /**
  * Touch: how touch on the game moves the pointer ([TouchMode]), its label and a compact choice of
  * Trackpad (the default, first) or Direct in one row; a press changes it at once ([onTouch]). The
- * in-game Controls screen has it under Pointer speed, Settings → Controller too ([modifier]: the
- * row's height and room, as its neighbours there).
+ * Controls screen has it under Pointer speed, Settings → Controls too ([modifier]: the row's
+ * height and room, as its neighbours there).
  */
 @Composable
 internal fun TouchRow(touch: TouchMode, onTouch: (TouchMode) -> Unit, modifier: Modifier = Modifier) {
@@ -425,7 +434,7 @@ private fun ModeItem(label: String, selected: Boolean, inUse: Boolean, focus: Fo
 private fun BindingsPane(
     controls: Controls,
     mouse: Boolean,
-    activeMouse: Boolean,
+    activeMouse: Boolean?,
     canUseMode: Boolean,
     rows: Map<PadButton, FocusRequester>,
     texts: Pair<String, String>?,
@@ -442,7 +451,8 @@ private fun BindingsPane(
                 stringResource(if (mouse) R.string.controls_mouse_mode else R.string.controls_pad_mode),
                 style = Type.Button, color = Palette.Text, modifier = Modifier.weight(1f).semantics { heading() },
             )
-            when (ModeHeader.of(mouse, activeMouse)) {
+            // Outside the game no mode is in use: no badge and no button.
+            if (activeMouse != null) when (ModeHeader.of(mouse, activeMouse)) {
                 // Said as it comes, after a Use press.
                 ModeHeader.IN_USE -> Box(Modifier.semantics { liveRegion = LiveRegionMode.Polite }) { InUseBadge() }
                 ModeHeader.USE_MOUSE -> if (canUseMode) {

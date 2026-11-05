@@ -27,7 +27,7 @@ object SettingsLog {
         append(", graphics profile ").append(app.graphicsProfile?.name?.lowercase() ?: "Automatic")
         append(", keep screen on ").append(onOff(app.keepScreenOn))
         append(", show fps ").append(onOff(app.showFps))
-        append(", app update checks ").append(onOff(app.updateChecks))
+        append(", update channel ").append(AppUpdate.channel(app.updateChannel, BuildConfig.VERSION_NAME).name.lowercase())
         append(", detailed logging ").append(onOff(app.detailedLogging))
         append(", save sync ").append(onOff(app.syncFolder != null))
         append("; controls: touch ").append(touch(app.touchMode))

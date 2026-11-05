@@ -5,7 +5,6 @@ import androidx.annotation.StringRes
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.BringIntoViewSpec
 import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
 import androidx.compose.foundation.layout.Box
@@ -29,7 +28,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -38,7 +36,6 @@ import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
@@ -53,6 +50,7 @@ import androidx.compose.ui.unit.dp
 import com.pd2launcher.app.R
 import com.pd2launcher.app.Refusal
 import com.pd2launcher.app.Refusals
+import com.pd2launcher.app.Tone
 
 /** The four first-run flows the header's step marks name. */
 enum class FlowStep(@param:StringRes val label: Int) {
@@ -62,8 +60,19 @@ enum class FlowStep(@param:StringRes val label: Int) {
     PLAY(R.string.step_play),
 }
 
-/** How one step mark shows: ✓ done, a filled number for the current one, ! when it stopped, a ring ahead. */
+/** How one step mark shows: a teal dot done, the current one working or waiting for the player, a red dot when it stopped, a ring ahead. */
 enum class StepMark { DONE, CURRENT, FAILED, AHEAD }
+
+/**
+ * The state mark of a step mark: the current step is [Tone.WORKING] (a spinner) while its work
+ * runs ([busy]) and [Tone.WAITING] (a ring with a dot) while it waits for the player.
+ */
+fun stepTone(mark: StepMark, busy: Boolean): Tone = when (mark) {
+    StepMark.DONE -> Tone.OK
+    StepMark.CURRENT -> if (busy) Tone.WORKING else Tone.WAITING
+    StepMark.FAILED -> Tone.ERROR
+    StepMark.AHEAD -> Tone.PENDING
+}
 
 /** The mark of [step] while the player is at [current]; [failed]: the current step stopped on a problem. */
 fun stepMark(step: FlowStep, current: FlowStep, failed: Boolean): StepMark = when {
@@ -160,7 +169,8 @@ data class Corners(val pill: Dp, val margin: Dp, val narrow: Dp, val wide: Dp) {
  *
  * [step] null: no step marks (Repair). [onBack] takes the system Back; [backButton] also shows it
  * as the Back pill; [secondary] takes Back's corner on a page whose two actions are not Back
- * (Repair). [progress]: a running download's or install's percent ([stepProgress]) for the step
+ * (Repair). [busy]: the step's work runs (its mark spins); else its mark waits for the player.
+ * [progress]: a running download's or install's percent ([stepProgress]) for the step
  * bar. While the keyboard leaves little height ([barsGiveWay]) the header and the pills give way.
  */
 @Composable
@@ -170,6 +180,7 @@ fun FlowShell(
     intro: String?,
     action: (@Composable () -> Unit)?,
     failed: Boolean = false,
+    busy: Boolean = false,
     onBack: (() -> Unit)? = null,
     backButton: Boolean = false,
     secondary: (@Composable () -> Unit)? = null,
@@ -202,7 +213,7 @@ fun FlowShell(
         content()
     }
     Column(Modifier.fillMaxSize().background(Palette.Background).windowInsetsPadding(WindowInsets.safeDrawing)) {
-        if (!typing) Header(step, failed, progress, phone)
+        if (!typing) Header(step, failed, busy, progress, phone)
         if (phone) {
             Pane(start, end, corners, Modifier.weight(1f).fillMaxWidth(), horizontal = 20.dp, top = 16.dp, bottom = 16.dp) {
                 words()
@@ -265,21 +276,21 @@ fun WaitNote(text: String, modifier: Modifier = Modifier, onPlayer: Boolean = fa
 
 /** The wordmark and the step marks over the rule, which carries a running job's progress. */
 @Composable
-private fun Header(step: FlowStep?, failed: Boolean, progress: Int?, phone: Boolean) {
+private fun Header(step: FlowStep?, failed: Boolean, busy: Boolean, progress: Int?, phone: Boolean) {
     if (!phone) {
         Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
             // The name gives way to the marks where both do not fit (Wordmark).
             Wordmark(Modifier.weight(1f))
             if (step != null) {
                 Spacer(Modifier.width(16.dp))
-                FlowMarks(step, failed = failed, progress = progress)
+                FlowMarks(step, failed = failed, busy = busy, progress = progress)
             }
         }
     } else {
         Column(Modifier.padding(horizontal = 20.dp)) {
             Wordmark()
             if (step != null) {
-                FlowMarks(step, compact = true, failed = failed, progress = progress)
+                FlowMarks(step, compact = true, failed = failed, busy = busy, progress = progress)
                 Spacer(Modifier.height(12.dp))
             }
         }
@@ -365,17 +376,27 @@ private fun RefusalBanner(notice: RefusalNotice) {
 }
 
 /**
- * The four step marks, Check · Download · Install · Play: ✓ done, a filled number for the
- * current step, a ring for the rest, ! when it stopped. Labels never wrap; [compact] (phones)
- * keeps only the current one's. [progress]: a running job's percent after the current label.
+ * The four step marks, Check · Download · Install · Play, each a [StatusMark]: a teal dot done,
+ * for the current step a spinner while its work runs ([busy]) or a teal ring with a dot while it
+ * waits for the player, a red dot when it stopped, a faint ring for the rest. Labels never wrap;
+ * [compact] (phones) keeps only the current one's. [progress]: a running job's percent after the
+ * current label.
  */
 @Composable
-fun FlowMarks(current: FlowStep, modifier: Modifier = Modifier, compact: Boolean = false, failed: Boolean = false, progress: Int? = null) {
+fun FlowMarks(
+    current: FlowStep,
+    modifier: Modifier = Modifier,
+    compact: Boolean = false,
+    failed: Boolean = false,
+    busy: Boolean = false,
+    progress: Int? = null,
+) {
     val name = stringResource(current.label)
     val counter = stringResource(R.string.step_counter, current.ordinal + 1, FlowStep.entries.size)
     val percent = progress?.let { stringResource(R.string.percent, it) }
+    val problem = if (failed) stringResource(R.string.status_error) else null
     Row(
-        modifier.clearAndSetSemantics { contentDescription = listOfNotNull(counter, name, percent).joinToString(", ") },
+        modifier.clearAndSetSemantics { contentDescription = listOfNotNull(counter, name, problem, percent).joinToString(", ") },
         verticalAlignment = Alignment.CenterVertically,
     ) {
         FlowStep.entries.forEach { step ->
@@ -387,28 +408,8 @@ fun FlowMarks(current: FlowStep, modifier: Modifier = Modifier, compact: Boolean
                 )
             }
             val now = mark == StepMark.CURRENT || mark == StepMark.FAILED
-            Box(
-                Modifier.size(20.dp).clip(CircleShape)
-                    .background(
-                        when (mark) {
-                            StepMark.CURRENT -> Palette.Teal
-                            StepMark.FAILED -> Palette.Red
-                            else -> Color.Transparent
-                        },
-                    )
-                    .border(1.5.dp, if (mark == StepMark.DONE) Palette.Teal else if (now) Color.Transparent else Palette.Rule, CircleShape),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    when (mark) {
-                        StepMark.DONE -> "✓"
-                        StepMark.FAILED -> "!"
-                        else -> "${step.ordinal + 1}"
-                    },
-                    style = Type.Glyph,
-                    color = if (now) Palette.Background else if (mark == StepMark.DONE) Palette.Teal else Palette.Faint,
-                )
-            }
+            // The small state mark of every status; the 20 dp box keeps the header's height and the labels' places.
+            StatusMark(stepTone(mark, busy), Modifier.size(20.dp), dim = true)
             if (!compact || now) {
                 Spacer(Modifier.width(6.dp))
                 Text(

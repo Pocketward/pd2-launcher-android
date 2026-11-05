@@ -1,27 +1,79 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Settings. -->
+    <!-- Settings: a list of pages (SettingsPages.kt), each with its groups of rows. -->
     <string name="settings_title">Settings</string>
-    <string name="settings_tab_game">Game</string>
-    <string name="settings_tab_app">App</string>
-    <string name="settings_tab_controller">Controller</string>
+    <string name="settings_page_display">Display</string>
+    <string name="settings_page_game">Game</string>
+    <string name="settings_page_controls">Controls</string>
+    <string name="settings_page_files">Files and saves</string>
+    <string name="settings_page_app">App</string>
+    <string name="settings_page_help">Help</string>
+    <!-- Under each page's name in the list: its values now, joined ("1068 × 600 · 60 fps"), or what needs the player. -->
+    <string name="settings_list_join">%1$s · %2$s</string>
+    <string name="settings_size">%1$d × %2$d</string>
+    <string name="settings_list_game_updates_on">Game updates: On</string>
+    <string name="settings_list_game_updates_off">Game updates: Off</string>
+    <string name="settings_list_sync_on">Save sync: On</string>
+    <string name="settings_list_sync_off">Save sync: Off</string>
+    <string name="settings_list_sync_problem">Save sync: not working</string>
+    <string name="settings_list_battery">Battery: Optimised</string>
+    <string name="settings_list_notifications">Notifications: Off</string>
+    <!-- The App page's line: the selected channel and its version, or the download. -->
+    <string name="settings_list_version">%1$s</string>
+    <string name="settings_list_version_out">%1$s is out</string>
+    <string name="settings_list_downloading">Downloading</string>
+    <string name="settings_list_percent">%1$d %%</string>
+    <string name="settings_list_download_stopped">Download stopped</string>
+    <string name="settings_list_download_failed">Download failed</string>
+    <!-- The Launcher's save state beside the Game page's title (the page also says it under the list's name when the save failed). -->
     <string name="settings_saved">Saved</string>
     <string name="settings_waiting">Waiting</string>
     <string name="settings_not_saved">Not saved</string>
-    <string name="settings_applies_game">These apply the next time you press Play.</string>
-    <string name="settings_applies_app">These apply at once.</string>
-    <string name="settings_applies_controller">These apply at once, in the game too.</string>
     <string name="settings_hint_waiting">Game settings wait for the Launcher to start, a few seconds after the app opens.</string>
     <string name="settings_hint_failed">The Launcher could not save its settings (%1$s). The next Play uses the last saved ones.</string>
 
-    <string name="settings_section_renderer">Renderer</string>
-    <string name="settings_section_start">Graphics, start and sound</string>
+    <!-- The groups of the pages. Display: Picture, Frame rate and Screen. Game: PD2 Launcher, Diablo II start options (with what they are) and Loot filters. -->
+    <string name="settings_section_picture">Picture</string>
+    <string name="settings_section_launcher">PD2 Launcher</string>
+    <string name="settings_section_start_options">Diablo II start options</string>
+    <string name="settings_start_options_hint">Only for Play. The official PD2 launcher has its own options for the games it starts.</string>
+    <!-- Game → Loot filters: greyed out until its own screen exists. -->
+    <string name="settings_loot_filters">Loot filters</string>
+    <string name="settings_loot_filters_body">Not available yet.</string>
+    <string name="settings_loot_filters_manage">Manage</string>
+    <!-- App → Graphics driver (DriverPage): the owner's texts (2026-10-31 to 2026-11-03). In 0.3.8 a placeholder: a pick changes nothing yet. -->
+    <string name="settings_driver_chip">Your graphics chip: %1$s.</string>
+    <string name="settings_driver_chip_unknown">Your graphics chip: not known.</string>
+    <string name="driver_app">App driver</string>
+    <string name="driver_app_body">The launcher\'s built-in optimized driver.</string>
+    <string name="driver_app_none">The launcher has no driver for this graphics chip.</string>
+    <string name="driver_phone">Phone driver</string>
+    <string name="driver_phone_body">Your phone\'s built-in driver. It might not work.</string>
+    <string name="driver_software">Software driver</string>
+    <string name="driver_software_body">Renders the game using software. Can be really slow.</string>
+    <!-- A chip with no usable GPU driver (decision 25, the owner's text). -->
+    <string name="driver_no_gpu_driver">The launcher has no GPU driver for this chip, and it cannot use your phone\'s GPU driver. You can still try the Software driver.</string>
+    <!-- The Phone driver's two ways, under it while it is in use (the owner, 2026-10-31: the names show, no "Way" label). -->
+    <string name="driver_way_virgl">VirGL</string>
+    <string name="driver_way_venus">Venus</string>
+    <!-- Decision 33 (owner-approved, 2026-11-03): the tag beside the driver or way in use, and the note on the chip's better way. -->
+    <string name="driver_in_use">In use</string>
+    <string name="driver_way_better">Usually runs better on this graphics chip.</string>
+    <string name="driver_app_failed">It stopped after an error. The app uses the phone driver until the next app update.</string>
+
+    <!-- Game → Diablo II start options → Renderer: its value, then its sheet (what it does at the top, then the two choices). -->
+    <string name="settings_renderer_glide_recommended">Glide (recommended)</string>
+    <string name="settings_renderer_body">Applies at the next Play. Change it only when the game does not start with Glide.</string>
     <string name="settings_renderer_glide">Glide</string>
-    <string name="settings_renderer_glide_body">D2GL on the GPU, full screen. Recommended.</string>
+    <!-- Display → Renderer, information only (decision 24, the owner's text). -->
+    <string name="settings_renderer_value">Renderer: %1$s</string>
+    <string name="settings_renderer_set_by_gpu">Set by the GPU driver.</string>
+    <string name="settings_renderer_glide_body">Full screen, drawn by the graphics chip. Recommended.</string>
     <string name="settings_renderer_direct_draw">DirectDraw</string>
-    <string name="settings_renderer_direct_draw_body">The game\'s own renderer through Wine. For when Glide does not start.</string>
+    <string name="settings_renderer_direct_draw_body">The game\'s own older way to draw. Use it only when Glide does not start.</string>
+    <!-- Display → Game resolution: the row shows the size; its sheet says what it does at the top. -->
     <string name="settings_section_resolution">Game resolution</string>
-    <string name="settings_resolution_body">The size the game draws at, also for the official PD2 launcher and a game it starts. The game\'s own size shows the game as PD2 made it. Its graphics options are in the game: Options, Video Options, D2GL.</string>
+    <string name="settings_resolution_body">Applies at the next Play. The size the game draws at, also for the official PD2 launcher and a game it starts. The game\'s own size shows the game as PD2 made it. Its graphics options are in the game: Options, Video Options, D2GL.</string>
     <string name="settings_resolution_running">The game or the official launcher that runs now has another size. The new size applies when you start it again.</string>
     <string name="settings_resolution_game_size">Game\'s own size (%1$d × %2$d)</string>
     <string name="settings_resolution_game_size_body">The size PD2 was made for. Recommended.</string>
@@ -35,7 +87,11 @@
     <!-- Under Game resolution and in Custom, only for a size with fewer than 800 columns or 600 lines. -->
     <string name="settings_resolution_launcher_cut">The official PD2 launcher does not get smaller than 800 × 600. At a smaller size, part of its window is cut off.</string>
     <string name="settings_resolution_custom_wrong">This size is not possible. Width from %1$d to %3$d, an even number. Height from %2$d to %4$d, a multiple of 4.</string>
-    <string name="settings_section_display">Display</string>
+    <string name="settings_section_display">Picture size</string>
+    <!-- Display → GPU (decision 23): the row's name and the sub page's title, the sub page's group, the row's value for a Phone driver way. -->
+    <string name="settings_gpu">GPU</string>
+    <string name="settings_section_gpu_driver">Driver</string>
+    <string name="settings_gpu_value_way">%1$s · %2$s</string>
     <string name="settings_display_body">How the game and the official PD2 launcher show on the screen. A change applies at once, also while they run. It is also in the in-game menu.</string>
     <string name="settings_display_fit">Fit to screen</string>
     <string name="settings_display_fit_body">What the game shows, its menus and the official launcher too, is as large as the screen allows. Its shape stays the same.</string>
@@ -43,16 +99,18 @@
     <string name="settings_display_center_body">Each game pixel is one screen pixel, in the middle of the screen, with black around it. Sharp, but smaller. If the game resolution is larger than the screen, Fit to screen applies.</string>
     <string name="settings_resolution_full">%1$d × %2$d (full)</string>
     <string name="settings_graphics_profile">Graphics profile</string>
-    <string name="settings_graphics_profile_body">D2GL\'s settings for the game\'s look, written at the next Play. What you change in the game (Options, Video Options, D2GL) stays until you pick another profile.</string>
+    <!-- At the top of the Graphics profile sheet. -->
+    <string name="settings_graphics_profile_body">Applies at the next Play. What you change in the game (Options, Video Options, D2GL) stays until you pick another profile.</string>
     <string name="settings_graphics_automatic_default">Automatic: Default</string>
     <string name="settings_graphics_automatic_performance">Automatic: Performance</string>
-    <string name="settings_graphics_automatic_body">Performance on older or entry-level Adreno GPUs and on Mali GPUs, Default on newer Adrenos.</string>
+    <string name="settings_graphics_automatic_body">Performance on older and low-cost graphics chips, Default on newer ones.</string>
     <string name="settings_graphics_default">Default</string>
-    <string name="settings_graphics_default_body">Project Diablo 2\'s own D2GL settings.</string>
+    <string name="settings_graphics_default_body">Project Diablo 2\'s own graphics settings.</string>
     <string name="settings_graphics_performance">Performance</string>
-    <string name="settings_graphics_performance_body">D2GL\'s advanced settings tuned down for older devices: a simpler shader, no sharpening, no bloom.</string>
+    <string name="settings_graphics_performance_body">Simpler effects for older devices: no sharpening and no glow.</string>
     <string name="settings_frame_rate">Frame rate</string>
-    <string name="settings_frame_rate_body">Fewer frames a second use less battery and keep the device cooler, but the game moves less smoothly. This applies while vsync is on in the game\'s own options (the game\'s default).</string>
+    <!-- At the top of the Frame rate input that Settings opens. -->
+    <string name="settings_frame_rate_body">Fewer frames a second use less battery and keep the device cooler, but the game moves less smoothly.</string>
     <!-- The Frame rate input: its unit after the number, and its one help line. -->
     <string name="frame_rate_unit">fps</string>
     <string name="frame_rate_help">%1$d–%2$d fps. This screen shows at most %2$d.</string>
@@ -60,30 +118,30 @@
     <string name="settings_frame_rate_ok">OK</string>
     <string name="settings_frame_rate_cancel">Cancel</string>
     <string name="settings_background_frame_rate">Slower game in the background</string>
-    <string name="settings_background_frame_rate_body">While you do not see the game (another app in front, the screen off, or these settings open), the app tells the game. The game then uses its own Max Background FPS setting (in the game: Options, Video Options, D2GL, Advanced Options, Screen). This saves battery.</string>
+    <string name="settings_background_frame_rate_body">Saves battery while you do not see the game.</string>
     <string name="settings_skip_to_bnet">Skip to Battle.net</string>
     <string name="settings_skip_to_bnet_body">The game opens on the online screen.</string>
     <string name="settings_sound_in_background">Sound in background</string>
     <string name="settings_sound_in_background_body">The game keeps its sound when another app is in front.</string>
-    <!-- Settings → Game → Game updates: the Launcher's update checks for Project Diablo 2 (not the app's own updates). -->
-    <string name="settings_section_game_updates">Game updates</string>
+    <!-- Settings → Game → PD2 Launcher → Check for game updates: the Launcher's update checks for Project Diablo 2 (not the app's own updates). -->
     <string name="settings_game_update_checks">Check for game updates</string>
-    <string name="settings_game_update_checks_body">Before the game starts, Play checks for a new version of Project Diablo 2. When this setting is off, Play starts the game with no update, for example with a mod or an older version. An import keeps its Project Diablo 2 as it is.</string>
+    <string name="settings_game_update_checks_body">Play looks for a new PD2 version first.</string>
 
+    <!-- Display → Screen. The FPS counter's name is the in-game tile's (game_menu_fps_counter). -->
     <string name="settings_section_screen">Screen</string>
     <string name="settings_keep_screen_on">Keep the screen on during play</string>
-    <string name="settings_keep_screen_on_body">The screen does not dim or turn off while the game shows.</string>
-    <string name="settings_show_fps">Show fps</string>
-    <string name="settings_show_fps_body">A small counter in a corner of the game: the frames the game draws each second.</string>
+    <string name="settings_keep_screen_on_body">The screen does not turn off while the game shows.</string>
+    <string name="settings_fps_counter_body">A small counter in a corner of the game.</string>
 
+    <!-- Help → Android. -->
     <string name="settings_section_android">Android</string>
     <string name="settings_battery">Battery optimisation</string>
-    <string name="settings_battery_restricted">On. Android may pause downloads and installs while the screen is off. Choose \"Not optimised\" for PD2 Launcher in the list that opens.</string>
-    <string name="settings_battery_unrestricted">Off for PD2 Launcher. Work goes on in the background.</string>
+    <string name="settings_battery_restricted">On. Android can pause downloads and installs.</string>
+    <string name="settings_battery_unrestricted">Off for PD2 Launcher.</string>
     <string name="settings_battery_open">Battery settings</string>
     <string name="settings_notifications">Notifications</string>
     <string name="settings_notifications_off">Off. Android may stop the game while PD2 Launcher is in the background.</string>
-    <string name="settings_notifications_on">On. The session notification keeps the Launcher and the game running.</string>
+    <string name="settings_notifications_on">On.</string>
     <string name="settings_notifications_open">Notification settings</string>
 
 

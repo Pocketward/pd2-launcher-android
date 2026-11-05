@@ -6,8 +6,10 @@ Short answers to questions that players often ask. For a different problem, open
 
 - [The game or the official PD2 launcher closes by itself in the background](#the-game-or-the-official-pd2-launcher-closes-by-itself-in-the-background)
 - [Why does the game not fill my screen?](#why-does-the-game-not-fill-my-screen)
-- [Why does the game miss 120 fps at a high Custom game resolution?](#why-does-the-game-miss-120-fps-at-a-high-custom-game-resolution)
+- [Performance at a high Custom game resolution](#performance-at-a-high-custom-game-resolution)
+- [Can the game use a different aspect ratio, for example 4:3?](#can-the-game-use-a-different-aspect-ratio-for-example-43)
 - [Which devices and graphics chips work?](#which-devices-and-graphics-chips-work)
+- [The app says that my device is not supported](#the-app-says-that-my-device-is-not-supported)
 - [How do I use a controller?](#how-do-i-use-a-controller)
 - [Can I use a mouse and a keyboard?](#can-i-use-a-mouse-and-a-keyboard)
 - [How do I open the game on the online screen?](#how-do-i-open-the-game-on-the-online-screen)
@@ -33,20 +35,14 @@ Short answers to questions that players often ask. For a different problem, open
 **Android and problem reports**
 
 - [Android 17 shows a message about 16 KB memory pages](#android-17-shows-a-message-about-16-kb-memory-pages)
+- [Android cannot install the APK](#android-cannot-install-the-apk)
 - [How do I send logs?](#how-do-i-send-logs)
 
 ## The game
 
 ### The game or the official PD2 launcher closes by itself in the background
 
-Android 12 and later have a limit for the extra processes that apps start, the "child processes". The app runs Wine, the game and the official PD2 launcher as child processes. When Android stops one of them, the game or the launcher can close with no error message.
-
-Android has two rules for child processes:
-
-- When all apps together have more than 32 child processes, Android stops some of them. It stops the processes of apps in the background first.
-- Android stops a child process that uses much processor time while its app is in the background.
-
-To prevent this, turn off the limit. The steps are different for each Android version.
+Android 12 and later can stop the game or the official PD2 launcher while the app is in the background, with no error message. To prevent this, find your Android version and do its steps. To learn why Android does this, see [Why Android stops the game](#why-android-stops-the-game) below.
 
 **Android 11:** you do not have to do anything. Android 11 has no limit for child processes.
 
@@ -65,15 +61,15 @@ The first command makes sure that Android does not overwrite the value of the se
 adb shell settings put global settings_enable_monitor_phantom_procs false
 ```
 
-**Android 14 and later:** open **Developer options** (step 2 below). In the **Apps** part, turn on **Disable child process restrictions**. This turns off the two rules. Keep Developer options on: when you turn Developer options off, Android turns the restrictions on again. If your phone does not show this switch, use the adb command for Android 12L and 13.
+**Android 14 and later:** open **Developer options** (step 2 below). In the **Apps** part, turn on **Disable child process restrictions**. This turns off the two rules. Keep Developer options on: when you turn Developer options off, Android turns the restrictions on again. If your device does not show this switch, use the adb command for Android 12L and 13.
 
 To use adb:
 
 1. On a computer (Windows, macOS or Linux), download [Android SDK Platform-Tools](https://developer.android.com/tools/releases/platform-tools) and unpack it. It contains adb.
-2. On the phone, show **Developer options**: open **Settings → About phone** and tap **Build number** seven times. On some phones, **Build number** is in a different place. See [Android's guide](https://developer.android.com/studio/debug/dev-options#enable).
+2. On the device, show **Developer options**: open **Settings → About phone** and tap **Build number** seven times. On some devices, **Build number** is in a different place. See [Android's guide](https://developer.android.com/studio/debug/dev-options#enable).
 3. In **Developer options**, turn on **USB debugging**.
-4. Connect the phone to the computer with a USB cable. When the phone asks, allow USB debugging from this computer.
-5. On the computer, open a terminal in the platform-tools folder. Type `adb devices` and make sure that your phone shows in the list. In Windows PowerShell, type `.\adb` instead of `adb`.
+4. Connect the device to the computer with a USB cable. When the device asks, allow USB debugging from this computer.
+5. On the computer, open a terminal in the platform-tools folder. Type `adb devices` and make sure that your device shows in the list. In Windows PowerShell, type `.\adb` instead of `adb`.
 6. Type the commands for your Android version.
 7. When you are done, you can turn off **USB debugging**.
 
@@ -84,6 +80,13 @@ To undo the change:
 - Android 12: type `adb shell device_config delete activity_manager max_phantom_processes`, then `adb shell device_config set_sync_disabled_for_tests none`.
 - Android 12L and later: type `adb shell settings delete global settings_enable_monitor_phantom_procs`. On Android 14 and later, also turn off **Disable child process restrictions**.
 
+#### Why Android stops the game
+
+Android 12 and later have a limit for the extra processes that apps start, the "child processes". The app runs Wine, the game and the official PD2 launcher as child processes. Android has two rules for child processes:
+
+- When all apps together have more than 32 child processes, Android stops some of them. It stops the processes of apps in the background first.
+- Android stops a child process that uses much processor time while its app is in the background.
+
 Sources, in Android's source code:
 
 - The limit of 32 and `max_phantom_processes`: [ActivityManagerConstants.java](https://android.googlesource.com/platform/frameworks/base/+/refs/tags/android-12.0.0_r1/services/core/java/com/android/server/am/ActivityManagerConstants.java) (Android 12).
@@ -93,32 +96,38 @@ Sources, in Android's source code:
 
 ### Why does the game not fill my screen?
 
-Project Diablo 2 supports only one resolution for online play: 1068 × 600 (widescreen). This is the official rule of the Project Diablo 2 team. The `!res` command in their Discord shows it. This app does not change Project Diablo 2's files to get other resolutions.
-
 By default, the game runs at its own size, 1068 × 600. On a screen that is smaller than this, the game uses the full size of the screen. The game keeps its shape. On a screen with a different shape, for example 4:3 or 20:9, a part of the screen stays black.
 
-**Settings → Game** has two settings for this:
+**Settings → Display** has two settings for this:
 
 - **Display:** how the game shows on the screen. **Fit to screen** (the default) makes what the game shows as large as the screen allows, with the same shape. **Center** shows each game pixel as one screen pixel, in the middle of the screen. A change applies at once. **Display** is also in the in-game menu.
 - **Game resolution:** the size that the game draws at. Select **Game's own size** (recommended) or **Custom…**. For **Custom…**, type a width from 640 and a height from 480, up to the size of your screen. The width must be an even number, and the height must be a multiple of 4. A change applies the next time you press **Play**.
 
-For single player, some mods let the game use other resolutions, for example 4:3. You can find them on Reddit or on the Project Diablo 2 Discord. To use such a mod:
+To use a different aspect ratio, see [Can the game use a different aspect ratio, for example 4:3?](#can-the-game-use-a-different-aspect-ratio-for-example-43).
 
-1. Put the mod in your game folder. Import a game folder that has the mod (**Use files you have**), or copy the mod's files into the game folder with Android's Files app.
-2. In **Settings → Game**, turn off **Check for game updates**. Play then starts the game as it is, with no update. The official PD2 launcher can still update the game when you open it.
-3. In **Settings → Game → Game resolution**, select **Custom…** and type the size for the mod.
+### Performance at a high Custom game resolution
 
-For online play, use **Game's own size** and keep **Check for game updates** on.
+Project Diablo 2 officially runs at 1068 × 600 and 25 fps. Project Diablo 2 uses D2GL to support higher resolutions and frame rates.
 
-### Why does the game miss 120 fps at a high Custom game resolution?
-
-At a high **Custom…** game resolution, with heavy D2GL shader settings, the game can miss some frames at 120 Hz. We measured this on one phone at 120 Hz: **Custom…** 1920 × 1080 with one player's heavy D2GL shader settings missed about 7 % of the frames. At **Game's own size**, the game held about 120 fps.
+At a high **Custom…** game resolution, D2GL gives only a small increase in quality, and the game can miss frames. With **Fit to screen**, Android scales the game's picture to your screen, with very little effect on performance.
 
 To get the frame rate back, do one of these:
 
-- In **Settings → Game → Game resolution**, select **Game's own size**.
+- In **Settings → Display → Game resolution**, select **Game's own size**.
 - In the game, use lighter D2GL shader settings.
-- In **Settings → Game → Graphics, start and sound**, or in the in-game menu's **Quick** tab, set a lower **Frame rate**.
+- In **Settings → Display**, or in the in-game menu's **Quick** tab, set a lower **Frame rate**.
+
+### Can the game use a different aspect ratio, for example 4:3?
+
+For online play, no. Project Diablo 2 officially supports only one resolution for online play: 1068 × 600 (widescreen). See [Performance at a high Custom game resolution](#performance-at-a-high-custom-game-resolution). This is the official rule of the Project Diablo 2 team. The `!res` command in their Discord shows it. This app does not change Project Diablo 2's files to get other resolutions.
+
+For single player, some mods let the game use other aspect ratios, for example 4:3. You can find them on Reddit or on the Project Diablo 2 Discord. To use such a mod:
+
+1. Put the mod in your game folder. Import a game folder that has the mod (**Use files you have**), or copy the mod's files into the game folder with Android's Files app.
+2. In **Settings → Game**, turn off **Check for game updates**. Play then starts the game as it is, with no update. The official PD2 launcher can still update the game when you open it.
+3. In **Settings → Display → Game resolution**, select **Custom…** and type the size for the mod.
+
+For online play, use **Game's own size** and keep **Check for game updates** on.
 
 ### Which devices and graphics chips work?
 
@@ -126,15 +135,15 @@ The app needs an ARM64 device with Android 11 or later, 4 KB memory pages and a 
 
 ### The app says that my device is not supported
 
-The app runs the game only on the graphics chips (GPUs) in [Supported graphics chips](../README.md#supported-graphics-chips). [Open an issue](https://github.com/Pocketward/pd2-launcher-android/issues/new?template=bug_report.yml) and give your device's name and its Android version. If the app shows a GPU name, add it under **What is the problem?**.
+The app runs the game only on the GPUs in [Supported graphics chips](../README.md#supported-graphics-chips). [Open an issue](https://github.com/Pocketward/pd2-launcher-android/issues/new?template=bug_report.yml) and give your device's name and its Android version. If the app shows a GPU name, add it under **What is the problem?**.
 
 ### How do I use a controller?
 
 Connect a Bluetooth or USB controller. In pad mode, the game sees an Xbox controller. The app selects a button layout for each controller when it connects.
 
-- Press **Select + Start** to switch between pad mode and mouse mode. Hold **Select + Start** to open the in-game menu. To use **L3 + R3** instead, go to **Settings → Controller**.
+- Press **Select + Start** to switch between pad mode and mouse mode. Hold **Select + Start** to open the in-game menu. To use **L3 + R3** instead, go to **Settings → Controls**.
 - Use mouse mode for the game's menus and for typing. In mouse mode, the sticks move the pointer. **A** or **L2** is a left click, and **B** or **R2** is a right click.
-- To see or change what each button does, open the in-game menu and tap the gamepad icon (**Controls**). Press the row of a button to change it, also while you play. Each direction of the d-pad can change too. **Settings → Controller** has the same settings.
+- To see or change what each button does, open the in-game menu and tap the gamepad icon (**Controls**). Press the row of a button to change it, also while you play. Each direction of the d-pad can change too. Outside the game, **Settings → Controls → Buttons** opens the same screen.
 
 If a controller has wrong buttons, send us the logs (see [How do I send logs?](#how-do-i-send-logs)). The logs name each controller and the layout that the app selected.
 
@@ -144,13 +153,13 @@ Yes. A USB or Bluetooth mouse moves the game's cursor. Its left, right and middl
 
 ### How do I open the game on the online screen?
 
-Turn on **Skip to Battle.net** in **Settings → Game**. The next time you press **Play**, the game opens on the online screen.
+**Skip to Battle.net** in **Settings → Game** does this, and it is on by default: when you press **Play**, the game opens on the online screen. Turn it off to open the game on its first screen.
 
 ## The official PD2 launcher
 
 ### The official PD2 launcher is slow to open
 
-While the official PD2 launcher starts, the screen is black and shows **Starting the official PD2 launcher…** in the middle. On a slower phone, the launcher can take up to a minute to open. Wait for its window. If the window does not show after 20 seconds, the screen also tells you that it can take a minute.
+While the official PD2 launcher starts, the screen is black and shows **Starting the official PD2 launcher…** in the middle. On a slower device, the launcher can take up to a minute to open. Wait for its window. If the window does not show after 20 seconds, the screen also tells you that it can take a minute.
 
 ### The official PD2 launcher asks a second time after its update
 
@@ -164,27 +173,33 @@ After its first update, the official PD2 launcher keeps a second copy of the gam
 
 ### The download or install stops part way
 
-For example, it stops at about 80 %. Tap **Try again**. The app keeps what it downloaded and continues from there. A second try often finishes. If **Fast download** fails again, go back to the **Diablo II source** page and choose **Blizzard's installers**.
+Tap **Try again**. The app keeps what it downloaded and continues from where it stopped, for example at 80 %. A second try often finishes. If **Fast download** fails again, go back to the **Diablo II source** page and choose **Blizzard's installers**.
 
 ### The app does not accept my CD key
 
-The line under the key says what is wrong. A key has 26 letters and numbers; the dashes are optional. Keys of 16 characters do not work: your Blizzard account shows the 26-character key for such a key. Type the Diablo II key in the first field and the Lord of Destruction key in the second.
+The line under the key says what is wrong. A key has 26 letters and numbers; the dashes are optional. Keys of 16 characters do not work. Your Blizzard account shows a 26-character key for each 16-character key. Type that key. Type the Diablo II key in the first field and the Lord of Destruction key in the second.
 
 ### A download stops while the app is in the background
 
-Some phones stop the network of an app, or stop the app, while it is in the background. This saves battery or data. Do these steps:
+Some devices stop the network of an app, or stop the app, while it is in the background. This saves battery or data. Do these steps:
 
-1. In **Settings → App → Android**, tap **Battery settings**. Select **Not optimised** for PD2 Launcher in the list that opens.
+1. In **Settings → Help**, tap **Battery settings**. Select **Not optimised** for PD2 Launcher in the list that opens.
 2. In the same part, make sure that **Notifications** are on. The notification keeps the app and the game running.
-3. In Android's settings for PD2 Launcher, let the app use the network in the background. The names of these settings are different on each phone.
+3. In Android's settings for PD2 Launcher, let the app use the network in the background. The names of these settings are different on each device.
 
-The **Connection** row on the **Check** screen tells you when the phone blocks the network of the app. It also opens the app's settings.
+The **Connection** row on the **Check** screen tells you when the device blocks the network of the app. It also opens the app's settings.
 
 ### How do updates work?
 
 The app and Project Diablo 2 have different updates.
 
-- **The app:** while the app is open, it looks for a new version each hour. The setting is **Settings → App → Look for new versions** (on by default). When a new version is available, Android shows a notification, and a gold dot shows on **About**. In **About**, tap **Download**, then **Install**, and confirm in Android's window. The download starts only when you tap **Download**; on mobile data, a note gives the size first. The first time, Android asks you to allow **Install unknown apps** for PD2 Launcher, and can restart the app when you do. Your game, characters and settings stay.
+- **The app:** while the app is open, it looks for a new version each hour. **Check now** looks at once. When a new version is available, Android shows a notification, and an orange dot shows on **Version** on the **Play** screen. To install it:
+  1. Tap **Version**. It opens **Settings → App**.
+  2. Select **Stable**, and tap the download sign. If you change the channel during a download, the download continues. To stop it, select the channel of the download again, and then tap **Stop**. **Stop** shows only on the selected channel.
+  3. When the download ends, confirm in Android's window. While the game or the official PD2 launcher runs, or the game is starting, you cannot change the channel, download or install: a line above the channels tells you to close it first. A download that runs continues, and **Stop** works. If you selected the other channel during the download, Android's window does not open by itself: the download waits on its channel with the install sign. Tap that sign. The first time, Android asks you to allow **Install unknown apps** for PD2 Launcher, and can restart the app when you do.
+
+  Your game, characters and settings stay.
+- **Stable and Beta:** **Beta** shows as not available yet until a test version is out. When one is out, you can switch in both directions: **Beta** has the test versions, and **Stable** has the finished versions. When a newer **Stable** has passed the beta, **Beta** shows as not available, and a line under it says that you cannot install that beta: wait for the next beta.
 - **Project Diablo 2:** when you press **Play**, the app first checks for a new version of Project Diablo 2. If there is one, **New version found** asks you. **Update** installs it, and then the game starts. **Cancel** keeps your version, and Play then offers **Update** and **Play without updating**. Online games can need the current version.
 - **Check for game updates** (**Settings → Game**, on by default): turn it off to keep your Project Diablo 2 as it is, for example with a mod. This setting does not change the updates of the app.
 - After the official PD2 launcher updates the game files, Play can ask you to check them one time. Tap **Check files**.
@@ -193,15 +208,15 @@ The app and Project Diablo 2 have different updates.
 
 ### Where are the game folder and my characters?
 
-In Android's Files app, the game folder is under **PD2 Launcher**, in the folder **Diablo II**. **Settings → App → Game files → Open in Files** opens it. Your characters are in its **Save** folder. Your loot filter is in the game folder too.
+In Android's Files app, the game folder is under **PD2 Launcher**, in the folder **Diablo II**. **Settings → Files and saves → Open in Files** opens it. Your characters are in its **Save** folder. Your loot filter is in the game folder too.
 
 When the app finds two different copies of a character, it keeps the copy that was saved last. The other copy goes to **Save/Backups**. The app keeps all backups: delete them yourself when you do not need them. When **Save sync** is on, a backup that you delete in the game folder stays in your sync folder. Delete it there too.
 
-When you uninstall the app, Android removes the installation. Android offers to keep the app's data. Copy your characters out first, or use **Save sync**. Before you put a mod's files in the game folder, read [Your files](../README.md#your-files) in the README.
+If you uninstall the app, you can lose your characters. Android offers to keep the app's data, but copy your characters out first, or use **Save sync**. Before you put a mod's files in the game folder, read [Your files](../README.md#your-files) in the README.
 
 ### How do I sync my characters with Syncthing?
 
-Use **Save sync** in **Settings → App → Game files**. It keeps the game's Save folder and a folder that you pick the same.
+Use **Save sync** in **Settings → Files and saves**. It keeps the game's Save folder and a folder that you pick the same.
 
 1. Turn on **Save sync**.
 2. Pick or make a folder, for example **Documents/PD2 Saves**, and allow access one time. The folder can be on the device or on an SD card.
@@ -215,13 +230,23 @@ When a character changed in the two places, the copy that was saved last stays. 
 
 ### Android 17 shows a message about 16 KB memory pages
 
-Android 17 can show a message about 16 KB memory pages. The app still works.
+Android 17 can show a message about 16 KB memory pages. The app still works. Close the message and play.
+
+### Android cannot install the APK
+
+Do these steps in sequence:
+
+1. Make sure that the APK download is complete. Android cannot install an APK file that did not download fully or that is damaged. Delete the file, then download it again from the [releases page](https://github.com/Pocketward/pd2-launcher-android/releases). Wait until your browser shows that the download is complete, then open the file.
+2. If **Google Play Protect** blocks the app, tap **More details**, then **Install anyway**. If you cannot see **Install anyway**, turn off Play Protect: open the **Play Store**, tap your profile picture, tap **Play Protect**, then the settings icon, and turn off **Scan apps with Play Protect**.
+3. On a Samsung device, **Auto Blocker** can block apps that do not come from an app store. Open **Settings → Security and privacy → Auto Blocker** and turn it off.
+
+After the install, you can turn Play Protect and Auto Blocker on again. The names and places of these settings can be different on your device.
 
 ### How do I send logs?
 
-1. In **Settings → App → Help**, turn on **Detailed logging**. The app records its own details at once, and the game's details from the next **Play** or official PD2 launcher.
+1. In **Settings → Help**, turn on **Detailed logging**. The app records its own details at once, and the game's details from the next **Play** or official PD2 launcher.
 2. Make the problem occur again.
-3. In **Settings → App → Help**, tap **Share logs** to send the file, or **Save logs** to save it on the device, for example in Downloads.
+3. In **Settings → Help**, tap **Save logs**, and pick a folder, for example Downloads.
 4. Attach the file to an [issue](https://github.com/Pocketward/pd2-launcher-android/issues). Write your device's model, its Android version and its GPU (the **Check** screen shows them), and what occurred.
 5. Turn off **Detailed logging**. While it is on, the logs fill up faster.
 

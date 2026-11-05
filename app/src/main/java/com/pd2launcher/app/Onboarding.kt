@@ -31,8 +31,11 @@ data class Line(@param:StringRes val id: Int, val args: List<Any>) {
     constructor(@StringRes id: Int, vararg args: Any) : this(id, args.toList())
 }
 
-/** How a check row stands; the screen shows each with a glyph and words, not color alone. */
-enum class Tone { PENDING, WORKING, OK, WARNING, ERROR }
+/**
+ * How a check row stands; the screen shows each with a glyph and words, not color alone. [WAITING]:
+ * the step waits for the player (the header's current step while no work runs).
+ */
+enum class Tone { PENDING, WORKING, WAITING, OK, WARNING, ERROR }
 
 /** One row of step 1: what is checked, how it stands, and what to say about it. */
 data class CheckRow(
@@ -192,7 +195,7 @@ sealed interface Screen {
          */
         val title: Line get() = when (tone) {
             Tone.ERROR -> Line(R.string.check_title_problem)
-            Tone.PENDING, Tone.WORKING -> Line(R.string.check_title)
+            Tone.PENDING, Tone.WORKING, Tone.WAITING -> Line(R.string.check_title)
             Tone.OK -> Line(R.string.check_title_ready)
             Tone.WARNING -> when {
                 untested -> Line(R.string.check_title_untested)
@@ -205,7 +208,7 @@ sealed interface Screen {
         @get:StringRes
         val intro: Int get() = when (tone) {
             Tone.ERROR -> R.string.check_intro_problem
-            Tone.PENDING, Tone.WORKING -> R.string.check_intro
+            Tone.PENDING, Tone.WORKING, Tone.WAITING -> R.string.check_intro
             Tone.OK -> R.string.check_intro_ready
             Tone.WARNING -> when {
                 untested -> R.string.check_intro_untested
@@ -419,8 +422,8 @@ object Onboarding {
     }
 
     /**
-     * Repair shows Settings and Share logs and Save logs for an installed game ([record]): held on
-     * screen (its Back leaves the app), opened from Play, and through Check again alike.
+     * Repair shows Share logs and Save logs for an installed game ([record]): held on screen (its
+     * Back leaves the app), opened from Play, and through Check again alike.
      */
     fun repairLinks(record: SetupRecord): Boolean = record == SetupRecord.INSTALLED
 

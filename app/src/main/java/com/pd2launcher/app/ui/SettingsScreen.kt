@@ -3,10 +3,10 @@ package com.pd2launcher.app.ui
 import androidx.activity.compose.BackHandler
 import androidx.annotation.StringRes
 import androidx.compose.foundation.LocalIndication
-import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -24,102 +24,111 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.InputMode
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.onPlaced
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalInputModeManager
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.pd2launcher.app.AppSettings
+import com.pd2launcher.app.BuildConfig
 import com.pd2launcher.app.FrameRateVote
 import com.pd2launcher.app.GameDisplay
 import com.pd2launcher.app.GameResolution
 import com.pd2launcher.app.GraphicsProfiles
 import com.pd2launcher.app.HostGpu
 import com.pd2launcher.app.LauncherSettings
+import com.pd2launcher.app.Line
 import com.pd2launcher.app.R
+import com.pd2launcher.app.SaveSyncFolder
+import com.pd2launcher.app.SaveSyncState
 import com.pd2launcher.app.Tone
 import com.pd2launcher.app.control.Command
-import com.pd2launcher.app.control.Renderer
 import com.pd2launcher.app.input.Chord
 import com.pd2launcher.app.input.Controls
 import com.pd2launcher.app.input.ControlsStore
-import com.pd2launcher.app.input.PadAction
-import com.pd2launcher.app.input.PadButton
-import com.pd2launcher.app.input.PointerSpeed
+import com.pd2launcher.app.input.TouchMode
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
-/** What the Android section says about the system settings the app depends on. */
+/** What the Android group says about the system settings the app depends on. */
 data class SystemState(val batteryRestricted: Boolean, val notificationsOff: Boolean)
 
-/**
- * Where Settings stands: the open tab, how far each tab is scrolled, the bindings' mode, the
- * binding being picked. Kept while Settings is away (the on-screen controls editor, the game).
- */
-class SettingsNav {
-    var tab by mutableIntStateOf(GAME)
-    var mouse by mutableStateOf(false)
-    var picker by mutableStateOf<PadButton?>(null)
-    var resolutions by mutableStateOf(false)
-    var customSize by mutableStateOf(false)
-    var displays by mutableStateOf(false)
-    var profiles by mutableStateOf(false)
-    var frameRates by mutableStateOf(false)
-    val scroll = List(3) { ScrollState(0) }
+/** The list's width on a handheld, beside the open page. */
+private val LIST_WIDTH = 240.dp
 
-    fun open(tab: Int) {
-        this.tab = tab
-        picker = null
-        resolutions = false
-        customSize = false
-        displays = false
-        profiles = false
-        frameRates = false
-    }
-
-    companion object {
-        const val GAME = 0
-        const val APP = 1
-        const val CONTROLLER = 2
-    }
-}
+/** The longest wait on the way back from a screen for the page to reach its old scroll: the system bars' return. */
+private const val SCROLL_BACK_MS = 500L
 
 /**
- * Settings, in three text tabs: Game (the Launcher's settings that apply on Android, [launcher],
- * changed with [onCommand]; the game resolution, also the official launcher's, whose choices
- * follow the landscape [display]; how the Game view shows the game and the official launcher's
- * window (Display, at once, also over a running game, with no restart); D2GL's
- * graphics profile, whose Automatic follows the [gpu]; the frame rate, whose choices follow the
- * screen's full rate ([fullFrameRate], [com.pd2launcher.app.ScreenRate]); and the lower frame rate in the background; next Play), App (the app's
- * own, [app], and the system settings it depends on; at once) and Controller (the physical
- * controller, [ControlsStore], and Touch, [app]; at once, in the game too). Each tab opens with when its settings
- * apply; while the game or the official launcher runs on another X screen than the game
- * resolution makes ([running]: its size), the game resolution also says that the new size applies
- * at the next start. Controller leads with On-screen controls, the way to the on-screen controls
- * ([onEditOnScreen]: their editor holds all their options); a binding opens the picker as a
- * sheet over the column, as the game resolution opens its choices. [back]: the back label, to where
- * Settings returns ([com.pd2launcher.app.Onboarding.settingsBack]). [updates]: this build gets app
- * updates (the App tab's App updates: the hourly check, and [newVersion] when one is out, which
- * About installs).
+ * Settings, as a list of pages ([SettingsPage]: Display, Game, Controls, Files and saves, App,
+ * Help), each in the list with its values now ([SettingsPage.line]) and a mark where it needs the
+ * player. A handheld shows two panes, the list at the left and the open page at the
+ * right; the d-pad moves between them. A phone shows the list, then the page with "‹ Settings";
+ * Back goes from the page to the list. L1 and R1 step through the pages ([SettingsNav.shoulder],
+ * from MainActivity). Rows are short: a row that opens a sheet or an input shows its title and
+ * its value, and the sheet or the input says the rest. Each row says when it applies only where
+ * that is not at once.
+ *
+ * Display: the game resolution, also the official launcher's, whose choices follow the landscape
+ * [display] (while the game or the official launcher runs at another size, [running]: its X
+ * screen, the row says that the new size applies at the next start); how the Game view shows
+ * them (Display, at once, also over a running game); D2GL's graphics profile, whose Automatic
+ * follows the [gpu]; the frame rate, whose choices follow the screen's full rate
+ * ([fullFrameRate], [com.pd2launcher.app.ScreenRate]); Slower game in the background, the FPS
+ * counter and Keep the screen on. Game: the Launcher's settings ([launcher], changed with
+ * [onCommand]; its save state beside the page's title): the check for game updates, then the
+ * start options that Play gives Diablo II; Loot filters keeps its place, greyed out. Controls:
+ * On-screen controls ([onEditOnScreen]: their editor holds all their options), Buttons
+ * ([onButtons]: the Controls screen of the game, which holds every binding), Touch, Pointer speed
+ * (its input, [PointerSpeedInput]) and the chord. Files and saves: the game folder, Save sync and
+ * Storage. App ([appPage]; null: this build gets no updates): the version, Check now and the
+ * Update channel, and About ([onAbout]). Help: the problem reports (Detailed logging and Save
+ * logs), and Android's battery and notification settings ([system]). [back]: the back label, to
+ * where Settings returns
+ * ([com.pd2launcher.app.Onboarding.settingsBack]).
  */
 @Composable
 fun SettingsScreen(
@@ -136,59 +145,252 @@ fun SettingsScreen(
     onBatterySettings: () -> Unit,
     onNotificationSettings: () -> Unit,
     onEditOnScreen: () -> Unit,
+    onButtons: () -> Unit,
     onAbout: () -> Unit,
     onBack: () -> Unit,
-    updates: Boolean = false,
-    newVersion: String? = null,
+    appPage: AppPageUi? = null,
     running: Pair<Int, Int>? = null,
 ) {
+    // Display's GPU sub page over Settings, as About and Buttons: on the way back Settings is new,
+    // and the focus returns to the GPU row (nav.opener).
+    if (nav.gpu) {
+        GpuPage(app, gpu, onAppChange) { nav.gpu = false }
+        return
+    }
     val context = LocalContext.current
     remember { ControlsStore.load(context) }
     val controls by ControlsStore.current.collectAsState()
     val save: (Controls) -> Unit = { ControlsStore.save(context, it) }
+    remember { SaveSyncFolder.load(context) }
+    val sync by SaveSyncFolder.state.collectAsState()
     val phone = LocalFormFactor.current == FormFactor.PHONE
-    val tabFocus = remember { FocusRequester() }
-    InitialFocus(tabFocus, nav.tab)
-    BackHandler(
-        enabled = nav.picker == null && !nav.resolutions && !nav.customSize && !nav.displays && !nav.profiles &&
-            !nav.frameRates,
-        onBack = onBack,
+    val (width, height) = display
+    val size = GameResolution.forPlay(width, height, app.customSize)
+    val facts = SettingsFacts(
+        size = size,
+        frameRate = FrameRateVote.shown(app.frameRate, fullFrameRate),
+        launcher = launcher,
+        touch = app.touchMode,
+        pointerSpeed = controls.pointerSpeed,
+        syncOn = app.syncFolder != null,
+        syncBroken = sync.problem == SaveSyncState.Problem.FOLDER_GONE || sync.problem == SaveSyncState.Problem.FAILED,
+        version = BuildConfig.SHOWN_VERSION,
+        appLine = appPage?.line,
+        system = system,
     )
-    Box(Modifier.fillMaxSize().background(Palette.Background)) {
-        Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
-            Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(start = 8.dp, end = 20.dp), verticalAlignment = Alignment.CenterVertically) {
-                LauncherButton(
-                    stringResource(back), onBack,
-                    kind = Kind.QUIET, height = 48.dp, padding = 14.dp,
-                )
-                ScreenTitle(stringResource(R.string.settings_title), Modifier.weight(1f).padding(start = 4.dp))
-                SaveStatus(LauncherSettings.saveState(launcher))
+    val list = remember { SettingsPage.entries.associateWith { FocusRequester() } }
+    val page = remember { FocusRequester() }
+    val rows = remember { PageRows() }
+    val input = LocalInputModeManager.current
+    // As Settings opens: the list's row of the open page; a phone's list or page as each shows. As
+    // InitialFocus, except that the first key after a touch on a scrolled page goes to a row in view,
+    // so the page stays where the player put it: the first row or the list would lose that.
+    var fromTouch by remember { mutableStateOf(false) }
+    val start = if (phone && nav.pageShown) page else list.getValue(nav.page)
+    LaunchedEffect(input.inputMode, phone && nav.pageShown) {
+        val stays = fromTouch && input.inputMode == InputMode.Keyboard && (!phone || nav.pageShown) && !nav.popup &&
+            nav.scroll.getValue(nav.page).value > 0 && rows.focusInView()
+        fromTouch = input.inputMode == InputMode.Touch
+        if (!stays) runCatching { start.requestFocus() }
+    }
+    // A closed sheet, and Buttons, About or the on-screen controls on the way back: the row that
+    // opened it, which is in view, so the page does not scroll. On the way back Settings is new:
+    // the frames that its first layout needs, as a row with no place yet can scroll the page. The
+    // scroll comes back too: the Controls screen and the editor hide the system bars, and until they
+    // show again a higher page can scroll less, which cuts the kept value. The page gets its height
+    // back in a few frames, or not at all when the page changed.
+    LaunchedEffect(nav.popup) {
+        val row = nav.opener.takeUnless { nav.popup } ?: return@LaunchedEffect
+        nav.opener = null
+        if (rows.view == null) repeat(2) { withFrameNanos {} }
+        val scroll = nav.scroll.getValue(nav.page)
+        if (scroll.value != nav.openerScroll) {
+            withTimeoutOrNull(SCROLL_BACK_MS) { snapshotFlow { scroll.maxValue }.first { it >= nav.openerScroll } }
+            scroll.scrollTo(nav.openerScroll)
+        }
+        runCatching { rows.focus.getValue(row).requestFocus() }
+    }
+    // L1 and R1: the focus goes to the first row of the page they open, by its own requester. The
+    // keys do not end Android's touch mode, in which no row takes the focus. After the frames that
+    // the new mode and the new page need: the first effect above also answers a new mode.
+    val seenSteps = remember { nav.focusPage }
+    LaunchedEffect(nav.focusPage) {
+        if (nav.focusPage != seenSteps) {
+            input.requestInputMode(InputMode.Keyboard)
+            repeat(2) { withFrameNanos {} }
+            runCatching { page.requestFocus() }
+        }
+    }
+    val updates = appPage != null
+    // The rows go from under the focus: another page by any way but the list, or the App page's
+    // updates. The focus then falls out of the page, so it goes to the first row, as for L1 and R1.
+    var inPage by remember { mutableStateOf(false) }
+    val rowsNow = nav.page to (nav.page == SettingsPage.APP && updates)
+    val lost = remember(rowsNow) { inPage }
+    LaunchedEffect(rowsNow) {
+        if (lost) {
+            repeat(2) { withFrameNanos {} }
+            runCatching { page.requestFocus() }
+        }
+    }
+    BackHandler(enabled = !nav.popup) { if (!nav.back(phone)) onBack() }
+    val enabled = launcher?.editable == true
+    val shown = { r: SettingsRow -> r.shown(gameUpdateChecks = launcher?.gameUpdateChecks != null, updates = updates) }
+    val firstRow = nav.page.firstRow(shown, enabled)
+    val focusOf = { r: SettingsRow -> page.takeIf { r == firstRow } }
+    val opens = { r: SettingsRow, open: () -> Unit ->
+        nav.opener = r
+        nav.openerScroll = nav.scroll.getValue(nav.page).value
+        open()
+    }
+    val rowView: @Composable ColumnScope.(SettingsRow) -> Unit = { row ->
+        when (row) {
+            SettingsRow.GAME_RESOLUTION -> OpenRow(
+                stringResource(R.string.settings_section_resolution), text(GameResolution.label(width, height, app.customSize)),
+                notes = listOfNotNull(
+                    // The official launcher's window is cut off at a size with fewer columns or lines than it.
+                    stringResource(R.string.settings_resolution_launcher_cut).takeIf { GameResolution.cutsLauncher(size) },
+                    stringResource(R.string.settings_resolution_running).takeIf { running != null && running != size },
+                ),
+                focusRequester = focusOf(row),
+            ) { opens(row) { nav.resolutions = true } }
+            SettingsRow.DISPLAY -> OpenRow(stringResource(R.string.settings_section_display), stringResource(app.gameDisplay.title)) { opens(row) { nav.displays = true } }
+            SettingsRow.GRAPHICS_PROFILE -> OpenRow(stringResource(R.string.settings_graphics_profile), text(GraphicsProfiles.shown(app.graphicsProfile, gpu))) {
+                opens(row) { nav.profiles = true }
             }
-            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.Center) {
-                listOf(R.string.settings_tab_game, R.string.settings_tab_app, R.string.settings_tab_controller).forEachIndexed { i, label ->
-                    TextTab(
-                        stringResource(label), nav.tab == i, { nav.open(i) },
-                        if (phone) Modifier.weight(1f) else Modifier, if (nav.tab == i) tabFocus else null,
-                    )
+            SettingsRow.FRAME_RATE -> OpenRow(stringResource(R.string.settings_frame_rate), frameRateLabel(app.frameRate, fullFrameRate)) { opens(row) { nav.frameRates = true } }
+            SettingsRow.FPS_COUNTER -> ToggleRow(
+                stringResource(R.string.game_menu_fps_counter), stringResource(R.string.settings_fps_counter_body),
+                app.showFps, { value -> onAppChange { it.copy(showFps = value) } },
+            )
+            SettingsRow.KEEP_SCREEN_ON -> ToggleRow(
+                stringResource(R.string.settings_keep_screen_on), stringResource(R.string.settings_keep_screen_on_body),
+                app.keepScreenOn, { value -> onAppChange { it.copy(keepScreenOn = value) } },
+            )
+            SettingsRow.SKIP_TO_BNET -> ToggleRow(
+                stringResource(R.string.settings_skip_to_bnet), stringResource(R.string.settings_skip_to_bnet_body),
+                launcher?.skipToBnet ?: false, { onCommand(LauncherSettings.skipToBnet(it)) }, enabled, focusOf(row),
+            )
+            // The Launcher's checks for Project Diablo 2's updates (the app's own are on the App page).
+            SettingsRow.GAME_UPDATE_CHECKS -> ToggleRow(
+                stringResource(R.string.settings_game_update_checks), stringResource(R.string.settings_game_update_checks_body),
+                launcher?.gameUpdateChecks == true, { onCommand(LauncherSettings.gameUpdateChecks(it)) }, enabled, focusOf(row),
+            )
+            SettingsRow.SLOWER_IN_BACKGROUND -> ToggleRow(
+                stringResource(R.string.settings_background_frame_rate), stringResource(R.string.settings_background_frame_rate_body),
+                app.lowFrameRateInBackground, { value -> onAppChange { it.copy(lowFrameRateInBackground = value) } },
+            )
+            SettingsRow.SOUND_IN_BACKGROUND -> ToggleRow(
+                stringResource(R.string.settings_sound_in_background), stringResource(R.string.settings_sound_in_background_body),
+                launcher?.soundInBackground ?: false, { onCommand(LauncherSettings.soundInBackground(it)) }, enabled, focusOf(row),
+            )
+            SettingsRow.RENDERER -> RendererInfoRow()
+            SettingsRow.LOOT_FILTERS -> LootFiltersRow()
+            SettingsRow.ON_SCREEN_CONTROLS -> OpenRow(
+                stringResource(R.string.controls_edit_on_screen), body = stringResource(R.string.controls_edit_on_screen_body),
+                minHeight = 56.dp, focusRequester = focusOf(row),
+            ) { opens(row, onEditOnScreen) }
+            SettingsRow.BUTTONS -> OpenRow(
+                stringResource(R.string.controls_section_buttons), body = stringResource(R.string.settings_buttons_body), minHeight = 56.dp,
+            ) { opens(row, onButtons) }
+            SettingsRow.CHORD -> ChoiceRow(
+                stringResource(R.string.controls_chord),
+                listOf(stringResource(R.string.controls_chord_select_start), stringResource(R.string.controls_chord_thumbs)),
+                controls.chord.ordinal, { save(controls.copy(chord = Chord.entries[it])) }, stringResource(R.string.controls_chord_body),
+            )
+            SettingsRow.POINTER_SPEED -> ValueRow(
+                stringResource(R.string.controls_pointer_speed_title), stringResource(R.string.controls_factor, speedText(controls.pointerSpeed)),
+            ) { opens(row) { nav.pointerSpeed = true } }
+            SettingsRow.TOUCH -> ChoiceRow(
+                stringResource(R.string.controls_touch),
+                listOf(stringResource(R.string.controls_touch_trackpad), stringResource(R.string.controls_touch_direct)),
+                TouchMode.entries.indexOf(app.touchMode), { index -> onAppChange { it.copy(touchMode = TouchMode.entries[index]) } },
+            )
+            SettingsRow.GAME_FOLDER -> GameFilesRows(focusOf(row))
+            SettingsRow.SAVE_SYNC -> SaveSyncRows(app)
+            SettingsRow.STORAGE -> StorageRows()
+            SettingsRow.APP_STATUS -> appPage?.let { AppStatusBlock(it, list.getValue(nav.page).takeUnless { phone }, page) }
+            SettingsRow.UPDATE_CHANNEL -> appPage?.let { ChannelRows(it, focusOf(row)) }
+            SettingsRow.DETAILED_LOGGING -> ToggleRow(
+                stringResource(R.string.settings_detailed_logging), stringResource(R.string.settings_detailed_logging_body),
+                app.detailedLogging, { value -> onAppChange { it.copy(detailedLogging = value) } }, focusRequester = focusOf(row), prominent = true,
+            )
+            SettingsRow.SAVE_LOGS -> SaveLogsRow()
+            SettingsRow.BATTERY -> SystemRow(
+                stringResource(R.string.settings_battery), !system.batteryRestricted,
+                stringResource(if (system.batteryRestricted) R.string.settings_battery_restricted else R.string.settings_battery_unrestricted),
+                stringResource(R.string.settings_battery_open), onBatterySettings,
+            )
+            SettingsRow.NOTIFICATIONS -> SystemRow(
+                stringResource(R.string.settings_notifications), !system.notificationsOff,
+                stringResource(if (system.notificationsOff) R.string.settings_notifications_off else R.string.settings_notifications_on),
+                stringResource(R.string.settings_notifications_open), onNotificationSettings,
+            )
+            // Display's GPU: the driver in use, and its sub page (decision 23).
+            SettingsRow.GPU -> OpenRow(
+                stringResource(R.string.settings_gpu), gpuValue(driverPage(app, gpu).first), focusRequester = focusOf(row),
+            ) { opens(row) { nav.gpu = true } }
+            SettingsRow.ABOUT -> OpenRow(
+                stringResource(R.string.settings_about), stringResource(R.string.about_version, BuildConfig.SHOWN_VERSION), minHeight = 56.dp,
+                focusRequester = focusOf(row),
+            ) { opens(row, onAbout) }
+        }
+    }
+    val saveState = LauncherSettings.saveState(launcher).takeIf { nav.page == SettingsPage.GAME }
+    Box(Modifier.fillMaxSize().background(Palette.Background)) {
+        if (phone) {
+            Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
+                if (nav.pageShown) {
+                    if (nav.fromPlay) {
+                        Header(stringResource(back), onBack, stringResource(nav.page.title), saveState)
+                    } else {
+                        Header(stringResource(R.string.back_to_settings), { nav.back(phone = true) }, stringResource(nav.page.title), saveState)
+                    }
+                    Rule()
+                    PageBody(nav, launcher, updates, null, rows, { inPage = it }, shown, rowView, Modifier.weight(1f))
+                } else {
+                    Header(stringResource(back), onBack, stringResource(R.string.settings_title), null)
+                    Rule()
+                    PageList(nav, facts, phone = true, list, null, Modifier.weight(1f).fillMaxWidth())
                 }
             }
-            Rule()
-            Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(nav.scroll[nav.tab]), horizontalAlignment = Alignment.CenterHorizontally) {
-                Column(Modifier.widthIn(max = 560.dp).fillMaxWidth().padding(horizontal = 8.dp).padding(top = 12.dp, bottom = 24.dp)) {
-                    when (nav.tab) {
-                        SettingsNav.GAME -> GameTab(launcher, onCommand, app, display, fullFrameRate, gpu, nav, onAppChange, running)
-                        SettingsNav.APP -> AppTab(app, system, onAppChange, onBatterySettings, onNotificationSettings, onAbout, updates, newVersion)
-                        else -> ControllerTab(controls, app, nav, phone, save, onAppChange, onEditOnScreen)
-                    }
+        } else {
+            Row(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
+                Column(Modifier.width(LIST_WIDTH).fillMaxHeight()) {
+                    Header(stringResource(back), onBack, stringResource(R.string.settings_title), null)
+                    PageList(nav, facts, phone = false, list, page, Modifier.weight(1f).fillMaxWidth())
+                }
+                Rule(Modifier.fillMaxHeight().padding(vertical = 12.dp), vertical = true)
+                Column(Modifier.weight(1f).fillMaxHeight()) {
+                    Header(null, {}, stringResource(nav.page.title), saveState, Type.PageTitle)
+                    PageBody(nav, launcher, updates, list.getValue(nav.page), rows, { inPage = it }, shown, rowView, Modifier.weight(1f))
                 }
             }
         }
-        nav.picker?.let { button -> BindingPicker(controls, button, nav.mouse, side = !phone, save) { nav.picker = null } }
         if (nav.resolutions) ResolutionSheet(app, display, phone, onAppChange, { nav.customSize = true }) { nav.resolutions = false }
         if (nav.customSize) CustomSizeInput(app.customSize, display, { value -> onAppChange { it.copy(customSize = value) } }) { nav.customSize = false }
         if (nav.displays) DisplaySheet(app, phone, onAppChange) { nav.displays = false }
         if (nav.profiles) GraphicsProfileSheet(app, gpu, phone, onAppChange) { nav.profiles = false }
-        if (nav.frameRates) FrameRateInput(app.frameRate, fullFrameRate, { value -> onAppChange { it.copy(frameRate = value) } }) { nav.frameRates = false }
+        if (nav.frameRates) {
+            FrameRateInput(
+                app.frameRate, fullFrameRate, { value -> onAppChange { it.copy(frameRate = value) } },
+                intro = stringResource(R.string.settings_frame_rate_body),
+            ) { nav.frameRates = false }
+        }
+        if (nav.pointerSpeed) PointerSpeedInput(controls.pointerSpeed, { save(controls.copy(pointerSpeed = it)) }) { nav.pointerSpeed = false }
+    }
+}
+
+/**
+ * A header: the back button ([back]; null: none, the page's header beside the list), the [title],
+ * and the Launcher's [save] state where the page holds its settings (Game).
+ */
+@Composable
+private fun Header(back: String?, onBack: () -> Unit, title: String, save: LauncherSettings.SaveState?, style: TextStyle = Type.Title) {
+    Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(start = 8.dp, end = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+        if (back != null) LauncherButton(back, onBack, kind = Kind.QUIET, height = 48.dp, padding = 14.dp)
+        ScreenTitle(title, Modifier.weight(1f).padding(start = if (back != null) 4.dp else 14.dp), style)
+        if (save != null) SaveStatus(save)
     }
 }
 
@@ -206,145 +408,271 @@ private fun SaveStatus(state: LauncherSettings.SaveState) {
     }
 }
 
-/** A text tab with a teal underline under the open one. */
+/**
+ * The list of pages: each with its icon, its name and its line ([SettingsPage.line]), the open
+ * one tinted on a handheld; on a [phone] a chevron, and a press opens the page. A handheld's d-pad
+ * goes right into the open page ([page]).
+ */
 @Composable
-private fun TextTab(label: String, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier, focus: FocusRequester? = null) {
-    val interaction = remember { MutableInteractionSource() }
-    val focused by interaction.collectIsFocusedAsState()
-    Box(
-        modifier.focusOn(focus)
-            .heightIn(min = 52.dp).focusMark(focused, shape = Small)
-            .selectable(selected, interaction, LocalIndication.current, role = Role.Tab, onClick = onClick)
-            .padding(horizontal = 18.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(label, style = Type.Button, color = if (selected) Palette.Text else Palette.Muted, maxLines = 1)
-        if (selected) Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 6.dp).width(24.dp).height(2.dp).background(Palette.Teal))
+private fun PageList(
+    nav: SettingsNav,
+    facts: SettingsFacts,
+    phone: Boolean,
+    focus: Map<SettingsPage, FocusRequester>,
+    page: FocusRequester?,
+    modifier: Modifier,
+) {
+    Column(modifier.verticalScroll(nav.listScroll).padding(horizontal = 8.dp, vertical = 4.dp)) {
+        SettingsPage.entries.forEach { entry ->
+            PageRow(entry, entry.line(facts), phone, selected = !phone && nav.page == entry, focus.getValue(entry), page) { nav.open(entry) }
+        }
     }
 }
 
-/** When this tab's settings take effect: the one truth players need before changing anything. */
+/**
+ * One page in the list, at least 56 dp high: its icon, its name, and its line joined with " · ",
+ * in the alert's colour with its mark where the page needs the player, or the amber dot of a new
+ * version ([PageLine.news]).
+ */
 @Composable
-private fun Applies(text: String) {
-    Text(text, style = Type.Hint, color = Palette.Muted, modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp))
+private fun PageRow(page: SettingsPage, line: PageLine, phone: Boolean, selected: Boolean, focus: FocusRequester, right: FocusRequester?, onOpen: () -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+    val press = if (phone) {
+        Modifier.clickable(interaction, LocalIndication.current, role = Role.Button, onClick = onOpen)
+    } else {
+        Modifier.selectable(selected, interaction, LocalIndication.current, role = Role.Tab, onClick = onOpen)
+    }
+    Row(
+        Modifier.focusRequester(focus)
+            .then(if (right != null) Modifier.focusProperties { this.right = right } else Modifier)
+            .fillMaxWidth().heightIn(min = 56.dp).focusMark(focused, selected)
+            .then(press)
+            .padding(start = 14.dp, end = 12.dp, top = 6.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        Icon(painterResource(page.icon), null, Modifier.size(22.dp), tint = if (selected) Palette.Teal else Palette.Muted)
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+            Text(
+                stringResource(page.title), style = Type.Body.copy(fontWeight = if (selected) FontWeight.SemiBold else null),
+                color = if (selected) Palette.Teal else Palette.Text,
+            )
+            // One line, so the six pages fit a short screen also at a large font. An alert's small mark, or a new
+            // version's amber dot, sits beside the words.
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                line.alert?.let { StatusMark(it) } ?: if (line.news) Dot(Palette.Amber) else Unit
+                Text(
+                    joined(line.lines), style = Type.Hint, color = line.alert?.let(::toneColor) ?: Palette.Muted,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        if (phone) Text("›", style = Type.Title, color = Palette.Teal)
+    }
 }
 
-/** A section: a teal overline with more room above than below; its rows ruled, no card. */
+/** [lines] as one text: "1068 × 600 · 60 fps". */
 @Composable
-private fun Section(title: String, content: @Composable ColumnScope.() -> Unit) {
-    GroupLabel(title, Modifier.padding(start = 14.dp, top = 8.dp))
+private fun joined(lines: List<Line>): String {
+    val parts = lines.map { text(it) }
+    return parts.drop(1).fold(parts.first()) { start, next -> stringResource(R.string.settings_list_join, start, next) }
+}
+
+/**
+ * The open page: on Game the Launcher's save problem or wait first, on the App page in a build
+ * that gets none a line that says so, then each group with its overline and its rows that show
+ * ([shown]). Its rows are one focus group, which says whether it holds the focus ([onFocus]); a
+ * handheld's d-pad left out of it goes to the list's row of the page ([back]). Down never leaves
+ * the group: with no control below, it scrolls to the page's end, which can hold what takes no
+ * focus (Loot filters, the chord's hint). [rows] holds each row's focus and place.
+ */
+@Composable
+private fun PageBody(
+    nav: SettingsNav,
+    launcher: LauncherSettings.View?,
+    updates: Boolean,
+    back: FocusRequester?,
+    rows: PageRows,
+    onFocus: (Boolean) -> Unit,
+    shown: (SettingsRow) -> Boolean,
+    row: @Composable ColumnScope.(SettingsRow) -> Unit,
+    modifier: Modifier,
+) {
+    val page = nav.page
+    val phone = LocalFormFactor.current == FormFactor.PHONE
+    val focus = LocalFocusManager.current
+    val scope = rememberCoroutineScope()
+    val scroll = nav.scroll.getValue(page)
+    Column(modifier.fillMaxWidth().onPlaced { rows.view = it }.verticalScroll(scroll), horizontalAlignment = if (phone) Alignment.CenterHorizontally else Alignment.Start) {
+        Column(
+            Modifier.widthIn(max = if (phone) 560.dp else 520.dp).fillMaxWidth().padding(horizontal = 8.dp).padding(top = if (phone) 12.dp else 0.dp, bottom = 24.dp)
+                .focusProperties {
+                    onExit = {
+                        when (requestedFocusDirection) {
+                            FocusDirection.Down -> cancelFocusChange()
+                            FocusDirection.Left -> back?.requestFocus()
+                            else -> Unit
+                        }
+                    }
+                }
+                .onKeyEvent { event ->
+                    if (event.type != KeyEventType.KeyDown || event.key != Key.DirectionDown) return@onKeyEvent false
+                    // False: no control below, or only one outside the page.
+                    if (!focus.moveFocus(FocusDirection.Down)) scope.launch { scroll.animateScrollTo(scroll.maxValue) }
+                    true
+                }
+                .onFocusChanged { onFocus(it.hasFocus) }
+                .focusGroup(),
+        ) {
+            if (page == SettingsPage.GAME) {
+                val failure = launcher?.failure
+                when {
+                    failure != null -> Banner(stringResource(R.string.settings_hint_failed, failure), Palette.Red, Modifier.padding(horizontal = 6.dp, vertical = 4.dp))
+                    launcher?.editable != true -> Banner(stringResource(R.string.settings_hint_waiting), Palette.Amber, Modifier.padding(horizontal = 6.dp, vertical = 4.dp))
+                }
+            }
+            if (page == SettingsPage.APP && !updates) {
+                Text(stringResource(R.string.settings_updates_none), style = Type.Hint, color = Palette.Muted, modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp))
+            }
+            var first = true
+            page.groups.forEach { group ->
+                val inGroup = group.rows.filter(shown)
+                if (inGroup.isNotEmpty()) {
+                    Section(group, first) {
+                        inGroup.forEachIndexed { index, each ->
+                            if (index > 0 && group.ruled) RowRule()
+                            Column(Modifier.focusRequester(rows.focus.getValue(each)).onPlaced { rows.places[each] = it }) { row(each) }
+                        }
+                    }
+                    first = false
+                }
+            }
+        }
+    }
+}
+
+/**
+ * The open page's rows: each row's [focus], which goes to the first control in it that takes the
+ * focus, its place in the page ([places]), and the page's part of the screen ([view]).
+ */
+private class PageRows {
+    val focus = SettingsRow.entries.associateWith { FocusRequester() }
+    val places = HashMap<SettingsRow, LayoutCoordinates>()
+    var view: LayoutCoordinates? = null
+
+    /** The focus goes to a row in view ([rowsInView]). False: none takes it. */
+    fun focusInView(): Boolean {
+        val page = view?.takeIf { it.isAttached } ?: return false
+        val placed = places.entries.filter { it.value.isAttached }
+        val spans = placed.map { (_, place) -> page.localBoundingBoxOf(place, clipBounds = false).let { it.top..it.bottom } }
+        return rowsInView(spans, page.size.height.toFloat()).any { index ->
+            runCatching { focus.getValue(placed[index].key).requestFocus() }.getOrDefault(false)
+        }
+    }
+}
+
+/**
+ * A group: a teal overline ([RowGroup.label]; none for null) with more room above than below,
+ * less at the top of the page ([first]), the line that says what the group is, and its rows, no
+ * card. A closing group ([RowGroup.gap]) starts with a wider gap and a rule.
+ */
+@Composable
+private fun Section(group: RowGroup, first: Boolean, content: @Composable ColumnScope.() -> Unit) {
+    if (group.gap) {
+        Spacer(Modifier.height(20.dp))
+        RowRule()
+    }
+    group.label?.let { GroupLabel(stringResource(it), Modifier.padding(start = 14.dp), top = if (first) 8.dp else 24.dp) }
+    group.hint?.let {
+        Text(stringResource(it), style = Type.Hint, color = Palette.Muted, modifier = Modifier.padding(start = 14.dp, end = 14.dp, bottom = 4.dp))
+    }
     Column(content = content)
 }
 
 @Composable
 private fun RowRule() = Rule(Modifier.padding(horizontal = 14.dp))
 
-// ---------------------------------------------------------------- Game and App
-
-@Composable
-private fun GameTab(
-    launcher: LauncherSettings.View?,
-    onCommand: (Command) -> Unit,
-    app: AppSettings,
-    display: Pair<Int, Int>,
-    fullFrameRate: Float,
-    gpu: HostGpu?,
-    nav: SettingsNav,
-    onAppChange: ((AppSettings) -> AppSettings) -> Unit,
-    running: Pair<Int, Int>?,
-) {
-    val enabled = launcher?.editable == true
-    val failure = launcher?.failure
-    when {
-        failure != null -> Banner(stringResource(R.string.settings_hint_failed, failure), Palette.Red, Modifier.padding(horizontal = 6.dp, vertical = 4.dp))
-        !enabled -> Banner(stringResource(R.string.settings_hint_waiting), Palette.Amber, Modifier.padding(horizontal = 6.dp, vertical = 4.dp))
-        else -> Applies(stringResource(R.string.settings_applies_game))
-    }
-    val renderer = launcher?.renderer ?: Renderer.GLIDE
-    Section(stringResource(R.string.settings_section_renderer)) {
-        OptionRow(
-            stringResource(R.string.settings_renderer_glide), stringResource(R.string.settings_renderer_glide_body),
-            renderer == Renderer.GLIDE, { if (renderer != Renderer.GLIDE) onCommand(LauncherSettings.renderer(Renderer.GLIDE)) }, enabled,
-        )
-        RowRule()
-        OptionRow(
-            stringResource(R.string.settings_renderer_direct_draw), stringResource(R.string.settings_renderer_direct_draw_body),
-            renderer == Renderer.DIRECT_DRAW, { if (renderer != Renderer.DIRECT_DRAW) onCommand(LauncherSettings.renderer(Renderer.DIRECT_DRAW)) }, enabled,
-        )
-    }
-    ResolutionSection(app, display, running) { nav.resolutions = true }
-    DisplaySection(app) { nav.displays = true }
-    // The settings that control the game itself: D2GL's graphics, its frame rate, how it starts, its sound.
-    Section(stringResource(R.string.settings_section_start)) {
-        GraphicsProfileRow(app, gpu) { nav.profiles = true }
-        RowRule()
-        FrameRateRow(app, fullFrameRate) { nav.frameRates = true }
-        RowRule()
-        ToggleRow(
-            stringResource(R.string.settings_background_frame_rate),
-            stringResource(R.string.settings_background_frame_rate_body),
-            app.lowFrameRateInBackground, { value -> onAppChange { it.copy(lowFrameRateInBackground = value) } },
-        )
-        RowRule()
-        ToggleRow(
-            stringResource(R.string.settings_skip_to_bnet), stringResource(R.string.settings_skip_to_bnet_body),
-            launcher?.skipToBnet ?: false, { onCommand(LauncherSettings.skipToBnet(it)) }, enabled,
-        )
-        RowRule()
-        ToggleRow(
-            stringResource(R.string.settings_sound_in_background), stringResource(R.string.settings_sound_in_background_body),
-            launcher?.soundInBackground ?: false, { onCommand(LauncherSettings.soundInBackground(it)) }, enabled,
-        )
-    }
-    // The Launcher's checks for Project Diablo 2's updates (the app's own updates are under App);
-    // only from an engine that has the setting.
-    launcher?.gameUpdateChecks?.let { checks ->
-        Section(stringResource(R.string.settings_section_game_updates)) {
-            ToggleRow(
-                stringResource(R.string.settings_game_update_checks), stringResource(R.string.settings_game_update_checks_body),
-                checks, { onCommand(LauncherSettings.gameUpdateChecks(it)) }, enabled,
-            )
-        }
-    }
-}
-
 /**
- * The app's own setting beside the Launcher's game settings: D2GL's graphics profile the next Play
- * sends ([GraphicsProfiles.shown]: Automatic says what it picks on this GPU), its choices in a sheet.
+ * A row that opens a sheet, an input or a screen: its title, then its value in teal ([value]) or a
+ * quiet line ([body]), the amber [notes] under them, and a chevron. What the setting does is on
+ * the sheet or the input.
  */
 @Composable
-private fun GraphicsProfileRow(app: AppSettings, gpu: HostGpu?, onOpen: () -> Unit) {
-    FocusRow(onOpen, minHeight = 60.dp) {
+private fun OpenRow(
+    title: String,
+    value: String? = null,
+    body: String? = null,
+    notes: List<String> = emptyList(),
+    minHeight: Dp = 60.dp,
+    focusRequester: FocusRequester? = null,
+    onOpen: () -> Unit,
+) {
+    FocusRow(onOpen, focusRequester = focusRequester, minHeight = minHeight) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(stringResource(R.string.settings_graphics_profile), style = Type.Body, color = Palette.Text)
-            Text(text(GraphicsProfiles.shown(app.graphicsProfile, gpu)), style = Type.Hint, color = Palette.Teal)
-            Text(stringResource(R.string.settings_graphics_profile_body), style = Type.Hint, color = Palette.Muted)
+            Text(title, style = Type.Body, color = Palette.Text)
+            if (value != null) Text(value, style = Type.Hint, color = Palette.Teal)
+            if (body != null) Text(body, style = Type.Hint, color = Palette.Muted)
+            notes.forEach { Text(it, style = Type.Hint, color = Palette.Amber) }
         }
         Text("›", style = Type.Title, color = Palette.Teal)
     }
 }
 
-/** D2GL's graphics profiles, in the game resolution's sheet ([GraphicsProfiles.choices]). A pick closes it. */
+/** A row of one line that opens an input: its title, its value in teal at the right, and a chevron. */
 @Composable
-private fun BoxScope.GraphicsProfileSheet(
-    app: AppSettings,
-    gpu: HostGpu?,
-    phone: Boolean,
-    onAppChange: ((AppSettings) -> AppSettings) -> Unit,
-    onClose: () -> Unit,
-) {
-    ChoiceSheet(stringResource(R.string.settings_graphics_profile), phone, onClose) { first ->
-        GraphicsProfiles.choices(gpu).forEachIndexed { index, choice ->
-            if (index > 0) RowRule()
-            OptionRow(
-                text(choice.title), text(choice.body), app.graphicsProfile == choice.profile,
-                {
-                    onAppChange { it.copy(graphicsProfile = choice.profile) }
-                    onClose()
-                },
-                focusRequester = first.takeIf { index == 0 },
-            )
+private fun ValueRow(title: String, value: String, onOpen: () -> Unit) {
+    FocusRow(onOpen) {
+        Text(title, style = Type.Body, color = Palette.Text, modifier = Modifier.weight(1f))
+        Text(value, style = Type.Hint, color = Palette.Teal, maxLines = 1)
+        Text("›", style = Type.Title, color = Palette.Teal)
+    }
+}
+
+/** One line per setting: its title and its slim switch at the right, and the [hint] under them. */
+@Composable
+private fun ChoiceRow(title: String, options: List<String>, selected: Int, onSelect: (Int) -> Unit, hint: String? = null) {
+    Column(Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 14.dp, vertical = 4.dp), verticalArrangement = Arrangement.Center) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(title, style = Type.Body, color = Palette.Text, modifier = Modifier.weight(1f))
+            SlimSwitch(options, selected, onSelect)
         }
+        if (hint != null) Text(hint, style = Type.Hint, color = Palette.Muted)
+    }
+}
+
+/**
+ * Display → Renderer, information only (decision 24, the owner, 2026-11-03: "renderers are now tied
+ * to the GPU options"): information only, the first line white as other titles, the second greyed;
+ * no focus, no sheet. Every Play from the app runs
+ * Glide ([com.pd2launcher.app.GlideFirst]); in 0.4.0 the Software driver plays with DirectDraw.
+ */
+@Composable
+private fun RendererInfoRow() {
+    Column(
+        Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        // Two lines (the owner, 2026-11-03): "Renderer: Glide", white as the other rows' titles ("white like the rest
+        // menu items for consistency"), then who sets it, greyed.
+        Text(stringResource(R.string.settings_renderer_value, stringResource(R.string.settings_renderer_glide)), style = Type.Body, color = Palette.Text)
+        Text(stringResource(R.string.settings_renderer_set_by_gpu), style = Type.Hint, color = Palette.Faint)
+    }
+}
+
+/** Loot filters: greyed out, as the place of a later screen. */
+@Composable
+private fun LootFiltersRow() {
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(stringResource(R.string.settings_loot_filters), style = Type.Body, color = Palette.Faint)
+            Text(stringResource(R.string.settings_loot_filters_body), style = Type.Hint, color = Palette.Faint)
+        }
+        SlimButton(stringResource(R.string.settings_loot_filters_manage), {}, Modifier.focusProperties { canFocus = false }, enabled = false)
     }
 }
 
@@ -360,66 +688,31 @@ internal fun frameRateLabel(pick: Int, full: Float): String {
     return if (shown > 0) stringResource(R.string.game_fps, shown) else stringResource(R.string.game_fps_unknown)
 }
 
-/** The app's own setting beside the graphics profile: the game's frame rate on the screen; a tap opens its input ([FrameRateInput]). */
+/** D2GL's graphics profiles ([GraphicsProfiles.choices]) under what a profile changes. A pick closes it. */
 @Composable
-private fun FrameRateRow(app: AppSettings, full: Float, onOpen: () -> Unit) {
-    FocusRow(onOpen, minHeight = 60.dp) {
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(stringResource(R.string.settings_frame_rate), style = Type.Body, color = Palette.Text)
-            Text(frameRateLabel(app.frameRate, full), style = Type.Hint, color = Palette.Teal)
-            Text(stringResource(R.string.settings_frame_rate_body), style = Type.Hint, color = Palette.Muted)
-        }
-        Text("›", style = Type.Title, color = Palette.Teal)
-    }
-}
-
-/**
- * The app's own setting: the size the next Play and the next official launcher use on the
- * landscape [display], its choices in a sheet; that the official launcher's window is cut off at
- * a size with fewer columns or lines than it ([GameResolution.LAUNCHER_WINDOW],
- * [GameResolution.cutsLauncher]); while a game or the launcher runs at another size ([running]: its
- * X screen), that the new size applies at the next start.
- */
-@Composable
-private fun ResolutionSection(app: AppSettings, display: Pair<Int, Int>, running: Pair<Int, Int>?, onOpen: () -> Unit) {
-    val (width, height) = display
-    val next = GameResolution.forPlay(width, height, app.customSize)
-    Section(stringResource(R.string.settings_section_resolution)) {
-        FocusRow(onOpen) {
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(text(GameResolution.label(width, height, app.customSize)), style = Type.Body, color = Palette.Text)
-                Text(stringResource(R.string.settings_resolution_body), style = Type.Hint, color = Palette.Muted)
-                if (GameResolution.cutsLauncher(next)) {
-                    Text(stringResource(R.string.settings_resolution_launcher_cut), style = Type.Hint, color = Palette.Amber)
-                }
-                if (running != null && running != next) {
-                    Text(stringResource(R.string.settings_resolution_running), style = Type.Hint, color = Palette.Amber)
-                }
-            }
-            Text("›", style = Type.Title, color = Palette.Teal)
+private fun BoxScope.GraphicsProfileSheet(
+    app: AppSettings,
+    gpu: HostGpu?,
+    phone: Boolean,
+    onAppChange: ((AppSettings) -> AppSettings) -> Unit,
+    onClose: () -> Unit,
+) {
+    ChoiceSheet(stringResource(R.string.settings_graphics_profile), phone, onClose, stringResource(R.string.settings_graphics_profile_body)) { first ->
+        GraphicsProfiles.choices(gpu).forEachIndexed { index, choice ->
+            if (index > 0) RowRule()
+            OptionRow(
+                text(choice.title), text(choice.body), app.graphicsProfile == choice.profile,
+                {
+                    onAppChange { it.copy(graphicsProfile = choice.profile) }
+                    onClose()
+                },
+                focusRequester = first.takeIf { index == 0 },
+            )
         }
     }
 }
 
-/**
- * The app's own setting: how the Game view shows the game and the official launcher's window
- * ([GameDisplay]), its choices in a sheet; a change applies at once, also to a running game (it
- * shows when the game shows again), with no restart. The in-game menu offers it too.
- */
-@Composable
-private fun DisplaySection(app: AppSettings, onOpen: () -> Unit) {
-    Section(stringResource(R.string.settings_section_display)) {
-        FocusRow(onOpen) {
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(stringResource(app.gameDisplay.title), style = Type.Body, color = Palette.Text)
-                Text(stringResource(R.string.settings_display_body), style = Type.Hint, color = Palette.Muted)
-            }
-            Text("›", style = Type.Title, color = Palette.Teal)
-        }
-    }
-}
-
-/** The Game view's ways to show the game ([GameDisplay]), as the binding picker's sheet. A pick closes it. */
+/** The Game view's ways to show the game ([GameDisplay]) under what Display does. A pick closes it. */
 @Composable
 private fun BoxScope.DisplaySheet(
     app: AppSettings,
@@ -427,7 +720,7 @@ private fun BoxScope.DisplaySheet(
     onAppChange: ((AppSettings) -> AppSettings) -> Unit,
     onClose: () -> Unit,
 ) {
-    ChoiceSheet(stringResource(R.string.settings_section_display), phone, onClose) { first ->
+    ChoiceSheet(stringResource(R.string.settings_section_display), phone, onClose, stringResource(R.string.settings_display_body)) { first ->
         GameDisplay.entries.forEachIndexed { index, choice ->
             if (index > 0) RowRule()
             OptionRow(
@@ -442,9 +735,13 @@ private fun BoxScope.DisplaySheet(
     }
 }
 
-/** A sheet of choices like the binding picker's: [title], Done, and [content] scrolling; [content] gets the first row's focus. */
+/**
+ * A sheet of choices: [title], Done, then what the setting does ([intro]) and [content], which
+ * scroll; [content] gets the first row's focus. From the right on a handheld, from the bottom on
+ * a [phone], the rest dimmed.
+ */
 @Composable
-private fun BoxScope.ChoiceSheet(title: String, phone: Boolean, onClose: () -> Unit, content: @Composable ColumnScope.(FocusRequester) -> Unit) {
+private fun BoxScope.ChoiceSheet(title: String, phone: Boolean, onClose: () -> Unit, intro: String, content: @Composable ColumnScope.(FocusRequester) -> Unit) {
     BackHandler(onBack = onClose)
     Box(Modifier.matchParentSize().background(Color.Black.copy(alpha = 0.5f)).clickable(remember { MutableInteractionSource() }, null, onClick = onClose))
     val sheet = if (phone) {
@@ -460,12 +757,15 @@ private fun BoxScope.ChoiceSheet(title: String, phone: Boolean, onClose: () -> U
             LauncherButton(stringResource(R.string.controls_picker_done), onClose, kind = Kind.QUIET, height = 48.dp, padding = 14.dp)
         }
         Rule()
-        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(6.dp)) { content(first) }
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(6.dp)) {
+            Text(intro, style = Type.Hint, color = Palette.Muted, modifier = Modifier.padding(start = 14.dp, end = 14.dp, top = 8.dp, bottom = 6.dp))
+            content(first)
+        }
     }
 }
 
 /**
- * The game resolution's choices on the landscape [display], as the binding picker's sheet: the
+ * The game resolution's choices on the landscape [display], under what the size does: the
  * game's own size (the default; the display's full size where it is smaller,
  * [GameResolution.ownSize]), then Custom… where the display offers it
  * ([GameResolution.customOffered]), which opens its input ([onCustom], [CustomSizeInput]). A pick
@@ -482,7 +782,7 @@ private fun BoxScope.ResolutionSheet(
 ) {
     val (width, height) = display
     val custom = GameResolution.allowedCustom(width, height, app.customSize)
-    ChoiceSheet(stringResource(R.string.settings_section_resolution), phone, onClose) { first ->
+    ChoiceSheet(stringResource(R.string.settings_section_resolution), phone, onClose, stringResource(R.string.settings_resolution_body)) { first ->
         OptionRow(
             text(GameResolution.label(width, height, null)),
             stringResource(
@@ -510,224 +810,29 @@ private fun BoxScope.ResolutionSheet(
     }
 }
 
-@Composable
-private fun AppTab(
-    app: AppSettings,
-    system: SystemState,
-    onAppChange: ((AppSettings) -> AppSettings) -> Unit,
-    onBatterySettings: () -> Unit,
-    onNotificationSettings: () -> Unit,
-    onAbout: () -> Unit,
-    updates: Boolean,
-    newVersion: String?,
-) {
-    Applies(stringResource(R.string.settings_applies_app))
-    Section(stringResource(R.string.settings_section_screen)) {
-        ToggleRow(
-            stringResource(R.string.settings_keep_screen_on), stringResource(R.string.settings_keep_screen_on_body),
-            app.keepScreenOn, { value -> onAppChange { it.copy(keepScreenOn = value) } },
-        )
-        RowRule()
-        ToggleRow(
-            stringResource(R.string.settings_show_fps), stringResource(R.string.settings_show_fps_body),
-            app.showFps, { value -> onAppChange { it.copy(showFps = value) } },
-        )
-    }
-    // Where the game folder is (mods, loot filters), then Save sync for the characters.
-    Section(stringResource(R.string.settings_section_game_files)) {
-        GameFilesRows()
-        RowRule()
-        SaveSyncRows(app)
-    }
-    Section(stringResource(R.string.settings_section_storage)) { StorageRows() }
-    Section(stringResource(R.string.settings_section_android)) {
-        SystemRow(
-            stringResource(R.string.settings_battery), !system.batteryRestricted,
-            stringResource(if (system.batteryRestricted) R.string.settings_battery_restricted else R.string.settings_battery_unrestricted),
-            stringResource(R.string.settings_battery_open), onBatterySettings,
-        )
-        RowRule()
-        SystemRow(
-            stringResource(R.string.settings_notifications), !system.notificationsOff,
-            stringResource(if (system.notificationsOff) R.string.settings_notifications_off else R.string.settings_notifications_on),
-            stringResource(R.string.settings_notifications_open), onNotificationSettings,
-        )
-    }
-    Section(stringResource(R.string.settings_section_help)) {
-        ShareLogsRow(LogShareUi.Action.SHARE)
-        RowRule()
-        ShareLogsRow(LogShareUi.Action.SAVE)
-        RowRule()
-        ToggleRow(
-            stringResource(R.string.settings_detailed_logging), stringResource(R.string.settings_detailed_logging_body),
-            app.detailedLogging, { value -> onAppChange { it.copy(detailedLogging = value) } },
-        )
-    }
-    // The app's own updates: the hourly check, and a new version's way to About, which installs it.
-    if (updates) Section(stringResource(R.string.app_update_title)) {
-        ToggleRow(
-            stringResource(R.string.app_update_auto), stringResource(R.string.app_update_auto_body),
-            app.updateChecks, { value -> onAppChange { it.copy(updateChecks = value) } },
-        )
-        if (newVersion != null) {
-            RowRule()
-            FocusRow(onAbout) {
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text(stringResource(R.string.app_update_new_version, newVersion), style = Type.Body, color = Palette.Teal)
-                    Text(stringResource(R.string.app_update_new_version_body), style = Type.Hint, color = Palette.Muted)
-                }
-                Text("›", style = Type.Title, color = Palette.Teal)
-            }
-        }
-    }
-    Section(stringResource(R.string.settings_section_about)) {
-        FocusRow(onAbout) {
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(stringResource(R.string.settings_about), style = Type.Body, color = Palette.Text)
-                Text(stringResource(R.string.settings_about_body), style = Type.Hint, color = Palette.Muted)
-            }
-            Text("›", style = Type.Title, color = Palette.Teal)
-        }
-    }
-}
-
-/** An Android permission state with its way out: the system screen that changes it (below the words on phones). */
+/**
+ * An Android permission state with its way out: the system screen that changes it (below the words
+ * on phones). Its state is a small dot in the status line (the size of Settings' save-state dot,
+ * [Dot]), amber with amber words when Android stops something, not a large mark (the owner,
+ * 2026-11-03: "we don't have to use such huge yellow warning icons").
+ */
 @Composable
 private fun SystemRow(title: String, ok: Boolean, status: String, action: String, onOpen: () -> Unit) {
     val phone = LocalFormFactor.current == FormFactor.PHONE
-    val button = @Composable { modifier: Modifier ->
-        LauncherButton(action, onOpen, modifier, height = 48.dp, padding = 16.dp, style = Type.Hint.copy(fontWeight = FontWeight.SemiBold))
-    }
+    val button = @Composable { modifier: Modifier -> SlimButton(action, onOpen, modifier) }
     Row(
-        Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(horizontal = 14.dp, vertical = 10.dp),
+        Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 14.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        StatusMark(if (ok) Tone.OK else Tone.WARNING)
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(title, style = Type.Body, color = Palette.Text)
-            Text(status, style = Type.Hint, color = Palette.Muted)
-            if (phone) button(Modifier.padding(top = 8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                StatusMark(if (ok) Tone.OK else Tone.WARNING)
+                Text(status, style = Type.Hint, color = if (ok) Palette.Muted else Palette.Amber)
+            }
+            if (phone) button(Modifier.padding(top = 1.dp))
         }
         if (!phone) button(Modifier)
-    }
-}
-
-// ---------------------------------------------------------------- Controller
-
-@Composable
-private fun ControllerTab(
-    controls: Controls,
-    app: AppSettings,
-    nav: SettingsNav,
-    phone: Boolean,
-    save: (Controls) -> Unit,
-    onAppChange: ((AppSettings) -> AppSettings) -> Unit,
-    onEditOnScreen: () -> Unit,
-) {
-    EditOnScreenRow(onEditOnScreen)
-    Applies(stringResource(R.string.settings_applies_controller))
-    Section(stringResource(R.string.controls_section_controller)) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(stringResource(R.string.controls_chord), style = Type.Body, color = Palette.Text)
-            Text(stringResource(R.string.controls_chord_body), style = Type.Hint, color = Palette.Muted)
-            Segmented(
-                listOf(stringResource(R.string.controls_chord_select_start), stringResource(R.string.controls_chord_thumbs)),
-                controls.chord.ordinal, { save(controls.copy(chord = Chord.entries[it])) }, Modifier.fillMaxWidth(),
-            )
-        }
-        RowRule()
-        PointerSpeedRow(controls, save)
-        RowRule()
-        // As the in-game Controls screen's, at this tab's row height and room.
-        TouchRow(app.touchMode, { mode -> onAppChange { it.copy(touchMode = mode) } }, Modifier.heightIn(min = 64.dp).padding(horizontal = 14.dp, vertical = 6.dp))
-    }
-    Section(stringResource(R.string.controls_section_buttons)) {
-        ModeSwitch(nav)
-        val chord = setOf(controls.chord.first, controls.chord.second)
-        PadButton.entries.chunked(if (phone) 1 else 2).forEach { row ->
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                row.forEach { button ->
-                    BindingCell(button, controls.action(button, nav.mouse), controls.isDefault(button, nav.mouse), button in chord, { nav.picker = button }, Modifier.weight(1f))
-                }
-            }
-        }
-        ResetRow(nav.mouse) { save(controls.resetMode(nav.mouse)) }
-    }
-}
-
-/** On-screen controls: their editor, which holds every option they have (the in-game Controls screen opens it too). */
-@Composable
-private fun EditOnScreenRow(onClick: () -> Unit) {
-    FocusRow(
-        onClick,
-        Modifier.padding(start = 6.dp, end = 6.dp, top = 4.dp, bottom = 8.dp).clip(RowShape).background(Palette.Surface).border(1.dp, Palette.Rule, RowShape),
-        minHeight = 72.dp,
-    ) {
-        Column(Modifier.weight(1f).padding(vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(stringResource(R.string.controls_edit_on_screen), style = Type.Body.copy(fontWeight = FontWeight.SemiBold), color = Palette.Text)
-            Text(stringResource(R.string.controls_edit_on_screen_body), style = Type.Hint, color = Palette.Muted)
-        }
-        Text("›", style = Type.Title, color = Palette.Teal)
-    }
-}
-
-/** The pointer speed of mouse mode and Trackpad; the in-game Controls screen changes it too ([PointerSpeedInput]). */
-@Composable
-private fun PointerSpeedRow(controls: Controls, save: (Controls) -> Unit) {
-    StepperRow(
-        stringResource(R.string.controls_pointer_speed_title), stringResource(R.string.controls_factor, speedText(controls.pointerSpeed)),
-        Controls.fraction(controls.pointerSpeed, PointerSpeed.RANGE),
-        { save(controls.copy(pointerSpeed = Controls.stepped(controls.pointerSpeed, PointerSpeed.STEP, -1, PointerSpeed.RANGE))) },
-        { save(controls.copy(pointerSpeed = Controls.stepped(controls.pointerSpeed, PointerSpeed.STEP, 1, PointerSpeed.RANGE))) },
-        supporting = stringResource(R.string.controls_pointer_speed_body),
-    )
-}
-
-/** The mode switch over the bindings, with what the mode means. */
-@Composable
-private fun ModeSwitch(nav: SettingsNav) {
-    Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Segmented(
-            listOf(stringResource(R.string.controls_pad_mode), stringResource(R.string.controls_mouse_mode)),
-            if (nav.mouse) 1 else 0, { nav.mouse = it == 1 }, Modifier.fillMaxWidth(),
-        )
-        Text(
-            stringResource(if (nav.mouse) R.string.controls_mouse_mode_body else R.string.controls_pad_mode_body),
-            style = Type.Hint, color = Palette.Muted,
-        )
-    }
-}
-
-/** One binding: the button's cap and what it does; defaults muted so changed ones stand out. A chord button says so. */
-@Composable
-private fun BindingCell(button: PadButton, action: PadAction, isDefault: Boolean, chord: Boolean, onClick: () -> Unit, modifier: Modifier) {
-    FocusRow(onClick, modifier, minHeight = 52.dp) {
-        KeyCap(buttonCap(button), Modifier.width(60.dp))
-        Column(Modifier.weight(1f)) {
-            Text(actionLine(action), style = Type.Body, color = if (isDefault) Palette.Muted else Palette.Text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (chord) Text(stringResource(R.string.controls_chord_button), style = Type.Hint, color = Palette.Muted, maxLines = 2)
-        }
-    }
-}
-
-/** Reset with an in-place confirmation that names what it resets. */
-@Composable
-private fun ResetRow(mouse: Boolean, onReset: () -> Unit) {
-    var confirm by remember { mutableStateOf(false) }
-    val mode = stringResource(if (mouse) R.string.controls_mouse_mode else R.string.controls_pad_mode)
-    Row(
-        Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        if (!confirm) {
-            Spacer(Modifier.weight(1f))
-            LauncherButton(stringResource(R.string.controls_reset, mode), { confirm = true }, kind = Kind.QUIET, height = 48.dp, padding = 14.dp, style = Type.Hint)
-        } else {
-            Text(stringResource(R.string.controls_reset_confirm, PadButton.entries.size, mode), style = Type.Hint, color = Palette.Text, modifier = Modifier.weight(1f).padding(start = 8.dp))
-            LauncherButton(stringResource(R.string.controls_reset_cancel), { confirm = false }, height = 48.dp, padding = 16.dp)
-            LauncherButton(stringResource(R.string.controls_reset_do), { onReset(); confirm = false }, kind = Kind.DANGER, height = 48.dp, padding = 16.dp)
-        }
     }
 }

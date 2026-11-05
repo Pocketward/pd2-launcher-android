@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The development build only: its app update test feed may be served over HTTP from this
-     device's own localhost (res/xml/test_feed_network.xml). -->
+<!-- The development build only: its app update test feed may be served over plain HTTP from
+     localhost (res/xml/test_feed_network.xml). -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <application android:networkSecurityConfig="@xml/test_feed_network">

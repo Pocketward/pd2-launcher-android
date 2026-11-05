@@ -11,24 +11,20 @@ import android.content.SharedPreferences
 import android.content.pm.PackageInfo
 import android.content.pm.PackageInstaller
 import android.content.pm.PackageManager
-import android.net.ConnectivityManager
 import android.os.Build
 import android.os.Process
 import android.os.StatFs
 import android.os.SystemClock
 import android.util.Log
 import androidx.core.content.IntentCompat
+import com.pd2launcher.app.AppUpdate.Check
 import com.pd2launcher.app.AppUpdate.CheckProblem
 import com.pd2launcher.app.AppUpdate.DownloadProblem
 import com.pd2launcher.app.AppUpdate.InstallOutcome
 import com.pd2launcher.app.AppUpdate.InstallProblem
-import com.pd2launcher.app.AppUpdate.State
-import com.pd2launcher.app.AppUpdate.offer
+import com.pd2launcher.app.AppUpdate.Work
 import java.io.File
 import java.io.IOException
-import java.net.ConnectException
-import java.net.SocketTimeoutException
-import java.net.UnknownHostException
 import java.security.MessageDigest
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -41,27 +37,32 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
 /**
- * App updates ([AppUpdate]): looks for a newer release of this app on its GitHub releases (each
- * hour while the app is open and automatic checks are on, or when the player asks), downloads its
- * APK into the app's own folder when the player asks, checks it, and hands it to Android's
- * installer, which asks the player to confirm. One worker thread does the work; the screens follow
- * [state]. What it does goes to `files/logs/update.log`, which Share logs packs.
+ * App updates ([AppUpdate]): reads GitHub's list of this app's releases ([Offers]; each hour while
+ * the app is open, and when the player asks), downloads a build's APK into the app's own folder when
+ * the player asks, checks it, and hands it to Android's installer, which asks the player to confirm.
+ * One worker thread does the work; the screens follow [offers], [check] and [work]. What it does goes to
+ * `files/logs/update.log`, which Save logs packs.
  */
 object AppUpdater {
     private const val TAG = "pd2-update"
     private const val PREFERENCES = "app_update"
     private const val ETAG = "etag"
-    private const val OFFER = "offer"
+    private const val OFFERS = "offers"
+    /** Older keys: the offer found, and the last notice's code. Removed at the start. */
+    private const val OLD_OFFER = "offer"
+    private const val OLD_NOTIFIED = "notified"
     private const val LAST_SUCCESS = "last_success"
     private const val LAST_ATTEMPT = "last_attempt"
     private const val NOT_BEFORE = "not_before"
-    private const val NOTIFIED = "notified"
+    /** The version of the last notice. */
+    private const val NOTIFIED = "notified_version"
     private const val DOWNLOAD = "download"
+    /** The uploads that the app does not offer again ([AppUpdate.upload]). */
+    private const val REFUSED = "refused"
     private const val TEST_FEED = "test_feed"
     private const val FOLDER = "app-update"
     private const val CHANNEL = "app_update"
@@ -75,8 +76,8 @@ object AppUpdater {
 
     /** The install session's status, to [AppUpdateReceiver]. */
     const val ACTION_STATUS = "com.pd2launcher.app.action.APP_UPDATE_STATUS"
-    /** Opens About: the notice of a new version. */
-    const val EXTRA_ABOUT = "com.pd2launcher.app.extra.ABOUT"
+    /** Opens Settings → App: the notice of a new version. */
+    const val EXTRA_APP_PAGE = "com.pd2launcher.app.extra.APP_PAGE"
 
     private val json = Json { ignoreUnknownKeys = true }
     /** The one worker thread, at background priority: a check while the game runs gives the CPU to the game first. */
@@ -94,8 +95,20 @@ object AppUpdater {
     @Volatile private var signerRead = false
     private var updateLog: RotatingLog? = null
 
-    private val _state = MutableStateFlow<State>(State.Idle)
-    val state: StateFlow<State> = _state.asStateFlow()
+    private val _offers = MutableStateFlow<Offers?>(null)
+    /** The two channels' builds on the last list of releases that read; null: none yet. */
+    val offers: StateFlow<Offers?> = _offers.asStateFlow()
+
+    private val _check = MutableStateFlow<Check>(Check.Idle)
+    val check: StateFlow<Check> = _check.asStateFlow()
+
+    private val _work = MutableStateFlow<Work?>(null)
+    /** The download in hand; null: none. */
+    val work: StateFlow<Work?> = _work.asStateFlow()
+
+    private val _refused = MutableStateFlow<Set<String>>(emptySet())
+    /** The uploads refused for good ([AppUpdate.remembers]), for the rows. */
+    val refused: StateFlow<Set<String>> = _refused.asStateFlow()
 
     /** Android's confirmation window for the committed update, for the activity to open while it is in front. */
     private val _confirmation = MutableStateFlow<Intent?>(null)
@@ -106,8 +119,8 @@ object AppUpdater {
     private data class Download(val offer: Offer, val sha256: String)
 
     /**
-     * Whether app updates work in this build: a release feed (in a debug build only the test feed,
-     * [setTestFeed]) and a certificate updates must be signed with ([signer]).
+     * Whether app updates work in this build: a release feed (in a debug build only the test
+     * feed, [setTestFeed]) and a certificate updates must be signed with ([signer]).
      */
     fun available(context: Context): Boolean = feed(context).isNotEmpty() && signer(context) != null
 
@@ -138,42 +151,49 @@ object AppUpdater {
         if (started.get()) worker.execute { checkIfDue(app) }
     }
 
-    /** Check now (About): at any time but during GitHub's wait. */
+    /** Check now (Settings → App): at any time but during the server's wait. */
     fun checkNow(context: Context) {
         val app = context.applicationContext
         worker.execute { check(app, automatic = false) }
     }
 
-    /** Download, Resume: the offer's APK, then its checks. */
-    fun download(context: Context) {
+    /**
+     * The download sign and Try again: [offer]'s APK, then its checks, then Android's question. It
+     * replaces a download of another build that does not run, and starts nothing while one runs.
+     */
+    fun download(context: Context, offer: Offer) {
         val app = context.applicationContext
-        val current = _state.value
-        if (current !is State.Available) return
+        val current = _work.value
+        if (AppUpdate.runs(current)) return
+        // The rows lock while the game or the official PD2 launcher runs, or the game starts.
+        if (!pressAllowed()) return
         stopRequested = false
+        val kept = (current as? Work.Kept)?.takeIf { it.offer == offer }?.downloaded ?: 0
         // Only from the state shown: a check that replaced it meanwhile wins.
-        if (!_state.compareAndSet(current, State.Downloading(current.offer, current.downloaded))) return
-        worker.execute { downloadNow(app, current.offer) }
+        if (!_work.compareAndSet(current, Work.Downloading(offer, kept))) return
+        worker.execute { downloadNow(app, offer) }
     }
 
-    /** Stop: the download ends at its next block and keeps what came in, for Resume. */
+    /** Stop: the download ends at its next block and keeps what came in, for Try again. */
     fun stop() {
         stopRequested = true
-        _state.update { if (it is State.Downloading) it.copy(stopping = true) else it }
+        _work.update { if (it is Work.Downloading) it.copy(stopping = true) else it }
     }
 
     /**
-     * Install: the checked download goes to Android's installer, which asks the player. Only when
-     * nothing runs that the update would end ([AppUpdate.waitFor]) and Android lets this app install
-     * updates; About shows why otherwise.
+     * Android's question: the checked download goes to Android's installer, which asks the player.
+     * It follows the download by itself, and the sign opens it again. Only when nothing runs that
+     * the update would end ([AppUpdate.waitFor]) and Android lets this app install updates; the row
+     * shows why otherwise.
      */
     fun install(context: Context) {
         val app = context.applicationContext
-        val current = _state.value
-        if (current !is State.Ready && current !is State.Installing) return
+        val current = _work.value
+        if (current !is Work.Ready && current !is Work.Installing) return
         if (wait() != null || !app.packageManager.canRequestPackageInstalls()) return
         // One copy for Android at a time: a second tap meanwhile does nothing.
         if (!installRunning.compareAndSet(false, true)) return
-        if (!_state.compareAndSet(current, State.Installing(current.offer))) {
+        if (!_work.compareAndSet(current, Work.Installing(current.offer))) {
             installRunning.set(false)
             return
         }
@@ -193,7 +213,7 @@ object AppUpdater {
      * session is abandoned), so a later Yes cannot end them.
      */
     private fun follow(context: Context, status: SessionStatus) {
-        val installing = _state.value as? State.Installing ?: return
+        val installing = _work.value as? Work.Installing ?: return
         if (AppUpdate.waitFor(status, copying(), SystemClock.elapsedRealtime()) == null) return
         takeBack(context, installing.offer, "something started while Android asked")
     }
@@ -212,7 +232,7 @@ object AppUpdater {
         log(app, "session $id: status $status${message?.let { " ($it)" }.orEmpty()}")
         // A session taken back, or one of an earlier try.
         if (id != session) return
-        val offer = _state.value.offer ?: return
+        val offer = _work.value?.offer ?: return
         if (status == PackageInstaller.STATUS_PENDING_USER_ACTION) {
             val confirm = IntentCompat.getParcelableExtra(intent, Intent.EXTRA_INTENT, Intent::class.java)
             when {
@@ -233,9 +253,9 @@ object AppUpdater {
     }
 
     /**
-     * Debug builds only: the test feed ([AppUpdateHost]: `--es update_feed <url>`, empty for
-     * none), which replaces everything known about updates, then a check as an automatic one (its
-     * notice too).
+     * Debug builds only: the test feed, a list of releases at any address ([AppUpdateHost]:
+     * `--es update_feed <url>`, empty for none), which replaces everything known about updates, a
+     * download in hand too, then a check as an automatic one (its notice too).
      */
     fun setTestFeed(context: Context, url: String) {
         if (!BuildConfig.DEBUG) return
@@ -244,15 +264,43 @@ object AppUpdater {
             abandonSessions(app)
             prefs(app).edit().clear().putString(TEST_FEED, url).apply()
             clearDownload(app)
-            _state.value = State.Idle
+            _work.value = null
+            _offers.value = null
+            _refused.value = emptySet()
+            _check.value = Check.Idle
             log(app, "test feed: ${url.ifEmpty { "none" }}")
             if (url.isNotEmpty()) check(app, automatic = true)
         }
     }
 
-    /** Whether the active network counts data (mobile data, a metered hotspot). */
-    fun metered(context: Context): Boolean =
-        context.getSystemService(ConnectivityManager::class.java)?.isActiveNetworkMetered ?: false
+    /**
+     * The player picked the other update channel (Settings → App, [AppUpdateHost.pickChannel]). The
+     * list of releases names both channels, so nothing is fetched for it; a download in hand goes on, as only
+     * Stop ends it. The notice of the old channel's version goes.
+     */
+    fun channelChanged(context: Context) {
+        val app = context.applicationContext
+        // Here, not on the worker thread: a download holds that thread until it ends.
+        log(app, "update channel: ${channel().name.lowercase()}")
+        worker.execute {
+            dropNotice(app)
+            checkIfDue(app)
+        }
+    }
+
+    /** The old channel's notice goes: its version is no longer the selected channel's. */
+    private fun dropNotice(context: Context) {
+        prefs(context).edit().remove(NOTIFIED).apply()
+        context.getSystemService(NotificationManager::class.java)?.cancel(NOTIFICATION_ID)
+    }
+
+    /** Beta opened or closed by itself ([AppUpdate.betaOpen]) and so the channel in use moved from [before]: as [channelChanged]. */
+    private fun followChannel(context: Context, before: UpdateChannel) {
+        val now = channel()
+        if (now == before) return
+        log(context, "update channel: ${now.name.lowercase()} (beta ${if (now == UpdateChannel.BETA) "opened" else "closed"})")
+        dropNotice(context)
+    }
 
     // ------------------------------------------------------------ worker thread
 
@@ -261,145 +309,136 @@ object AppUpdater {
         // its own task): this process cannot take it back, so it goes. Install makes a new one.
         abandonSessions(context)
         val prefs = prefs(context)
+        prefs.edit().remove(OLD_OFFER).remove(OLD_NOTIFIED).apply()
+        val offers = storedOffers(prefs)
+        // No offers that read: the first check runs at once, whenever the last one was.
+        if (offers == null) prefs.edit().remove(OFFERS).remove(ETAG).remove(LAST_SUCCESS).remove(LAST_ATTEMPT).apply()
+        _offers.value = offers
+        _refused.value = prefs.getStringSet(REFUSED, null).orEmpty().toSet()
         val download = held(prefs)
         if (download == null) {
             // No record that reads (none, or one of another app version's form): no file of the
             // folder belongs to a download, so all go.
             clearDownload(context)
-        } else if (download.offer.versionCode <= BuildConfig.VERSION_CODE) {
-            // An update that installed since, or a download older than this app: what it left goes.
+        } else if (!AppUpdate.keptAtStart(download.offer, BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE)) {
+            // An update that installed since, or a download this app cannot install: what it left goes.
             log(context, "now ${BuildConfig.VERSION_NAME}: the download of ${download.offer.versionName} is removed")
             clearDownload(context)
             context.getSystemService(NotificationManager::class.java)?.cancel(NOTIFICATION_ID)
         }
-        val offer = cachedOffer(prefs)
-        if (offer != null && offer.versionCode <= BuildConfig.VERSION_CODE) prefs.edit().remove(OFFER).remove(ETAG).apply()
-        _state.value = restored(context)
+        _work.value = restored(context)
+        val checkedAt = prefs.getLong(LAST_SUCCESS, 0)
+        _check.value = if (offers != null && checkedAt > 0) Check.Done(checkedAt) else Check.Idle
     }
 
-    private fun restored(context: Context): State {
-        val prefs = prefs(context)
-        val download = held(prefs)
-        if (download != null) {
-            return if (apkFile(context, download.offer).isFile) {
-                State.Ready(download.offer)
-            } else {
-                State.Available(download.offer, partFile(context, download.offer).length())
-            }
-        }
-        val offer = cachedOffer(prefs)
-        val checkedAt = prefs.getLong(LAST_SUCCESS, 0)
-        return when {
-            offer != null -> State.Available(offer)
-            checkedAt > 0 -> State.UpToDate(checkedAt)
-            else -> State.Idle
-        }
+    private fun restored(context: Context): Work? {
+        val offer = held(prefs(context))?.offer ?: return null
+        if (apkFile(context, offer).isFile) return Work.Ready(offer)
+        val downloaded = partFile(context, offer).length()
+        if (downloaded > 0) return Work.Kept(offer, downloaded)
+        clearDownload(context)
+        return null
     }
 
     private fun checkIfDue(context: Context) {
         val prefs = prefs(context)
         val due = AppUpdate.checkDue(
-            System.currentTimeMillis(), AppSettingsStore.current.value.updateChecks,
-            prefs.getLong(LAST_SUCCESS, 0), prefs.getLong(LAST_ATTEMPT, 0), prefs.getLong(NOT_BEFORE, 0),
+            System.currentTimeMillis(), prefs.getLong(LAST_SUCCESS, 0), prefs.getLong(LAST_ATTEMPT, 0), prefs.getLong(NOT_BEFORE, 0),
         )
         if (due) check(context, automatic = true)
     }
 
     private fun check(context: Context, automatic: Boolean) {
-        if (!available(context) || _state.value is State.Installing) return
+        if (!available(context) || _work.value is Work.Installing) return
         val prefs = prefs(context)
         val now = System.currentTimeMillis()
-        val held = _state.value.offer
         val notBefore = prefs.getLong(NOT_BEFORE, 0)
-        if (AppUpdate.waitingForGitHub(now, notBefore)) {
-            if (held == null) _state.value = State.CheckFailed(CheckProblem.BUSY, notBefore)
+        if (AppUpdate.waiting(now, notBefore)) {
+            _check.value = Check.Failed(CheckProblem.BUSY, notBefore)
             return
         }
         prefs.edit().putLong(LAST_ATTEMPT, now).apply()
-        // With a newer release in hand, About keeps it through the check.
-        if (held == null) _state.value = State.Checking
-        val started = SystemClock.elapsedRealtime()
         // A check the player asked for shows "Looking for a new version…" long enough to be seen,
         // also when the answer comes at once and is the same as before.
+        if (!automatic) _check.value = Check.Running
+        val started = SystemClock.elapsedRealtime()
         fun shown() {
-            if (!automatic && held == null) SystemClock.sleep((CHECK_SHOWN_MS - (SystemClock.elapsedRealtime() - started)).coerceAtLeast(0))
+            if (!automatic) SystemClock.sleep((CHECK_SHOWN_MS - (SystemClock.elapsedRealtime() - started)).coerceAtLeast(0))
+        }
+        // A bad or missing answer changes nothing but the status: the offers in hand and a download stay.
+        fun failed(problem: CheckProblem, retryAt: Long = 0) {
+            shown()
+            _check.value = Check.Failed(problem, retryAt)
         }
         val answer = try {
-            AppUpdateHttp.ask(feed(context), prefs.getString(ETAG, null), now)
+            AppUpdateHttp.ask(feed(context), AppUpdate.etagToSend(prefs.getString(ETAG, null), _offers.value), now)
         } catch (error: Exception) {
             log(context, "check failed: ${AppUpdate.describe(error)}")
-            if (held == null) {
-                val offline = error is UnknownHostException || error is ConnectException || error is SocketTimeoutException
-                shown()
-                _state.value = State.CheckFailed(if (offline) CheckProblem.OFFLINE else CheckProblem.FAILED)
-            }
+            failed(AppUpdate.checkProblem(error))
             return
         }
-        val offer: Offer? = when (answer) {
-            is AppUpdateHttp.Answer.Wait -> {
-                log(context, "GitHub asks to wait until ${answer.until}")
-                prefs.edit().putLong(NOT_BEFORE, answer.until).apply()
-                if (held == null) {
-                    shown()
-                    _state.value = State.CheckFailed(CheckProblem.BUSY, answer.until)
-                }
-                return
-            }
-            AppUpdateHttp.Answer.NotModified -> cachedOffer(prefs)
-            AppUpdateHttp.Answer.NoRelease -> null
-            // A release build takes files only from its own repository's releases; a debug build's
-            // test feed may name any HTTPS URL, or HTTP.
-            is AppUpdateHttp.Answer.Found -> AppUpdate.offer(
-                answer.releases, BuildConfig.VERSION_CODE, BuildConfig.UPDATE_APK_PREFIX,
-                allowHttp = BuildConfig.DEBUG, filesUnder = BuildConfig.UPDATE_RELEASES.takeUnless { BuildConfig.DEBUG },
-            )
+        val end = AppUpdate.afterAnswer(answer, _offers.value, rules())
+        val offers = end.offers
+        if (end.problem != null || offers == null) {
+            end.note?.let { log(context, it) }
+            if (end.retryAt > 0) prefs.edit().putLong(NOT_BEFORE, end.retryAt).apply()
+            _offers.value = end.offers
+            failed(end.problem ?: CheckProblem.FAILED, end.retryAt)
+            return
         }
-        val etag = (answer as? AppUpdateHttp.Answer.Found)?.etag
-        // When the answer came: About's "Checked … ago" counts from here, also after a slow answer.
+        if (answer is AppUpdateHttp.Answer.Found) {
+            prefs.edit().apply {
+                putString(OFFERS, json.encodeToString(Offers.serializer(), offers))
+                if (answer.etag != null) putString(ETAG, answer.etag) else remove(ETAG)
+            }.apply()
+        }
+        val refused = AppUpdate.stillRefused(_refused.value, offers)
+        if (refused != _refused.value) setRefused(context, refused)
+        // When the answer came: "Checked … ago" counts from here, also after a slow answer.
         val checkedAt = System.currentTimeMillis()
-        prefs.edit().apply {
-            putLong(LAST_SUCCESS, checkedAt)
-            if (etag != null) putString(ETAG, etag) else if (answer != AppUpdateHttp.Answer.NotModified) remove(ETAG)
-            if (offer != null) putString(OFFER, json.encodeToString(Offer.serializer(), offer)) else remove(OFFER)
-        }.apply()
+        prefs.edit().putLong(LAST_SUCCESS, checkedAt).apply()
         val unchanged = if (answer == AppUpdateHttp.Answer.NotModified) "unchanged, " else ""
-        log(context, "check: $unchanged${offer?.let { "${it.versionName} is out" } ?: "up to date"}")
+        log(context, "check: ${unchanged}stable ${offers.stable?.versionName ?: "none"}, beta ${offers.beta?.versionName ?: "none"}")
         shown()
-        found(context, offer, held, automatic, checkedAt)
+        found(context, end, offers, automatic)
+        _check.value = Check.Done(checkedAt)
     }
 
     /**
-     * What the check found, whose answer came at [checkedAt]: [offer] (null: nothing newer)
-     * replaces what was [held] unless it is the same. An automatic check gives the notice of a new
-     * version ([notice], once per version); a check the player asked for shows it in About, so it
-     * needs none.
+     * What the check found: [offers], at its [end]. A download in hand may go
+     * ([AppUpdate.dropsDownload]); a new version of the selected channel gets the notice when the
+     * check was automatic ([notice], once per version).
      */
-    private fun found(context: Context, offer: Offer?, held: Offer?, automatic: Boolean, checkedAt: Long) {
-        if (offer != held || held == null) {
-            if (held != null) {
-                // A newer release, a release built again, or one that was taken down: its download goes.
-                log(context, "the download of ${held.versionName} is removed")
-                clearDownload(context)
-            }
-            _state.value = if (offer != null) State.Available(offer) else State.UpToDate(checkedAt)
+    private fun found(context: Context, end: AppUpdate.CheckEnd, offers: Offers, automatic: Boolean) {
+        val before = channel()
+        _offers.value = offers
+        val held = _work.value
+        if (AppUpdate.dropsDownload(end, held)) {
+            log(context, "the download of ${held?.offer?.versionName} is removed")
+            clearDownload(context)
+            _work.value = null
         }
+        followChannel(context, before)
+        val channel = channel()
+        val offer = AppUpdate.newOffer(offers, channel, BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE, _work.value, _refused.value)
+        log(context, "${channel.name.lowercase()} channel: ${offer?.let { "offer ${it.versionName} (code ${it.versionCode})" } ?: "no offer"}")
         if (offer == null) return
         if (automatic) {
             notice(context, offer)
-        } else if (prefs(context).getInt(NOTIFIED, 0) < offer.versionCode) {
-            prefs(context).edit().putInt(NOTIFIED, offer.versionCode).apply()
+        } else {
+            prefs(context).edit().putString(NOTIFIED, offer.versionName).apply()
         }
     }
 
     private fun downloadNow(context: Context, offer: Offer) {
-        // A check that ran first found another release, which replaced this one.
-        if (_state.value.offer != offer) return
+        // A check that ran first removed this build.
+        if (_work.value?.offer != offer) return
         val part = partFile(context, offer)
         // Stop came before the file's request: the server is not asked for it, and the part stays.
         fun stoppedBefore(): Boolean {
             if (!stopRequested) return false
             log(context, "download of ${offer.versionName} stopped at ${part.length()} bytes, before its request")
-            _state.value = State.Available(offer, part.length())
+            stopped(context, offer, part)
             return true
         }
         if (stoppedBefore()) return
@@ -410,7 +449,7 @@ object AppUpdater {
                 val expected = AppUpdate.expectedSha256(AppUpdate.checksum(text, offer.apkName), offer.githubSha256)
                 if (expected == null) {
                     log(context, "no usable SHA-256 for ${offer.apkName}: nothing is downloaded")
-                    _state.value = State.Available(offer, problem = DownloadProblem.CHECKSUM)
+                    _work.value = Work.Kept(offer, 0, DownloadProblem.UNCHECKED)
                     return
                 }
                 Download(offer, expected).also { prefs(context).edit().putString(DOWNLOAD, json.encodeToString(Download.serializer(), it)).apply() }
@@ -420,20 +459,20 @@ object AppUpdater {
             val free = StatFs(part.parentFile!!.path).availableBytes
             if (free < needed) {
                 log(context, "not enough space for ${offer.versionName}: ${needed shr 20} MB needed, ${free shr 20} MB free")
-                _state.value = State.Available(offer, part.length(), DownloadProblem.NO_SPACE, needed, free)
+                _work.value = Work.Kept(offer, part.length(), DownloadProblem.NO_SPACE, needed, free)
                 return
             }
             if (stoppedBefore()) return
-            log(context, "download of ${offer.versionName} from ${part.length()} bytes")
+            log(context, "download of ${offer.versionName}: asks from ${part.length()} bytes")
             AppUpdateHttp.fetch(offer.apkUrl, offer.apkSize, part, { stopRequested }, answered = { log(context, "download: $it") }) { done ->
-                _state.value = State.Downloading(offer, done, stopRequested)
+                _work.value = Work.Downloading(offer, done, stopRequested)
             }
             if (stopRequested) {
                 log(context, "download stopped at ${part.length()} bytes")
-                _state.value = State.Available(offer, part.length())
+                stopped(context, offer, part)
                 return
             }
-            _state.value = State.Verifying(offer)
+            _work.value = Work.Verifying(offer)
             verify(context, download, part)
         } catch (error: Exception) {
             log(context, "download of ${offer.versionName} failed: ${AppUpdate.describe(error)}")
@@ -442,17 +481,30 @@ object AppUpdater {
                 error is IOException -> DownloadProblem.NETWORK
                 else -> DownloadProblem.FAILED
             }
-            _state.value = State.Available(offer, part.length(), problem)
-            // The release's file is gone or another one: a check finds out whether the release still
-            // offers it (else its offer and download go), also while automatic checks are off.
+            if (problem == null) stopped(context, offer, part) else _work.value = Work.Kept(offer, part.length(), problem)
+            // The release's file is gone or another one: a check finds out whether the list still
+            // offers it (else its download goes).
             val gone = error is AppUpdateHttp.OtherFile || (error as? AppUpdateHttp.Status)?.code in GONE
             if (gone && !stopRequested) check(context, automatic = false)
         }
     }
 
+    /** The player's Stop: what came in stays for Try again; with nothing kept, no download is left. */
+    private fun stopped(context: Context, offer: Offer, part: File) {
+        if (part.length() > 0) {
+            _work.value = Work.Kept(offer, part.length())
+        } else {
+            clearDownload(context)
+            _work.value = null
+        }
+    }
+
     /**
-     * The download's checks ([AppUpdate.refusal]): a file that passes becomes the APK that Install
-     * hands over; one that fails is deleted, with the record of its SHA-256, so Download starts again.
+     * The download's checks ([AppUpdate.refusal]): a file that passes becomes the APK that Android's
+     * question installs, which follows at once only while its channel is the selected one
+     * ([AppUpdate.asksAtOnce]; else it waits on its own row with its install sign); one that fails is
+     * deleted, with its record, so the download sign starts again, unless the same upload can only
+     * fail again ([AppUpdate.remembers]).
      */
     private fun verify(context: Context, download: Download, part: File) {
         val offer = download.offer
@@ -463,26 +515,39 @@ object AppUpdater {
         if (refusal != null) {
             log(context, "the download of ${offer.versionName} is refused ($refusal) and deleted")
             clearDownload(context)
-            _state.value = State.Available(offer, problem = DownloadProblem.REFUSED)
+            if (AppUpdate.remembers(refusal, offer)) {
+                log(context, "the app does not offer this upload of ${offer.versionName} again")
+                val before = channel()
+                setRefused(context, _refused.value + AppUpdate.upload(offer))
+                _work.value = null
+                followChannel(context, before)
+            } else {
+                _work.value = Work.Kept(offer, 0, DownloadProblem.REFUSED)
+            }
             return
         }
         if (!part.renameTo(apkFile(context, offer))) throw IOException("cannot keep the checked download")
         log(context, "the download of ${offer.versionName} passed its checks")
-        _state.value = State.Ready(offer)
+        _work.value = Work.Ready(offer)
+        if (AppUpdate.asksAtOnce(offer, channel())) {
+            install(context)
+        } else {
+            log(context, "${offer.versionName} waits on its own row: ${channel().name.lowercase()} is selected")
+        }
     }
 
     private fun installNow(context: Context, offer: Offer) {
-        if (_state.value.offer != offer) return
+        if (_work.value?.offer != offer) return
         val download = held(prefs(context))?.takeIf { it.offer == offer }
         val file = apkFile(context, offer)
         if (download == null || !file.isFile) {
             log(context, "install of ${offer.versionName}: the checked download is gone")
             clearDownload(context)
-            _state.value = State.Available(offer)
+            _work.value = null
             return
         }
         val installer = context.packageManager.packageInstaller
-        // Sessions an earlier try left (Install pressed again, or the app closed meanwhile) go
+        // Sessions an earlier try left (the sign pressed again, or the app closed meanwhile) go
         // first; their answers no longer count.
         abandonSessions(context)
         val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL).apply {
@@ -519,7 +584,7 @@ object AppUpdater {
                 log(context, "the checked download of ${offer.versionName} changed: it is deleted")
                 installer.abandonSession(id)
                 clearDownload(context)
-                _state.value = State.Available(offer, problem = DownloadProblem.REFUSED)
+                _work.value = Work.Kept(offer, 0, DownloadProblem.REFUSED)
                 return
             }
             val status = Intent(context, AppUpdateReceiver::class.java).setAction(ACTION_STATUS)
@@ -534,8 +599,13 @@ object AppUpdater {
             session = null
             id?.let { runCatching { installer.abandonSession(it) } }
             // A take-back meanwhile has said why already.
-            _state.update { if (it is State.Installing) State.Ready(offer, InstallProblem.FAILED) else it }
+            _work.update { if (it is Work.Installing) Work.Ready(offer, InstallProblem.FAILED) else it }
         }
+    }
+
+    private fun setRefused(context: Context, refused: Set<String>) {
+        prefs(context).edit().putStringSet(REFUSED, refused).apply()
+        _refused.value = refused
     }
 
     /** Abandons every install session of this app; their answers no longer count. */
@@ -555,14 +625,17 @@ object AppUpdater {
         _confirmation.value = null
         runCatching { context.packageManager.packageInstaller.abandonSession(id) }
         log(context, "session $id taken back: $why")
-        _state.value = State.Ready(offer, InstallProblem.GAME_STARTED)
+        _work.value = Work.Ready(offer, InstallProblem.GAME_STARTED)
     }
 
     private fun finished(offer: Offer, problem: InstallProblem) {
         session = null
         _confirmation.value = null
-        _state.value = State.Ready(offer, problem)
+        _work.value = Work.Ready(offer, problem)
     }
+
+    /** Whether a press on the channel rows may act now ([AppUpdate.pressAllowed]), from the session as it is now. */
+    fun pressAllowed(): Boolean = AppUpdate.pressAllowed(SessionService.status.value, copying(), SystemClock.elapsedRealtime())
 
     private fun wait(): AppUpdate.Wait? = AppUpdate.waitFor(SessionService.status.value, copying(), SystemClock.elapsedRealtime())
 
@@ -575,7 +648,7 @@ object AppUpdater {
      */
     private fun notice(context: Context, offer: Offer) {
         val prefs = prefs(context)
-        if (prefs.getInt(NOTIFIED, 0) >= offer.versionCode) return
+        if (prefs.getString(NOTIFIED, null) == offer.versionName) return
         val manager = context.getSystemService(NotificationManager::class.java) ?: return
         if (manager.notificationChannels.isEmpty()) return
         if (manager.getNotificationChannel(CHANNEL) == null) {
@@ -585,9 +658,9 @@ object AppUpdater {
         }
         // The app's own activity, with what was on top of it in its task closed (Android's
         // settings page, its installer window, a picker), not a second activity over them.
-        val about = Intent(context, MainActivity::class.java).putExtra(EXTRA_ABOUT, true)
+        val page = Intent(context, MainActivity::class.java).putExtra(EXTRA_APP_PAGE, true)
             .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-        val open = PendingIntent.getActivity(context, NOTIFICATION_ID, about, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val open = PendingIntent.getActivity(context, NOTIFICATION_ID, page, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         manager.notify(
             NOTIFICATION_ID,
             Notification.Builder(context, CHANNEL)
@@ -598,12 +671,20 @@ object AppUpdater {
                 .setAutoCancel(true)
                 .build(),
         )
-        prefs.edit().putInt(NOTIFIED, offer.versionCode).apply()
+        prefs.edit().putString(NOTIFIED, offer.versionName).apply()
     }
 
+    /** The update channel the checks follow ([AppUpdate.channel]): the player's pick, else this build's own. */
+    private fun channel(): UpdateChannel = AppUpdate.channel(
+        AppSettingsStore.current.value.updateChannel, BuildConfig.VERSION_NAME,
+        AppUpdate.betaOpen(_offers.value, BuildConfig.VERSION_CODE, _refused.value, _work.value),
+    )
+
     /** Where checks ask: the release feed, or in a debug build only its test feed. */
-    private fun feed(context: Context): String =
-        if (BuildConfig.DEBUG) prefs(context).getString(TEST_FEED, null).orEmpty() else BuildConfig.UPDATE_FEED
+    private fun feed(context: Context): String = AppUpdate.feedOf(BuildConfig.DEBUG, prefs(context).getString(TEST_FEED, null))
+
+    /** What a release's files must be for this build ([AppUpdate.feedRules]). */
+    private fun rules() = AppUpdate.rulesOf(BuildConfig.DEBUG)
 
     /**
      * The certificate an update must be signed with (SHA-256, lower-case hex): the release
@@ -647,7 +728,7 @@ object AppUpdater {
         }
         val info = read ?: return null
         val signers = info.signingInfo?.apkContentsSigners?.map { sha256(it.toByteArray()) } ?: return null
-        return AppUpdate.Archive(info.packageName, info.longVersionCode, signers)
+        return AppUpdate.Archive(info.packageName, info.versionName, info.longVersionCode, signers)
     }
 
     /** The space the next version's game support files need when it unpacks them, from this version's; 0 when unknown. */
@@ -677,18 +758,19 @@ object AppUpdater {
 
     private fun apkFile(context: Context, offer: Offer) = File(folder(context), offer.apkName)
 
-    private fun held(prefs: SharedPreferences): Download? = prefs.getString(DOWNLOAD, null)?.let { decode(Download.serializer(), it) }
+    /** The download in hand; null: none, or a record of another app version's form. */
+    private fun held(prefs: SharedPreferences): Download? =
+        prefs.getString(DOWNLOAD, null)?.let { runCatching { json.decodeFromString(Download.serializer(), it) }.getOrNull() }
 
-    private fun cachedOffer(prefs: SharedPreferences): Offer? = prefs.getString(OFFER, null)?.let { decode(Offer.serializer(), it) }
+    /** The offers of the last check, if they read. */
+    private fun storedOffers(prefs: SharedPreferences): Offers? =
+        prefs.getString(OFFERS, null)?.let { runCatching { json.decodeFromString(Offers.serializer(), it) }.getOrNull() }
 
     /** The download's files and its record. */
     private fun clearDownload(context: Context) {
         folder(context).listFiles()?.forEach { it.delete() }
         prefs(context).edit().remove(DOWNLOAD).apply()
     }
-
-    /** A stored value, or null when it no longer reads (an older form). */
-    private fun <T> decode(serializer: KSerializer<T>, text: String): T? = runCatching { json.decodeFromString(serializer, text) }.getOrNull()
 
     private fun prefs(context: Context): SharedPreferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
 

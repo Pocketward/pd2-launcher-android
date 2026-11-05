@@ -26,6 +26,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
@@ -52,10 +53,10 @@ import com.pd2launcher.app.control.Installer
 import com.pd2launcher.app.control.Step
 import com.pd2launcher.app.input.ControllerLog
 import com.pd2launcher.app.input.ControlsStore
-import com.pd2launcher.app.input.PadButton
 import com.pd2launcher.app.input.PadLayouts
 import com.pd2launcher.app.ui.AboutScreen
 import com.pd2launcher.app.ui.ControlsEditor
+import com.pd2launcher.app.ui.ControlsScreen
 import com.pd2launcher.app.ui.rememberImportRecord
 import com.pd2launcher.app.ui.CheckScreen
 import com.pd2launcher.app.ui.CheckingDeviceScreen
@@ -78,6 +79,7 @@ import com.pd2launcher.app.ui.NetworkState
 import com.pd2launcher.app.ui.navigationKey
 import com.pd2launcher.app.ui.LocalRefusal
 import com.pd2launcher.app.ui.NotSupportedScreen
+import com.pd2launcher.app.ui.Palette
 import com.pd2launcher.app.ui.Play
 import com.pd2launcher.app.ui.PlayDestinations
 import com.pd2launcher.app.ui.PlayScreen
@@ -88,6 +90,7 @@ import com.pd2launcher.app.ui.RepairScreen
 import com.pd2launcher.app.ui.rememberImported
 import com.pd2launcher.app.ui.rememberInstallerDownloads
 import com.pd2launcher.app.ui.SettingsNav
+import com.pd2launcher.app.ui.SettingsPage
 import com.pd2launcher.app.ui.SettingsScreen
 import com.pd2launcher.app.ui.SourceScreen
 import com.pd2launcher.app.ui.SystemState
@@ -112,6 +115,8 @@ import kotlinx.coroutines.withContext
  */
 class MainActivity : ComponentActivity() {
     private val notificationsOff = mutableStateOf(false)
+    /** The activity is started (visible): Play's stats line asks for its numbers only then. */
+    private val started = mutableStateOf(false)
     /** Debug builds only: the [DebugPreview] screen asked for with `--es preview <name>`. */
     private val preview = mutableStateOf<String?>(null)
     /** Debug builds only: the Game view, opened with `--ez gameview true`. */
@@ -135,13 +140,17 @@ class MainActivity : ComponentActivity() {
     /** Settings, from Play or the game's menu, and where in it. */
     private val settingsOpen = mutableStateOf(false)
     private val settingsNav = SettingsNav()
-    /** The on-screen controls editor, from Settings, over a sample screen. */
+    /** Settings is the screen in front (it sets this as it shows and goes): L1 and R1 step its pages ([dispatchKeyEvent]). */
+    private var settingsShown = false
+    /** The on-screen controls editor, from Settings or the Controls screen, over a sample screen. */
     private val editorOpen = mutableStateOf(false)
+    /** The Controls screen outside the game, from Settings → Controls → Buttons: the bindings, in the game's own screen. */
+    private val buttonsOpen = mutableStateOf(false)
     /** Repair, from Play, or from Check when the installation's game folder is gone. */
     private val repairOpen = mutableStateOf(false)
-    /** About, from Play or Settings; over both. */
+    /** About, from Settings → App; over it. */
     private val aboutOpen = mutableStateOf(false)
-    /** Share logs and Save logs, from Settings → App and beside a failure on Check, Download and Install ([shareLogs], [saveLogs]). */
+    /** Share logs and Save logs, beside a failure on Check, Download and Install, and Save logs from Settings → Help ([shareLogs], [saveLogs]). */
     private val logShare = LogShareUi(onShare = ::shareLogs, onSave = ::saveLogs)
     /** Whether the servers can be reached ([NetworkCheck]): on Check, and under a failed download ([checkNetwork]). */
     private val networkCheck = NetworkCheckUi(onRecheck = ::checkNetwork, onOpenSettings = ::openAppSettings)
@@ -181,7 +190,7 @@ class MainActivity : ComponentActivity() {
     /** Which layout the launcher screens use, from the display's shape (ui/FormFactor.kt). */
     private lateinit var formFactor: FormFactor
     private val batteryRestricted = mutableStateOf(false)
-    /** App updates: About's group, Settings → App's section and Android's window ([AppUpdateHost]). */
+    /** App updates: Settings → App and Android's window ([AppUpdateHost]). */
     private val appUpdate = AppUpdateHost(this)
     private var sessionStarted = false
     /**
@@ -220,9 +229,11 @@ class MainActivity : ComponentActivity() {
 
         formFactor = FormFactor.of(this)
         requestedOrientation = formFactor.launcherOrientation
-        // About stays open when Android restarted the app under it (allowing app updates can);
+        // The App page stays open when Android restarted the app under it (allowing app updates can);
         // a new start from the notice of a new app version opens it.
-        aboutOpen.value = savedInstanceState?.getBoolean(STATE_ABOUT) ?: intent.getBooleanExtra(AppUpdater.EXTRA_ABOUT, false)
+        if (savedInstanceState?.getBoolean(STATE_APP_PAGE) ?: intent.getBooleanExtra(AppUpdater.EXTRA_APP_PAGE, false)) {
+            openAppPage(savedInstanceState?.getBoolean(STATE_FROM_PLAY) ?: true)
+        }
         // A debug intent's settings and Play act once: not again when Android makes the activity again.
         freshIntent = savedInstanceState == null
         readScreenExtras(intent)
@@ -314,9 +325,10 @@ class MainActivity : ComponentActivity() {
         val gamePreview = DebugPreview.gameLayer(previewName)
         val showGameView = (gameView.value && debuggable) || playing || gamePreview != null
         BackHandler(enabled = showGameView && !playing && gamePreview == null) { gameView.value = false }
-        // The controls editor lays them out on the game's landscape screen, without system bars.
-        val gameScreen = showGameView || editorOpen.value
-        // Settings → Keep the screen on during play, followed live (the in-game menu switches it too).
+        // The controls editor lays them out on the game's landscape screen, without system bars;
+        // the Controls screen is the game's own screen, so it shows the same way.
+        val gameScreen = showGameView || editorOpen.value || buttonsOpen.value
+        // Settings → Display → Keep the screen on during play, followed live (the in-game menu switches it too).
         val keepOn = showGameView && AppSettingsStore.current.collectAsState().value.keepScreenOn
         DisposableEffect(keepOn) {
             if (keepOn) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -439,8 +451,9 @@ class MainActivity : ComponentActivity() {
             )
         }
 
-        val openSettings: (Int) -> Unit = { tab ->
-            settingsNav.open(tab)
+        // Play's Settings and Repair's: the last page (Display at first), on a phone the list; Play's Controls: the Controls page.
+        val openSettings: (SettingsPage?) -> Unit = { page ->
+            if (page == null) settingsNav.openSettings() else settingsNav.open(page)
             settingsOpen.value = true
         }
         val leavePreview = { preview.value = null }
@@ -457,14 +470,38 @@ class MainActivity : ComponentActivity() {
             AboutScreen(
                 onBack = { aboutOpen.value = false },
                 runtime = (status.userland as? SessionStatus.Userland.Ready)?.version,
-                update = appUpdate.about(status, sourceCopy is SourceCopy.Copying),
             )
         } else if (editorOpen.value) {
             ControlsEditor(sample = true, onClose = { editorOpen.value = false })
+        } else if (buttonsOpen.value) Box(Modifier.fillMaxSize().background(Palette.Background)) {
+            // Outside the game: no mode is in use and no strip of the menu; ✕ and Back go back to Settings.
+            BackHandler { buttonsOpen.value = false }
+            remember { ControlsStore.load(this@MainActivity) }
+            val controls by ControlsStore.current.collectAsState()
+            val app by AppSettingsStore.current.collectAsState()
+            ControlsScreen(
+                visible = true,
+                controls = controls,
+                activeMouse = null,
+                canUseMode = false,
+                save = { ControlsStore.save(this@MainActivity, it) },
+                touch = app.touchMode,
+                onTouch = { mode -> AppSettingsStore.update(this@MainActivity) { it.copy(touchMode = mode) } },
+                onUseMode = {},
+                menuHeight = null,
+                onStop = null,
+                onClose = { buttonsOpen.value = false },
+                onPopup = {},
+                onEditOnScreen = { editorOpen.value = true },
+            )
         } else if (showGameView && !settingsOpen.value) {
             // Settings, when open (the in-game menu has no way there now), show over the running game; back returns to it.
             GameView(framebuffer, status.gameEnvironment, presentCounter = paths.presentCounter, preview = gamePreview, previewLauncher = DebugPreview.gameLauncher(previewName))
         } else if (settingsOpen.value) {
+            DisposableEffect(Unit) {
+                settingsShown = true
+                onDispose { settingsShown = false }
+            }
             val app by AppSettingsStore.current.collectAsState()
             // Live: the Frame rate input measures it again while it shows ([ScreenRateProbe]).
             remember { ScreenRate.load(this) }
@@ -484,10 +521,10 @@ class MainActivity : ComponentActivity() {
                 onBatterySettings = { openSystemSettings(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) },
                 onNotificationSettings = ::openNotificationSettings,
                 onEditOnScreen = { editorOpen.value = true },
+                onButtons = { buttonsOpen.value = true },
                 onAbout = { aboutOpen.value = true },
                 onBack = { settingsOpen.value = false },
-                updates = appUpdate.available,
-                newVersion = appUpdate.newVersion(),
+                appPage = appUpdate.page(status, sourceCopy is SourceCopy.Copying),
                 // The app's own Play and the official launcher (and a game it starts) use the game resolution.
                 running = runningScreen.takeIf { playing },
             )
@@ -510,15 +547,15 @@ class MainActivity : ComponentActivity() {
                 window = framebuffer.takeIf { status.gameEnvironment },
             )
         } else if (previewName == DebugPreview.REPAIR) {
-            // As where the app holds Repair on screen: with Settings and the logs.
-            RepairScreen(status, onCheckAgain = {}, onStartOver = {}, onBack = leavePreview, onSettings = { openSettings(SettingsNav.GAME) })
+            // As where the app holds Repair on screen: with the logs, and no way to Settings.
+            RepairScreen(status, onCheckAgain = {}, onStartOver = {}, onBack = leavePreview, logs = true)
         } else if (previewName == DebugPreview.PLAY || DebugPreview.notice(previewName) != null || DebugPreview.playUpdate(previewName, status) != null) Box(Modifier.fillMaxSize()) {
             val shown = DebugPreview.playUpdate(previewName, status) ?: status
             PlayScreen(
                 facts = Play.facts(shown.snapshot, (device as? DeviceCheckState.Done)?.facts?.gpu?.name),
                 problem = null,
                 onPlay = {},
-                destinations = PlayDestinations({ openSettings(SettingsNav.GAME) }, { openSettings(SettingsNav.CONTROLLER) }, {}, { aboutOpen.value = true }),
+                destinations = PlayDestinations({ openSettings(null) }, { openSettings(SettingsPage.CONTROLS) }, {}, ::openAppPage),
                 update = Play.update(shown),
                 newVersion = appUpdate.newVersionDot(),
             )
@@ -555,7 +592,7 @@ class MainActivity : ComponentActivity() {
                     SessionService.command(Command.StartOver)
                 },
                 // Back to Play; with the installation found broken (or Start over running) there
-                // is none: Back leaves the app, and Settings and the logs are on Repair itself.
+                // is none: Back leaves the app, and the logs are on Repair itself.
                 onBack = {
                     if (installed == Installed.Repair) {
                         closing = true
@@ -564,7 +601,7 @@ class MainActivity : ComponentActivity() {
                         repairOpen.value = false
                     }
                 },
-                onSettings = { openSettings(SettingsNav.GAME) }.takeIf { Onboarding.repairLinks(record) },
+                logs = Onboarding.repairLinks(record),
                 // After an update in place whose moved game the engine rejected: Import of it first.
                 onImport = {
                     repairOpen.value = false
@@ -627,12 +664,13 @@ class MainActivity : ComponentActivity() {
                 launching = launching || status.playCheck is PlayCheck.State.Starting,
                 onTryAgain = { SessionService.send(this@MainActivity, SessionService.ACTION_RETRY) }.takeIf { Onboarding.failed(status) },
                 destinations = PlayDestinations(
-                    onSettings = { openSettings(SettingsNav.GAME) },
-                    onControls = { openSettings(SettingsNav.CONTROLLER) },
+                    onSettings = { openSettings(null) },
+                    onControls = { openSettings(SettingsPage.CONTROLS) },
                     onRepair = { repairOpen.value = true },
-                    onAbout = { aboutOpen.value = true },
+                    onVersion = ::openAppPage,
                 ),
                 newVersion = appUpdate.newVersionDot(),
+                stats = playStats(Play.statsActive(started.value, launching, status.playCheck, status.engine)),
             )
             // Once, after the first game session (never right after the install): the installer
             // downloads can go and, after an import from Android's own storage, so can the Diablo II
@@ -998,7 +1036,8 @@ class MainActivity : ComponentActivity() {
         val operation = snapshot?.operation
         return LogShare.about(
             listOf(
-                "App" to "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}, ${BuildConfig.APPLICATION_ID}, ${BuildConfig.BUILD_TYPE})",
+                "App" to "${BuildConfig.SHOWN_VERSION} (${BuildConfig.VERSION_CODE}, ${BuildConfig.APPLICATION_ID}, ${BuildConfig.BUILD_TYPE})" +
+                    BuildConfig.TEST_COMMIT.let { if (it.isEmpty()) "" else ", commit $it" },
                 "Created" to Instant.now().toString(),
                 "Device" to "${Build.MANUFACTURER} ${Build.MODEL} (${Build.DEVICE})",
                 // Android 11 names no chip: its hardware name (Build.HARDWARE) instead.
@@ -1079,8 +1118,8 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        // The notice of a new app version opens About, over whatever shows.
-        if (intent.getBooleanExtra(AppUpdater.EXTRA_ABOUT, false)) aboutOpen.value = true
+        // The notice of a new app version opens the App page, over whatever shows.
+        if (intent.getBooleanExtra(AppUpdater.EXTRA_APP_PAGE, false)) openAppPage()
         freshIntent = true
         readScreenExtras(intent)
         appUpdate.newIntent(intent)
@@ -1089,7 +1128,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
-        outState.putBoolean(STATE_ABOUT, aboutOpen.value)
+        outState.putBoolean(STATE_APP_PAGE, settingsOpen.value && settingsNav.page == SettingsPage.APP)
+        outState.putBoolean(STATE_FROM_PLAY, settingsNav.fromPlay)
         outState.putStringArrayList(STATE_NAV, nav.value.saved())
         sourceChoice.value?.let { outState.putString(STATE_SOURCE, it.name) }
         outState.putLong(STATE_KEY_REFUSAL, keyRefusalShown)
@@ -1097,6 +1137,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
+        started.value = true
         closing = false
         controllerLog.start()
         getSystemService(DisplayManager::class.java)?.registerDisplayListener(displayLog, null)
@@ -1107,6 +1148,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
+        started.value = false
         controllerLog.stop()
         getSystemService(DisplayManager::class.java)?.unregisterDisplayListener(displayLog)
         // Closed (Back on the first screen, or the activity ends), or only left (Home, the lock, another app).
@@ -1160,6 +1202,44 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Play's stats line ([PlayStats]) while Play shows: [PlayStats.run] while Play is [visible]
+     * (the activity started, no launch pending, the engine connected), so a fetch at each visit
+     * (Play opens, or the app comes back to the front on Play) unless the last was less than 1 s
+     * ago, then every 60 s; nothing while it is not. Until the first answer, the last answer of
+     * this run, else unknown while it may ask, else no line ([PlayStats.shown]). Detailed
+     * logging: one line when the status changes and one when a fetch fails, written on the IO
+     * threads.
+     */
+    @Composable
+    private fun playStats(visible: Boolean): PlayStats.Stats? {
+        LaunchedEffect(visible) {
+            if (!visible) return@LaunchedEffect
+            PlayStats.run(PlayStats.schedule, SystemClock::elapsedRealtime, PlayStats::get, { result ->
+                if (BuildConfig.DEBUG) Log.d(TAG, "play stats: fetch")
+                val before = PlayStats.current.value
+                PlayStats.current.value = result.stats
+                if (AppSettingsStore.current.value.detailedLogging) {
+                    val lines = listOfNotNull(
+                        result.failures.takeIf { it.isNotEmpty() }?.let { "play stats: fetch failed: ${it.joinToString("; ")}" },
+                        PlayStats.changeLine(before, result.stats),
+                    )
+                    if (lines.isNotEmpty()) withContext(Dispatchers.IO) { lines.forEach { networkLog.line(it) } }
+                }
+            })
+        }
+        return PlayStats.shown(PlayStats.current.collectAsState().value, visible)
+    }
+
+    /** Settings → App: Play's Version and the notice of a new app version. */
+    private fun openAppPage(fromPlay: Boolean = true) {
+        aboutOpen.value = false
+        buttonsOpen.value = false
+        editorOpen.value = false
+        settingsNav.openVersion(fromPlay)
+        settingsOpen.value = true
+    }
+
     /** The app's own settings page, where Android allows or blocks its Wi-Fi and mobile data. */
     private fun openAppSettings() =
         openSystemSettings(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null)))
@@ -1167,14 +1247,20 @@ class MainActivity : ComponentActivity() {
     /**
      * Controllers: A selects and B goes back on every native screen. Android does not treat
      * the gamepad's A as a confirm key, so it is handed on as the d-pad's center, and B as Back.
+     * While Settings is in front, L1 and R1 step its pages wherever the focus is (also nowhere,
+     * in touch mode; [SettingsNav.shoulder]).
      */
-    override fun dispatchKeyEvent(event: KeyEvent): Boolean = super.dispatchKeyEvent(navigationKey(event))
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val key = navigationKey(event)
+        val press = key.action == KeyEvent.ACTION_DOWN && key.repeatCount == 0
+        return (settingsShown && settingsNav.shoulder(key.keyCode, press)) || super.dispatchKeyEvent(key)
+    }
 
     /**
-     * Debug builds only: `--es preview <name>` (`--ei tab <n>` and `--es picker <button>` with
-     * `settings`, `--ez mouse true` for mouse mode), `--ez gameview true` and `--ez keys true`;
-     * Settings → Game without taps ([debugGameSettings]): `--es display fit|center` and
-     * `--es resolution own|<width>x<height>`.
+     * Debug builds only: `--es preview <name>` (`--es page <name>` with `settings`: its page, for
+     * example `game`; else the list, or the last page; `--ez buttons true` the Controls screen
+     * over it), `--ez gameview true` and `--ez keys true`; Settings → Display without taps
+     * ([debugGameSettings]): `--es display fit|center` and `--es resolution own|<width>x<height>`.
      */
     private fun readScreenExtras(intent: Intent) {
         if (!debuggable) return
@@ -1182,9 +1268,8 @@ class MainActivity : ComponentActivity() {
         preview.value = intent.getStringExtra("preview")
         if (preview.value == DebugPreview.SETTINGS) {
             preview.value = null
-            settingsNav.open(intent.getIntExtra("tab", SettingsNav.GAME))
-            settingsNav.mouse = intent.getBooleanExtra("mouse", false)
-            settingsNav.picker = intent.getStringExtra("picker")?.let { name -> PadButton.entries.firstOrNull { it.name == name } }
+            SettingsPage.named(intent.getStringExtra("page"))?.let(settingsNav::open) ?: settingsNav.openSettings()
+            buttonsOpen.value = intent.getBooleanExtra("buttons", false)
             settingsOpen.value = true
         } else if (preview.value != null) {
             settingsOpen.value = false
@@ -1253,8 +1338,9 @@ class MainActivity : ComponentActivity() {
         const val CONTROLLERS_TAG = "pd2-controllers"
         /** How long Share logs and Save logs wait for the engine's report before they go on without one. */
         const val REPORT_WAIT_MS = 20_000L
-        /** Whether About was open, kept when Android ends the app under it. */
-        const val STATE_ABOUT = "about_open"
+        /** Whether Settings → App was open, kept when Android ends the app under it. */
+        const val STATE_APP_PAGE = "app_page_open"
+        const val STATE_FROM_PLAY = "app_page_from_play"
         /** The first run's pages and the source choice, kept when Android makes the activity again (for example, the process ended under the folder picker). */
         const val STATE_NAV = "flow_nav"
         const val STATE_SOURCE = "source_choice"

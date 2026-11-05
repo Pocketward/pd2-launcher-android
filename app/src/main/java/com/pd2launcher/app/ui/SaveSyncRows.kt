@@ -30,10 +30,11 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.pd2launcher.app.AppSettings
 import com.pd2launcher.app.R
@@ -46,9 +47,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * Settings → App → Game files → Save sync ([SaveSyncFolder]): the switch, off by default, whose On
- * opens Android's folder picker (the setting stays off when the player picks nothing); How it
- * works, which shows when the app copies and what it does with two copies and with a delete;
+ * Settings → Files and saves → Game files → Save sync ([SaveSyncFolder]): the switch, off by
+ * default, whose On opens Android's folder picker (the setting stays off when the player picks
+ * nothing); How it works, which shows that a sync app (Syncthing) keeps the folder, when the app
+ * copies and what it does with two copies and with a delete;
  * while on, the folder with Change, and how the last sync went with Sync now. A pick, Change and
  * Sync now each have the session service sync ([SessionService.ACTION_SYNC_SAVES]). Off keeps
  * both copies.
@@ -99,7 +101,7 @@ fun ColumnScope.SaveSyncRows(app: AppSettings) {
     HowItWorks(how) { how = !how }
     if (how) {
         Column(Modifier.padding(start = 14.dp, end = 14.dp, bottom = 10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            for (line in listOf(R.string.sync_how_in, R.string.sync_how_out, R.string.sync_how_never, R.string.sync_how_both, R.string.sync_how_backups, R.string.sync_how_delete, R.string.sync_how_off)) {
+            for (line in listOf(R.string.sync_how_app, R.string.sync_how_in, R.string.sync_how_out, R.string.sync_how_never, R.string.sync_how_both, R.string.sync_how_backups, R.string.sync_how_delete, R.string.sync_how_off)) {
                 Text("•  " + stringResource(line), style = Type.Hint, color = Palette.Muted)
             }
         }
@@ -152,22 +154,30 @@ private fun HowItWorks(shown: Boolean, onToggle: () -> Unit) {
     }
 }
 
-/** A line of words, with its [tone]'s mark when there is one, and its button (below the words on phones). */
+/**
+ * A line of words, with its [tone]'s mark when there is one, and its button (below the words on
+ * phones). The button stays the focus stop when it greys or comes back: its focus would else fall
+ * out of the page, to "‹ Play".
+ */
 @Composable
 private fun ButtonRow(words: String, tone: Tone?, action: String, enabled: Boolean = true, onClick: () -> Unit) {
     val phone = LocalFormFactor.current == FormFactor.PHONE
+    val focus = remember { FocusRequester() }
+    var held by remember { mutableStateOf(false) }
+    val lost = remember(enabled) { held }
+    LaunchedEffect(enabled) { if (lost) runCatching { focus.requestFocus() } }
     val button = @Composable { modifier: Modifier ->
-        LauncherButton(action, onClick, modifier, enabled = enabled, height = 48.dp, padding = 16.dp, style = Type.Hint.copy(fontWeight = FontWeight.SemiBold))
+        SlimButton(action, onClick, modifier.onFocusChanged { held = it.isFocused }, enabled = enabled, focusRequester = focus)
     }
     Row(
-        Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(horizontal = 14.dp, vertical = 10.dp),
+        Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 14.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         tone?.let { StatusMark(it) }
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(words, style = if (tone == null) Type.Body else Type.Hint, color = if (tone == null) Palette.Text else Palette.Muted)
-            if (phone) button(Modifier.padding(top = 8.dp))
+            if (phone) button(Modifier.padding(top = 1.dp))
         }
         if (!phone) button(Modifier)
     }
