@@ -2,6 +2,8 @@
 <resources>
     <!-- App updates: a new version of this app (Settings → App, the notice). Not Project Diablo 2's updates. -->
     <string name="app_update_you_have">You have %1$s</string>
+    <!-- Under "You have …" on a player's test APK: Stable and Beta are the ways out of the test build. -->
+    <string name="app_update_test_build">Test build: install Stable or Beta below to leave it.</string>
     <string name="app_update_idle">PD2 Launcher has not looked for a new version yet.</string>
     <string name="app_update_checking">Looking for a new version…</string>
     <!-- Under "You have": when the last check was. -->

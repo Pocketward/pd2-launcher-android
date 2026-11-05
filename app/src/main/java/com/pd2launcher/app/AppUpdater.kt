@@ -48,6 +48,9 @@ import kotlinx.serialization.json.Json
  * `files/logs/update.log`, which Save logs packs.
  */
 object AppUpdater {
+    /** A player's test APK ("<version> (test <label>)"): the test channel, which leaves by Stable or Beta ([AppUpdate.rows]). */
+    val TEST_BUILD: Boolean = BuildConfig.SHOWN_VERSION != BuildConfig.VERSION_NAME
+
     private const val TAG = "pd2-update"
     private const val PREFERENCES = "app_update"
     private const val ETAG = "etag"
@@ -420,7 +423,9 @@ object AppUpdater {
         }
         followChannel(context, before)
         val channel = channel()
-        val offer = AppUpdate.newOffer(offers, channel, BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE, _work.value, _refused.value)
+        val offer = AppUpdate.newOffer(
+            offers, channel, BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE, _work.value, _refused.value, testBuild = TEST_BUILD,
+        )
         log(context, "${channel.name.lowercase()} channel: ${offer?.let { "offer ${it.versionName} (code ${it.versionCode})" } ?: "no offer"}")
         if (offer == null) return
         if (automatic) {

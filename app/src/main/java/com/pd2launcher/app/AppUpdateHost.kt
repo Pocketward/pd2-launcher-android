@@ -127,6 +127,8 @@ class AppUpdateHost(private val activity: ComponentActivity) {
         return AppUpdate.rows(
             offers, AppUpdate.channel(picked, BuildConfig.VERSION_NAME, open), BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE,
             work, wait, allowed.value, refused, betaOpen = open,
+            // A test APK ("<version> (test <label>)") can install its own Stable again: the way back.
+            testBuild = AppUpdater.TEST_BUILD,
         )
     }
 

@@ -294,9 +294,25 @@ object AppUpdate {
     fun dropsDownload(end: CheckEnd, work: Work?): Boolean =
         end.problem == null && work != null && !runs(work) && offer(end.offers, channelOf(work.offer.versionName)) != work.offer
 
-    /** The new version of [channel] for the build that runs, for the notice; null: none. */
-    fun newOffer(offers: Offers, channel: UpdateChannel, installedName: String, installedCode: Int, work: Work?, refused: Set<String>): Offer? =
-        rows(offers, channel, installedName, installedCode, work, null, true, refused).first { it.selected }.let { row -> row.offer.takeIf { row.fresh } }
+    /**
+     * The new version of [channel] for the build that runs, for the notice; null: none. A test build
+     * ([testBuild], the test channel) hears of a new version of either channel, the selected one
+     * first: it has no channel of its own to follow, and both are ways out of the test.
+     */
+    fun newOffer(
+        offers: Offers,
+        channel: UpdateChannel,
+        installedName: String,
+        installedCode: Int,
+        work: Work?,
+        refused: Set<String>,
+        testBuild: Boolean = false,
+    ): Offer? {
+        val rows = rows(offers, channel, installedName, installedCode, work, null, true, refused, testBuild = testBuild)
+        val selected = rows.first { it.selected }
+        if (!testBuild) return selected.offer.takeIf { selected.fresh }
+        return (listOf(selected) + rows.filter { it !== selected }).firstOrNull { it.fresh }?.offer
+    }
 
     /**
      * What tells one upload of a release's APK from any other: its name, which holds the tag's
@@ -652,6 +668,9 @@ object AppUpdate {
      * ([rank]). [wait] and [allowed] say whether Android's question can open now ([waitFor]). A
      * beta in [refused] ([upload]), or one below [installedCode], closes the Beta row ([betaOpen]),
      * and the greyed row says that this beta cannot install over the build that runs ([ChannelRow.info]).
+     * A test build ([testBuild]: a player's test APK with its Stable's own name and code) can install
+     * that Stable again from its row, the way back from the test; it is never offered by itself (no
+     * notice, no dot).
      */
     fun rows(
         offers: Offers?,
@@ -663,6 +682,7 @@ object AppUpdate {
         allowed: Boolean,
         refused: Set<String> = emptySet(),
         betaOpen: Boolean = betaOpen(offers, installedCode, refused, work),
+        testBuild: Boolean = false,
     ): List<ChannelRow> = UpdateChannel.entries.map { channel ->
         // While Beta is closed the checks follow Stable ([channel]), so Stable is the selected row.
         val selected = if (betaOpen) selected else UpdateChannel.STABLE
@@ -675,15 +695,19 @@ object AppUpdate {
         val job = work?.takeIf { channelOf(it.offer.versionName) == channel }
         val offer = offer(offers, channel) ?: job?.offer
         val on = channel == selected
-        val installed = offer?.versionName == installedName
+        val sameName = offer?.versionName == installedName
+        // A test build is not its Stable: that Stable installs again, as the way back.
+        val again = testBuild && sameName && channel == UpdateChannel.STABLE
+        val installed = sameName && !again
         val allowedCode = offer != null && offer.versionCode >= installedCode
         val otherChannel = channelOf(installedName) != channel
         val barred = offer != null && upload(offer) in refused
-        val canInstall = offer != null && !installed && allowedCode && !barred && (otherChannel || newer(offer.versionName, installedName))
+        val canInstall = offer != null && !installed && allowedCode && !barred &&
+            (otherChannel || again || newer(offer.versionName, installedName))
         ChannelRow(
             channel, on, offer, installed, canInstall,
             locked = wait in LOCKS,
-            fresh = canInstall && !(channel == UpdateChannel.STABLE && otherChannel && offer?.versionCode == installedCode),
+            fresh = canInstall && !again && !(channel == UpdateChannel.STABLE && otherChannel && offer?.versionCode == installedCode),
             sign = when {
                 job != null -> jobSign(job, wait, allowed, on)
                 !on -> null
