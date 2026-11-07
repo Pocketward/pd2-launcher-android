@@ -232,6 +232,9 @@ class SessionService : Service() {
     private val frameWatch = FrameWatch()
     /** What the phone did while the game joined an online game, in the service log ([JoinWindow]). */
     private val joinWindow = JoinWindow()
+
+    /** Test builds: one line for each join of an online game ([CreateVerdict]). */
+    private val createVerdict = CreateVerdict()
     /** The highest speed of each CPU (kHz), read at the first join window. */
     private var joinMaxKhz: Map<Int, Long> = emptyMap()
     /** Whether [joinWindow] is open, for its sampler off the worker; set on the worker. */
@@ -495,6 +498,7 @@ class SessionService : Service() {
             ACTION_STOP_SAFELY -> worker.execute { sendCommand(Command.RequestSafeStop) }
             ACTION_INSTALL_PD2 -> worker.execute { installProjectDiablo(press = true) }
             ACTION_SYNC_SAVES -> syncSavesSoon(intent.getStringExtra(EXTRA_SYNC_WHY) ?: "Sync now")
+            ACTION_BOX64_TEST_ENV -> if (AppUpdater.TEST_BUILD) worker.execute { writeBox64TestEnv("the Testing page", maySweep = false) }
         }
         return START_NOT_STICKY
     }
@@ -1031,7 +1035,10 @@ class SessionService : Service() {
                     launcherLog.engineLine(line)
                     // Detailed logging: a connect to a game server opens the join window, its
                     // socket's close ends it; the other network lines do nothing here.
-                    if (line.contains(JOIN_NETWORK) && (line.contains(" connect socket ") || line.contains(" closesocket "))) {
+                    // Test builds: a socket's line too, for the create verdict ([CreateVerdict]).
+                    if (line.contains(JOIN_NETWORK) && (line.contains(" connect socket ") || line.contains(" closesocket ") ||
+                            (AppUpdater.TEST_BUILD && line.contains(" closed after ")))
+                    ) {
                         post { joinLine(line) }
                     }
                 },
@@ -1632,6 +1639,7 @@ class SessionService : Service() {
         glideAskedAt = null
         glideSeq = null
         glideRefused = false
+        writeBox64TestEnv("Play", maySweep = true)
         launchRequested(now)
         val settings = AppSettingsStore.load(this)
         stopAtOtherSize()
@@ -1664,6 +1672,70 @@ class SessionService : Service() {
             // launcher session must not stop it ([launcherSent]).
             if (launchSent != null) launcherSent = null
         }
+    }
+
+    /**
+     * Test builds only ([AppUpdater.TEST_BUILD]): the Testing page's Box64 values ([Box64TestEnv])
+     * into the prefix's `user.reg`, for [why] (Play, the official launcher, a change on the page),
+     * with one log line that names them. Only while the installation stands Ready and no Wine runs
+     * ([PrefixStateKeeper.wineRuns]), under the launches' lock and the prefix lock, as the prefix
+     * state's capture. [maySweep] (Play, the official launcher): a game environment with nothing in
+     * it stops first when the values change, as its Wine keeps the hive in memory; the launch then
+     * starts it again. Else the values wait for the next Play.
+     */
+    private fun writeBox64TestEnv(why: String, maySweep: Boolean) {
+        if (!AppUpdater.TEST_BUILD) return
+        val settings = AppSettingsStore.load(this)
+        val choices = Box64TestEnv.active(settings.box64TestEnv, testBuild = true)
+        val other = box64Other
+        val build = Box64Build.active(settings.box64Build, testBuild = true, other = other)
+        log(if (why == "Play") Box64TestEnv.line(choices) else "${Box64TestEnv.line(choices)} ($why)")
+        log(if (why == "Play") Box64Build.line(build, other) else "${Box64Build.line(build, other)} ($why)")
+        if (_status.value.snapshot?.installation != Installation.READY) {
+            log("${Box64TestEnv.LINE}: not written ($why): the installation is not Ready")
+            return
+        }
+        val prefix = File(paths.managedRoot, "prefix")
+        val snapshot = _status.value.snapshot
+        val idle = snapshot?.activeJob == null && snapshot?.game != Game.RUNNING && !_status.value.launcherGame &&
+            _status.value.launchRequestedAt == null && installWork.sequence == null && pendingStart == null
+        if (maySweep && game.running && idle && (Box64TestEnv.differs(prefix, choices) || Box64Build.differs(paths.managedRoot, build, other))) {
+            log("${Box64TestEnv.LINE}: the game environment stops first, so that Wine reads the new values")
+            stopGameEnvironment()
+        }
+        if (PrefixStateKeeper.wineRuns(_status.value, SystemClock.elapsedRealtime())) {
+            log("${Box64TestEnv.LINE}: not written ($why): Wine runs; the values are written at the next start with nothing running")
+            return
+        }
+        try {
+            val outcome = SaveSyncFolder.locked { PrefixState.locked { Box64TestEnv.applyTo(prefix, choices, testBuild = true) } }
+            when (outcome) {
+                Box64TestEnv.Outcome.WRITTEN -> log("${Box64TestEnv.LINE}: written into the prefix's user.reg ($why)")
+                Box64TestEnv.Outcome.NO_PREFIX -> log("${Box64TestEnv.LINE}: not written ($why): the prefix has no user.reg yet")
+                else -> Unit
+            }
+        } catch (error: Exception) {
+            log("${Box64TestEnv.LINE}: not written ($why): $error")
+        }
+        if (other == null) return
+        try {
+            val outcome = SaveSyncFolder.locked {
+                PrefixState.locked { Box64Build.apply(paths.managedRoot, build, other) { assets.open("${Box64Build.ASSET_FOLDER}/wowbox64.dll") } }
+            }
+            when (outcome) {
+                Box64Build.Outcome.WRITTEN -> log("${Box64Build.LINE}: ${build.name.lowercase()} wowbox64.dll in place, SHA-256 checked ($why)")
+                Box64Build.Outcome.NO_RUNTIME -> log("${Box64Build.LINE}: not switched ($why): the runtime has no wowbox64.dll")
+                Box64Build.Outcome.NO_PINNED_COPY -> log("${Box64Build.LINE}: not switched ($why): the runtime's own wowbox64.dll was not kept")
+                Box64Build.Outcome.UNCHANGED -> Unit
+            }
+        } catch (error: Exception) {
+            log("${Box64Build.LINE}: not switched ($why): $error")
+        }
+    }
+
+    /** The APK's second wowbox64.dll ([Box64Build.otherFromAssets]); null: this APK has none. */
+    private val box64Other: Box64Build.Other? by lazy {
+        Box64Build.otherFromAssets { path -> try { assets.open(path).bufferedReader().use { it.readText() } } catch (_: java.io.IOException) { null } }
     }
 
     /** When Play asked the engine for Glide first ([GlideFirst]); null: no such wait. Worker thread only. */
@@ -1728,6 +1800,7 @@ class SessionService : Service() {
         }
         val settings = AppSettingsStore.load(this)
         beginLauncherRun(settings.detailedLogging)
+        writeBox64TestEnv("official launcher", maySweep = true)
         launchRequested(SystemClock.elapsedRealtime())
         stopAtOtherSize()
         val started = !game.running
@@ -2357,6 +2430,7 @@ class SessionService : Service() {
     private fun joinLine(line: String) {
         if (joinMaxKhz.isEmpty()) joinMaxKhz = JoinWindow.coreKhz(File(CPU_FOLDER), "cpuinfo_max_freq")
         val was = joinWindow.isOpen
+        if (AppUpdater.TEST_BUILD) createVerdict.line(line, SystemClock.elapsedRealtime(), gameRunningSince)?.let(::log)
         joinWindow.line(line, SystemClock.elapsedRealtime(), joinMaxKhz)?.let(::log)
         joinOpen = joinWindow.isOpen
         if (!joinWindow.isOpen) joinNetworkStop()
@@ -2687,6 +2761,8 @@ class SessionService : Service() {
         const val ACTION_CLOSE = "com.pd2launcher.app.action.CLOSE"
         /** Settings → Files and saves → Game files → Save sync: a sync now ([syncSavesSoon]), named by [EXTRA_SYNC_WHY]. */
         const val ACTION_SYNC_SAVES = "com.pd2launcher.app.action.SYNC_SAVES"
+        /** Test builds: the Testing page's Box64 values changed; written now when nothing runs ([Box64TestEnv]). */
+        const val ACTION_BOX64_TEST_ENV = "com.pd2launcher.app.action.BOX64_TEST_ENV"
         /** Debug builds: the X screen's size for [ACTION_GAME_START], `<width>x<height>`. */
         const val EXTRA_X_SCREEN = "xscreen"
         /** Why [ACTION_SYNC_SAVES] came (Sync now, the setting turned on, another folder), for the log. */

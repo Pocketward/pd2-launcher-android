@@ -126,7 +126,8 @@ private const val SCROLL_BACK_MS = 500L
  * (its input, [PointerSpeedInput]) and the chord. Files and saves: the game folder, Save sync and
  * Storage. App ([appPage]; null: this build gets no updates): the version, Check now and the
  * Update channel, and About ([onAbout]). Help: the problem reports (Detailed logging and Save
- * logs), and Android's battery and notification settings ([system]). [back]: the back label, to
+ * logs), and Android's battery and notification settings ([system]). Testing, in a test build only
+ * ([testing]; [SettingsNav.testing]): Box64's settings and Reset all. [back]: the back label, to
  * where Settings returns
  * ([com.pd2launcher.app.Onboarding.settingsBack]).
  */
@@ -150,6 +151,7 @@ fun SettingsScreen(
     onBack: () -> Unit,
     appPage: AppPageUi? = null,
     running: Pair<Int, Int>? = null,
+    testing: TestingPageUi? = null,
 ) {
     // Display's GPU sub page over Settings, as About and Buttons: on the way back Settings is new,
     // and the focus returns to the GPU row (nav.opener).
@@ -177,6 +179,7 @@ fun SettingsScreen(
         version = BuildConfig.SHOWN_VERSION,
         appLine = appPage?.line,
         system = system,
+        box64Set = testing?.choices?.size ?: 0,
     )
     val list = remember { SettingsPage.entries.associateWith { FocusRequester() } }
     val page = remember { FocusRequester() }
@@ -330,6 +333,8 @@ fun SettingsScreen(
             SettingsRow.GPU -> OpenRow(
                 stringResource(R.string.settings_gpu), gpuValue(driverPage(app, gpu).first), focusRequester = focusOf(row),
             ) { opens(row) { nav.gpu = true } }
+            SettingsRow.BOX64_KNOBS -> testing?.let { Box64KnobRows(it, focusOf(row)) }
+            SettingsRow.BOX64_RESET -> testing?.let { Box64ResetRow(it) }
             SettingsRow.ABOUT -> OpenRow(
                 stringResource(R.string.settings_about), stringResource(R.string.about_version, BuildConfig.SHOWN_VERSION), minHeight = 56.dp,
                 focusRequester = focusOf(row),
@@ -423,7 +428,7 @@ private fun PageList(
     modifier: Modifier,
 ) {
     Column(modifier.verticalScroll(nav.listScroll).padding(horizontal = 8.dp, vertical = 4.dp)) {
-        SettingsPage.entries.forEach { entry ->
+        SettingsPage.pages(nav.testing).forEach { entry ->
             PageRow(entry, entry.line(facts), phone, selected = !phone && nav.page == entry, focus.getValue(entry), page) { nav.open(entry) }
         }
     }

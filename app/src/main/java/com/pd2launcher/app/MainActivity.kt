@@ -55,6 +55,7 @@ import com.pd2launcher.app.input.ControllerLog
 import com.pd2launcher.app.input.ControlsStore
 import com.pd2launcher.app.input.PadLayouts
 import com.pd2launcher.app.ui.AboutScreen
+import com.pd2launcher.app.ui.TestingPageUi
 import com.pd2launcher.app.ui.ControlsEditor
 import com.pd2launcher.app.ui.ControlsScreen
 import com.pd2launcher.app.ui.rememberImportRecord
@@ -139,7 +140,7 @@ class MainActivity : ComponentActivity() {
     private var keyRefusalShown = -1L
     /** Settings, from Play or the game's menu, and where in it. */
     private val settingsOpen = mutableStateOf(false)
-    private val settingsNav = SettingsNav()
+    private val settingsNav = SettingsNav(testing = AppUpdater.TEST_BUILD)
     /** Settings is the screen in front (it sets this as it shows and goes): L1 and R1 step its pages ([dispatchKeyEvent]). */
     private var settingsShown = false
     /** The on-screen controls editor, from Settings or the Controls screen, over a sample screen. */
@@ -528,6 +529,7 @@ class MainActivity : ComponentActivity() {
                 appPage = appUpdate.page(status, sourceCopy is SourceCopy.Copying),
                 // The app's own Play and the official launcher (and a game it starts) use the game resolution.
                 running = runningScreen.takeIf { playing },
+                testing = testingPage(app, status, sourceCopy is SourceCopy.Copying),
             )
         } else if (previewName == DebugPreview.SOURCE) {
             // Continue sends nothing here: the running Download preview shows what follows.
@@ -1083,8 +1085,55 @@ class MainActivity : ComponentActivity() {
                     LauncherSettings.view(snapshot?.settings, status.engine == SessionStatus.Engine.CONNECTED),
                 ),
                 "Detailed logging" to if (AppSettingsStore.current.value.detailedLogging) "on" else "off",
+            ) + listOfNotNull(
+                // Test builds only: the Testing page's Box64 values, as each Play logs them.
+                (Box64TestEnv.LINE to Box64TestEnv.summary(Box64TestEnv.active(AppSettingsStore.load(this).box64TestEnv, testBuild = true)))
+                    .takeIf { AppUpdater.TEST_BUILD },
+                (Box64Build.LINE to Box64Build.line(Box64Build.active(AppSettingsStore.load(this).box64Build, true, box64Other), box64Other).substringAfter(": "))
+                    .takeIf { AppUpdater.TEST_BUILD },
             ),
         )
+    }
+
+    /**
+     * Settings → Testing in a test build ([AppUpdater.TEST_BUILD]; null in any other build): the
+     * player's Box64 values in [app], locked as the App page's rows while [status] (and a folder
+     * [copying]) holds the game, the official launcher or a start ([AppUpdate.lock]). A pick and Reset
+     * all are stored, and the session writes them into the prefix at once when nothing runs, else at
+     * the next Play. The lock holds at the press too, from the session as it is then.
+     */
+    private fun testingPage(app: AppSettings, status: SessionStatus, copying: Boolean): TestingPageUi? {
+        if (!AppUpdater.TEST_BUILD) return null
+        val store = { choices: (Map<String, Int>) -> Map<String, Int> ->
+            if (AppUpdate.pressAllowed(SessionService.status.value, copying, SystemClock.elapsedRealtime())) {
+                AppSettingsStore.update(this) { it.copy(box64TestEnv = Box64TestEnv.stored(choices(Box64TestEnv.parse(it.box64TestEnv)))) }
+                SessionService.send(this, SessionService.ACTION_BOX64_TEST_ENV)
+            }
+        }
+        val build = { choice: Box64Build.Choice ->
+            if (AppUpdate.pressAllowed(SessionService.status.value, copying, SystemClock.elapsedRealtime())) {
+                AppSettingsStore.update(this) { it.copy(box64Build = Box64Build.stored(choice)) }
+                SessionService.send(this, SessionService.ACTION_BOX64_TEST_ENV)
+            }
+        }
+        return TestingPageUi(
+            Box64TestEnv.parse(app.box64TestEnv), AppUpdate.lock(AppUpdate.waitFor(status, copying, SystemClock.elapsedRealtime())),
+            onPick = { name, value -> store { Box64TestEnv.with(it, name, value) } },
+            onReset = {
+                if (AppUpdate.pressAllowed(SessionService.status.value, copying, SystemClock.elapsedRealtime())) {
+                    AppSettingsStore.update(this) { it.copy(box64TestEnv = null, box64Build = null) }
+                    SessionService.send(this, SessionService.ACTION_BOX64_TEST_ENV)
+                }
+            },
+            build = Box64Build.parse(app.box64Build),
+            other = box64Other,
+            onBuild = build,
+        )
+    }
+
+    /** The APK's second wowbox64.dll ([Box64Build.otherFromAssets]); null: this APK has none (the Box64 build row does not show). */
+    private val box64Other: Box64Build.Other? by lazy {
+        Box64Build.otherFromAssets { path -> try { assets.open(path).bufferedReader().use { it.readText() } } catch (_: java.io.IOException) { null } }
     }
 
     /** The screen for device.txt: the whole panel, the app's window, the density, the rate now and the full rate the app measured. */
@@ -1269,7 +1318,7 @@ class MainActivity : ComponentActivity() {
         preview.value = intent.getStringExtra("preview")
         if (preview.value == DebugPreview.SETTINGS) {
             preview.value = null
-            SettingsPage.named(intent.getStringExtra("page"))?.let(settingsNav::open) ?: settingsNav.openSettings()
+            SettingsPage.named(intent.getStringExtra("page"))?.takeIf { it.shown(AppUpdater.TEST_BUILD) }?.let(settingsNav::open) ?: settingsNav.openSettings()
             buttonsOpen.value = intent.getBooleanExtra("buttons", false)
             settingsOpen.value = true
         } else if (preview.value != null) {

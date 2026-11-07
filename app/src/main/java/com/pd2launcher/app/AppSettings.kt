@@ -89,6 +89,13 @@ data class AppSettings(
     val driverPagePick: PlayerDriver? = null,
     /** The Phone driver's way picked on the same page (VirGL or Venus); null: the chip's first. UI only, as [driverPagePick]. */
     val driverPageWay: PhoneWay? = null,
+    /**
+     * Settings → Testing, test builds only ([Box64TestEnv]): the player's Box64 values as one string
+     * ([Box64TestEnv.stored]); null: none set. Any other build never reads it ([Box64TestEnv.active]).
+     */
+    val box64TestEnv: String? = null,
+    /** Settings → Testing's Box64 build ([Box64Build.stored]); null: the runtime's own (pinned). Test builds only. */
+    val box64Build: String? = null,
 ) {
     /**
      * Start over took the installation ([SetupRecord.NONE]): the downloads notice belongs to it,
@@ -137,6 +144,8 @@ data class AppSettings(
             TOUCH_MODE to touchMode.takeIf { it != TouchMode.TRACKPAD }?.name,
             DRIVER_PAGE_PICK to driverPagePick?.name,
             DRIVER_PAGE_WAY to driverPageWay?.name,
+            BOX64_TEST_ENV to box64TestEnv,
+            BOX64_BUILD to box64Build,
         )
 
     companion object {
@@ -185,6 +194,10 @@ data class AppSettings(
         const val DRIVER_PAGE_PICK = "driver_page_pick"
         /** [driverPageWay]'s name; none: the chip's first way. */
         const val DRIVER_PAGE_WAY = "driver_page_way"
+        /** [box64TestEnv]; none: no Box64 value set on the Testing page. */
+        const val BOX64_TEST_ENV = "box64_test_env"
+        /** [box64Build]; none: the runtime's own Box64. */
+        const val BOX64_BUILD = "box64_build"
 
         /** "<width>x<height>" of positive whole numbers, else null. */
         private fun parseSize(text: String): Pair<Int, Int>? {
@@ -213,6 +226,8 @@ data class AppSettings(
                 touchMode = TouchMode.entries.firstOrNull { it.name == values[TOUCH_MODE] } ?: defaults.touchMode,
                 driverPagePick = PlayerDriver.entries.firstOrNull { it.name == values[DRIVER_PAGE_PICK] },
                 driverPageWay = PhoneWay.entries.firstOrNull { it.name == values[DRIVER_PAGE_WAY] },
+                box64TestEnv = (values[BOX64_TEST_ENV] as? String)?.let(Box64TestEnv::parse)?.let(Box64TestEnv::stored),
+                box64Build = Box64Build.stored(Box64Build.parse(values[BOX64_BUILD] as? String)),
             )
         }
     }

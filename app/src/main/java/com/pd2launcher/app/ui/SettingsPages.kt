@@ -26,7 +26,12 @@ enum class SettingsPage(@param:StringRes val title: Int, @param:DrawableRes val 
     FILES(R.string.settings_page_files, R.drawable.ic_settings_files),
     APP(R.string.settings_page_app, R.drawable.ic_settings_updates),
     HELP(R.string.settings_page_help, R.drawable.ic_settings_help),
+    /** Test builds only ([shown]): Box64's settings for a player's comparison ([com.pd2launcher.app.Box64TestEnv]). */
+    TESTING(R.string.settings_page_testing, R.drawable.ic_menu_quick),
     ;
+
+    /** Whether the page is in the list: Testing only in a test build ([testing]), every other page always. */
+    fun shown(testing: Boolean): Boolean = this != TESTING || testing
 
     /** The page's rows in their groups, in order; a row shows only where it applies ([SettingsRow.shown]). */
     val groups: List<RowGroup>
@@ -67,6 +72,10 @@ enum class SettingsPage(@param:StringRes val title: Int, @param:DrawableRes val 
                     hint = R.string.settings_logs_note, ruled = false,
                 ),
                 RowGroup(R.string.settings_section_android, SettingsRow.NOTIFICATIONS, SettingsRow.BATTERY),
+            )
+            TESTING -> listOf(
+                RowGroup(null, SettingsRow.BOX64_KNOBS, ruled = false),
+                RowGroup(null, SettingsRow.BOX64_RESET, gap = true),
             )
         }
 
@@ -125,14 +134,25 @@ enum class SettingsPage(@param:StringRes val title: Int, @param:DrawableRes val 
             facts.system.batteryRestricted -> PageLine(listOf(Line(R.string.settings_list_battery)), Tone.WARNING)
             else -> PageLine(listOf(Line(R.string.settings_section_logs), Line(R.string.settings_section_android)))
         }
+        TESTING -> PageLine(listOf(if (facts.box64Set == 0) Line(R.string.testing_line_defaults) else Line(R.string.testing_line_set, facts.box64Set)))
     }
 
     companion object {
-        /** The page the shoulder button [keyCode] goes to from [from] (L1 back, R1 on); null at an end or for another key. */
-        fun step(from: SettingsPage, keyCode: Int): SettingsPage? = when (keyCode) {
-            KeyEvent.KEYCODE_BUTTON_L1 -> entries.getOrNull(from.ordinal - 1)
-            KeyEvent.KEYCODE_BUTTON_R1 -> entries.getOrNull(from.ordinal + 1)
-            else -> null
+        /** The pages in the list, in order: Testing only in a test build ([testing]). */
+        fun pages(testing: Boolean): List<SettingsPage> = entries.filter { it.shown(testing) }
+
+        /**
+         * The page the shoulder button [keyCode] goes to from [from] (L1 back, R1 on) among the
+         * list's pages ([pages]); null at an end or for another key.
+         */
+        fun step(from: SettingsPage, keyCode: Int, testing: Boolean = false): SettingsPage? {
+            val pages = pages(testing)
+            val at = pages.indexOf(from)
+            return when (keyCode) {
+                KeyEvent.KEYCODE_BUTTON_L1 -> pages.getOrNull(at - 1)
+                KeyEvent.KEYCODE_BUTTON_R1 -> pages.getOrNull(at + 1).takeIf { at >= 0 }
+                else -> null
+            }
         }
 
         /** The page a debug intent names (`--es page game`), in any case; null: none. */
@@ -174,6 +194,10 @@ enum class SettingsRow {
     NOTIFICATIONS,
     GPU,
     ABOUT,
+    /** Testing: the warning, then one row for each of Box64's settings ([com.pd2launcher.app.Box64TestEnv.KNOBS]). */
+    BOX64_KNOBS,
+    /** Testing: Reset all. */
+    BOX64_RESET,
     ;
 
     /**
@@ -196,6 +220,8 @@ enum class SettingsRow {
         GAME_RESOLUTION, ON_SCREEN_CONTROLS, GAME_FOLDER, UPDATE_CHANNEL, ABOUT, DETAILED_LOGGING -> true
         // Display's GPU row opens its sub page in every build (the rows there grey with the page's one switch).
         GPU -> true
+        // Its first setting's switch: grey but focusable while the game runs, so the controller can read why.
+        BOX64_KNOBS -> true
         GAME_UPDATE_CHECKS, SKIP_TO_BNET, SOUND_IN_BACKGROUND -> editable
         else -> false
     }
@@ -232,6 +258,8 @@ data class SettingsFacts(
     val version: String,
     val appLine: PageLine?,
     val system: SystemState,
+    /** Testing (test builds): how many of Box64's settings the player set; 0: all at Box64's defaults. */
+    val box64Set: Int = 0,
 )
 
 /**
@@ -256,7 +284,10 @@ data class PageLine(val lines: List<Line>, val alert: Tone? = null, val news: Bo
  * page and the list are scrolled, and the sheet or input open over the page. Kept while Settings
  * is away (the on-screen controls editor, the Controls screen, About, the game).
  */
-class SettingsNav {
+class SettingsNav(
+    /** A test build: the list has the Testing page ([SettingsPage.shown]), and L1 and R1 reach it. */
+    val testing: Boolean = false,
+) {
     var page by mutableStateOf(SettingsPage.DISPLAY)
     /** Phones: the open page shows (else the list). Handhelds show both. */
     var pageShown by mutableStateOf(false)
@@ -328,7 +359,7 @@ class SettingsNav {
     fun shoulder(keyCode: Int, press: Boolean): Boolean {
         if (!MenuStop.isStep(keyCode) || popup) return false
         if (press) {
-            SettingsPage.step(page, keyCode)?.let {
+            SettingsPage.step(page, keyCode, testing)?.let {
                 open(it)
                 focusPage++
             }

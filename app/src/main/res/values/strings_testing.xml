@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Settings → Testing: test builds only (Box64TestEnv). -->
+    <string name="settings_page_testing">Testing</string>
+    <string name="testing_line_defaults">Box64: defaults</string>
+    <string name="testing_line_set">Box64: %1$d set</string>
+    <string name="testing_warning">For testing only. Applies to everything the app runs.</string>
+    <string name="testing_default">Default</string>
+    <string name="testing_box64_default">Box64: %1$d</string>
+    <string name="testing_reset_all">Reset all</string>
+    <string name="testing_box64_build">Box64 build</string>
+    <string name="testing_build_pinned">Pinned (%1$s, %2$s)</string>
+    <string name="testing_build_upstream">Upstream main (%1$s, %2$s)</string>
+    <string name="testing_settings">Box64 settings</string>
+</resources>

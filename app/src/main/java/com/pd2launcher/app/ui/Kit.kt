@@ -59,6 +59,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.TextStyle
@@ -500,10 +501,18 @@ fun SlimButton(
 /**
  * A slim switch between [options]: one line in a pill, 34 dp to see and 48 dp to touch, the
  * chosen option filled. Each option is its own focus stop; [selectedFocus] is the chosen one's, so
- * a row above can send the d-pad there.
+ * a row above can send the d-pad there. Not [enabled]: grey, and a press selects nothing; each
+ * option stays focusable so the controller can reach it and read why.
  */
 @Composable
-fun SlimSwitch(options: List<String>, selected: Int, onSelect: (Int) -> Unit, modifier: Modifier = Modifier, selectedFocus: FocusRequester? = null) {
+fun SlimSwitch(
+    options: List<String>,
+    selected: Int,
+    onSelect: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+    selectedFocus: FocusRequester? = null,
+    enabled: Boolean = true,
+) {
     Row(
         modifier.height(48.dp).drawBehind {
             val high = SLIM_SWITCH_HIGH.toPx()
@@ -522,7 +531,13 @@ fun SlimSwitch(options: List<String>, selected: Int, onSelect: (Int) -> Unit, mo
             Box(
                 Modifier.fillMaxHeight()
                     .then(if (on && selectedFocus != null) Modifier.focusRequester(selectedFocus) else Modifier)
-                    .selectable(on, interaction, null, role = Role.RadioButton) { onSelect(i) },
+                    .then(
+                        if (enabled) {
+                            Modifier.selectable(on, interaction, null, role = Role.RadioButton) { onSelect(i) }
+                        } else {
+                            Modifier.semantics { disabled(); this.selected = on; role = Role.RadioButton }.focusable(interactionSource = interaction)
+                        },
+                    ),
                 contentAlignment = Alignment.Center,
             ) {
                 Box(
@@ -533,7 +548,7 @@ fun SlimSwitch(options: List<String>, selected: Int, onSelect: (Int) -> Unit, mo
                 ) {
                     Text(
                         label, style = Type.Hint.copy(fontWeight = if (on) FontWeight.SemiBold else FontWeight.Medium),
-                        color = if (on) Palette.Teal else Palette.Muted, maxLines = 1, softWrap = false,
+                        color = if (!enabled) Palette.Faint else if (on) Palette.Teal else Palette.Muted, maxLines = 1, softWrap = false,
                     )
                 }
             }
