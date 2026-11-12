@@ -45,6 +45,10 @@
     <string name="settings_driver_chip">Your graphics chip: %1$s.</string>
     <string name="settings_driver_chip_unknown">Your graphics chip: not known.</string>
     <string name="driver_app">App driver</string>
+    <!-- Test 23 only (branch test/23-csf-approaches): the two App drivers of a CSF Mali. -->
+    <string name="driver_app_approach_1">App driver · Approach 1</string>
+    <string name="driver_app_approach_2">App driver · Approach 2</string>
+    <string name="driver_off_in_test_23">Off in this test build.</string>
     <string name="driver_app_body">The launcher\'s built-in optimized driver.</string>
     <string name="driver_app_none">The launcher has no driver for this graphics chip.</string>
     <string name="driver_phone">Phone driver</string>

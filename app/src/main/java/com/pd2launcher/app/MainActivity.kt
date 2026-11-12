@@ -1087,7 +1087,7 @@ class MainActivity : ComponentActivity() {
                 "Android build" to HardwareFacts.androidBuild(
                     Build.MANUFACTURER, Build.BRAND, Build.FINGERPRINT, Build.DISPLAY, Build.VERSION.INCREMENTAL, Build.VERSION.SECURITY_PATCH,
                 ),
-                "GPU" to (facts?.gpu?.name ?: "not found"),
+                "GPU" to (facts?.gpu?.let { gpu -> (gpu as? MaliGpu)?.let { "${it.name} (${it.kernelInterface})" } ?: gpu.name } ?: "not found"),
                 "Graphics route" to "${status.graphicsRoute ?: "none"} (can run: ${facts?.driverOptions?.routes ?: "unknown"}; " +
                     "phone's own driver: ${facts?.phoneDriver?.let { "${it.name}, Vulkan ${it.apiVersion.first}.${it.apiVersion.second}, Zink ${it.zink}, memory ${it.memory}" } ?: "not probed"}" +
                     "${SystemDriver.forced(filesDir)?.let { "; forced by the debug file: $it" } ?: ""}" +

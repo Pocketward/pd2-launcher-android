@@ -76,10 +76,14 @@ jobs:
           [[ $BRANCH =~ ^test/([0-9]{1,8})(-[0-9A-Za-z-]+)?$ ]] ||
             { echo "::error::the branch $BRANCH is not test/<label> or test/<label>-<words> (the label is the issue's number)"; exit 1; }
           label=${BASH_REMATCH[1]}
-          stable=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)
+          # The base: the newest published Stable, or the newest published Beta for a player on the
+          # Beta channel (a Beta has its Stable's versionCode, so the test installs over both).
+          latest=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)
+          beta=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=30" --jq '[.[] | select(.prerelease and (.draft | not))][0].tag_name // ""')
           version=$(sed -n 's/^ *versionName = "\([^"]*\)"$/\1/p' app/build.gradle.kts)
+          if [[ -n $beta && v$version == "$beta" ]]; then stable=$beta; else stable=$latest; fi
           [[ v$version == "$stable" ]] ||
-            { echo "::error::the commit's versionName is ${version:-unknown}, not the newest Stable's ${stable#v}: start the branch from the Stable's commit"; exit 1; }
+            { echo "::error::the commit's versionName is ${version:-unknown}, not the newest Stable's ${latest#v} or Beta's ${beta#v}: start the branch from its commit"; exit 1; }
           git merge-base --is-ancestor "$(git rev-parse "refs/tags/$stable^{commit}")" HEAD ||
             { echo "::error::the branch does not start at the commit of $stable"; exit 1; }
           if ! grep -q PD2_TEST_BUILD build.sh || ! grep -q pd2.testBuild app/build.gradle.kts; then
@@ -879,8 +883,8 @@ jobs:
           [[ $package == com.pd2launcher.app ]] ||
             { echo "::error::the APK's package is ${package:-unknown}, not com.pd2launcher.app"; exit 1; }
           [[ v$version_name == "$STABLE" ]] ||
-            { echo "::error::the APK's versionName is $version_name, not the newest Stable's ${STABLE#v}"; exit 1; }
-          stable_apk=pd2-launcher-android-$version_name.apk
+            { echo "::error::the APK's versionName is $version_name, not the base release's ${STABLE#v}"; exit 1; }
+          stable_apk=$(./apk-name.sh "$version_name")
           gh release download "$STABLE" --repo "$GITHUB_REPOSITORY" --pattern "$stable_apk" --dir stable
           stable_badging=$(podman run --rm -v "$PWD/stable:/apk:ro" "$IMAGE" aapt2 dump badging "/apk/$stable_apk" | head -n 1)
           stable_code=$(sed -n "s/.* versionCode='\([^']*\)'.*/\1/p" <<<"$stable_badging")

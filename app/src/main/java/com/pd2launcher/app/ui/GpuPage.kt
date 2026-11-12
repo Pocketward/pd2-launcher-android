@@ -64,13 +64,13 @@ internal fun driverPage(app: AppSettings, gpu: HostGpu?, inUse: DriverPage.InUse
 /** Display's GPU row value: "App driver", "Phone driver · VirGL", "Software driver" ([DriverPage.value]); null: none in use. */
 @Composable
 internal fun gpuValue(page: DriverPage.Page): String? = DriverPage.value(page)?.let { (driver, way) ->
-    val name = stringResource(driverTitle(driver))
+    val name = stringResource(driverTitle(driver, page.approaches))
     if (way == null) name else stringResource(R.string.settings_gpu_value_way, name, stringResource(way.label))
 }
 
-private fun driverTitle(driver: PlayerDriver): Int = when (driver) {
-    PlayerDriver.APP -> R.string.driver_app
-    PlayerDriver.PHONE -> R.string.driver_phone
+private fun driverTitle(driver: PlayerDriver, approaches: Boolean = false): Int = when (driver) {
+    PlayerDriver.APP -> if (approaches) R.string.driver_app_approach_1 else R.string.driver_app
+    PlayerDriver.PHONE -> if (approaches) R.string.driver_app_approach_2 else R.string.driver_phone
     PlayerDriver.SOFTWARE -> R.string.driver_software
 }
 
@@ -122,7 +122,7 @@ fun GpuPage(
                         if (index > 0) Rule(Modifier.padding(horizontal = 14.dp))
                         val parent = row.driver == PlayerDriver.PHONE && page.ways.isNotEmpty()
                         DriverRadio(
-                            stringResource(driverTitle(row.driver)), stringResource(row.body), row.selected, row.tag, row.enabled, row.focusable,
+                            stringResource(driverTitle(row.driver, page.approaches)), stringResource(row.body), row.selected, row.tag, row.enabled, row.focusable,
                             {
                                 // Review LOW-1: a row also stores its driver where the stored pick gave no route (that row shows in use then).
                                 if (!row.selected || app.driverPick != row.driver) onAppChange { it.withPick(row.driver) }

@@ -84,12 +84,21 @@ object SystemDriver {
     const val FORCE_LIBHYBRIS_FILE = "debug/system-driver-libhybris"
 
     /**
-     * The route that a debug build ([debug]) forces: [GraphicsRoute.LIBHYBRIS] with
-     * [FORCE_LIBHYBRIS_FILE], else [GraphicsRoute.VIRGL] with [FORCE_VIRGL_FILE], else
-     * [GraphicsRoute.VENUS] with [FORCE_FILE]; null without any.
+     * The same for the mali-panvk route ([GraphicsRoute.MALI_PANVK]), on any Mali, a CSF one too,
+     * which the route leaves to our PanVK ([MaliPanvk.gpu]): the A/B of mali-panvk against our
+     * PanVK on the CSF Malis (issue 23). It wins over the other three.
+     */
+    const val FORCE_MALI_PANVK_FILE = "debug/system-driver-mali-panvk"
+
+    /**
+     * The route that a debug build ([debug]) forces: [GraphicsRoute.MALI_PANVK] with
+     * [FORCE_MALI_PANVK_FILE], else [GraphicsRoute.LIBHYBRIS] with [FORCE_LIBHYBRIS_FILE], else
+     * [GraphicsRoute.VIRGL] with [FORCE_VIRGL_FILE], else [GraphicsRoute.VENUS] with
+     * [FORCE_FILE]; null without any.
      */
     fun forced(files: File, debug: Boolean = BuildConfig.DEBUG): GraphicsRoute? = when {
         !debug -> null
+        File(files, FORCE_MALI_PANVK_FILE).isFile -> GraphicsRoute.MALI_PANVK
         File(files, FORCE_LIBHYBRIS_FILE).isFile -> GraphicsRoute.LIBHYBRIS
         File(files, FORCE_VIRGL_FILE).isFile -> GraphicsRoute.VIRGL
         File(files, FORCE_FILE).isFile -> GraphicsRoute.VENUS
@@ -100,6 +109,7 @@ object SystemDriver {
     fun forceFile(route: GraphicsRoute): String = when (route) {
         GraphicsRoute.VIRGL -> FORCE_VIRGL_FILE
         GraphicsRoute.LIBHYBRIS -> FORCE_LIBHYBRIS_FILE
+        GraphicsRoute.MALI_PANVK -> FORCE_MALI_PANVK_FILE
         else -> FORCE_FILE
     }
 

@@ -4,9 +4,6 @@
  */
 
 #include <errno.h>
-#include <fcntl.h>
-#include <limits.h>
-#include <stdio.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
@@ -259,29 +256,6 @@ kbase_fill_props(struct kbase_kmod_dev *kdev, const struct kbase_props *raw)
    }
 }
 
-/* Replaces the open file behind `fd` with a new open of the same device node. */
-static int
-kbase_reopen(int fd, const struct stat *st)
-{
-   char link[64], path[PATH_MAX];
-   snprintf(link, sizeof(link), "/proc/self/fd/%d", fd);
-   ssize_t n = readlink(link, path, sizeof(path) - 1);
-   if (n <= 0)
-      return -1;
-   path[n] = '\0';
-
-   int nfd = open(path, O_RDWR | O_CLOEXEC);
-   if (nfd < 0)
-      return -1;
-
-   struct stat nst;
-   int ret = -1;
-   if (!fstat(nfd, &nst) && nst.st_rdev == st->st_rdev && dup3(nfd, fd, O_CLOEXEC) >= 0)
-      ret = 0;
-   close(nfd);
-   return ret;
-}
-
 static struct pan_kmod_dev *
 kbase_kmod_dev_create(int fd, uint32_t flags, const struct pan_kmod_allocator *allocator)
 {
@@ -291,25 +265,17 @@ kbase_kmod_dev_create(int fd, uint32_t flags, const struct pan_kmod_allocator *a
    if (fstat(fd, &st) || !S_ISCHR(st.st_mode) || major(st.st_rdev) == 226)
       return NULL;
 
-   /* The CSF handshake (ioctl 52). A JM kbase (uAPI major 11, handshake ioctl 0) fails here or
-    * answers another major. */
+   /* The CSF handshake (ioctl 52), once per open file: each device opens the node itself
+    * (PanVK's panvk_physical_device_open_kmod_fd), as a kbase context is one GPU address space.
+    * A JM kbase (uAPI major 11, handshake ioctl 0) fails here or answers another major. */
    struct kbase_ioctl_version_check version = {
       .major = KBASE_KMOD_UAPI_MAJOR,
       .minor = KBASE_KMOD_UAPI_MINOR,
    };
    if (kbase_kmod_ioctl(fd, KBASE_IOCTL_VERSION_CHECK, &version)) {
-      /* EPERM: this file already has a kbase context, because the fd is a dup() of another
-       * device's (PanVK creates each VkDevice's pan_kmod_dev from a dup of the physical
-       * device's fd). A kbase context is one GPU address space, so the new device gets its own:
-       * the same node opened again, in place of the fd we were given. */
-      if (errno != EPERM || kbase_reopen(fd, &st))
-         return NULL;
-      version = (struct kbase_ioctl_version_check){
-         .major = KBASE_KMOD_UAPI_MAJOR,
-         .minor = KBASE_KMOD_UAPI_MINOR,
-      };
-      if (kbase_kmod_ioctl(fd, KBASE_IOCTL_VERSION_CHECK, &version))
-         return NULL;
+      mesa_logi("kbase: the CSF handshake failed (%s): not a CSF kbase, or the file already "
+                "has a context", strerror(errno));
+      return NULL;
    }
    if (version.major != KBASE_KMOD_UAPI_MAJOR) {
       mesa_logi("kbase: uAPI %u.%u is not CSF; not supported", version.major, version.minor);
@@ -366,8 +332,10 @@ kbase_kmod_dev_create(int fd, uint32_t flags, const struct pan_kmod_allocator *a
    }
 
    struct kbase_kmod_dev *kdev = pan_kmod_alloc(allocator, sizeof(*kdev));
-   if (!kdev)
+   if (!kdev) {
+      mesa_loge("kbase: no memory for the device");
       return NULL;
+   }
 
    kdev->base.fd = fd;
    kdev->uapi_major = version.major;
@@ -412,8 +380,10 @@ kbase_kmod_dev_create(int fd, uint32_t flags, const struct pan_kmod_allocator *a
       .version = { .major = version.major, .minor = version.minor },
    };
    if (pan_kmod_dev_init(&kdev->base, fd, flags, &driver, allocator, &kbase_kmod_ops,
-                         kbase_sync_provider_create(kdev)))
+                         kbase_sync_provider_create(kdev))) {
+      mesa_loge("kbase: no memory for the sync provider");
       goto err_unmap;
+   }
 
    kbase_fill_props(kdev, &raw);
 

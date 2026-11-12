@@ -375,7 +375,7 @@ object DriverChoice {
             libhybris = hybrisInApk && hybrisFiles && !builtIn && phone != null && libhybrisRuns(phone),
             radv = radvAllowed && radvFiles && !builtIn && phone?.xclipse == true,
             maliPanvk = maliPanvkAllowed && maliPanvkFiles && !builtIn && MaliPanvk.gpu(gpu, phone) != null,
-        )
+        ).let { if (Test23.on(gpu)) Test23.options(it, maliPanvkFiles) else it } // Test 23: a CSF Mali's two approaches
     }
 
     /**

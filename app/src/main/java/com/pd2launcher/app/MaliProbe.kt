@@ -18,6 +18,14 @@ data class MaliGpu(val gpuId: Long, val uapiMinor: Int, val jobManager: Boolean 
 
     override val name: String
         get() = (if (jobManager) maliPanvkModel(this) else panvkModels[productId]) ?: "Mali v%d (GPU id 0x%08x)".format(archMajor, gpuId)
+
+    /**
+     * Arm's kernel interface that the driver agreed to, for a report: the CSF one or the job
+     * manager's, with its version. A fault of one kbase variant (issue 23: CSF uAPI 1.20, where
+     * 1.18 worked) shows by this alone.
+     */
+    val kernelInterface: String
+        get() = if (jobManager) "kbase job manager, uAPI 11.$uapiMinor" else "kbase CSF, uAPI 1.$uapiMinor"
 }
 
 /**
