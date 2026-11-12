@@ -1,0 +1,139 @@
+panfrost/kmod: kbase on CSF falls back to the older group and tiler heap layouts
+
+MediaTek's CSF kbase reports a newer uAPI version than the request layouts it takes: a MediaTek
+r32p1 kbase (Mali-G710) reports 1.18 and refuses KBASE_IOCTL_CS_TILER_HEAP_INIT in the layout with
+buf_desc_va (ENOTTY), so Zink's vkCreateDevice failed (VK_ERROR_INITIALIZATION_FAILED). As our own
+backend does (mesa-kbase kbase_kmod_csf.c), a request that gets ENOTTY in the newer layout is sent
+again in the older one, CS_TILER_HEAP_INIT_1_13 and CS_QUEUE_GROUP_CREATE_1_6 (no CSI exception
+handlers), and the device keeps the older layout from then on. Nothing changes on the job manager.
+
+--- a/src/panfrost/lib/kmod/kbase_kmod.c
++++ b/src/panfrost/lib/kmod/kbase_kmod.c
+@@ -278,6 +278,11 @@
+    bool csf;
+    struct drm_panthor_csif_info csif;
+    struct kbase_csf_dev *csfq;
++   /* The kernel takes only these older layouts (found when the newer layout gets ENOTTY; MediaTek's
++    * kbase reports a newer uAPI than its layouts): CS_QUEUE_GROUP_CREATE_1_6, which has no CSI
++    * exception handlers, and CS_TILER_HEAP_INIT_1_13. */
++   bool group_create_1_6;
++   bool tiler_heap_init_1_13;
+ };
+ 
+ static void kbase_queue_init(struct kbase_queue *q);
+@@ -2165,6 +2170,40 @@
+    } out;
+ };
+ 
++union kbase_ioctl_cs_queue_group_create_1_6 {
++   struct {
++      uint64_t tiler_mask;
++      uint64_t fragment_mask;
++      uint64_t compute_mask;
++      uint8_t cs_min;
++      uint8_t priority;
++      uint8_t tiler_max;
++      uint8_t fragment_max;
++      uint8_t compute_max;
++      uint8_t padding[3];
++   } in;
++   struct {
++      uint8_t group_handle;
++      uint8_t padding[3];
++      uint32_t group_uid;
++   } out;
++};
++
++union kbase_ioctl_cs_tiler_heap_init_1_13 {
++   struct {
++      uint32_t chunk_size;
++      uint32_t initial_chunks;
++      uint32_t max_chunks;
++      uint16_t target_in_flight;
++      uint8_t group_id;
++      uint8_t padding;
++   } in;
++   struct {
++      uint64_t gpu_heap_va;
++      uint64_t first_chunk_va;
++   } out;
++};
++
+ struct kbase_ioctl_cs_queue_group_term {
+    uint8_t group_handle;
+    uint8_t padding[7];
+@@ -2223,6 +2262,10 @@
+    _IOW(KBASE_IOCTL_TYPE, 43, struct kbase_ioctl_cs_queue_group_term)
+ #define KBASE_IOCTL_CS_TILER_HEAP_INIT                                                            \
+    _IOWR(KBASE_IOCTL_TYPE, 48, union kbase_ioctl_cs_tiler_heap_init)
++#define KBASE_IOCTL_CS_QUEUE_GROUP_CREATE_1_6                                                     \
++   _IOWR(KBASE_IOCTL_TYPE, 42, union kbase_ioctl_cs_queue_group_create_1_6)
++#define KBASE_IOCTL_CS_TILER_HEAP_INIT_1_13                                                       \
++   _IOWR(KBASE_IOCTL_TYPE, 48, union kbase_ioctl_cs_tiler_heap_init_1_13)
+ #define KBASE_IOCTL_CS_TILER_HEAP_TERM                                                            \
+    _IOW(KBASE_IOCTL_TYPE, 49, struct kbase_ioctl_cs_tiler_heap_term)
+ #define KBASE_IOCTL_CS_GET_GLB_IFACE                                                              \
+@@ -2625,7 +2668,31 @@
+          .compute_max = max_compute,
+       },
+    };
+-   if (pan_kmod_ioctl(dev->fd, KBASE_IOCTL_CS_QUEUE_GROUP_CREATE, &gc)) {
++   int ret = -1;
++   errno = ENOTTY;
++   if (!p_atomic_read(&kdev->group_create_1_6))
++      ret = pan_kmod_ioctl(dev->fd, KBASE_IOCTL_CS_QUEUE_GROUP_CREATE, &gc);
++   if (ret && errno == ENOTTY) {
++      union kbase_ioctl_cs_queue_group_create_1_6 old = {
++         .in = {
++            .tiler_mask = gc.in.tiler_mask,
++            .fragment_mask = gc.in.fragment_mask,
++            .compute_mask = gc.in.compute_mask,
++            .cs_min = gc.in.cs_min,
++            .priority = gc.in.priority,
++            .tiler_max = gc.in.tiler_max,
++            .fragment_max = gc.in.fragment_max,
++            .compute_max = gc.in.compute_max,
++         },
++      };
++      ret = pan_kmod_ioctl(dev->fd, KBASE_IOCTL_CS_QUEUE_GROUP_CREATE_1_6, &old);
++      gc.out.group_handle = old.out.group_handle;
++      if (!ret && !p_atomic_read(&kdev->group_create_1_6)) {
++         p_atomic_set(&kdev->group_create_1_6, true);
++         mesa_logi("kbase: CS_QUEUE_GROUP_CREATE in the 1.6 layout (no CSI exception handlers)");
++      }
++   }
++   if (ret) {
+       mesa_loge("kbase: CS_QUEUE_GROUP_CREATE failed (err=%d)", errno);
+       goto err_free_seq;
+    }
+@@ -2764,7 +2831,29 @@
+          .target_in_flight = target_in_flight,
+       },
+    };
+-   if (pan_kmod_ioctl(dev->fd, KBASE_IOCTL_CS_TILER_HEAP_INIT, &req)) {
++   struct kbase_kmod_dev *kdev = container_of(dev, struct kbase_kmod_dev, base);
++   int ret = -1;
++   errno = ENOTTY;
++   if (!p_atomic_read(&kdev->tiler_heap_init_1_13))
++      ret = pan_kmod_ioctl(dev->fd, KBASE_IOCTL_CS_TILER_HEAP_INIT, &req);
++   if (ret && errno == ENOTTY) {
++      union kbase_ioctl_cs_tiler_heap_init_1_13 old = {
++         .in = {
++            .chunk_size = chunk_size,
++            .initial_chunks = initial_chunks,
++            .max_chunks = max_chunks,
++            .target_in_flight = target_in_flight,
++         },
++      };
++      ret = pan_kmod_ioctl(dev->fd, KBASE_IOCTL_CS_TILER_HEAP_INIT_1_13, &old);
++      req.out.gpu_heap_va = old.out.gpu_heap_va;
++      req.out.first_chunk_va = old.out.first_chunk_va;
++      if (!ret && !p_atomic_read(&kdev->tiler_heap_init_1_13)) {
++         p_atomic_set(&kdev->tiler_heap_init_1_13, true);
++         mesa_logi("kbase: CS_TILER_HEAP_INIT in the 1.13 layout");
++      }
++   }
++   if (ret) {
+       mesa_loge("kbase: CS_TILER_HEAP_INIT failed (err=%d)", errno);
+       return false;
+    }

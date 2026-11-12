@@ -1370,7 +1370,7 @@ class SessionService : Service() {
                     "${phoneDriverReport() ?: gpu ?: "no GPU named"}",
             )
             GraphicsRoute.MALI_PANVK -> log(
-                "graphics: route MALI_PANVK, mali-panvk for a Mali of kbase's job manager (Zink current, /dev/mali0, no server)" +
+                "graphics: route MALI_PANVK, mali-panvk on the Mali's kbase driver (Zink current, /dev/mali0, no server)" +
                     "${if (DriverChoice.MALI_PANVK_FOR_PLAYERS) "" else ", offered by the debug file files/${MaliPanvk.DEBUG_FILE}"}$how: " +
                     "${MaliPanvk.gpu(gpu, phoneDriverReport()) ?: gpu ?: "no GPU named"}",
             )

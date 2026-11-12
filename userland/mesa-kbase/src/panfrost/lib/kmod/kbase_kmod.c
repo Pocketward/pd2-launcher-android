@@ -387,9 +387,11 @@ kbase_kmod_dev_create(int fd, uint32_t flags, const struct pan_kmod_allocator *a
 
    kbase_fill_props(kdev, &raw);
 
-   mesa_logi("kbase: CSF uAPI %u.%u, page size %u, gpu_id 0x%" PRIx64 " variant 0x%x, "
-             "%u CSG slots x %u CS, %u CS registers, %u scoreboards, coherency %u%s",
-             kdev->uapi_major, kdev->uapi_minor, kdev->page_size, kdev->base.props.gpu_id,
+   mesa_logi("kbase: CSF uAPI %u.%u, firmware interface %u.%u.%u, page size %u, gpu_id 0x%" PRIx64
+             " variant 0x%x, %u CSG slots x %u CS, %u CS registers, %u scoreboards, coherency %u%s",
+             kdev->uapi_major, kdev->uapi_minor, kdev->fw.glb_version >> 24,
+             (kdev->fw.glb_version >> 16) & 0xff, kdev->fw.glb_version & 0xffff,
+             kdev->page_size, kdev->base.props.gpu_id,
              kdev->base.props.gpu_variant, kdev->csif.csg_slot_count,
              kdev->csif.cs_slot_count, kdev->csif.cs_reg_count,
              kdev->csif.scoreboard_slot_count, kdev->coherency_mode,

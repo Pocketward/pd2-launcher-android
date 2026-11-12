@@ -7,9 +7,10 @@ import android.util.Log
  * minor:4 arch rev:4 product major:4 version major:4 version minor:8 status:4, from the top), and
  * the interface version the driver agreed to: 1.[uapiMinor] on a CSF kbase (v10 and later), or
  * 11.[uapiMinor] on a job-manager one ([jobManager]: Bifrost v6/v7, Valhall v9, whose GPU id the
- * probe makes from its product id the way mali-panvk does, so it reads the same).
+ * probe makes from its product id the way mali-panvk does, so it reads the same). [ddkVersion] is
+ * the kernel driver's release as kbase names it (e.g. "K:r44p1-01eac0(GPL)"), null when unknown.
  */
-data class MaliGpu(val gpuId: Long, val uapiMinor: Int, val jobManager: Boolean = false) : HostGpu {
+data class MaliGpu(val gpuId: Long, val uapiMinor: Int, val jobManager: Boolean = false, val ddkVersion: String? = null) : HostGpu {
     /** The architecture: 10 for the Mali-G610 and G310, 11 for the G715 and G615, 12, 13; on the job manager 6, 7 (Bifrost) or 9 (Valhall). */
     val archMajor: Int get() = ((gpuId shr 28) and 0xF).toInt()
 
@@ -21,11 +22,13 @@ data class MaliGpu(val gpuId: Long, val uapiMinor: Int, val jobManager: Boolean 
 
     /**
      * Arm's kernel interface that the driver agreed to, for a report: the CSF one or the job
-     * manager's, with its version. A fault of one kbase variant (issue 23: CSF uAPI 1.20, where
-     * 1.18 worked) shows by this alone.
+     * manager's, with its version and the kernel driver's release. Kernels of one uAPI version
+     * differ by release (a MediaTek r32p1 kbase reports 1.18 but lacks calls and layouts of 1.18),
+     * so the release tells which of the drivers' fallbacks a kernel needs (issue 23).
      */
     val kernelInterface: String
-        get() = if (jobManager) "kbase job manager, uAPI 11.$uapiMinor" else "kbase CSF, uAPI 1.$uapiMinor"
+        get() = (if (jobManager) "kbase job manager, uAPI 11.$uapiMinor" else "kbase CSF, uAPI 1.$uapiMinor") +
+            (ddkVersion?.let { ", driver $it" } ?: "")
 }
 
 /**
@@ -44,13 +47,17 @@ object MaliProbe {
     @JvmStatic
     private external fun nativeProbe(): LongArray
 
+    /** The kernel driver's release (GET_DDK_VERSION), or null. */
+    @JvmStatic
+    private external fun nativeDdkVersion(): String?
+
     /**
      * The GPU, or null when `/dev/mali0` is absent, does not answer, is neither a CSF nor a
      * job-manager kbase, or is a job-manager Mali that mali-panvk does not know ([maliGpuOf]).
      */
     fun probe(): MaliGpu? {
         val answer = nativeProbe()
-        return maliGpuOf(answer).also { gpu ->
+        return maliGpuOf(answer)?.let { it.copy(ddkVersion = nativeDdkVersion()?.trim()?.takeIf(String::isNotEmpty)) }.also { gpu ->
             if (gpu == null) Log.i(TAG, "/dev/mali0: no kbase GPU the app's drivers know (errno ${answer[0]}, uAPI ${answer[2]}.${answer[3]}, GPU id 0x%x)".format(answer[1]))
         }
     }
