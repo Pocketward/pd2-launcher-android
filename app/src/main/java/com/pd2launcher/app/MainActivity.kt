@@ -1148,16 +1148,7 @@ class MainActivity : ComponentActivity() {
     /** Android's thermal status (a throttled CPU is slower) and power saving, for device.txt. */
     private fun thermalState(): String {
         val power = getSystemService(PowerManager::class.java) ?: return "unknown"
-        val thermal = when (power.currentThermalStatus) {
-            PowerManager.THERMAL_STATUS_NONE -> "none"
-            PowerManager.THERMAL_STATUS_LIGHT -> "light"
-            PowerManager.THERMAL_STATUS_MODERATE -> "moderate"
-            PowerManager.THERMAL_STATUS_SEVERE -> "severe"
-            PowerManager.THERMAL_STATUS_CRITICAL -> "critical"
-            PowerManager.THERMAL_STATUS_EMERGENCY -> "emergency"
-            PowerManager.THERMAL_STATUS_SHUTDOWN -> "shutdown"
-            else -> "level ${power.currentThermalStatus}"
-        }
+        val thermal = PerfWatch.thermal(power.currentThermalStatus)
         return "$thermal; power saving ${if (power.isPowerSaveMode) "on" else "off"}"
     }
 

@@ -253,6 +253,7 @@ class SessionService : Service() {
     private var stopAsked = false
     /** The device's memory lines while the game runs ([MemoryLog.Watch]); worker thread only. */
     private val memoryWatch = MemoryLog.Watch()
+    private val perfWatch = PerfWatch()
     /** The engine's snapshots in the service log, a line for each change ([SnapshotLines]): the snapshot collection, Share logs and the service's end. */
     private val snapshotLines = SnapshotLines({ log(it) })
     /** The game's frames in the service log ([FrameWatch]); the frame look only. */
@@ -2964,8 +2965,32 @@ class SessionService : Service() {
         val running = status.snapshot?.game == Game.RUNNING || status.launcherGame
         if (!running && !memoryWatch.running) return
         memoryWatch.next(running, MemoryLog.read(), SystemClock.elapsedRealtime())?.let(::log)
+        if (!running) {
+            perfWatch.reset()
+            return
+        }
+        val processes = UidCleanup.scan(File("/proc"), Os.getuid(), Os.getpid(), ::owner)
         // The game's environment, once for each Wine program.
-        if (running) programEnvironments.next(UidCleanup.scan(File("/proc"), Os.getuid(), Os.getpid(), ::owner)).forEach(::log)
+        programEnvironments.next(processes).forEach(::log)
+        if (AppSettingsStore.current.value.detailedLogging) perfWatch.next(perfLook(processes), Os.sysconf(OsConstants._SC_CLK_TCK))?.let(::log)
+        else perfWatch.reset()
+    }
+
+    /** What [perfWatch] reads now, with the app's other [processes]. */
+    private fun perfLook(processes: List<UidProcess>): PerfWatch.Look {
+        val proc = File("/proc")
+        val game = processes.firstOrNull { it.name.equals(LauncherGame.PROCESS, ignoreCase = true) }
+        val power = getSystemService(PowerManager::class.java)
+        return PerfWatch.Look(
+            now = SystemClock.elapsedRealtime(),
+            presents = PresentCounter.read(paths.presentCounter),
+            processTicks = PerfWatch.processTicks(proc, processes, Os.getpid()),
+            gameThreadTicks = game?.let { PerfWatch.threadTicks(proc, it.pid) }.orEmpty(),
+            clusters = PerfWatch.clusters(File("/sys/devices/system/cpu/cpufreq")),
+            thermal = power?.let { PerfWatch.thermal(it.currentThermalStatus) } ?: "unknown",
+            headroom = power?.getThermalHeadroom(0)?.takeUnless { it.isNaN() },
+            shown = appForeground,
+        )
     }
 
     /**

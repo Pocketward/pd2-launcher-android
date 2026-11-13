@@ -170,14 +170,19 @@ EOF
     fi
 
     # The patches, when the tree does not have this set yet: the tree's own files that they change
-    # back (with the time of now, so ninja rebuilds what uses them), then each patch, exactly.
+    # back (with the time of now, so ninja rebuilds what uses them), also those that the set before
+    # changed (.pd2-patched-files: a patch taken out leaves nothing of it), then each patch, exactly.
     if [[ -f "$src/.pd2-patches" && "$(< "$src/.pd2-patches")" == "$pid" ]]; then
         say "patches: already in the tree"
     else
-        say "patches: the tree's ${#PATCHED_FILES[@]} files that they change restored"
+        mapfile -t restored < <({
+            printf '%s\n' "${PATCHED_FILES[@]}"
+            if [[ -f "$src/.pd2-patched-files" ]]; then cat "$src/.pd2-patched-files"; fi
+        } | LC_ALL=C sort -u)
+        say "patches: the tree's ${#restored[@]} files that they or the set before change restored"
         rm -f "$src/.pd2-wsi-patches" "$src/.pd2-patches"
         tar -xzf "$tree_archive" -C "$src" --strip-components=1 --touch \
-            "${PATCHED_FILES[@]/#/mali-panvk-$MALI_PANVK_COMMIT/}"
+            "${restored[@]/#/mali-panvk-$MALI_PANVK_COMMIT/}"
         for p in "${PATCHES[@]}"; do
             patch -d "$src" -p1 --forward --fuzz=0 --no-backup-if-mismatch < "$p" > "$build/patch.log" 2>&1 ||
                 { cat "$build/patch.log"; fail "$(basename "$p") does not apply to the tree"; }
@@ -187,6 +192,7 @@ EOF
             fi
             say "patch applied: $(basename "$(dirname "$p")")/$(basename "$p")"
         done
+        printf '%s\n' "${PATCHED_FILES[@]}" > "$src/.pd2-patched-files"
         echo "$pid" > "$src/.pd2-patches"
     fi
 

@@ -136,13 +136,17 @@ data class DriverOptions(
      * routes to the phone's own driver.
      */
     val libhybris: Boolean = false,
+    /** Test 23: [GraphicsRoute.MALI_PANVK] before [GraphicsRoute.BUILT_IN] ([Test23.options]). */
+    val maliPanvkFirst: Boolean = false,
 ) {
     /** The routes that can run here, in the app's order ([GraphicsRoute], [radv], [maliPanvk], [libhybris], [virglFirst]). */
     val routes: List<GraphicsRoute>
         get() = buildList {
+            // Test 23: on a CSF Mali, Approach 2 (mali-panvk) comes first, as main makes it the App driver (ADR 0031).
+            if (maliPanvkFirst && maliPanvk) add(GraphicsRoute.MALI_PANVK)
             if (builtIn) add(GraphicsRoute.BUILT_IN)
             if (radv) add(GraphicsRoute.RADV)
-            if (maliPanvk) add(GraphicsRoute.MALI_PANVK)
+            if (maliPanvk && !maliPanvkFirst) add(GraphicsRoute.MALI_PANVK)
             if (libhybris) add(GraphicsRoute.LIBHYBRIS)
             if (virglFirst && virgl) add(GraphicsRoute.VIRGL)
             if (venus) add(GraphicsRoute.VENUS)

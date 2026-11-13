@@ -13,10 +13,10 @@ object Test23 {
     /** Whether [gpu] is a Mali of the CSF kbase: the chips that this test build changes. */
     fun on(gpu: HostGpu?): Boolean = gpu is MaliGpu && !gpu.jobManager
 
-    /** The routes on such a chip: Approach 1, then Approach 2 where the APK has mali-panvk ([maliPanvkFiles]). */
+    /** The routes on such a chip: Approach 2 where the APK has mali-panvk ([maliPanvkFiles]), the default as in main (ADR 0031), then Approach 1. */
     fun options(options: DriverOptions, maliPanvkFiles: Boolean): DriverOptions = options.copy(
         venus = false, virgl = false, virglFirst = false, qualcomm = false, mali = false,
-        libhybris = false, radv = false, maliPanvk = maliPanvkFiles,
+        libhybris = false, radv = false, maliPanvk = maliPanvkFiles, maliPanvkFirst = true,
     )
 
     /** Whether [options] are this test's: both approaches can run. */
