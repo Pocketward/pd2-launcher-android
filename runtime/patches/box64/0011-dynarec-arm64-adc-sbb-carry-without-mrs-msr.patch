@@ -25,7 +25,7 @@ sbb eax,-1", about 25 million times at each game entry, and the first SBB takes 
 xFlags. That loop is about half of the time between the realm's join answer and the game's logon,
 which the game server limits (issue #17).
 
-Measured on an OPPO CPH2641 (Snapdragon 662, big core at 2112 MHz), 2026-11-10: the translated
+Measured 2026-11-10 with a Snapdragon 662 phone (big core at 2112 MHz): the translated
 loop in the game takes 440 ms at a game entry before and 416 ms after (10 single-player entries
 each, the two builds in turn; the ranges 429-448 and 413-424 do not overlap). A native copy of
 the loop: 18.5 ns a probe before, 16.7 ns after with the key strings 16 bytes apart.

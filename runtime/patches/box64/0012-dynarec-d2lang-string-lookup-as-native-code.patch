@@ -23,7 +23,7 @@ Tested against the x86 function itself on an x86 PC, on the three string tables 
 PD2 game (11487 keys, each with three near misses, in each table) and on small built tables (no
 tries, unused entries, a repeated key, a wrap): 139140 calls, no difference in the eight registers,
 the six flags, the stored result or the stack. Ten planted errors in the native code each make
-that test fail. Native ARM64 on the OPPO CPH2641 (Snapdragon 662, big core): 5.65 ns for each entry
+that test fail. Native ARM64 with the same Snapdragon 662 phone (big core): 5.65 ns for each entry
 tried, against 16.6 ns for the translated loop with patch 0011.
 ---
 diff --git a/src/dynarec/arm64/dynarec_arm64_consts.c b/src/dynarec/arm64/dynarec_arm64_consts.c

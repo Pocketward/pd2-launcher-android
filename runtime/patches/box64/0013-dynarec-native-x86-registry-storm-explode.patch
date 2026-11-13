@@ -1,0 +1,790 @@
+Subject: [PATCH] dynarec: a registry of x86 functions that run as native code; Storm's explode (Project Diablo 2, WowBox64)
+
+Patch 0012 runs D2Lang.dll's string-key lookup as native code from a hook at the start of a block.
+This patch makes that hook a registry (native_x86.c): each known function has its own check of its
+code bytes and its own native code, and the block calls the one whose code it starts at. When the
+native code did the work, the block does the function's `ret` as Box64 translates it (with CALLRET a
+direct return into the caller's code), not through the epilog and a lookup of the return address.
+When the native code refuses a call, the block runs the x86 code as before.
+BOX64_DYNAREC_NATIVEX86=0 (was BOX64_DYNAREC_D2LANG) turns them all off. Box64's log says once for
+each when it is used.
+
+The second function is Storm.dll's PKWARE decompressor ("explode"), which unpacks the game's data
+files: at a game entry it is about 190 ms of a game thread on a Snapdragon 662, and the game's main
+thread waits for that thread. storm_explode.c does what it does on the caller's own work area, with
+the same layout (its tables, its window, its input buffer, its bit state), and does what Storm's two
+memory callbacks do: the same result, registers, flags, work area, parameter block and output. It
+takes a call only when the callbacks are one of Storm's two pairs of memory callbacks (those of its
+decompress function and those of its MPQ sector reader, which unpacks most of the data), and refuses (the x86 code runs) a header that it
+does not take (a first read of 4 bytes or less, a dictionary size other than 4 to 6 bits, a type
+other than binary or ASCII) and memory that overlaps. One call unpacks a whole block, so the check
+that the code is unchanged compares all of it at each call (64-bit words).
+
+Tested against Storm's x86 explode itself on an x86 PC (the DLL's sections at its base): blocks of
+six kinds, packed by Storm's own x86 implode (binary and ASCII, dictionaries of 1, 2 and 4 KB),
+some corrupted or cut short, unpacked into outputs of the right size, too small or larger, with
+either pair of callbacks: 3204 calls (2471 to the end, 529 that end on bad data), no difference in eax, ecx, edx, the kept
+registers, esp, the six flags, the work area (all 0x3134 bytes), the parameter block, the output
+with its margins, and the stack from the return address up; 200 of 200 round trips give the data
+back; the 4 refusal cases are refused with nothing changed. Ten planted errors: eight make the test
+fail; two change nothing that can be seen (a shift mask past the largest shift, a count below the
+stack pointer).
+---
+diff --git a/src/dynarec/arm64/dynarec_arm64_consts.c b/src/dynarec/arm64/dynarec_arm64_consts.c
+index 009dac1..d2a68ad 100644
+--- a/src/dynarec/arm64/dynarec_arm64_consts.c
++++ b/src/dynarec/arm64/dynarec_arm64_consts.c
+@@ -55,7 +55,7 @@ uintptr_t getConst(arm64_consts_t which)
+         case const_native_gpf: return (uintptr_t)native_gpf;
+         case const_native_int3: return (uintptr_t)native_int3;
+         case const_native_int: return (uintptr_t)native_int;
+-        case const_native_d2lang_lookup: return (uintptr_t)native_d2lang_lookup;
++        case const_native_x86_call: return (uintptr_t)native_x86_call;
+         case const_native_div0: return (uintptr_t)native_div0;
+         case const_native_frstor16: return (uintptr_t)native_frstor16;
+         case const_native_fsave16: return (uintptr_t)native_fsave16;
+diff --git a/src/dynarec/arm64/dynarec_arm64_consts.h b/src/dynarec/arm64/dynarec_arm64_consts.h
+index cf35a40..870d3a9 100644
+--- a/src/dynarec/arm64/dynarec_arm64_consts.h
++++ b/src/dynarec/arm64/dynarec_arm64_consts.h
+@@ -105,7 +105,7 @@ typedef enum arm64_consts_s {
+     const_4f_1_m1_1_m1,
+     const_2d_1_m1,
+     const_lock_cmpxchg8b_unaligned,
+-    const_native_d2lang_lookup,
++    const_native_x86_call,
+ 
+     const_last
+ } arm64_consts_t;
+diff --git a/src/dynarec/dynarec_native_functions.c b/src/dynarec/dynarec_native_functions.c
+index 79c0b9c..7288e09 100644
+--- a/src/dynarec/dynarec_native_functions.c
++++ b/src/dynarec/dynarec_native_functions.c
+@@ -27,7 +27,7 @@
+ #include "custommem.h"
+ #include "bridge.h"
+ #include "dynarec_native_functions.h"
+-#include "d2lang_lookup.h"
++#include "native_x86.h"
+ 
+ void native_fstp(x64emu_t* emu, void* p)
+ {
+@@ -271,28 +271,34 @@ void native_gpf(x64emu_t* emu)
+     EmitSignal(emu, X64_SIGSEGV, (void*)R_RIP, 0xbad0); // same effect has private opcode?
+ }
+ 
+-// D2Lang.dll's string-key lookup, as native code (d2lang_lookup.h). A block that starts at that
+-// function calls this first. It returns 1 when it did what the function does, up to and with its
+-// return; the block then goes on at the return address. It returns 0, with nothing changed, when
+-// the x86 code must run: the block then runs it.
+-uint32_t native_d2lang_lookup(x64emu_t* emu)
++// An x86 function of Project Diablo 2 that runs as native code (native_x86.h). A block that starts at
++// such a function calls this first. It returns 1 when the native code did what the function does up
++// to its `ret`, which the block then does as translated code (esp is at the return address). It
++// returns 0, with nothing changed, when the x86 code must run: the block then runs it.
++uint32_t native_x86_call(x64emu_t* emu)
+ {
+-    static int logged;
++    static const native_x86_fn_t* logged[4];
+     const uint32_t fn = R_EIP;
+-    if (!d2lang_lookup_unchanged(fn)) return 0;
+-    d2lang_cpu_t cpu = { R_EAX, R_ECX, R_EDX, R_EBX, R_ESP, R_EBP, R_ESI, R_EDI, 0 };
+-    if (!d2lang_lookup_run(&cpu, fn)) return 0;
+-    const uint32_t ret = *(uint32_t*)(uintptr_t)cpu.esp;
++    const native_x86_fn_t* f = native_x86_find(fn);
++    if (!f) return 0;
++    native_x86_cpu_t cpu = { R_EAX, R_ECX, R_EDX, R_EBX, R_ESP, R_EBP, R_ESI, R_EDI, 0, 0, 0, { { 0 } } };
++    memcpy(cpu.xmm[0], &emu->xmm[0], sizeof(cpu.xmm[0]));
++    memcpy(cpu.xmm[1], &emu->xmm[1], sizeof(cpu.xmm[1]));
++    if (!f->run(&cpu, fn)) return 0;
+     R_RAX = cpu.eax;
+     R_RCX = cpu.ecx;
+     R_RDX = cpu.edx;
+-    R_RSP = cpu.esp + 4 + D2LANG_LOOKUP_RET;
+-    R_RIP = ret;
+-    emu->eflags.x64 = (emu->eflags.x64 & ~(uint64_t)D2LANG_FLAGS) | cpu.flags;
++    if (cpu.xmm_written & 1) memcpy(&emu->xmm[0], cpu.xmm[0], sizeof(cpu.xmm[0]));
++    if (cpu.xmm_written & 2) memcpy(&emu->xmm[1], cpu.xmm[1], sizeof(cpu.xmm[1]));
++    emu->eflags.x64 = (emu->eflags.x64 & ~(uint64_t)NATIVE_X86_FLAGS) | cpu.flags;
+     emu->df = d_none;
+-    if (!logged) {
+-        logged = 1;
+-        printf_log(LOG_INFO, "D2Lang.dll's string lookup at %p runs as native code\n", (void*)(uintptr_t)fn);
++    for (unsigned i = 0; i < sizeof(logged) / sizeof(logged[0]); ++i) {
++        if (logged[i] == f) break;
++        if (!logged[i]) {
++            logged[i] = f;
++            printf_log(LOG_INFO, "%s at %p runs as native code\n", f->name, (void*)(uintptr_t)fn);
++            break;
++        }
+     }
+     return 1;
+ }
+diff --git a/src/dynarec/dynarec_native_functions.h b/src/dynarec/dynarec_native_functions.h
+index b8cd7b7..60b4350 100644
+--- a/src/dynarec/dynarec_native_functions.h
++++ b/src/dynarec/dynarec_native_functions.h
+@@ -68,7 +68,7 @@ void native_priv(x64emu_t* emu);
+ void native_gpf(x64emu_t* emu);
+ void native_int3(x64emu_t* emu);
+ void native_int(x64emu_t* emu, int num);
+-uint32_t native_d2lang_lookup(x64emu_t* emu);
++uint32_t native_x86_call(x64emu_t* emu);
+ void native_wineint(x64emu_t* emu, int num);
+ void native_div0(x64emu_t* emu);
+ 
+diff --git a/src/dynarec/dynarec_native_pass.c b/src/dynarec/dynarec_native_pass.c
+index 0719ebd..8859af1 100644
+--- a/src/dynarec/dynarec_native_pass.c
++++ b/src/dynarec/dynarec_native_pass.c
+@@ -16,7 +16,7 @@
+ #include "x64trace.h"
+ #include "dynablock.h"
+ #include "dynarec_native.h"
+-#include "d2lang_lookup.h"
++#include "native_x86.h"
+ #include "dynablock_private.h"
+ #include "custommem.h"
+ #include "x64test.h"
+@@ -115,7 +115,7 @@ uintptr_t native_pass(dynarec_native_t* dyn, uintptr_t addr, int alternate, int
+     dyn->ymm_zero = 0;
+     dyn->is_file_mapped = IsAddrElfOrFileMapped(addr);
+     #if defined(ARM64) && defined(_WIN32)
+-    const int d2lang = is32bits && !alternate && BOX64DRENV(dynarec_d2lang) && d2lang_lookup_at(addr);
++    const native_x86_fn_t* native_fn = (is32bits && !alternate && BOX64DRENV(dynarec_nativex86)) ? native_x86_at(addr) : NULL;
+     #endif
+     #if STEP == 0
+     memset(&dyn->insts[ninst], 0, sizeof(instruction_native_t));
+@@ -180,16 +180,24 @@ uintptr_t native_pass(dynarec_native_t* dyn, uintptr_t addr, int alternate, int
+             if(dyn->insts[0].preload_xmmymm)
+                 doPreload(dyn, 0);
+             #ifdef _WIN32
+-            if(d2lang) {
+-                // D2Lang.dll's string lookup: native code, or this block's x86 code when that refuses
++            if(native_fn) {
++                // a known x86 function: native code, or this block's x86 code when that refuses
++                // (MARK3 is the first instruction's: a push, which uses no mark)
+                 GETIP(ip);
+                 STORE_XEMU_CALL(xRIP);
+-                CALL_S(const_native_d2lang_lookup, x1);
++                CALL_S(const_native_x86_call, x1);
+                 LOAD_XEMU_CALL(xRIP);
+-                SMEND();
+-                TABLE64C(x2, const_epilog);
+-                CBZw(x1, 8);
+-                BR(x2);
++                CBZw_MARK3(x1);
++                // done: the function's `ret`, as Box64 translates it
++                rex_t ret_rex = { 0 };
++                ret_rex.is32bits = 1;
++                {
++                    rex_t rex = ret_rex;
++                    POP1z(xRIP);
++                    ADDz_U12(xRSP, xRSP, native_fn->pop);
++                    ret_to_next(dyn, ip, ninst, rex);
++                }
++                MARK3;
+             }
+             #endif
+             ENDPREFIX;
+diff --git a/src/include/env.h b/src/include/env.h
+index 3acc63e..bc80198 100644
+--- a/src/include/env.h
++++ b/src/include/env.h
+@@ -55,7 +55,7 @@ extern char* ftrace_name;
+     INTEGER(BOX64_DYNAREC_DIRTY, dynarec_dirty, 0, 0, 2, 0, 2)                   \
+     BOOLEAN(BOX64_DYNAREC_NOHOTPAGE, dynarec_nohotpage, 0, 0, 1)                 \
+     BOOLEAN(BOX64_DYNAREC_DIV0, dynarec_div0, 0, 1, 1)                           \
+-    BOOLEAN(BOX64_DYNAREC_D2LANG, dynarec_d2lang, 1, 1, 0)                       \
++    BOOLEAN(BOX64_DYNAREC_NATIVEX86, dynarec_nativex86, 1, 1, 0)                 \
+     INTEGER(BOX64_DYNAREC_DUMP, dynarec_dump, 0, 0, 3, 1, 0)                     \
+     BOOLEAN(BOX64_DYNAREC_DISASM, dynarec_disasm, 0, 0, 0)                       \
+     STRING(BOX64_DYNAREC_DUMP_RANGE, dynarec_dump_range, 1, 0)                   \
+diff --git a/src/include/native_x86.h b/src/include/native_x86.h
+new file mode 100644
+index 0000000..7bdc2af
+--- /dev/null
++++ b/src/include/native_x86.h
+@@ -0,0 +1,44 @@
++// SPDX-License-Identifier: MIT
++#ifndef __NATIVE_X86_H
++#define __NATIVE_X86_H
++
++#include <stdint.h>
++
++// x86 functions of Project Diablo 2's DLLs that run as native code, with the same results: Box64
++// knows each one by the bytes of its code. A block that starts at such a function calls its native
++// code first; when that refuses a call, the block runs the x86 code.
++//
++// No Box64 type is in this interface, so a test can run the native code beside the x86 code.
++
++// The x86 state that a native function reads and leaves, at its first instruction (esp at the
++// return address) and at its `ret` (esp still at the return address).
++typedef struct native_x86_cpu_s {
++    uint32_t eax, ecx, edx, ebx, esp, ebp, esi, edi;
++    uint32_t flags;       // out: CF, PF, AF, ZF, SF and OF as the function leaves them
++    uint32_t pop;         // out: the argument bytes that the function's `ret` takes off the stack
++    uint32_t xmm_written; // out: bit i set when xmm[i] holds what the function leaves in xmm<i>
++    uint32_t xmm[2][4];   // in and out: xmm0 and xmm1
++} native_x86_cpu_t;
++
++#define NATIVE_X86_FLAGS 0x8d5u // CF, PF, AF, ZF, SF and OF in EFLAGS
++
++// One known function.
++typedef struct native_x86_fn_s {
++    const char* name;
++    uint16_t pop; // the argument bytes that its `ret` takes off the stack
++    // Whether the x86 code at fn is that function. It keeps what it needs for unchanged().
++    int (*at)(uintptr_t fn);
++    // Whether at(fn) knew it and the code is as it saw it (cheap: it runs at each call).
++    int (*unchanged)(uintptr_t fn);
++    // Does what the function does up to its `ret`: returns 1, or 0 with nothing changed for a call
++    // that the x86 code must take itself.
++    int (*run)(native_x86_cpu_t* cpu, uint32_t fn);
++} native_x86_fn_t;
++
++// The known function at fn, or 0.
++const native_x86_fn_t* native_x86_at(uintptr_t fn);
++
++// The known function at fn whose code is unchanged since native_x86_at(fn), or 0.
++const native_x86_fn_t* native_x86_find(uintptr_t fn);
++
++#endif // __NATIVE_X86_H
+diff --git a/src/include/storm_explode.h b/src/include/storm_explode.h
+new file mode 100644
+index 0000000..b542e43
+--- /dev/null
++++ b/src/include/storm_explode.h
+@@ -0,0 +1,15 @@
++// SPDX-License-Identifier: MIT
++#ifndef __STORM_EXPLODE_H
++#define __STORM_EXPLODE_H
++
++#include <stdint.h>
++#include "native_x86.h"
++
++// Storm.dll's PKWARE decompressor ("explode"), as native code: the same results, see storm_explode.c.
++#define STORM_EXPLODE_RET 0 // cdecl: its `ret` takes no argument bytes
++
++int storm_explode_at(uintptr_t fn);
++int storm_explode_unchanged(uintptr_t fn);
++int storm_explode_run(native_x86_cpu_t* cpu, uint32_t fn);
++
++#endif // __STORM_EXPLODE_H
+diff --git a/src/tools/native_x86.c b/src/tools/native_x86.c
+new file mode 100644
+index 0000000..fa696ec
+--- /dev/null
++++ b/src/tools/native_x86.c
+@@ -0,0 +1,37 @@
++// SPDX-License-Identifier: MIT
++#include "native_x86.h"
++#include "d2lang_lookup.h"
++#include "storm_explode.h"
++
++// D2Lang.dll's string-key lookup, in the registry's form.
++static int d2lang_run(native_x86_cpu_t* cpu, uint32_t fn)
++{
++    d2lang_cpu_t c = { cpu->eax, cpu->ecx, cpu->edx, cpu->ebx, cpu->esp, cpu->ebp, cpu->esi, cpu->edi, 0 };
++    if (!d2lang_lookup_run(&c, fn)) return 0;
++    cpu->eax = c.eax;
++    cpu->ecx = c.ecx;
++    cpu->edx = c.edx;
++    cpu->flags = c.flags;
++    cpu->pop = D2LANG_LOOKUP_RET;
++    cpu->xmm_written = 0;
++    return 1;
++}
++
++static const native_x86_fn_t known[] = {
++    { "D2Lang.dll's string lookup", D2LANG_LOOKUP_RET, d2lang_lookup_at, d2lang_lookup_unchanged, d2lang_run },
++    { "Storm.dll's explode", STORM_EXPLODE_RET, storm_explode_at, storm_explode_unchanged, storm_explode_run },
++};
++
++const native_x86_fn_t* native_x86_at(uintptr_t fn)
++{
++    for (unsigned i = 0; i < sizeof(known) / sizeof(known[0]); ++i)
++        if (known[i].at(fn)) return &known[i];
++    return 0;
++}
++
++const native_x86_fn_t* native_x86_find(uintptr_t fn)
++{
++    for (unsigned i = 0; i < sizeof(known) / sizeof(known[0]); ++i)
++        if (known[i].unchanged(fn)) return &known[i];
++    return 0;
++}
+diff --git a/src/tools/storm_explode.c b/src/tools/storm_explode.c
+new file mode 100644
+index 0000000..05254f7
+--- /dev/null
++++ b/src/tools/storm_explode.c
+@@ -0,0 +1,455 @@
++// SPDX-License-Identifier: MIT
++#include "storm_explode.h"
++
++// Storm.dll's PKWARE "explode" (Diablo II 1.13c's Storm, as Project Diablo 2 ships it): the
++// decompressor of the game's data files. One call unpacks a whole block; at a game entry it is
++// about 190 ms of a game thread on a Snapdragon 662. It reads its input and writes its output
++// through two callbacks; this native code takes a call only when they are one of Storm's two pairs
++// of memory callbacks (its decompress function's, its MPQ sector reader's), and does what they do. It works on the caller's work area with the same layout as
++// the x86 code (its tables, its 0x2000-byte window, its input buffer, its bit state), so the work
++// area, the callbacks' parameter block, the output and the registers are the same when it returns.
++//
++// The code by its place in the DLL and the FNV-1a hash of its bytes, each relocated address taken
++// back to its place in the image (RVA). tests: fingerprint.py prints these.
++#define CODE_RVA      0xec20u // explode, its main loop, the decoders, the table builders, its copy
++#define CODE_SIZE     0x6b7u
++#define CODE_FNV      0xa08e0c7d080543c8ull
++#define CB_SIZE       0x80u // each pair: the write callback, then the read callback
++static const uint16_t code_relocs[] = { 0xb6, 0xd5, 0xea, 0x102, 0x11e, 0x12e, 0x143, 0x58c, 0x665 };
++
++// The DLL's tables that explode copies into its work area or reads (RVA).
++#define TAB_CHBITS_ASC 0x50d60u // 0x100 bytes
++#define TAB_LEN_BITS   0x50d40u // 0x10
++#define TAB_LEN_CODE   0x50d50u // 0x10
++#define TAB_EX_LEN     0x50d10u // 0x10
++#define TAB_LEN_BASE   0x50d20u // 0x10 words
++#define TAB_DIST_BITS  0x50c90u // 0x40
++#define TAB_DIST_CODE  0x50cd0u // 0x40
++#define TAB_ASC_CODE   0x50e60u // 0x100 words
++
++// The work area.
++#define W_CTYPE    0x04u
++#define W_OUTPOS   0x08u
++#define W_DSBITS   0x0cu
++#define W_DSMASK   0x10u
++#define W_BITBUF   0x14u
++#define W_EXTRA    0x18u
++#define W_INPOS    0x1cu
++#define W_INBYTES  0x20u
++#define W_PARAM    0x24u
++#define W_READ     0x28u
++#define W_WRITE    0x2cu
++#define W_OUT      0x30u   // the window: 0x2204 bytes
++#define W_IN       0x2234u // the input buffer: 0x800 bytes
++#define W_DISTPOS  0x2a34u
++#define W_LENPOS   0x2b34u
++#define W_ASC1     0x2c34u
++#define W_ASC2     0x2d34u
++#define W_ASC3     0x2e34u
++#define W_ASC4     0x2eb4u
++#define W_CHBITS   0x2fb4u
++#define W_DISTBITS 0x30b4u
++#define W_LENBITS  0x30f4u
++#define W_EXLEN    0x3104u
++#define W_LENBASE  0x3114u
++#define W_SIZE     0x3134u
++
++// A pair of Storm's memory callbacks, and the layout of their parameter block. The read callback
++// reads at most the bytes that are left; the write callback of the first pair writes at most the
++// room that is left, the second's has no limit. They leave the new output position and the count
++// in ecx and edx, in this order or the other.
++typedef struct {
++    uint32_t write_rva, read_rva;
++    uint64_t fnv;
++    uint32_t in, inpos, insize, out, outpos;
++    int32_t outsize;   // -1: no limit
++    int pos_in_ecx;    // the write callback leaves the new position in ecx (else in edx)
++} callbacks_t;
++static const callbacks_t pairs[] = {
++    { 0x21c30u, 0x21c70u, 0x47ff9eb51b1e3938ull, 0xc, 0x10, 0x14, 0x0, 0x4, 0x8, 1 },  // SCompDecompress (PKWARE)
++    { 0x25f90u, 0x25fd0u, 0x7301204b89320226ull, 0x0, 0x4, 0x10, 0x8, 0xc, -1, 0 },    // the MPQ sector reader
++};
++#define NPAIRS (sizeof(pairs) / sizeof(pairs[0]))
++
++#define END_MARK 0x305u
++#define BAD      0x306u
++
++static inline uint8_t* at(uint32_t addr) { return (uint8_t*)(uintptr_t)addr; }
++static inline uint8_t rd8(uint32_t addr) { return *at(addr); }
++static inline uint16_t rd16(uint32_t addr)
++{
++    uint16_t v;
++    __builtin_memcpy(&v, at(addr), sizeof(v));
++    return v;
++}
++static inline uint32_t rd32(uint32_t addr)
++{
++    uint32_t v;
++    __builtin_memcpy(&v, at(addr), sizeof(v));
++    return v;
++}
++static inline uint64_t rd64(uint32_t addr)
++{
++    uint64_t v;
++    __builtin_memcpy(&v, at(addr), sizeof(v));
++    return v;
++}
++static inline void wr8(uint32_t addr, uint8_t v) { *at(addr) = v; }
++static inline void wr32(uint32_t addr, uint32_t v) { __builtin_memcpy(at(addr), &v, sizeof(v)); }
++
++static uint64_t fnv1a(uint64_t h, const uint8_t* p, uint32_t n)
++{
++    while (n--) h = (h ^ *p++) * 0x100000001b3ull;
++    return h;
++}
++
++static uint64_t code_hash(uint32_t addr, uint32_t size, const uint16_t* relocs, unsigned nrelocs, uint32_t base)
++{
++    uint64_t h = 0xcbf29ce484222325ull;
++    uint32_t done = 0;
++    for (unsigned i = 0; i < nrelocs; ++i) {
++        h = fnv1a(h, at(addr + done), relocs[i] - done);
++        const uint32_t v = rd32(addr + relocs[i]) - base;
++        h = fnv1a(h, (const uint8_t*)&v, sizeof(v));
++        done = relocs[i] + 4;
++    }
++    return fnv1a(h, at(addr + done), size - done);
++}
++
++// The code as storm_explode_at() saw it: one call does so much work that a compare of all of it
++// at each call costs little (words, not a byte-wise memcmp).
++static uint64_t seen_code[(CODE_SIZE + 7) / 8], seen_cb[NPAIRS][CB_SIZE / 8];
++static volatile uintptr_t seen_fn;
++
++int storm_explode_at(uintptr_t fn)
++{
++    if ((fn & 0xffff) != (CODE_RVA & 0xffff)) return 0;
++    const uint32_t base = (uint32_t)fn - CODE_RVA;
++    if (base & 0xffff) return 0;
++    if (code_hash((uint32_t)fn, CODE_SIZE, code_relocs, sizeof(code_relocs) / sizeof(code_relocs[0]), base) != CODE_FNV) return 0;
++    for (unsigned k = 0; k < NPAIRS; ++k)
++        if (code_hash(base + pairs[k].write_rva, CB_SIZE, 0, 0, base) != pairs[k].fnv) return 0;
++    seen_fn = 0;
++    for (unsigned i = 0; i < sizeof(seen_code) / 8; ++i) seen_code[i] = rd64((uint32_t)fn + 8 * i);
++    for (unsigned k = 0; k < NPAIRS; ++k)
++        for (unsigned i = 0; i < CB_SIZE / 8; ++i) seen_cb[k][i] = rd64(base + pairs[k].write_rva + 8 * i);
++    seen_fn = fn;
++    return 1;
++}
++
++int storm_explode_unchanged(uintptr_t fn)
++{
++    if (seen_fn != fn) return 0;
++    const uint32_t base = (uint32_t)fn - CODE_RVA;
++    for (unsigned i = 0; i < sizeof(seen_code) / 8; ++i)
++        if (rd64((uint32_t)fn + 8 * i) != seen_code[i]) return 0;
++    for (unsigned k = 0; k < NPAIRS; ++k)
++        for (unsigned i = 0; i < CB_SIZE / 8; ++i)
++            if (rd64(base + pairs[k].write_rva + 8 * i) != seen_cb[k][i]) return 0;
++    return 1;
++}
++
++// The state of one call. The work area's bit state, positions and counts live here while the call
++// runs (nothing else reads them then) and go back into the work area at its end; keeping them out of
++// memory lets the compiler hold them in registers.
++typedef struct {
++    const callbacks_t* cb;
++    uint32_t w, p;              // the work area, the parameter block
++    uint8_t* win;               // the window (work area + W_OUT)
++    const uint8_t* inbuf;       // the input buffer (work area + W_IN)
++    uint32_t bitbuf, extra, inpos, inbytes, outpos;
++    uint32_t ctype, dsbits, dsmask;
++    uint32_t last_ecx, last_edx; // what the last write callback left in ecx and edx
++} ex_t;
++
++static void save(const ex_t* e)
++{
++    wr32(e->w + W_BITBUF, e->bitbuf);
++    wr32(e->w + W_EXTRA, e->extra);
++    wr32(e->w + W_INPOS, e->inpos);
++    wr32(e->w + W_INBYTES, e->inbytes);
++    wr32(e->w + W_OUTPOS, e->outpos);
++}
++
++// The read callback: up to *size bytes (a 32-bit value at size_at) of the input to dst.
++static uint32_t read_cb(const ex_t* e, uint32_t dst, uint32_t size_at)
++{
++    const callbacks_t* cb = e->cb;
++    const uint32_t pos = rd32(e->p + cb->inpos);
++    uint32_t n = rd32(e->p + cb->insize) - pos;
++    const uint32_t want = rd32(size_at);
++    if (want < n) n = want;
++    const uint32_t src = rd32(e->p + cb->in) + pos;
++    for (uint32_t i = 0; i < n; ++i) wr8(dst + i, rd8(src + i));
++    wr32(e->p + cb->inpos, rd32(e->p + cb->inpos) + n);
++    return n;
++}
++
++// The write callback: *size bytes from src to the output (as many as fit, where it has a limit).
++static void write_cb(ex_t* e, uint32_t src, uint32_t size_at)
++{
++    const callbacks_t* cb = e->cb;
++    const uint32_t pos = rd32(e->p + cb->outpos);
++    uint32_t n = rd32(size_at);
++    if (cb->outsize >= 0) {
++        const uint32_t room = rd32(e->p + (uint32_t)cb->outsize) - pos;
++        if (n >= room) n = room;
++    }
++    const uint32_t dst = rd32(e->p + cb->out) + pos;
++    for (uint32_t i = 0; i < n; ++i) wr8(dst + i, rd8(src + i));
++    const uint32_t end = rd32(e->p + cb->outpos) + n;
++    wr32(e->p + cb->outpos, end);
++    e->last_ecx = cb->pos_in_ecx ? end : n;
++    e->last_edx = cb->pos_in_ecx ? n : end;
++}
++
++// Drops n bits from the bit buffer, and reads a byte when it runs short. 1: the input ended.
++static inline __attribute__((always_inline)) int waste_bits(ex_t* e, uint32_t n)
++{
++    if (e->extra >= n) {
++        e->extra -= n;
++        e->bitbuf >>= (n & 31);
++        return 0;
++    }
++    e->bitbuf >>= (e->extra & 31);
++    if (e->inpos == e->inbytes) {
++        // the read callback reads its size from the work area's input position
++        e->inpos = 0x800;
++        wr32(e->w + W_INPOS, e->inpos);
++        e->inbytes = read_cb(e, e->w + W_IN, e->w + W_INPOS);
++        if (!e->inbytes) return 1;
++        e->inpos = 0;
++    }
++    const uint32_t buf = ((uint32_t)e->inbuf[e->inpos++] << 8) | e->bitbuf;
++    e->bitbuf = buf >> ((uint8_t)(n - e->extra) & 31);
++    e->extra = e->extra - n + 8;
++    return 0;
++}
++
++// The next literal (0 to 0xff) or repeat length (0x100 + length - 2), END_MARK, or BAD.
++static inline __attribute__((always_inline)) uint32_t decode_lit(ex_t* e)
++{
++    const uint8_t* w = at(e->w);
++    if (e->bitbuf & 1) {
++        if (waste_bits(e, 1)) return BAD;
++        const uint32_t code = w[W_LENPOS + (e->bitbuf & 0xff)];
++        if (waste_bits(e, w[W_LENBITS + code])) return BAD;
++        const uint8_t bits = w[W_EXLEN + code];
++        uint32_t v = code;
++        if (bits) {
++            const uint32_t extra = ((1u << (bits & 31)) - 1) & e->bitbuf;
++            if (waste_bits(e, bits) && code + extra != 0x10e) return BAD;
++            v = rd16(e->w + W_LENBASE + 2 * code) + extra;
++        }
++        return v + 0x100;
++    }
++    if (waste_bits(e, 1)) return BAD;
++    uint32_t v;
++    if (e->ctype == 0) {
++        v = e->bitbuf & 0xff;
++        if (waste_bits(e, 8)) return BAD;
++        return v;
++    }
++    const uint32_t buf = e->bitbuf;
++    if (buf & 0xff) {
++        v = w[W_ASC1 + (buf & 0xff)];
++        if (v == 0xff) {
++            if (buf & 0x3f) {
++                if (waste_bits(e, 4)) return BAD;
++                v = w[W_ASC2 + (e->bitbuf & 0xff)];
++            } else {
++                if (waste_bits(e, 6)) return BAD;
++                v = w[W_ASC3 + (e->bitbuf & 0x7f)];
++            }
++        }
++    } else {
++        if (waste_bits(e, 8)) return BAD;
++        v = w[W_ASC4 + (e->bitbuf & 0xff)];
++    }
++    if (waste_bits(e, w[W_CHBITS + v])) return BAD;
++    return v;
++}
++
++// The distance back of a repeat of the given length, or 0 when the input ended.
++static inline __attribute__((always_inline)) uint32_t decode_dist(ex_t* e, uint32_t len)
++{
++    const uint8_t* w = at(e->w);
++    uint32_t pos = w[W_DISTPOS + (e->bitbuf & 0xff)];
++    if (waste_bits(e, w[W_DISTBITS + pos])) return 0;
++    if (len == 2) {
++        pos = (pos << 2) | (e->bitbuf & 3);
++        if (waste_bits(e, 2)) return 0;
++    } else {
++        pos = (pos << (e->dsbits & 31)) | (e->dsmask & e->bitbuf);
++        if (waste_bits(e, e->dsbits)) return 0;
++    }
++    return pos + 1;
++}
++
++// Storm's table builder: for each code i from n - 1 down, every byte value whose low bits are its
++// code gets i.
++static void gen_tabs(uint32_t n, uint32_t bits, uint32_t codes, uint32_t out)
++{
++    for (int32_t i = (int32_t)n - 1; i >= 0; --i) {
++        const uint32_t step = 1u << (rd8(bits + i) & 31);
++        uint32_t a = rd8(codes + i);
++        do {
++            wr8(out + a, (uint8_t)i);
++            a += step;
++        } while (a < 0x100);
++    }
++}
++
++// Writes d at table + a, a + step, ... while below limit; the first one always (as the x86 loops).
++static void fill(uint32_t table, uint32_t a, uint32_t step, uint32_t limit, uint8_t d)
++{
++    do {
++        wr8(table + a, d);
++        a += step;
++    } while (a < limit);
++}
++
++// The ASCII tables (it also changes the bit lengths in the work area, as the x86 code does).
++static void gen_asc(uint32_t w, uint32_t base)
++{
++    for (int32_t d = 0xff; d >= 0; --d) {
++        const uint32_t code = rd16(base + TAB_ASC_CODE + 2 * d);
++        const uint32_t chb = w + W_CHBITS + d;
++        uint8_t bits = rd8(chb);
++        if (bits <= 8) {
++            fill(w + W_ASC1, code, 1u << bits, 0x100, (uint8_t)d);
++        } else if (code & 0xff) {
++            wr8(w + W_ASC1 + (code & 0xff), 0xff);
++            if (code & 0x3f) {
++                bits -= 4;
++                wr8(chb, bits);
++                fill(w + W_ASC2, code >> 4, 1u << (bits & 31), 0x100, (uint8_t)d);
++            } else {
++                bits -= 6;
++                wr8(chb, bits);
++                fill(w + W_ASC3, code >> 6, 1u << (bits & 31), 0x80, (uint8_t)d);
++            }
++        } else {
++            bits -= 8;
++            wr8(chb, bits);
++            fill(w + W_ASC4, code >> 8, 1u << (bits & 31), 0x100, (uint8_t)d);
++        }
++    }
++}
++
++static void copy(uint32_t dst, uint32_t src, uint32_t n)
++{
++    for (uint32_t i = 0; i < n; ++i) wr8(dst + i, rd8(src + i));
++}
++
++// The main loop and its result (END_MARK or BAD). Its two locals hold the counts that it gives the
++// write callback: flush_at for a full window, end_at for the rest at the end.
++static uint32_t expand(ex_t* e, uint32_t flush_at, uint32_t end_at)
++{
++    uint8_t* const win = e->win;
++    uint32_t result;
++    e->outpos = 0x1000;
++    for (;;) {
++        const uint32_t v = decode_lit(e);
++        if (v >= END_MARK) {
++            result = v;
++            break;
++        }
++        if (v < 0x100) {
++            win[e->outpos++] = (uint8_t)v;
++        } else {
++            uint32_t len = v - 0xfe;
++            const uint32_t dist = decode_dist(e, len);
++            if (!dist) {
++                result = BAD;
++                break;
++            }
++            uint8_t* dst = win + e->outpos;
++            const uint8_t* src = dst - dist;
++            e->outpos += len;
++            for (; len; --len) *dst++ = *src++;
++        }
++        if (e->outpos >= 0x2000) {
++            wr32(flush_at, 0x1000);
++            write_cb(e, e->w + W_OUT + 0x1000, flush_at);
++            copy(e->w + W_OUT, e->w + W_OUT + 0x1000, e->outpos - 0x1000);
++            e->outpos -= 0x1000;
++        }
++    }
++    wr32(end_at, e->outpos - 0x1000);
++    write_cb(e, e->w + W_OUT + 0x1000, end_at);
++    return result;
++}
++
++// Whether [a, a + an) and [b, b + bn) share a byte (32-bit addresses).
++static int overlap(uint32_t a, uint32_t an, uint32_t b, uint32_t bn)
++{
++    return (uint64_t)a < (uint64_t)b + bn && (uint64_t)b < (uint64_t)a + an;
++}
++
++int storm_explode_run(native_x86_cpu_t* cpu, uint32_t fn)
++{
++    const uint32_t base = fn - CODE_RVA;
++    const uint32_t sp = cpu->esp;
++    const uint32_t read_fn = rd32(sp + 4), write_fn = rd32(sp + 8), w = rd32(sp + 12), p = rd32(sp + 16);
++    const callbacks_t* cb = 0;
++    for (unsigned k = 0; k < NPAIRS; ++k)
++        if (read_fn == base + pairs[k].read_rva && write_fn == base + pairs[k].write_rva) cb = &pairs[k];
++    if (!cb) return 0;
++    // The stack that its calls use, the work area, the parameter block, the input, the output. With no
++    // limit on the output, 64 KB of it count (an MPQ sector is at most 4 KB).
++    const uint32_t stack_lo = sp - 0x80, stack_n = 0x80 + 0x14;
++    const uint32_t in = rd32(p + cb->in), in_pos = rd32(p + cb->inpos), in_size = rd32(p + cb->insize);
++    const uint32_t out = rd32(p + cb->out), out_pos = rd32(p + cb->outpos);
++    const uint32_t out_size = cb->outsize >= 0 ? rd32(p + (uint32_t)cb->outsize) : out_pos + 0x10000;
++    if (in_pos > in_size || out_pos > out_size) return 0;
++    if ((uint64_t)w + W_SIZE > 0x100000000ull || (uint64_t)in + in_size > 0x100000000ull || (uint64_t)out + out_size > 0x100000000ull) return 0;
++    if (overlap(w, W_SIZE, stack_lo, stack_n) || overlap(p, 0x18, stack_lo, stack_n) || overlap(p, 0x18, w, W_SIZE)
++        || overlap(in, in_size, w, W_SIZE) || overlap(out, out_size, w, W_SIZE) || overlap(out, out_size, in, in_size)
++        || overlap(out, out_size, p, 0x18) || overlap(in, in_size, p, 0x18) || overlap(out, out_size, stack_lo, stack_n))
++        return 0;
++    // The header: more than 4 bytes in the first read, a dictionary of 4 to 6 bits, binary or ASCII.
++    uint32_t first = in_size - in_pos;
++    if (first > 0x800) first = 0x800;
++    if (first <= 4) return 0;
++    const uint8_t ctype = rd8(in + in_pos), dsbits = rd8(in + in_pos + 1);
++    if (dsbits < 4 || dsbits > 6 || ctype > 1) return 0;
++
++    ex_t e = { cb, w, p, at(w + W_OUT), at(w + W_IN), 0, 0, 0, 0, 0, ctype, dsbits, 0xffffu >> (16 - dsbits), 0, 0 };
++    wr32(w + W_READ, read_fn);
++    wr32(w + W_WRITE, write_fn);
++    wr32(w + W_PARAM, p);
++    wr32(w + W_INPOS, 0x800);
++    wr32(w + W_INBYTES, read_cb(&e, w + W_IN, w + W_INPOS));
++    wr32(w + W_CTYPE, rd8(w + W_IN));
++    wr32(w + W_DSBITS, rd8(w + W_IN + 1));
++    wr32(w + W_BITBUF, rd8(w + W_IN + 2));
++    wr32(w + W_EXTRA, 0);
++    wr32(w + W_INPOS, 3);
++    wr32(w + W_DSMASK, 0xffffu >> (16 - dsbits));
++    if (ctype == 1) {
++        copy(w + W_CHBITS, base + TAB_CHBITS_ASC, 0x100);
++        gen_asc(w, base);
++    }
++    copy(w + W_LENBITS, base + TAB_LEN_BITS, 0x10);
++    gen_tabs(0x10, w + W_LENBITS, base + TAB_LEN_CODE, w + W_LENPOS);
++    copy(w + W_EXLEN, base + TAB_EX_LEN, 0x10);
++    copy(w + W_LENBASE, base + TAB_LEN_BASE, 0x20);
++    copy(w + W_DISTBITS, base + TAB_DIST_BITS, 0x40);
++    gen_tabs(0x40, w + W_DISTBITS, base + TAB_DIST_CODE, w + W_DISTPOS);
++    // The main loop's two locals are below the return address, at esp - 0x1c and esp - 0x18.
++    e.bitbuf = rd8(w + W_IN + 2);
++    e.extra = 0;
++    e.inpos = 3;
++    e.inbytes = rd32(w + W_INBYTES);
++    const uint32_t result = expand(&e, sp - 0x1c, sp - 0x18);
++    save(&e);
++    const uint32_t ret = result == BAD ? 4 : 0;
++    cpu->eax = ret;
++    cpu->ecx = e.last_ecx;
++    cpu->edx = e.last_edx;
++    cpu->flags = ret ? 0 : 0x44; // of `and eax, 4`: ZF and PF for 0
++    cpu->pop = 0;
++    cpu->xmm_written = 0;
++    return 1;
++}
+diff --git a/wine/wow64/CMakeLists.txt b/wine/wow64/CMakeLists.txt
+index bec589f..66b8947 100644
+--- a/wine/wow64/CMakeLists.txt
++++ b/wine/wow64/CMakeLists.txt
+@@ -101,6 +101,8 @@ set(WOW64_BOX64CPU_SRC
+     "${BOX64_ROOT}/src/tools/bitutils.c"
+     "${BOX64_ROOT}/src/tools/env.c"
+     "${BOX64_ROOT}/src/tools/d2lang_lookup.c"
++    "${BOX64_ROOT}/src/tools/storm_explode.c"
++    "${BOX64_ROOT}/src/tools/native_x86.c"
+     "${BOX64_ROOT}/src/tools/dynacache.c"
+     "${BOX64_ROOT}/src/tools/rbtree.c"
+     "${BOX64_ROOT}/src/tools/cpumask.c"
