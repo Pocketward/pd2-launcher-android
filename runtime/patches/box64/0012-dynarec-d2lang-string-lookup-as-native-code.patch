@@ -1,0 +1,436 @@
+Subject: [PATCH] dynarec: D2Lang.dll's string-key lookup as native code (Project Diablo 2, WowBox64)
+
+D2Lang.dll (Diablo II 1.13c, as Project Diablo 2 ships it) finds a string by its key with one
+function: it hashes the key, then goes from entry to entry of a string table, comparing keys, until
+it finds the key or has made the table's number of tries. PD2's tables are full and that number is
+nearly the table's size, so a key that is not in a table costs a walk over the whole table, and the
+game asks three tables in turn: about 25 million entries at each game entry. Translated, that is
+about 0.42 s of a game entry on a Snapdragon 662, inside the time that the game server allows from a
+game's create to its logon ("Failed to join game", issue #17).
+
+d2lang_lookup.c is that function as native code: the same search with the same reads, and the same
+registers, flags, stored result and stack bytes when it returns. A block that starts at an address
+whose code is that function, with the hash function it calls (by the FNV-1a hash of their bytes,
+with the one relocated address taken back to its place in the image), first calls it. When it did
+the work, the block goes on at the return address; when it refuses (an argument in the stack area,
+a table size of 0 or above 2^31, a found entry with no string, which the x86 code ends with an
+error), the block runs the x86 code as before. Before each call it checks that both functions still
+have the bytes it saw. Other code, and a changed D2Lang.dll, are not touched.
+
+BOX64_DYNAREC_D2LANG=0 turns it off. Box64's log says once when it is used.
+
+Tested against the x86 function itself on an x86 PC, on the three string tables read from a running
+PD2 game (11487 keys, each with three near misses, in each table) and on small built tables (no
+tries, unused entries, a repeated key, a wrap): 139140 calls, no difference in the eight registers,
+the six flags, the stored result or the stack. Ten planted errors in the native code each make
+that test fail. Native ARM64 with the same Snapdragon 662 phone (big core): 5.65 ns for each entry
+tried, against 16.6 ns for the translated loop with patch 0011.
+---
+diff --git a/src/dynarec/arm64/dynarec_arm64_consts.c b/src/dynarec/arm64/dynarec_arm64_consts.c
+index 7dd0cbb..009dac1 100644
+--- a/src/dynarec/arm64/dynarec_arm64_consts.c
++++ b/src/dynarec/arm64/dynarec_arm64_consts.c
+@@ -55,6 +55,7 @@ uintptr_t getConst(arm64_consts_t which)
+         case const_native_gpf: return (uintptr_t)native_gpf;
+         case const_native_int3: return (uintptr_t)native_int3;
+         case const_native_int: return (uintptr_t)native_int;
++        case const_native_d2lang_lookup: return (uintptr_t)native_d2lang_lookup;
+         case const_native_div0: return (uintptr_t)native_div0;
+         case const_native_frstor16: return (uintptr_t)native_frstor16;
+         case const_native_fsave16: return (uintptr_t)native_fsave16;
+diff --git a/src/dynarec/arm64/dynarec_arm64_consts.h b/src/dynarec/arm64/dynarec_arm64_consts.h
+index a7d1466..cf35a40 100644
+--- a/src/dynarec/arm64/dynarec_arm64_consts.h
++++ b/src/dynarec/arm64/dynarec_arm64_consts.h
+@@ -105,6 +105,7 @@ typedef enum arm64_consts_s {
+     const_4f_1_m1_1_m1,
+     const_2d_1_m1,
+     const_lock_cmpxchg8b_unaligned,
++    const_native_d2lang_lookup,
+ 
+     const_last
+ } arm64_consts_t;
+diff --git a/src/dynarec/dynarec_native_functions.c b/src/dynarec/dynarec_native_functions.c
+index fa8c58d..79c0b9c 100644
+--- a/src/dynarec/dynarec_native_functions.c
++++ b/src/dynarec/dynarec_native_functions.c
+@@ -27,6 +27,7 @@
+ #include "custommem.h"
+ #include "bridge.h"
+ #include "dynarec_native_functions.h"
++#include "d2lang_lookup.h"
+ 
+ void native_fstp(x64emu_t* emu, void* p)
+ {
+@@ -270,6 +271,32 @@ void native_gpf(x64emu_t* emu)
+     EmitSignal(emu, X64_SIGSEGV, (void*)R_RIP, 0xbad0); // same effect has private opcode?
+ }
+ 
++// D2Lang.dll's string-key lookup, as native code (d2lang_lookup.h). A block that starts at that
++// function calls this first. It returns 1 when it did what the function does, up to and with its
++// return; the block then goes on at the return address. It returns 0, with nothing changed, when
++// the x86 code must run: the block then runs it.
++uint32_t native_d2lang_lookup(x64emu_t* emu)
++{
++    static int logged;
++    const uint32_t fn = R_EIP;
++    if (!d2lang_lookup_unchanged(fn)) return 0;
++    d2lang_cpu_t cpu = { R_EAX, R_ECX, R_EDX, R_EBX, R_ESP, R_EBP, R_ESI, R_EDI, 0 };
++    if (!d2lang_lookup_run(&cpu, fn)) return 0;
++    const uint32_t ret = *(uint32_t*)(uintptr_t)cpu.esp;
++    R_RAX = cpu.eax;
++    R_RCX = cpu.ecx;
++    R_RDX = cpu.edx;
++    R_RSP = cpu.esp + 4 + D2LANG_LOOKUP_RET;
++    R_RIP = ret;
++    emu->eflags.x64 = (emu->eflags.x64 & ~(uint64_t)D2LANG_FLAGS) | cpu.flags;
++    emu->df = d_none;
++    if (!logged) {
++        logged = 1;
++        printf_log(LOG_INFO, "D2Lang.dll's string lookup at %p runs as native code\n", (void*)(uintptr_t)fn);
++    }
++    return 1;
++}
++
+ void native_int(x64emu_t* emu, int num)
+ {
+     emu->test.test = 0;
+diff --git a/src/dynarec/dynarec_native_functions.h b/src/dynarec/dynarec_native_functions.h
+index 5620ad6..b8cd7b7 100644
+--- a/src/dynarec/dynarec_native_functions.h
++++ b/src/dynarec/dynarec_native_functions.h
+@@ -68,6 +68,7 @@ void native_priv(x64emu_t* emu);
+ void native_gpf(x64emu_t* emu);
+ void native_int3(x64emu_t* emu);
+ void native_int(x64emu_t* emu, int num);
++uint32_t native_d2lang_lookup(x64emu_t* emu);
+ void native_wineint(x64emu_t* emu, int num);
+ void native_div0(x64emu_t* emu);
+ 
+diff --git a/src/dynarec/dynarec_native_pass.c b/src/dynarec/dynarec_native_pass.c
+index 7e08b08..0719ebd 100644
+--- a/src/dynarec/dynarec_native_pass.c
++++ b/src/dynarec/dynarec_native_pass.c
+@@ -16,6 +16,7 @@
+ #include "x64trace.h"
+ #include "dynablock.h"
+ #include "dynarec_native.h"
++#include "d2lang_lookup.h"
+ #include "dynablock_private.h"
+ #include "custommem.h"
+ #include "x64test.h"
+@@ -113,6 +114,9 @@ uintptr_t native_pass(dynarec_native_t* dyn, uintptr_t addr, int alternate, int
+     dyn->forward_ninst = 0;
+     dyn->ymm_zero = 0;
+     dyn->is_file_mapped = IsAddrElfOrFileMapped(addr);
++    #if defined(ARM64) && defined(_WIN32)
++    const int d2lang = is32bits && !alternate && BOX64DRENV(dynarec_d2lang) && d2lang_lookup_at(addr);
++    #endif
+     #if STEP == 0
+     memset(&dyn->insts[ninst], 0, sizeof(instruction_native_t));
+     #endif
+@@ -175,6 +179,19 @@ uintptr_t native_pass(dynarec_native_t* dyn, uintptr_t addr, int alternate, int
+                 checkCRC(dyn, 0);
+             if(dyn->insts[0].preload_xmmymm)
+                 doPreload(dyn, 0);
++            #ifdef _WIN32
++            if(d2lang) {
++                // D2Lang.dll's string lookup: native code, or this block's x86 code when that refuses
++                GETIP(ip);
++                STORE_XEMU_CALL(xRIP);
++                CALL_S(const_native_d2lang_lookup, x1);
++                LOAD_XEMU_CALL(xRIP);
++                SMEND();
++                TABLE64C(x2, const_epilog);
++                CBZw(x1, 8);
++                BR(x2);
++            }
++            #endif
+             ENDPREFIX;
+         }
+         #elif defined(LA64)
+diff --git a/src/include/d2lang_lookup.h b/src/include/d2lang_lookup.h
+new file mode 100644
+index 0000000..9e6310a
+--- /dev/null
++++ b/src/include/d2lang_lookup.h
+@@ -0,0 +1,40 @@
++// SPDX-License-Identifier: MIT
++#ifndef __D2LANG_LOOKUP_H
++#define __D2LANG_LOOKUP_H
++
++#include <stdint.h>
++
++// The string-key lookup of D2Lang.dll (Diablo II 1.13c, as Project Diablo 2 ships it), as native
++// code. The x86 function finds a key in one string table: it hashes the key, then goes from table
++// entry to table entry and compares the key with each entry's key, until it finds the key or has
++// made the table's number of tries. PD2's tables are full and that number is nearly the table's
++// size, so a key that is not in a table costs a walk over the whole table, and the game asks three
++// tables in turn. This is the same search with the same reads, compiled; it keeps no state.
++//
++// It has no Box64 type in it, so a test can run it beside the x86 function itself.
++
++// The x86 registers that the function reads and leaves.
++typedef struct d2lang_cpu_s {
++    uint32_t eax, ecx, edx, ebx, esp, ebp, esi, edi;
++    uint32_t flags; // out: CF, PF, AF, ZF, SF and OF as the function leaves them
++} d2lang_cpu_t;
++
++#define D2LANG_FLAGS      0x8d5u // CF, PF, AF, ZF, SF and OF in EFLAGS
++#define D2LANG_LOOKUP_RET 0x10   // the argument bytes that the function's `ret` takes off the stack
++
++// Whether the x86 code at fn is that function, with the hash function it calls. It keeps a copy of
++// both for d2lang_lookup_unchanged().
++int d2lang_lookup_at(uintptr_t fn);
++
++// Whether both functions still have the bytes that d2lang_lookup_at(fn) saw.
++int d2lang_lookup_unchanged(uintptr_t fn);
++
++// Does what the function at fn does, from its first instruction up to its `ret`, which stays for
++// the caller: the registers in cpu (esp still at the return address), the result that it stores,
++// and what it leaves on the stack below the return address.
++// Returns 1 when done. Returns 0, with nothing changed, for a call that the x86 code must take
++// itself: one that the x86 code ends with an error or a fault, or with arguments in its own stack
++// area.
++int d2lang_lookup_run(d2lang_cpu_t* cpu, uint32_t fn);
++
++#endif // __D2LANG_LOOKUP_H
+diff --git a/src/include/env.h b/src/include/env.h
+index 09565f3..3acc63e 100644
+--- a/src/include/env.h
++++ b/src/include/env.h
+@@ -55,6 +55,7 @@ extern char* ftrace_name;
+     INTEGER(BOX64_DYNAREC_DIRTY, dynarec_dirty, 0, 0, 2, 0, 2)                   \
+     BOOLEAN(BOX64_DYNAREC_NOHOTPAGE, dynarec_nohotpage, 0, 0, 1)                 \
+     BOOLEAN(BOX64_DYNAREC_DIV0, dynarec_div0, 0, 1, 1)                           \
++    BOOLEAN(BOX64_DYNAREC_D2LANG, dynarec_d2lang, 1, 1, 0)                       \
+     INTEGER(BOX64_DYNAREC_DUMP, dynarec_dump, 0, 0, 3, 1, 0)                     \
+     BOOLEAN(BOX64_DYNAREC_DISASM, dynarec_disasm, 0, 0, 0)                       \
+     STRING(BOX64_DYNAREC_DUMP_RANGE, dynarec_dump_range, 1, 0)                   \
+diff --git a/src/tools/d2lang_lookup.c b/src/tools/d2lang_lookup.c
+new file mode 100644
+index 0000000..cf4a040
+--- /dev/null
++++ b/src/tools/d2lang_lookup.c
+@@ -0,0 +1,209 @@
++// SPDX-License-Identifier: MIT
++#include "d2lang_lookup.h"
++
++// Both functions by their place in the DLL and by the FNV-1a hash of their bytes, with the one
++// relocated address in them taken back to its place in the image. A DLL's base is a multiple of
++// 64 KiB, so the low half of the function's address is known. tests: fingerprint.py prints these.
++#define LOOKUP_RVA      0x9360u
++#define LOOKUP_SIZE     0xe9u
++#define LOOKUP_FNV      0xdf4b41aa9a24ef38ull
++#define LOOKUP_RELOC    0xb8u    // offset of the relocated address in the lookup function
++#define LOOKUP_RELOC_TO 0xd274u  // its place in the image
++#define LOOKUP_AFTER_HASH 0x25u  // offset of the instruction after the call of the hash function
++#define HASH_RVA        0x8fe0u
++#define HASH_SIZE       0x42u
++#define HASH_FNV        0x3465414d4871733bull
++
++// A string table in memory (the .tbl file): a header, the index list, the hash entries, the strings.
++#define TBL_COUNT      0x02u // uint16: strings, and the length of the index list
++#define TBL_HASH_SIZE  0x04u // uint32: hash entries
++#define TBL_MAX_TRIES  0x0du // uint32: the most entries that one lookup tries
++#define TBL_INDEX_LIST 0x15u
++#define ENTRY_SIZE     17u
++#define ENTRY_USED     0u // uint8: 1 for an entry with a string
++#define ENTRY_NUMBER   1u // uint16: the string's number
++#define ENTRY_KEY      7u // uint32: the key's offset in the table
++
++static inline const uint8_t* at(uint32_t addr) { return (const uint8_t*)(uintptr_t)addr; }
++static inline uint8_t rd8(uint32_t addr) { return *at(addr); }
++static inline uint16_t rd16(uint32_t addr)
++{
++    uint16_t v;
++    __builtin_memcpy(&v, at(addr), sizeof(v));
++    return v;
++}
++static inline uint32_t rd32(uint32_t addr)
++{
++    uint32_t v;
++    __builtin_memcpy(&v, at(addr), sizeof(v));
++    return v;
++}
++static inline void wr32(uint32_t addr, uint32_t v) { __builtin_memcpy((void*)(uintptr_t)addr, &v, sizeof(v)); }
++
++static uint64_t fnv1a(uint64_t h, const uint8_t* p, uint32_t n)
++{
++    while (n--) h = (h ^ *p++) * 0x100000001b3ull;
++    return h;
++}
++
++// The copy of both functions' bytes that d2lang_lookup_at() saw, and where.
++static uint8_t seen[LOOKUP_SIZE + HASH_SIZE];
++static volatile uintptr_t seen_fn;
++
++int d2lang_lookup_at(uintptr_t fn)
++{
++    if ((fn & 0xffff) != LOOKUP_RVA) return 0;
++    const uint8_t* lookup = (const uint8_t*)fn;
++    const uint32_t base = (uint32_t)fn - LOOKUP_RVA;
++    // The lookup function first: it is in the page that the caller is about to run. The hash
++    // function is in the page before, which is surely there only once the lookup function is right.
++    uint32_t reloc;
++    __builtin_memcpy(&reloc, lookup + LOOKUP_RELOC, sizeof(reloc));
++    reloc -= base;
++    uint64_t h = fnv1a(0xcbf29ce484222325ull, lookup, LOOKUP_RELOC);
++    h = fnv1a(h, (const uint8_t*)&reloc, sizeof(reloc));
++    h = fnv1a(h, lookup + LOOKUP_RELOC + 4, LOOKUP_SIZE - LOOKUP_RELOC - 4);
++    if (h != LOOKUP_FNV) return 0;
++    const uint8_t* hash = (const uint8_t*)(uintptr_t)(base + HASH_RVA);
++    if (fnv1a(0xcbf29ce484222325ull, hash, HASH_SIZE) != HASH_FNV) return 0;
++    seen_fn = 0;
++    __builtin_memcpy(seen, lookup, LOOKUP_SIZE);
++    __builtin_memcpy(seen + LOOKUP_SIZE, hash, HASH_SIZE);
++    seen_fn = fn;
++    return 1;
++}
++
++int d2lang_lookup_unchanged(uintptr_t fn)
++{
++    if (seen_fn != fn) return 0;
++    return !__builtin_memcmp(seen, (const uint8_t*)fn, LOOKUP_SIZE)
++        && !__builtin_memcmp(seen + LOOKUP_SIZE, (const uint8_t*)(fn - LOOKUP_RVA + HASH_RVA), HASH_SIZE);
++}
++
++// The function's hash of a key (the DLL's export 10000), before the division by the table's size.
++static uint32_t key_hash(uint32_t key)
++{
++    uint32_t h = 0;
++    for (;; ++key) {
++        const int8_t c = (int8_t)rd8(key);
++        if (!c) return h;
++        h = (h << 4) + (uint32_t)(int32_t)c;
++        const uint32_t top = h & 0xf0000000u;
++        if (top) h = ((top >> 24) ^ h) & 0x0fffffffu;
++    }
++}
++
++static int key_equal(uint32_t a, uint32_t b)
++{
++    for (;; ++a, ++b) {
++        const uint8_t c = rd8(a);
++        if (c != rd8(b)) return 0;
++        if (!c) return 1;
++    }
++}
++
++// The first of n entries from p that is in use with this key, or 0. The key's first letter is
++// tried before the whole key: nearly every entry of a walk ends there.
++static const uint8_t* find_in_run(const uint8_t* p, uint32_t n, uint32_t tbl, uint32_t key, uint8_t first)
++{
++    for (; n; --n, p += ENTRY_SIZE) {
++        if (p[ENTRY_USED] != 1) continue;
++        uint32_t offset;
++        __builtin_memcpy(&offset, p + ENTRY_KEY, sizeof(offset));
++        const uint32_t entry_key = tbl + offset;
++        if (rd8(entry_key) == first && key_equal(entry_key, key)) return p;
++    }
++    return 0;
++}
++
++static uint32_t parity_flag(uint32_t v)
++{
++    v &= 0xff;
++    v ^= v >> 4;
++    v ^= v >> 2;
++    v ^= v >> 1;
++    return (v & 1) ? 0 : 0x4;
++}
++
++// The flags of the 32-bit `add` that is the last instruction with flags before the return of a
++// key that was found.
++static uint32_t add_flags(uint32_t a, uint32_t b)
++{
++    const uint32_t r = a + b;
++    return (r < a ? 0x1 : 0) | parity_flag(r) | ((a ^ b ^ r) & 0x10) | (r ? 0 : 0x40) | ((r >> 31) << 7)
++        | (((~(a ^ b) & (a ^ r)) >> 31) << 11);
++}
++
++int d2lang_lookup_run(d2lang_cpu_t* cpu, uint32_t fn)
++{
++    // At the first instruction: the return address at esp, then the table, the list of string
++    // pointers (one for each hash entry), the key, and where the string pointer goes.
++    const uint32_t sp = cpu->esp;
++    const uint32_t tbl = rd32(sp + 4), strings = rd32(sp + 8), key = rd32(sp + 12), out = rd32(sp + 16);
++    // The function writes below the return address and into its first argument's place before it
++    // reads the rest. An argument that points there, or below there into the stack, would make the
++    // order of this code show.
++    const uint32_t args[] = { tbl, strings, key, out };
++    for (unsigned i = 0; i < sizeof(args) / sizeof(args[0]); ++i)
++        if (sp + 19 - args[i] < 0x10000u) return 0;
++    const uint32_t size = rd32(tbl + TBL_HASH_SIZE);
++    // The function divides by the size, as an unsigned and as a signed number.
++    if (!size || size > 0x7fffffffu) return 0;
++    const uint32_t max_tries = rd32(tbl + TBL_MAX_TRIES);
++    const uint32_t entries = tbl + TBL_INDEX_LIST + 2u * rd16(tbl + TBL_COUNT);
++    // The function's addresses are 32 bits wide: entries that go past the end of the address space
++    // would come back at its start.
++    if ((uint64_t)entries + (uint64_t)size * ENTRY_SIZE > 0x100000000ull) return 0;
++
++    // The function goes from entry to entry and back to the first one after the last, for the
++    // table's number of tries. Here: one straight run of entries after the other.
++    uint32_t index = key_hash(key) % size;
++    uint32_t tries = 0, found = 0;
++    const uint8_t first = rd8(key);
++    for (uint32_t left = max_tries; left;) {
++        const uint32_t run = size - index < left ? size - index : left;
++        const uint8_t* const begin = at(entries + index * ENTRY_SIZE);
++        const uint8_t* const hit = find_in_run(begin, run, tbl, key, first);
++        if (hit) {
++            const uint32_t before = (uint32_t)(hit - begin) / ENTRY_SIZE;
++            tries += before + 1;
++            index += before;
++            found = 1;
++            break;
++        }
++        tries += run;
++        left -= run;
++        index = index + run == size ? 0 : index + run;
++    }
++    const uint32_t entry = entries + index * ENTRY_SIZE;
++    uint32_t string = 0;
++    if (found) {
++        string = rd32(strings + index * 4);
++        if (!string) return 0; // the function ends the game with an error here
++    }
++
++    // What the function's pushes and its call of the hash function leave below the return address.
++    wr32(sp - 0x04, tries ? tries : cpu->ecx);
++    wr32(sp - 0x08, cpu->ebx);
++    wr32(sp - 0x0c, cpu->ebp);
++    wr32(sp - 0x10, cpu->esi);
++    wr32(sp - 0x14, cpu->edi);
++    wr32(sp - 0x18, size);
++    wr32(sp - 0x1c, key);
++    wr32(sp - 0x20, fn + LOOKUP_AFTER_HASH);
++    wr32(sp + 4, entries);
++
++    if (found) {
++        wr32(out, string);
++        const uint32_t scaled = index << 4;
++        cpu->eax = ((scaled + entries) & 0xffff0000u) | rd16(entry + ENTRY_NUMBER);
++        cpu->edx = out;
++        cpu->flags = add_flags(scaled, entries);
++    } else {
++        cpu->eax = 0xffff; // `or ax, 0xffff` on a quotient of 0 or 1
++        cpu->edx = index;  // the remainder of its last division: the entry after the last one tried
++        cpu->flags = 0x84; // of that `or`: SF and PF
++    }
++    if (tries) cpu->ecx = tries; // its `pop ecx` takes the place that held the count
++    return 1;
++}
+diff --git a/wine/wow64/CMakeLists.txt b/wine/wow64/CMakeLists.txt
+index a93e3e9..bec589f 100644
+--- a/wine/wow64/CMakeLists.txt
++++ b/wine/wow64/CMakeLists.txt
+@@ -100,6 +100,7 @@ set(WOW64_BOX64CPU_SRC
+     "${BOX64_ROOT}/src/tools/alternate.c"
+     "${BOX64_ROOT}/src/tools/bitutils.c"
+     "${BOX64_ROOT}/src/tools/env.c"
++    "${BOX64_ROOT}/src/tools/d2lang_lookup.c"
+     "${BOX64_ROOT}/src/tools/dynacache.c"
+     "${BOX64_ROOT}/src/tools/rbtree.c"
+     "${BOX64_ROOT}/src/tools/cpumask.c"
