@@ -1,0 +1,21 @@
+Subject: [PATCH] wowbox64: TEST BUILD ONLY: Game.exe runs with BOX64_DYNAREC_CALLRET=1 (issue 17)
+
+The engine of main gives the game CALLRET=1 (src/box64.rs, ADR 0027); the engine that v0.3.8
+pins does not. For the issue 17 test build only, WowBox64 gives a program named Game.exe
+CALLRET=1 when its environment does not set it. Not for main.
+---
+diff --git a/wine/wow64/wowbox64.c b/wine/wow64/wowbox64.c
+index 8b9d2d3..1176142 100644
+--- a/wine/wow64/wowbox64.c
++++ b/wine/wow64/wowbox64.c
+@@ -507,6 +507,10 @@ NTSTATUS WINAPI BTCpuProcessInit(void)
+             shortname++;
+             dynarec_settings_for(shortname);
+             ApplyEnvFileEntry(shortname);
++            /* Test build only (issue 17): the game runs with CALLRET=1, as the engine of main
++             * gives it (src/box64.rs); the engine of this release does not. */
++            if (!_stricmp(shortname, "Game.exe"))
++                SET_BOX64ENV_IF_EMPTY(dynarec_callret, 1);
+         }
+     }
+ 
