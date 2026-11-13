@@ -54,8 +54,7 @@ object DriverPage {
      */
     fun route(options: DriverOptions, pick: PlayerDriver?, way: PhoneWay?, software: Boolean = true): GraphicsRoute? = when (pick) {
         PlayerDriver.SOFTWARE -> GraphicsRoute.SOFTWARE.takeIf { software }
-        // Test 23: the Phone driver's pick is Approach 2 (mali-panvk) on a CSF Mali.
-        PlayerDriver.PHONE -> if (Test23.approaches(options)) GraphicsRoute.MALI_PANVK else {
+        PlayerDriver.PHONE -> {
             val phone = options.routes.filter { it.player == PlayerDriver.PHONE }
             if (GraphicsRoute.LIBHYBRIS in phone) GraphicsRoute.LIBHYBRIS else way?.route?.takeIf { it in phone } ?: phone.firstOrNull()
         }
@@ -233,8 +232,6 @@ object DriverPage {
         @param:StringRes val note: Int? = null,
         /** Way rows that show grey under [ways], with "Does not run on this graphics chip." ([InUse.greyWays]). */
         val greyWays: List<PhoneWay> = emptyList(),
-        /** Test 23: the rows are the App driver's Approach 1 and 2 ([InUse.approaches]). */
-        val approaches: Boolean = false,
     ) {
         val better: PhoneWay? get() = ways.firstOrNull()
     }
@@ -266,8 +263,6 @@ object DriverPage {
          * grey rows under the ways that run.
          */
         val greyWays: List<PhoneWay> = emptyList(),
-        /** Test 23: the App driver's two approaches on a CSF Mali ([Test23]). */
-        val approaches: Boolean = false,
     ) {
         /** The same with the rows of [grey] shown as they are where their driver cannot run ([debugGrey]). */
         fun greyed(grey: Set<PlayerDriver>): InUse =
@@ -326,11 +321,6 @@ object DriverPage {
             else -> DriverChip.NO_APP_DRIVER
         }
         val phoneRuns = !phoneRead || device.routes.any { it.player == PlayerDriver.PHONE }
-        if (Test23.approaches(device)) {
-            // Test 23: Approach 2 is in the Phone driver's row; no Software driver.
-            val driver = if (route == GraphicsRoute.MALI_PANVK) PlayerDriver.PHONE else route?.player
-            return InUse(chip, driver, null, emptyList(), phoneRuns = true, softwareRuns = false, approaches = true)
-        }
         return InUse(chip, route?.player, way, ways, phoneRuns, software, greyWays.filter { it !in ways })
     }
 
@@ -386,28 +376,17 @@ object DriverPage {
             Row(PlayerDriver.APP, inUse == PlayerDriver.APP, selectable && appExists, appBody, selectable, tag(PlayerDriver.APP)),
             Row(
                 PlayerDriver.PHONE, inUse == PlayerDriver.PHONE, selectable && phoneExists,
-                when {
-                    route?.approaches == true -> R.string.driver_app_body
-                    shown != DriverChip.NONE && !phoneExists -> R.string.driver_phone_none
-                    else -> R.string.driver_phone_body
-                },
-                selectable, tag(PlayerDriver.PHONE),
+                if (shown != DriverChip.NONE && !phoneExists) R.string.driver_phone_none else R.string.driver_phone_body, selectable, tag(PlayerDriver.PHONE),
             ),
             Row(
                 PlayerDriver.SOFTWARE, inUse == PlayerDriver.SOFTWARE, selectable && softwareExists,
-                when {
-                    route?.approaches == true -> R.string.driver_off_in_test_23
-                    softwareExists -> R.string.driver_software_body
-                    else -> R.string.driver_software_needs_update
-                },
-                selectable, tag(PlayerDriver.SOFTWARE),
+                if (softwareExists) R.string.driver_software_body else R.string.driver_software_needs_update, selectable, tag(PlayerDriver.SOFTWARE),
             ),
         )
         return Page(
             rows, ways, if (ways.isEmpty()) route?.way?.takeIf { inUse == PlayerDriver.PHONE } else (route?.way ?: way)?.takeIf { it in ways } ?: ways.first(),
             R.string.driver_no_gpu_driver.takeIf { shown == DriverChip.NONE },
             if (waysShow) grey else emptyList(),
-            approaches = route?.approaches == true,
         )
     }
 
