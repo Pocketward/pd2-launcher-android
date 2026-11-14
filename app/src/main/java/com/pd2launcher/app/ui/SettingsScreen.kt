@@ -320,6 +320,10 @@ fun SettingsScreen(
                 app.detailedLogging, { value -> onAppChange { it.copy(detailedLogging = value) } }, focusRequester = focusOf(row), prominent = true,
             )
             SettingsRow.SAVE_LOGS -> SaveLogsRow()
+            SettingsRow.GAME_HINTS -> ToggleRow(
+                stringResource(R.string.settings_game_hints), stringResource(R.string.settings_game_hints_body),
+                app.gameHints, { value -> onAppChange { it.copy(gameHints = value) } }, focusRequester = focusOf(row),
+            )
             SettingsRow.BATTERY -> SystemRow(
                 stringResource(R.string.settings_battery), !system.batteryRestricted,
                 stringResource(if (system.batteryRestricted) R.string.settings_battery_restricted else R.string.settings_battery_unrestricted),

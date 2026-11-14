@@ -8,6 +8,9 @@
     <string name="share_logs">Share logs</string>
     <string name="settings_detailed_logging">Detailed logging</string>
     <string name="settings_detailed_logging_body">Records more. Turn it off after you send the logs.</string>
+    <string name="settings_section_testing">Testing</string>
+    <string name="settings_game_hints">Performance hints</string>
+    <string name="settings_game_hints_body">Android can make the CPU faster when the game is slow. From the next Play.</string>
     <string name="share_logs_working">Preparing the logs…</string>
     <string name="share_logs_failed">The logs couldn\'t be prepared. Try again.</string>
     <string name="save_logs">Save logs</string>

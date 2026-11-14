@@ -64,6 +64,11 @@ data class AppSettings(
      */
     val detailedLogging: Boolean = false,
     /**
+     * Test and debug builds only ([GameThreadBoost]): Android's performance hints for the game's
+     * main thread, from the next Play. On by default there; a release build never reads it.
+     */
+    val gameHints: Boolean = true,
+    /**
      * Save sync (Settings → Files and saves → Game files, [SaveSyncFolder]): the
      * folder the player picked, as its document tree's URI, which the app holds a lasting grant
      * for; null: off (the default).
@@ -149,6 +154,7 @@ data class AppSettings(
             UPDATE_CHECKS to null,
             UPDATE_CHANNEL to updateChannel?.name,
             DETAILED_LOGGING to detailedLogging,
+            GAME_HINTS to gameHints,
             SYNC_FOLDER to syncFolder,
             PHONE_DRIVER_ACCEPTED to phoneDriverAccepted,
             SOURCE_CHOICE to sourceChoice?.name,
@@ -194,6 +200,7 @@ data class AppSettings(
         /** [updateChannel]'s name; none: no pick yet (this build's own channel). */
         const val UPDATE_CHANNEL = "update_channel"
         const val DETAILED_LOGGING = "detailed_logging"
+        const val GAME_HINTS = "game_hints"
         /** [syncFolder]'s URI; none: the sync is off. */
         const val SYNC_FOLDER = "sync_folder"
         const val PHONE_DRIVER_ACCEPTED = "phone_driver_accepted"
@@ -241,6 +248,7 @@ data class AppSettings(
                 gamePlayed = values[GAME_PLAYED] as? Boolean ?: defaults.gamePlayed,
                 updateChannel = UpdateChannel.entries.firstOrNull { it.name == values[UPDATE_CHANNEL] },
                 detailedLogging = values[DETAILED_LOGGING] as? Boolean ?: defaults.detailedLogging,
+                gameHints = values[GAME_HINTS] as? Boolean ?: defaults.gameHints,
                 syncFolder = (values[SYNC_FOLDER] as? String)?.takeIf { it.isNotEmpty() },
                 phoneDriverAccepted = values[PHONE_DRIVER_ACCEPTED] as? Boolean ?: defaults.phoneDriverAccepted,
                 sourceChoice = SourceChoice.named(values[SOURCE_CHOICE] as? String),

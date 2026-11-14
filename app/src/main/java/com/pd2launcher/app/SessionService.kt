@@ -254,6 +254,8 @@ class SessionService : Service() {
     /** The device's memory lines while the game runs ([MemoryLog.Watch]); worker thread only. */
     private val memoryWatch = MemoryLog.Watch()
     private val perfWatch = PerfWatch()
+    /** The game's main thread on the big cores and Android's performance hints (test and debug builds); its own loop only. */
+    private val boost by lazy { GameThreadBoost(DeviceThreadEffects(this), ::log) }
     /** The engine's snapshots in the service log, a line for each change ([SnapshotLines]): the snapshot collection, Share logs and the service's end. */
     private val snapshotLines = SnapshotLines({ log(it) })
     /** The game's frames in the service log ([FrameWatch]); the frame look only. */
@@ -368,6 +370,33 @@ class SessionService : Service() {
                 } else {
                     d2glWatch.reset()
                 }
+            }
+        }
+        // Test and debug builds, while the game runs: its main thread on the big cores and Android's
+        // performance hints for it (GameThreadBoost), as the Testing switches say.
+        if (GameThreadBoost.AVAILABLE) scope.launch(Dispatchers.IO) {
+            var counter: PresentCounter.Reader? = null
+            var gamePid: Int? = null
+            while (true) {
+                delay(GameThreadBoost.POLL_MS)
+                val status = _status.value
+                val running = status.snapshot?.game == Game.RUNNING || status.launcherGame
+                if (!running) {
+                    if (counter != null || gamePid != null) boost.stop()
+                    counter = null
+                    gamePid = null
+                    continue
+                }
+                if (counter == null) counter = PresentCounter.reader(paths.presentCounter)
+                val proc = File("/proc")
+                gamePid = gamePid?.takeIf { File(proc, "$it").exists() }
+                    ?: UidCleanup.scan(proc, Os.getuid(), Os.getpid(), ::owner).firstOrNull { it.name.equals(LauncherGame.PROCESS, ignoreCase = true) }?.pid
+                val (times, names) = gamePid?.let { GameThreadBoost.threads(proc, it) } ?: (emptyMap<Int, Long>() to emptyMap())
+                val settings = AppSettingsStore.current.value
+                boost.next(
+                    GameThreadBoost.Look(SystemClock.elapsedRealtime(), times, names, counter?.presents()),
+                    GameThreadBoost.Options(bigCores = false, hints = settings.gameHints, targetNs = 1_000_000_000L / settings.frameRate.coerceAtLeast(1)),
+                )
             }
         }
         // While the game runs on a route of the frozen-picture rule (FrozenPicture.ROUTES).

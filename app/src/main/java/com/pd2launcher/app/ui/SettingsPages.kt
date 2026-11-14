@@ -8,6 +8,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import com.pd2launcher.app.GameThreadBoost
 import com.pd2launcher.app.LauncherSettings
 import com.pd2launcher.app.Line
 import com.pd2launcher.app.R
@@ -67,6 +68,8 @@ enum class SettingsPage(@param:StringRes val title: Int, @param:DrawableRes val 
                     hint = R.string.settings_logs_note, ruled = false,
                 ),
                 RowGroup(R.string.settings_section_android, SettingsRow.NOTIFICATIONS, SettingsRow.BATTERY),
+                // Test and debug builds only (GameThreadBoost.AVAILABLE).
+                RowGroup(R.string.settings_section_testing, SettingsRow.GAME_HINTS),
             )
         }
 
@@ -170,6 +173,7 @@ enum class SettingsRow {
     UPDATE_CHANNEL,
     DETAILED_LOGGING,
     SAVE_LOGS,
+    GAME_HINTS,
     BATTERY,
     NOTIFICATIONS,
     GPU,
@@ -184,6 +188,8 @@ enum class SettingsRow {
     fun shown(gameUpdateChecks: Boolean, updates: Boolean): Boolean = when (this) {
         GAME_UPDATE_CHECKS -> gameUpdateChecks
         APP_STATUS, UPDATE_CHANNEL -> updates
+        // The testing switch: test and debug builds only.
+        GAME_HINTS -> GameThreadBoost.AVAILABLE
         else -> true
     }
 
