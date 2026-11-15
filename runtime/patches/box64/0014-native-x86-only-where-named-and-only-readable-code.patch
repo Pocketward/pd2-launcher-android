@@ -1,0 +1,140 @@
+Subject: [PATCH] native x86: only for the programs that name it, and a check reads only memory that is there
+
+Patches 0012 and 0013 made each new 32-bit block of every program check whether it starts at a
+known PD2 function (native_x86_at): the official PD2 launcher, its UpdateUtility, all of .NET's
+code, not only the game. Storm's check hashes 0x6b7 bytes from a block at offset 0xc20 of its
+page, so it always reads into the next page. When the block is at the end of a mapping (.NET's
+JIT code, any program's last page), Box64 itself faulted there while it translated code. Seen in
+the official launcher (a .NET program) on two phones: EXCEPTION_ACCESS_VIOLATION, then the process
+hangs (RtlpWaitForCriticalSection on a lock of the faulting thread). That breaks the rule that
+native code falls back safely on every failure.
+
+- BOX64_DYNAREC_NATIVEX86 is off by default. The program that wants it names it: the engine gives
+  it to Game.exe only (BOX64_DYNAREC_PROGRAMS "Game.exe:CALLRET:NATIVEX86;"), so no other program
+  runs the checks at all.
+- Each check reads a range only when Windows says that all of it is committed and readable
+  (native_x86_readable, NtQueryVirtualMemory in wowbox64.c), and else says "not this function":
+  the x86 code runs, as before. The check runs only after the cheap test of the address's low 16
+  bits, so it costs one or two queries for one block in 65536.
+---
+diff --git a/src/include/env.h b/src/include/env.h
+index bc80198..b1e1b14 100644
+--- a/src/include/env.h
++++ b/src/include/env.h
+@@ -55,7 +55,7 @@ extern char* ftrace_name;
+     INTEGER(BOX64_DYNAREC_DIRTY, dynarec_dirty, 0, 0, 2, 0, 2)                   \
+     BOOLEAN(BOX64_DYNAREC_NOHOTPAGE, dynarec_nohotpage, 0, 0, 1)                 \
+     BOOLEAN(BOX64_DYNAREC_DIV0, dynarec_div0, 0, 1, 1)                           \
+-    BOOLEAN(BOX64_DYNAREC_NATIVEX86, dynarec_nativex86, 1, 1, 0)                 \
++    BOOLEAN(BOX64_DYNAREC_NATIVEX86, dynarec_nativex86, 0, 1, 0)                 \
+     INTEGER(BOX64_DYNAREC_DUMP, dynarec_dump, 0, 0, 3, 1, 0)                     \
+     BOOLEAN(BOX64_DYNAREC_DISASM, dynarec_disasm, 0, 0, 0)                       \
+     STRING(BOX64_DYNAREC_DUMP_RANGE, dynarec_dump_range, 1, 0)                   \
+diff --git a/src/include/native_x86.h b/src/include/native_x86.h
+index 7bdc2af..3a9a05f 100644
+--- a/src/include/native_x86.h
++++ b/src/include/native_x86.h
+@@ -38,6 +38,11 @@ typedef struct native_x86_fn_s {
+ // The known function at fn, or 0.
+ const native_x86_fn_t* native_x86_at(uintptr_t fn);
+ 
++// Whether all of [addr, addr + size) is committed memory that can be read now. A check reads a
++// function's code only after this, so a block at the end of a mapping (another program's code,
++// a JIT's code) never makes Box64 itself fault. Given by the CPU DLL (wowbox64.c).
++int native_x86_readable(uintptr_t addr, uint32_t size);
++
+ // The known function at fn whose code is unchanged since native_x86_at(fn), or 0.
+ const native_x86_fn_t* native_x86_find(uintptr_t fn);
+ 
+diff --git a/src/tools/d2lang_lookup.c b/src/tools/d2lang_lookup.c
+index cf4a040..71643c8 100644
+--- a/src/tools/d2lang_lookup.c
++++ b/src/tools/d2lang_lookup.c
+@@ -1,5 +1,6 @@
+ // SPDX-License-Identifier: MIT
+ #include "d2lang_lookup.h"
++#include "native_x86.h"
+ 
+ // Both functions by their place in the DLL and by the FNV-1a hash of their bytes, with the one
+ // relocated address in them taken back to its place in the image. A DLL's base is a multiple of
+@@ -53,6 +54,7 @@ static volatile uintptr_t seen_fn;
+ int d2lang_lookup_at(uintptr_t fn)
+ {
+     if ((fn & 0xffff) != LOOKUP_RVA) return 0;
++    if (!native_x86_readable(fn, LOOKUP_SIZE)) return 0;
+     const uint8_t* lookup = (const uint8_t*)fn;
+     const uint32_t base = (uint32_t)fn - LOOKUP_RVA;
+     // The lookup function first: it is in the page that the caller is about to run. The hash
+@@ -65,6 +67,7 @@ int d2lang_lookup_at(uintptr_t fn)
+     h = fnv1a(h, lookup + LOOKUP_RELOC + 4, LOOKUP_SIZE - LOOKUP_RELOC - 4);
+     if (h != LOOKUP_FNV) return 0;
+     const uint8_t* hash = (const uint8_t*)(uintptr_t)(base + HASH_RVA);
++    if (!native_x86_readable(base + HASH_RVA, HASH_SIZE)) return 0;
+     if (fnv1a(0xcbf29ce484222325ull, hash, HASH_SIZE) != HASH_FNV) return 0;
+     seen_fn = 0;
+     __builtin_memcpy(seen, lookup, LOOKUP_SIZE);
+diff --git a/src/tools/storm_explode.c b/src/tools/storm_explode.c
+index 05254f7..ed0fd51 100644
+--- a/src/tools/storm_explode.c
++++ b/src/tools/storm_explode.c
+@@ -1,5 +1,6 @@
+ // SPDX-License-Identifier: MIT
+ #include "storm_explode.h"
++#include "native_x86.h"
+ 
+ // Storm.dll's PKWARE "explode" (Diablo II 1.13c's Storm, as Project Diablo 2 ships it): the
+ // decompressor of the game's data files. One call unpacks a whole block; at a game entry it is
+@@ -126,9 +127,12 @@ int storm_explode_at(uintptr_t fn)
+     if ((fn & 0xffff) != (CODE_RVA & 0xffff)) return 0;
+     const uint32_t base = (uint32_t)fn - CODE_RVA;
+     if (base & 0xffff) return 0;
++    // The code reaches into the next page: read it only when it is there.
++    if (!native_x86_readable(fn, CODE_SIZE)) return 0;
+     if (code_hash((uint32_t)fn, CODE_SIZE, code_relocs, sizeof(code_relocs) / sizeof(code_relocs[0]), base) != CODE_FNV) return 0;
+     for (unsigned k = 0; k < NPAIRS; ++k)
+-        if (code_hash(base + pairs[k].write_rva, CB_SIZE, 0, 0, base) != pairs[k].fnv) return 0;
++        if (!native_x86_readable(base + pairs[k].write_rva, CB_SIZE)
++            || code_hash(base + pairs[k].write_rva, CB_SIZE, 0, 0, base) != pairs[k].fnv) return 0;
+     seen_fn = 0;
+     for (unsigned i = 0; i < sizeof(seen_code) / 8; ++i) seen_code[i] = rd64((uint32_t)fn + 8 * i);
+     for (unsigned k = 0; k < NPAIRS; ++k)
+diff --git a/wine/wow64/wowbox64.c b/wine/wow64/wowbox64.c
+index 8b9d2d3..0bc2dba 100644
+--- a/wine/wow64/wowbox64.c
++++ b/wine/wow64/wowbox64.c
+@@ -23,6 +23,7 @@
+ #include "box64cpu_util.h"
+ #include "build_info.h"
+ #include "rbtree.h"
++#include "native_x86.h"
+ #include "wine/compiler.h"
+ #include "wine/debug.h"
+ #include "hostext.h"
+@@ -152,6 +153,27 @@ void box_to_fpu(WOW64_CONTEXT* ctx, x64emu_t* emu)
+     memcpy(fpu->XmmRegisters, emu->xmm, sizeof(emu->xmm));
+ }
+ 
++// native_x86.h: whether all of [addr, addr + size) is committed memory that can be read now
++// (Windows' view of it), region by region, so that a check never reads past a mapping.
++int native_x86_readable(uintptr_t addr, uint32_t size)
++{
++    const uintptr_t end = addr + size;
++    if (end < addr) return 0;
++    while (addr < end) {
++        MEMORY_BASIC_INFORMATION mem_info;
++        if (NtQueryVirtualMemory(NtCurrentProcess(), (PVOID)addr, MemoryBasicInformation, &mem_info, sizeof(mem_info), NULL))
++            return 0;
++        if (mem_info.State != MEM_COMMIT || (mem_info.Protect & (PAGE_GUARD | PAGE_NOACCESS))
++            || !(mem_info.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READ
++                                     | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)))
++            return 0;
++        const uintptr_t next = (uintptr_t)mem_info.BaseAddress + mem_info.RegionSize;
++        if (next <= addr) return 0;
++        addr = next;
++    }
++    return 1;
++}
++
+ static NTSTATUS invalidate_mapped_section(PVOID addr)
+ {
+     MEMORY_BASIC_INFORMATION mem_info;

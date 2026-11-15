@@ -29,6 +29,10 @@ enum Dynarec {
     /// A call and its return go directly to the translated code, not through
     /// the jump table. For the game.
     CallRet,
+    /// PD2's known x86 functions (D2Lang's string lookup, Storm's explode)
+    /// run as native code (our Box64 patches 0012 to 0014). Off in Box64 by
+    /// default; only the game gets it, so no other program checks for them.
+    NativeX86,
     /// Exact x86 flags at every instruction. Inno Setup's program and the
     /// `.tmp` copy it runs stop with an access violation without it.
     SafeFlags,
@@ -46,6 +50,7 @@ impl Dynarec {
     const fn name(self) -> &'static str {
         match self {
             Self::CallRet => "CALLRET",
+            Self::NativeX86 => "NATIVEX86",
             Self::SafeFlags => "SAFEFLAGS",
             Self::StrongMem => "STRONGMEM",
             Self::Wait => "WAIT",
@@ -56,6 +61,7 @@ impl Dynarec {
     const fn value(self) -> &'static str {
         match self {
             Self::CallRet => "1",
+            Self::NativeX86 => "1",
             Self::SafeFlags => "2",
             Self::StrongMem => "1",
             Self::Wait => "0",
@@ -115,9 +121,9 @@ const fn game(strict_memory_order: bool) -> Program {
     Program {
         name: "Game.exe",
         settings: if strict_memory_order {
-            &[Dynarec::CallRet, Dynarec::StrongMem]
+            &[Dynarec::CallRet, Dynarec::NativeX86, Dynarec::StrongMem]
         } else {
-            &[Dynarec::CallRet]
+            &[Dynarec::CallRet, Dynarec::NativeX86]
         },
     }
 }
@@ -270,6 +276,7 @@ mod tests {
             }),
             pairs(&[
                 ("BOX64_DYNAREC_CALLRET", "1"),
+                ("BOX64_DYNAREC_NATIVEX86", "1"),
                 ("BOX64_DYNAREC_PROGRAMS", "Game.exe;"),
             ])
         );
@@ -279,6 +286,7 @@ mod tests {
             }),
             pairs(&[
                 ("BOX64_DYNAREC_CALLRET", "1"),
+                ("BOX64_DYNAREC_NATIVEX86", "1"),
                 ("BOX64_DYNAREC_PROGRAMS", "Game.exe;"),
                 ("BOX64_DYNAREC_STRONGMEM", "1"),
             ])
@@ -293,10 +301,11 @@ mod tests {
             }),
             pairs(&[
                 ("BOX64_DYNAREC_CALLRET", "1"),
+                ("BOX64_DYNAREC_NATIVEX86", "1"),
                 (
                     "BOX64_DYNAREC_PROGRAMS",
                     "PD2Launcher.exe:STRONGMEM:WAIT;UpdateUtility.exe:STRONGMEM:WAIT;\
-                     Game.exe:CALLRET;"
+                     Game.exe:CALLRET:NATIVEX86;"
                 ),
                 ("BOX64_DYNAREC_STRONGMEM", "1"),
                 ("BOX64_DYNAREC_WAIT", "0"),
@@ -308,10 +317,11 @@ mod tests {
             }),
             pairs(&[
                 ("BOX64_DYNAREC_CALLRET", "1"),
+                ("BOX64_DYNAREC_NATIVEX86", "1"),
                 (
                     "BOX64_DYNAREC_PROGRAMS",
                     "PD2Launcher.exe:STRONGMEM:WAIT;UpdateUtility.exe:STRONGMEM:WAIT;\
-                     Game.exe:CALLRET:STRONGMEM;"
+                     Game.exe:CALLRET:NATIVEX86:STRONGMEM;"
                 ),
                 ("BOX64_DYNAREC_STRONGMEM", "1"),
                 ("BOX64_DYNAREC_WAIT", "0"),

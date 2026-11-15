@@ -23,9 +23,12 @@ data class ScreenCapability(val hertz: Int, val panel: String) {
          * The measurement after the screen held [hertz]. While the window asked for the panel's
          * highest mode ([asksHighest]) the reading is what the phone gives the app that asks for
          * all that the panel can do, so it replaces what was known. Under another request (the game's own) a lower reading says
-         * nothing about what the screen can do, so only a higher one counts. Null: nothing new.
+         * nothing about what the screen can do, so only a higher one counts. A rate that is none of the panel's modes is the
+         * phone slowing a still screen for a moment (45 Hz on a 60/90 Hz panel), not what it can show: it
+         * counts for nothing. Null: nothing new.
          */
         fun after(measured: ScreenCapability?, modes: PanelModes, cap: PhoneRefreshCap, hertz: Int, asksHighest: Boolean): ScreenCapability? {
+            if (modes.modes.isNotEmpty() && modes.modes.none { Math.round(it.rate) == hertz }) return null
             val next = ScreenCapability(hertz, modes.key)
             return next.takeIf { it != measured && (asksHighest || hertz > upTo(measured, modes, cap)) }
         }
