@@ -25,7 +25,7 @@ body:
     attributes:
       label: Device
       description: Only if the idea is for a specific device, controller or screen.
-      placeholder: "Retroid Pocket 5"
+      placeholder: "Galaxy S24"
   - type: textarea
     id: more
     attributes:
