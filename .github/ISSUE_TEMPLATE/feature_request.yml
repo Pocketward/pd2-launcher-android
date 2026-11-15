@@ -1,0 +1,33 @@
+name: Feature request
+description: An idea for something new in PD2 Launcher for Android, or a change to how it works.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Something does not work? Use **Problem report** instead.
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like?
+      description: Describe the feature or the change.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why?
+      description: What would it help you do? How do you do it today?
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Device
+      description: Only if the idea is for a specific device, controller or screen.
+      placeholder: "Retroid Pocket 5"
+  - type: textarea
+    id: more
+    attributes:
+      label: Anything else
+      description: Pictures, mock-ups or examples from other apps help.

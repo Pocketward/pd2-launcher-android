@@ -2,12 +2,21 @@ name: Problem report
 description: Something does not work in PD2 Launcher for Android.
 labels: ["bug"]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        **Logs help us find the problem much faster.** Before you send this report:
+        1. In the app, open **Settings → Help** and turn on **Detailed logging**.
+        2. Do again what causes the problem.
+        3. Open **Settings → Help → Save logs**, save the file, and drag it into "What is the problem?" below.
+
+        Turn Detailed logging off again after you send the logs.
   - type: input
     id: app-version
     attributes:
       label: App version
       description: About shows it.
-      placeholder: "0.3.1"
+      placeholder: "0.4.0"
     validations:
       required: true
   - type: input
@@ -38,6 +47,6 @@ body:
     id: problem
     attributes:
       label: What is the problem?
-      description: "If you can, attach the app's logs: in the app, use Settings → App → Share logs or Save logs, then drag the file here."
+      description: "What did you do, what did you expect, and what happened? Attach the logs file here (Settings → Help → Save logs)."
     validations:
       required: true
