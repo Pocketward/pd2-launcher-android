@@ -46,11 +46,14 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.InputMode
 import androidx.compose.ui.input.key.Key
@@ -74,14 +77,16 @@ import androidx.compose.ui.unit.dp
 import com.pd2launcher.app.AppSettings
 import com.pd2launcher.app.BuildConfig
 import com.pd2launcher.app.DriverPage
-import com.pd2launcher.app.FrameRateVote
+import com.pd2launcher.app.FramePick
 import com.pd2launcher.app.GameDisplay
 import com.pd2launcher.app.GameResolution
 import com.pd2launcher.app.GraphicsProfiles
 import com.pd2launcher.app.HostGpu
 import com.pd2launcher.app.LauncherSettings
-import com.pd2launcher.app.PlayerDriver
 import com.pd2launcher.app.Line
+import com.pd2launcher.app.LootFilterStore
+import com.pd2launcher.app.PanelModes
+import com.pd2launcher.app.PlayerDriver
 import com.pd2launcher.app.R
 import com.pd2launcher.app.SaveSyncFolder
 import com.pd2launcher.app.SaveSyncState
@@ -118,8 +123,7 @@ private const val SCROLL_BACK_MS = 500L
  * [display] (while the game or the official launcher runs at another size, [running]: its X
  * screen, the row says that the new size applies at the next start); how the Game view shows
  * them (Display, at once, also over a running game); D2GL's graphics profile, whose Automatic
- * follows the [gpu]; the frame rate, whose choices follow the screen's full rate
- * ([fullFrameRate], [com.pd2launcher.app.ScreenRate]); Slower game in the background, the FPS
+ * follows the [gpu]; the frame rate; Slower game in the background, the FPS
  * counter and Keep the screen on. Game: the Launcher's settings ([launcher], changed with
  * [onCommand]; its save state beside the page's title): the check for game updates, then the
  * start options that Play gives Diablo II; Loot filters keeps its place, greyed out. Controls:
@@ -138,7 +142,7 @@ fun SettingsScreen(
     launcher: LauncherSettings.View?,
     app: AppSettings,
     display: Pair<Int, Int>,
-    fullFrameRate: Float,
+    panel: PanelModes,
     gpu: HostGpu?,
     system: SystemState,
     nav: SettingsNav,
@@ -161,6 +165,11 @@ fun SettingsScreen(
         GpuPage(app, gpu, onAppChange, gpuInUse) { nav.gpu = false }
         return
     }
+    // Game's Loot filters page over Settings, as the GPU page: the focus returns to its row.
+    if (nav.lootFilters) {
+        LootFiltersPage { nav.lootFilters = false }
+        return
+    }
     val context = LocalContext.current
     remember { ControlsStore.load(context) }
     val controls by ControlsStore.current.collectAsState()
@@ -172,7 +181,7 @@ fun SettingsScreen(
     val size = GameResolution.forPlay(width, height, app.customSize)
     val facts = SettingsFacts(
         size = size,
-        frameRate = FrameRateVote.shown(app.frameRate, fullFrameRate),
+        frameRate = FramePick.onPanel(app.frameRate, panel),
         launcher = launcher,
         touch = app.touchMode,
         pointerSpeed = controls.pointerSpeed,
@@ -239,7 +248,9 @@ fun SettingsScreen(
     }
     BackHandler(enabled = !nav.popup) { if (!nav.back(phone)) onBack() }
     val enabled = launcher?.editable == true
-    val shown = { r: SettingsRow -> r.shown(gameUpdateChecks = launcher?.gameUpdateChecks != null, updates = updates) }
+    val shown = { r: SettingsRow ->
+        r.shown(gameUpdateChecks = launcher?.gameUpdateChecks != null, updates = updates, startOptionsOpen = nav.startOptionsOpen)
+    }
     val firstRow = nav.page.firstRow(shown, enabled)
     val focusOf = { r: SettingsRow -> page.takeIf { r == firstRow } }
     val opens = { r: SettingsRow, open: () -> Unit ->
@@ -262,7 +273,7 @@ fun SettingsScreen(
             SettingsRow.GRAPHICS_PROFILE -> OpenRow(stringResource(R.string.settings_graphics_profile), text(GraphicsProfiles.shown(app.graphicsProfile, gpu))) {
                 opens(row) { nav.profiles = true }
             }
-            SettingsRow.FRAME_RATE -> OpenRow(stringResource(R.string.settings_frame_rate), frameRateLabel(app.frameRate, fullFrameRate)) { opens(row) { nav.frameRates = true } }
+            SettingsRow.FRAME_RATE -> OpenRow(stringResource(R.string.settings_frame_rate), frameRateLabel(app.frameRate, panel)) { opens(row) { nav.frameRates = true } }
             SettingsRow.FPS_COUNTER -> ToggleRow(
                 stringResource(R.string.game_menu_fps_counter), stringResource(R.string.settings_fps_counter_body),
                 app.showFps, { value -> onAppChange { it.copy(showFps = value) } },
@@ -272,7 +283,8 @@ fun SettingsScreen(
                 app.keepScreenOn, { value -> onAppChange { it.copy(keepScreenOn = value) } },
             )
             SettingsRow.SKIP_TO_BNET -> ToggleRow(
-                stringResource(R.string.settings_skip_to_bnet), stringResource(R.string.settings_skip_to_bnet_body),
+                stringResource(R.string.settings_skip_to_bnet),
+                stringResource(R.string.settings_start_flag, "-skiptobnet", stringResource(R.string.settings_skip_to_bnet_body)),
                 launcher?.skipToBnet ?: false, { onCommand(LauncherSettings.skipToBnet(it)) }, enabled, focusOf(row),
             )
             // The Launcher's checks for Project Diablo 2's updates (the app's own are on the App page).
@@ -285,11 +297,52 @@ fun SettingsScreen(
                 app.lowFrameRateInBackground, { value -> onAppChange { it.copy(lowFrameRateInBackground = value) } },
             )
             SettingsRow.SOUND_IN_BACKGROUND -> ToggleRow(
-                stringResource(R.string.settings_sound_in_background), stringResource(R.string.settings_sound_in_background_body),
+                stringResource(R.string.settings_sound_in_background),
+                stringResource(R.string.settings_start_flag, "-sndbkg", stringResource(R.string.settings_sound_in_background_body)),
                 launcher?.soundInBackground ?: false, { onCommand(LauncherSettings.soundInBackground(it)) }, enabled, focusOf(row),
             )
+            SettingsRow.CUSTOM_ARGUMENTS -> OpenRow(
+                stringResource(R.string.settings_custom_arguments),
+                launcher?.customArguments?.ifEmpty { null } ?: stringResource(R.string.settings_custom_arguments_none),
+                enabled = enabled, focusRequester = focusOf(row),
+            ) { opens(row) { nav.customArguments = true } }
+            SettingsRow.GAME_PROGRAM -> {
+                val program = launcher?.gameProgram ?: LauncherSettings.DEFAULT_GAME_PROGRAM
+                val other = program != LauncherSettings.DEFAULT_GAME_PROGRAM
+                OpenRow(
+                    stringResource(R.string.settings_game_program), stringResource(R.string.program_path, program),
+                    body = stringResource(R.string.settings_game_program_other).takeIf { other },
+                    valueWarning = other, enabled = enabled, focusRequester = focusOf(row),
+                ) { opens(row) { nav.gameProgram = true } }
+            }
+            SettingsRow.START_OPTIONS -> {
+                val on = launcher?.let { startOptionsOn(it.skipToBnet, it.soundInBackground) }
+                ExpandRow(
+                    stringResource(R.string.settings_start_options),
+                    when {
+                        on == null -> stringResource(R.string.settings_start_options_default)
+                        on.isEmpty() -> stringResource(R.string.settings_custom_arguments_none)
+                        else -> on.joinToString(" · ")
+                    },
+                    nav.startOptionsOpen, enabled, focusOf(row),
+                ) { nav.startOptionsOpen = !nav.startOptionsOpen }
+            }
+            SettingsRow.LAUNCHER_PROGRAM -> {
+                val program = launcher?.launcherProgram ?: LauncherSettings.DEFAULT_LAUNCHER_PROGRAM
+                val other = program != LauncherSettings.DEFAULT_LAUNCHER_PROGRAM
+                OpenRow(
+                    stringResource(R.string.settings_launcher_program), stringResource(R.string.program_path, program),
+                    body = stringResource(R.string.settings_launcher_program_other).takeIf { other },
+                    valueWarning = other, enabled = enabled, focusRequester = focusOf(row),
+                ) { opens(row) { nav.launcherProgram = true } }
+            }
+            SettingsRow.LAUNCHER_CUSTOM_ARGUMENTS -> OpenRow(
+                stringResource(R.string.settings_custom_arguments),
+                launcher?.launcherCustomArguments?.ifEmpty { null } ?: stringResource(R.string.settings_custom_arguments_none),
+                enabled = enabled, focusRequester = focusOf(row),
+            ) { opens(row) { nav.launcherCustomArguments = true } }
             SettingsRow.RENDERER -> RendererInfoRow(software = gpuInUse?.driver == PlayerDriver.SOFTWARE)
-            SettingsRow.LOOT_FILTERS -> LootFiltersRow()
+            SettingsRow.LOOT_FILTERS -> LootFiltersRow(focusOf(row)) { opens(row) { nav.lootFilters = true } }
             SettingsRow.ON_SCREEN_CONTROLS -> OpenRow(
                 stringResource(R.string.controls_edit_on_screen), body = stringResource(R.string.controls_edit_on_screen_body),
                 minHeight = 56.dp, focusRequester = focusOf(row),
@@ -377,11 +430,42 @@ fun SettingsScreen(
         if (nav.profiles) GraphicsProfileSheet(app, gpu, phone, onAppChange) { nav.profiles = false }
         if (nav.frameRates) {
             FrameRateInput(
-                app.frameRate, fullFrameRate, { value -> onAppChange { it.copy(frameRate = value) } },
+                app.frameRate, panel, { value -> onAppChange { it.copy(frameRate = value) } },
                 intro = stringResource(R.string.settings_frame_rate_body),
+                measures = true,
             ) { nav.frameRates = false }
         }
         if (nav.pointerSpeed) PointerSpeedInput(controls.pointerSpeed, { save(controls.copy(pointerSpeed = it)) }) { nav.pointerSpeed = false }
+        if (nav.customArguments) {
+            val current = launcher?.customArguments.orEmpty()
+            CustomArgumentsInput(current, stringResource(R.string.settings_custom_arguments_intro), {
+                if (it != current) onCommand(LauncherSettings.customArguments(it))
+            }) { nav.customArguments = false }
+        }
+        if (nav.launcherCustomArguments) {
+            val current = launcher?.launcherCustomArguments.orEmpty()
+            CustomArgumentsInput(current, stringResource(R.string.settings_launcher_custom_arguments_intro), {
+                if (it != current) onCommand(LauncherSettings.launcherCustomArguments(it))
+            }) { nav.launcherCustomArguments = false }
+        }
+        if (nav.gameProgram) {
+            ProgramPathInput(
+                stringResource(R.string.settings_game_program),
+                stringResource(R.string.settings_game_program_intro, LauncherSettings.DEFAULT_GAME_PROGRAM),
+                stringResource(R.string.settings_game_program_help),
+                launcher?.gameProgram ?: LauncherSettings.DEFAULT_GAME_PROGRAM, LauncherSettings.DEFAULT_GAME_PROGRAM,
+                { onCommand(LauncherSettings.gameProgram(it)) },
+            ) { nav.gameProgram = false }
+        }
+        if (nav.launcherProgram) {
+            ProgramPathInput(
+                stringResource(R.string.settings_launcher_program),
+                stringResource(R.string.settings_launcher_program_intro, LauncherSettings.DEFAULT_LAUNCHER_PROGRAM),
+                stringResource(R.string.settings_launcher_program_help),
+                launcher?.launcherProgram ?: LauncherSettings.DEFAULT_LAUNCHER_PROGRAM, LauncherSettings.DEFAULT_LAUNCHER_PROGRAM,
+                { onCommand(LauncherSettings.launcherProgram(it)) },
+            ) { nav.launcherProgram = false }
+        }
     }
 }
 
@@ -546,7 +630,11 @@ private fun PageBody(
                     Section(group, first) {
                         inGroup.forEachIndexed { index, each ->
                             if (index > 0 && group.ruled) RowRule()
-                            Column(Modifier.focusRequester(rows.focus.getValue(each)).onPlaced { rows.places[each] = it }) { row(each) }
+                            // The Start options drop-down's rows: set in under it, with a rule at their start.
+                            val inset = if (each.inStartOptions) Modifier.padding(start = 14.dp).drawBehind {
+                                drawRect(Palette.Rule, size = Size(2.dp.toPx(), size.height))
+                            }.padding(start = 2.dp) else Modifier
+                            Column(inset.focusRequester(rows.focus.getValue(each)).onPlaced { rows.places[each] = it }) { row(each) }
                         }
                     }
                     first = false
@@ -598,9 +686,10 @@ private fun Section(group: RowGroup, first: Boolean, content: @Composable Column
 private fun RowRule() = Rule(Modifier.padding(horizontal = 14.dp))
 
 /**
- * A row that opens a sheet, an input or a screen: its title, then its value in teal ([value]) or a
- * quiet line ([body]), the amber [notes] under them, and a chevron. What the setting does is on
- * the sheet or the input.
+ * A row that opens a sheet, an input or a screen: its title, then its value in teal ([value]; in
+ * amber where it is not the default and the player should know it, [valueWarning]) or a quiet line
+ * ([body]), the amber [notes] under them, and a chevron. What the setting does is on the sheet or
+ * the input.
  */
 @Composable
 private fun OpenRow(
@@ -610,16 +699,42 @@ private fun OpenRow(
     notes: List<String> = emptyList(),
     minHeight: Dp = 60.dp,
     focusRequester: FocusRequester? = null,
+    enabled: Boolean = true,
+    valueWarning: Boolean = false,
     onOpen: () -> Unit,
 ) {
-    FocusRow(onOpen, focusRequester = focusRequester, minHeight = minHeight) {
+    // A grey row ([enabled] false) opens nothing, and stays a stop that the controller can reach and read.
+    FocusRow({ if (enabled) onOpen() }, focusRequester = focusRequester, minHeight = minHeight) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(title, style = Type.Body, color = Palette.Text)
-            if (value != null) Text(value, style = Type.Hint, color = Palette.Teal)
-            if (body != null) Text(body, style = Type.Hint, color = Palette.Muted)
+            Text(title, style = Type.Body, color = if (enabled) Palette.Text else Palette.Faint)
+            if (value != null) {
+                Text(
+                    value, style = Type.Hint, color = if (!enabled) Palette.Faint else if (valueWarning) Palette.Amber else Palette.Teal,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (body != null) Text(body, style = Type.Hint, color = if (enabled) Palette.Muted else Palette.Faint)
             notes.forEach { Text(it, style = Type.Hint, color = Palette.Amber) }
         }
-        Text("›", style = Type.Title, color = Palette.Teal)
+        Text("›", style = Type.Title, color = if (enabled) Palette.Teal else Palette.Faint)
+    }
+}
+
+/**
+ * A drop-down row (Game's Start options): its title, its value in teal, and a chevron that points
+ * down while it is closed and up while it is [open]. A tap, or A with a controller, opens or closes
+ * it ([onToggle]); the rows it holds show under it, and the D-pad goes down into them. Grey while
+ * the Launcher's settings take no change ([enabled] false), and it still opens, so the player can
+ * read them.
+ */
+@Composable
+private fun ExpandRow(title: String, value: String, open: Boolean, enabled: Boolean, focusRequester: FocusRequester?, onToggle: () -> Unit) {
+    FocusRow(onToggle, focusRequester = focusRequester, minHeight = 60.dp) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(title, style = Type.Body, color = if (enabled) Palette.Text else Palette.Faint)
+            Text(value, style = Type.Hint, color = if (enabled) Palette.Teal else Palette.Faint, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        Text("›", Modifier.rotate(if (open) -90f else 90f), style = Type.Title, color = if (enabled) Palette.Teal else Palette.Faint)
     }
 }
 
@@ -665,33 +780,28 @@ private fun RendererInfoRow(software: Boolean) {
     }
 }
 
-/** Loot filters: greyed out, as the place of a later screen. */
-@Composable
-private fun LootFiltersRow() {
-    Row(
-        Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 14.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(14.dp),
-    ) {
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(stringResource(R.string.settings_loot_filters), style = Type.Body, color = Palette.Faint)
-            Text(stringResource(R.string.settings_loot_filters_body), style = Type.Hint, color = Palette.Faint)
-        }
-        SlimButton(stringResource(R.string.settings_loot_filters_manage), {}, Modifier.focusProperties { canFocus = false }, enabled = false)
-    }
-}
-
 /**
- * The game's frame rate on the screen, as the player reads it, in Settings and the in-game menu:
- * always a number, the player's rate where it applies, else the screen's [full] rate ("120 fps"
- * for the stored Full, [FrameRateVote.shown], [com.pd2launcher.app.ScreenRate]); "– fps" when no
- * display mode could be read.
+ * Game's Loot filters row: the filter in use (or "No filter chosen") and the page it opens
+ * ([LootFiltersPage]). The saved choice loads on the store's worker, not on the main thread.
  */
 @Composable
-internal fun frameRateLabel(pick: Int, full: Float): String {
-    val shown = FrameRateVote.shown(pick, full)
-    return if (shown > 0) stringResource(R.string.game_fps, shown) else stringResource(R.string.game_fps_unknown)
+private fun LootFiltersRow(focusRequester: FocusRequester?, onOpen: () -> Unit) {
+    val context = LocalContext.current
+    LaunchedEffect(Unit) { LootFilterStore.preload(context) }
+    val state by LootFilterStore.state.collectAsState()
+    val inUse = if (state.managedOutside) {
+        state.launcherPick?.let { "${stringResource(R.string.loot_by_launcher)} · ${it.file}" } ?: stringResource(R.string.loot_set_outside)
+    } else {
+        state.inUseChoice?.let { if (it.local) it.file else "${it.author} · ${it.display}" }
+    }
+    OpenRow(
+        stringResource(R.string.settings_loot_filters), inUse ?: stringResource(R.string.settings_loot_filters_none),
+        body = stringResource(R.string.settings_loot_filters_body), minHeight = 56.dp, focusRequester = focusRequester, onOpen = onOpen,
+    )
 }
+
+@Composable
+internal fun frameRateLabel(pick: Int, panel: PanelModes): String = stringResource(R.string.game_fps, FramePick.onPanel(pick, panel))
 
 /** D2GL's graphics profiles ([GraphicsProfiles.choices]) under what a profile changes. A pick closes it. */
 @Composable

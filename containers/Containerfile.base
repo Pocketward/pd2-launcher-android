@@ -1,0 +1,108 @@
+# Layer 1 of the build: the base image that every part of the userland, the runtime, the engine
+# and the system-driver server builds in. It holds only Debian 13 and tools that change rarely:
+# the compilers and build tools at the exact versions of containers/base-packages.lock, rustup-init,
+# and the .deb files of userland/packages.lock (the App userland's Debian packages) in /opt/pd2/debs.
+# Nothing of ours is built here: Mesa, glibc, Xvfb, Wine, Box64 and the others are layer 2.
+#
+# Its tag is a hash of its inputs (containers/base-image.sh). CI pulls the image of that tag from
+# ghcr.io, and builds and pushes it only when no image has that tag, that is, after a change to
+# this file, base-packages.lock, userland/packages.lock, DEBIAN_IMAGE or DEBIAN_SNAPSHOT.
+# containers/check-sources.sh lists the pinned versions that deb.debian.org no longer has (they
+# then come from snapshot.debian.org).
+#
+# Build context: android/ (for the two lock files).
+
+# debian:trixie-slim (multi-arch index digest; the amd64 image is used)
+ARG DEBIAN_IMAGE
+FROM ${DEBIAN_IMAGE}
+
+# Debian 13 from deb.debian.org, with arm64 as a foreign architecture for the cross builds'
+# development packages, and source packages (no build step reads them: the glibc source package is
+# in the image, below). Second, snapshot.debian.org at DEBIAN_SNAPSHOT (userland/config.sh; the
+# lock files' versions are from it): a pinned version that Debian has replaced since comes from
+# there (apt checks it against the snapshot's signed index as it does any other).
+ARG DEBIAN_SNAPSHOT
+RUN rm -f /etc/apt/sources.list.d/debian.sources \
+    && printf '%s\n' \
+        'Types: deb deb-src' \
+        'URIs: http://deb.debian.org/debian' \
+        'Suites: trixie trixie-updates' \
+        'Components: main' \
+        'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+        '' \
+        'Types: deb deb-src' \
+        'URIs: http://deb.debian.org/debian-security' \
+        'Suites: trixie-security' \
+        'Components: main' \
+        'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+        > /etc/apt/sources.list.d/debian.sources \
+    && printf '%s\n' \
+        'Types: deb' \
+        "URIs: http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT:?}" \
+        'Suites: trixie trixie-updates' \
+        'Components: main' \
+        'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+        'Check-Valid-Until: no' \
+        '' \
+        'Types: deb' \
+        "URIs: http://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}" \
+        'Suites: trixie-security' \
+        'Components: main' \
+        'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+        'Check-Valid-Until: no' \
+        > /etc/apt/sources.list.d/snapshot.sources \
+    && dpkg --add-architecture arm64
+
+# Every package at its exact version. --allow-downgrades: the slim image may hold a newer
+# point release of a package than the lock names.
+COPY containers/base-packages.lock /tmp/base-packages.lock
+# Acquire::Retries: snapshot.debian.org answers 504 at times.
+RUN apt-get -o Acquire::Retries=5 update \
+    && DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --no-install-recommends --allow-downgrades \
+        $(grep -v '^#' /tmp/base-packages.lock) \
+    && rm -rf /var/lib/apt/lists/* /tmp/base-packages.lock
+
+# rustup 1.29.1 (the engine's toolchain is installed by rustup at build time, from the engine's
+# rust-toolchain.toml)
+ARG RUSTUP_INIT_URL=https://static.rust-lang.org/rustup/archive/1.29.1/x86_64-unknown-linux-gnu/rustup-init
+ARG RUSTUP_INIT_SHA256=dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71
+RUN curl -fsSL --proto '=https' -o /usr/local/bin/rustup-init "$RUSTUP_INIT_URL" \
+    && echo "$RUSTUP_INIT_SHA256  /usr/local/bin/rustup-init" | sha256sum -c - \
+    && chmod 0755 /usr/local/bin/rustup-init
+
+# The App userland's arm64 .deb files (userland/packages.lock), each checked by SHA-256 and size.
+# The lock names their snapshot.debian.org URLs; the same files are in deb.debian.org's pool, which
+# is tried first.
+COPY userland/packages.lock /tmp/packages.lock
+RUN mkdir -p /opt/pd2/debs \
+    && grep -v '^#' /tmp/packages.lock | while read -r set name version arch sha size url; do \
+        file="/opt/pd2/debs/$(basename "$url")"; \
+        pool="${url#*/archive/}"; repo="${pool%%/*}"; pool="${pool#*/}"; pool="${pool#*/}"; \
+        curl -fsSL --retry 3 -o "$file" "http://deb.debian.org/$repo/$pool" \
+            || curl -fsSL --retry 3 -o "$file" "$url" || exit 1; \
+        echo "$sha  $file" | sha256sum -c --quiet - || { echo "SHA-256 mismatch: $name $version" >&2; exit 1; }; \
+        [ "$(stat -c %s "$file")" = "$size" ] || { echo "size mismatch: $name" >&2; exit 1; }; \
+    done \
+    && chmod -R a+rX /opt/pd2 \
+    && rm /tmp/packages.lock
+
+# Debian 13's glibc source package that userland/glibc/build.sh builds our glibc from (its .dsc, the
+# upstream tarball and Debian's tarball), at that exact version, each checked by SHA-256 (the
+# values that glibc/build.sh checks again). In the image, it does not depend on deb.debian.org
+# keeping this version after Debian's next update. A new version is a new base image. From
+# deb.debian.org's pool, else from snapshot.debian.org at DEBIAN_SNAPSHOT.
+ARG GLIBC_POOL=http://deb.debian.org/debian/pool/main/g/glibc
+RUN mkdir -p /opt/pd2/src/glibc \
+    && cd /opt/pd2/src/glibc \
+    && for f in glibc_2.41-12+deb13u4.dsc glibc_2.41.orig.tar.xz glibc_2.41-12+deb13u4.debian.tar.xz; do \
+        name="$(printf '%s' "$f" | sed 's/+/%2B/g')"; \
+        curl -fsSL --retry 3 -o "$f" "$GLIBC_POOL/$name" \
+            || curl -fsSL --retry 3 -o "$f" "http://snapshot.debian.org/archive/debian/$DEBIAN_SNAPSHOT/pool/main/g/glibc/$name" \
+            || exit 1; \
+    done \
+    && printf '%s\n' \
+        '0915324aa646bb99abfaa9aa6ecb734b30babd28454a3e51f3152912370fbd3e  glibc_2.41-12+deb13u4.dsc' \
+        'f24aa441021121a79266f0d75242706cab8843a47901fefe74527491807f1998  glibc_2.41.orig.tar.xz' \
+        'dda4153511bfd543502d18e5bc9323110996fe9c531f14ae3fad6eb17f027c7d  glibc_2.41-12+deb13u4.debian.tar.xz' \
+        | sha256sum -c - \
+    && chmod -R a+rX /opt/pd2

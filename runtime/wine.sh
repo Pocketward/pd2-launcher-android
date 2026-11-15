@@ -18,8 +18,8 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 identity() {
     part_identity "wine=$WINE_VERSION $WINE_SHA256" "llvm-mingw=$LLVM_MINGW_NAME $LLVM_MINGW_SHA256" \
-        "debian=$DEBIAN_IMAGE $DEBIAN_SNAPSHOT" "prefix=$WINE_PREFIX_DIR" \
-        "$here/wine.sh" "$RUNTIME_DIR/containers/Containerfile.wine" "$RUNTIME_DIR"/patches/wine/*.patch
+        "image=$(base_image_name)" "prefix=$WINE_PREFIX_DIR" \
+        "$here/wine.sh" "$RUNTIME_DIR"/patches/wine/*.patch
 }
 
 if [[ "${1:-}" == --identity ]]; then
@@ -37,7 +37,7 @@ if ! in_container; then
     fetch "$LLVM_MINGW_URL" "$LLVM_MINGW_SHA256" >/dev/null
     rm -rf "$RUNTIME_PARTS/wine"
     mkdir -p "$RUNTIME_PARTS/wine"
-    run_in "$(runtime_image wine)" wine.sh
+    run_in "$(ensure_base_image)" wine.sh
     part_done wine "$id"
     exit 0
 fi

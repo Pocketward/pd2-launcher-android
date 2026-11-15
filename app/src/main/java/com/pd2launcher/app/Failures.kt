@@ -11,6 +11,9 @@ import com.pd2launcher.app.control.Job
  */
 object Failures {
     @StringRes
+    /** The engine refused the chosen folder at the import (gone or changed since it was chosen). */
+    const val EXISTING_INVALID = "existing-install-invalid"
+
     fun text(code: String?, job: Job?): Int = when (code) {
         "installer-download-failed" -> R.string.failure_blizzard_download
         "installer-download-stalled" -> R.string.failure_blizzard_stalled
@@ -22,6 +25,7 @@ object Failures {
         "downloads-required" -> R.string.failure_downloads_required
         "download-failed", "client-download-failed" -> R.string.failure_download
         "client-not-kept" -> R.string.failure_client_not_kept
+        EXISTING_INVALID -> R.string.failure_existing_invalid
         "base-game-key-rejected" -> R.string.failure_d2_key
         "expansion-key-rejected" -> R.string.failure_lod_key
         "base-game-installer-error", "expansion-installer-error",

@@ -1,6 +1,6 @@
 package com.pd2launcher.app
 
-import android.content.pm.PackageInstaller
+import android.app.Activity
 import com.pd2launcher.app.control.Game
 import com.pd2launcher.app.control.Job
 import com.pd2launcher.app.control.OperationStatus
@@ -294,9 +294,25 @@ object AppUpdate {
     fun dropsDownload(end: CheckEnd, work: Work?): Boolean =
         end.problem == null && work != null && !runs(work) && offer(end.offers, channelOf(work.offer.versionName)) != work.offer
 
-    /** The new version of [channel] for the build that runs, for the notice; null: none. */
-    fun newOffer(offers: Offers, channel: UpdateChannel, installedName: String, installedCode: Int, work: Work?, refused: Set<String>): Offer? =
-        rows(offers, channel, installedName, installedCode, work, null, true, refused).first { it.selected }.let { row -> row.offer.takeIf { row.fresh } }
+    /**
+     * The new version of [channel] for the build that runs, for the notice; null: none. A test build
+     * ([testBuild], the test channel) hears of a new version of either channel, the selected one
+     * first: it has no channel of its own to follow, and both are ways out of the test.
+     */
+    fun newOffer(
+        offers: Offers,
+        channel: UpdateChannel,
+        installedName: String,
+        installedCode: Int,
+        work: Work?,
+        refused: Set<String>,
+        testBuild: Boolean = false,
+    ): Offer? {
+        val rows = rows(offers, channel, installedName, installedCode, work, null, true, refused, testBuild = testBuild)
+        val selected = rows.first { it.selected }
+        if (!testBuild) return selected.offer.takeIf { selected.fresh }
+        return (listOf(selected) + rows.filter { it !== selected }).firstOrNull { it.fresh }?.offer
+    }
 
     /**
      * What tells one upload of a release's APK from any other: its name, which holds the tag's
@@ -499,16 +515,14 @@ object AppUpdate {
         else -> null
     }
 
-    /** How Android's installer ended a session, in the app's terms. */
-    enum class InstallOutcome { INSTALLED, CANCELLED, NO_SPACE, FAILED }
-
-    /** [PackageInstaller]'s session status as an [InstallOutcome]; the waits for the player are not one. */
-    fun installOutcome(status: Int): InstallOutcome = when (status) {
-        PackageInstaller.STATUS_SUCCESS -> InstallOutcome.INSTALLED
-        PackageInstaller.STATUS_FAILURE_ABORTED -> InstallOutcome.CANCELLED
-        PackageInstaller.STATUS_FAILURE_STORAGE -> InstallOutcome.NO_SPACE
-        else -> InstallOutcome.FAILED
-    }
+    /**
+     * What the row says when Android's installer screen gives a result back to a process that
+     * still runs (so the app was not replaced): RESULT_CANCELED, the player's Cancel or Back, is
+     * [InstallProblem.CANCELLED]; any other result, an install that failed after the player's
+     * yes, is [InstallProblem.FAILED]. A successful update ends the process, so no result comes.
+     */
+    fun installAnswer(resultCode: Int): InstallProblem =
+        if (resultCode == Activity.RESULT_CANCELED) InstallProblem.CANCELLED else InstallProblem.FAILED
 
     /** Where the look at the list of releases stands. */
     sealed interface Check {
@@ -562,8 +576,7 @@ object AppUpdate {
     /** [REFUSED]: the file failed its checks ([Refusal]). [UNCHECKED]: no usable SHA-256, so nothing was downloaded. */
     enum class DownloadProblem { NETWORK, NO_SPACE, REFUSED, UNCHECKED, FAILED }
 
-    /** [GAME_STARTED]: the game or other work ([waitFor]) started while Android asked, so the update was taken back. */
-    enum class InstallProblem { CANCELLED, GAME_STARTED, NO_SPACE, FAILED }
+    enum class InstallProblem { CANCELLED, FAILED }
 
     /** The sign at a row's end: [DOWNLOAD] starts the download, [RETRY] starts it again, [INSTALL] opens Android's question, [INSTALLED] is the check mark. */
     enum class Sign { DOWNLOAD, RETRY, INSTALL, INSTALLED }
@@ -652,6 +665,9 @@ object AppUpdate {
      * ([rank]). [wait] and [allowed] say whether Android's question can open now ([waitFor]). A
      * beta in [refused] ([upload]), or one below [installedCode], closes the Beta row ([betaOpen]),
      * and the greyed row says that this beta cannot install over the build that runs ([ChannelRow.info]).
+     * A test build ([testBuild]: a player's test APK with its Stable's own name and code) can install
+     * that Stable again from its row, the way back from the test; it is never offered by itself (no
+     * notice, no dot).
      */
     fun rows(
         offers: Offers?,
@@ -663,6 +679,7 @@ object AppUpdate {
         allowed: Boolean,
         refused: Set<String> = emptySet(),
         betaOpen: Boolean = betaOpen(offers, installedCode, refused, work),
+        testBuild: Boolean = false,
     ): List<ChannelRow> = UpdateChannel.entries.map { channel ->
         // While Beta is closed the checks follow Stable ([channel]), so Stable is the selected row.
         val selected = if (betaOpen) selected else UpdateChannel.STABLE
@@ -675,15 +692,19 @@ object AppUpdate {
         val job = work?.takeIf { channelOf(it.offer.versionName) == channel }
         val offer = offer(offers, channel) ?: job?.offer
         val on = channel == selected
-        val installed = offer?.versionName == installedName
+        val sameName = offer?.versionName == installedName
+        // A test build is not its Stable: that Stable installs again, as the way back.
+        val again = testBuild && sameName && channel == UpdateChannel.STABLE
+        val installed = sameName && !again
         val allowedCode = offer != null && offer.versionCode >= installedCode
         val otherChannel = channelOf(installedName) != channel
         val barred = offer != null && upload(offer) in refused
-        val canInstall = offer != null && !installed && allowedCode && !barred && (otherChannel || newer(offer.versionName, installedName))
+        val canInstall = offer != null && !installed && allowedCode && !barred &&
+            (otherChannel || again || newer(offer.versionName, installedName))
         ChannelRow(
             channel, on, offer, installed, canInstall,
             locked = wait in LOCKS,
-            fresh = canInstall && !(channel == UpdateChannel.STABLE && otherChannel && offer?.versionCode == installedCode),
+            fresh = canInstall && !again && !(channel == UpdateChannel.STABLE && otherChannel && offer.versionCode == installedCode),
             sign = when {
                 job != null -> jobSign(job, wait, allowed, on)
                 !on -> null
@@ -907,11 +928,9 @@ object AppUpdate {
         val line = when (work.problem) {
             null -> Line(R.string.app_update_ready, shown(work.offer.versionName))
             InstallProblem.CANCELLED -> Line(R.string.app_update_cancelled)
-            InstallProblem.GAME_STARTED -> Line(R.string.app_update_put_off)
-            InstallProblem.NO_SPACE -> Line(R.string.app_update_install_no_space)
             InstallProblem.FAILED -> Line(R.string.app_update_install_failed)
         }
-        val tone = if (work.problem == InstallProblem.NO_SPACE || work.problem == InstallProblem.FAILED) Tone.WARNING else Tone.PENDING
+        val tone = if (work.problem == InstallProblem.FAILED) Tone.WARNING else Tone.PENDING
         return when {
             // A wait that locks the rows has its one line above them ([lock]), not on the row.
             wait in LOCKS -> WorkView(line, tone)

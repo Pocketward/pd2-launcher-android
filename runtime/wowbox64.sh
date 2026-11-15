@@ -13,8 +13,8 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 identity() {
     part_identity "box64=$BOX64_COMMIT $BOX64_SHA256 $BOX64_DATE_EPOCH" "llvm-mingw=$LLVM_MINGW_NAME $LLVM_MINGW_SHA256" \
-        "debian=$DEBIAN_IMAGE $DEBIAN_SNAPSHOT" \
-        "$here/wowbox64.sh" "$RUNTIME_DIR/containers/Containerfile.wine" "$RUNTIME_DIR"/patches/box64/*.patch
+        "image=$(base_image_name)" \
+        "$here/wowbox64.sh" "$RUNTIME_DIR"/patches/box64/*.patch
 }
 
 if [[ "${1:-}" == --identity ]]; then
@@ -36,7 +36,7 @@ if ! in_container; then
     # keeps the DLL the same in every build.
     # shellcheck disable=SC2034 # read by run_in (config.sh)
     RUN_EXTRA=(-e SOURCE_DATE_EPOCH="$BOX64_DATE_EPOCH")
-    run_in "$(runtime_image wine)" wowbox64.sh
+    run_in "$(ensure_base_image)" wowbox64.sh
     part_done wowbox64 "$id"
     exit 0
 fi

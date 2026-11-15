@@ -2,9 +2,9 @@
 # Installs our glibc (glibc/) into the staging tree in place of Debian's
 # libc6. build.sh calls it only with PD2_USERLAND_WITH_GLIBC=1, after fetch-debian.sh and before
 # relocate.sh.
-#   - reuses glibc/out/install when glibc/out/BUILDINFO names the current Debian version,
-#     config.sh's Debian image and snapshot (the build image's base and packages), the prefix and
-#     the SHA-256 of glibc/build.sh, glibc/Containerfile and every glibc/patches/*.patch;
+#   - reuses glibc/out/install when glibc/out/BUILDINFO names the current Debian version, the base
+#     image (its compiler), the prefix and the SHA-256 of glibc/build.sh and every
+#     glibc/patches/*.patch;
 #     otherwise runs glibc/build.sh
 #   - the loader becomes the real file usr/lib/ld-linux-aarch64.so.1 (= <U>/lib, glibc's rtlddir,
 #     the interpreter relocate.sh sets); Debian's usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1
@@ -16,6 +16,8 @@
 #   - writes the cache's work/glibc.json (BUILDINFO fields, patch SHA-256s, SHA-256 of every
 #     installed file), which pack.sh puts into manifest.json and check-tree.sh verifies
 # Headers, static libraries, programs (libc-bin) and locale data are not installed.
+# `build-glibc.sh --identity` prints the lines of glibc/out/BUILDINFO that decide the reuse, on the
+# host, before any build (the release workflow's cache key).
 set -euo pipefail
 export LC_ALL=C
 
@@ -27,17 +29,20 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ "${PD2_USERLAND_IN_CONTAINER:-}" != 1 ]]; then
     g="$here/glibc"
     out="$g/out"
-    # build.sh holds the configure flags and CFLAGS, the Containerfile the compiler: a change to
+    # build.sh holds the configure flags and CFLAGS, the base image the compiler: a change to
     # either is a different glibc, even with the same Debian version and patches.
     expected() {
         echo "glibc_debian_version=$(sed -n 's/^GLIBC_DEB_VERSION=//p' "$g/build.sh")"
-        echo "debian_image=$DEBIAN_IMAGE"
-        echo "debian_snapshot=$DEBIAN_SNAPSHOT"
+        echo "image=$(base_image_name)"
         echo "prefix=$USERLAND"
-        for i in build.sh Containerfile; do echo "input=$i $(sha256sum < "$g/$i" | cut -d' ' -f1)"; done
+        for i in build.sh; do echo "input=$i $(sha256sum < "$g/$i" | cut -d' ' -f1)"; done
         for p in "$g"/patches/*.patch; do echo "patch=$(basename "$p") $(sha256sum < "$p" | cut -d' ' -f1)"; done
     }
-    recorded() { grep -E '^(glibc_debian_version|debian_image|debian_snapshot|prefix|input|patch)=' "$out/BUILDINFO" 2>/dev/null || true; }
+    if [[ "${1:-}" == --identity ]]; then
+        expected
+        exit 0
+    fi
+    recorded() { grep -E '^(glibc_debian_version|image|prefix|input|patch)=' "$out/BUILDINFO" 2>/dev/null || true; }
     if [[ -f "$out/install/lib/ld-linux-aarch64.so.1" && "$(recorded)" == "$(expected)" ]]; then
         echo "reusing ${out#"$here/"}/install (BUILDINFO matches the prefix, the patches and build files)"
     else
@@ -45,7 +50,7 @@ if [[ "${PD2_USERLAND_IN_CONTAINER:-}" != 1 ]]; then
         "$g/build.sh"
         [[ "$(recorded)" == "$(expected)" ]] || { echo "${out#"$here/"}/BUILDINFO does not match the inputs" >&2; exit 1; }
     fi
-    run_in_tools build-glibc.sh "$@"
+    run_in_base build-glibc.sh "$@"
     exit
 fi
 

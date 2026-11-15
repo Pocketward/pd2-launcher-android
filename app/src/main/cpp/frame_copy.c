@@ -1,13 +1,15 @@
 // The copy path (the base of the Game view): Xvfb's framebuffer (a memfd, or its -fbdir file
 // when no memfd could be made: 32-bit BGRX after the XWD header) copied into a SurfaceView's
 // window through ANativeWindow, on a display frame (AChoreographer on the copy thread's own
-// looper) whose framebuffer changed: a hash of it spares the copy and the compositor a repeat.
-// The game's own frames are counted where it sends them, by the App userland's Mesa (patch
-// 0002: a 32-bit counter in a shared file); the copy reads that count for the fps counter, and
-// hashes only on a display frame that a present came before (or while none come: a picture drawn
-// outside Mesa's presentation). It does not copy on each present: a display frame shows one
-// present at most whichever way they are taken, and the game often presents the same picture
-// again, which the hash skips.
+// looper) that a game present came before, or whose framebuffer changed (a hash of it finds a
+// picture drawn outside Mesa's presentation). The game's own frames are counted where it sends
+// them, by the App userland's Mesa (patch 0002: a 32-bit counter in a shared file); the copy reads
+// that count for the fps counter, and hashes only on a display frame that a present came before (or
+// while none come). It copies one present at most a display frame: a display frame shows one present
+// at most whichever way they are taken. A present of the same picture again is copied too (issue
+// 21): with no new buffer the game's layer goes idle, and the OnePlus Pad's MediaTek display path
+// flickers a still picture (Character and Inventory open together; firmware 16.0.5.1301).
+// The hash still counts those repeats for the stats.
 // The app's clock paces the game in every present mode (frame_clock.c, Mesa patch 0008). The
 // copy's take holds every present mode to one frame a display frame on this path: it says in the
 // same file the last present it has taken off the X screen (patch 0003), and Mesa copies the X
@@ -80,9 +82,6 @@ struct copy {
     int64_t start_ns, last_ns;
     uint64_t presented, copy_ns, copy_max_ns;
     _Alignas(8) uint64_t changed; // atomic: nativeChangedFrames reads it on the main thread
-    // The buffers that went to the compositor: the copy's posts, and the game's presents while its
-    // own layer shows (one buffer each). Atomic: nativePostedFrames reads it on the main thread.
-    _Alignas(8) uint64_t posts;
     uint64_t last_presented, last_changed, last_copy_ns;
     uint64_t previous_hash;
     uint64_t checks, check_ns, last_checks, last_check_ns;
@@ -300,7 +299,6 @@ static void stats(struct copy *c, int64_t now) {
 static void counted(struct copy *c, int64_t begin) {
     int64_t took = now_ns() - begin;
     c->presented++;
-    __atomic_fetch_add(&c->posts, 1, __ATOMIC_RELAXED);
     c->copy_ns += took;
     if ((uint64_t)took > c->copy_max_ns) c->copy_max_ns = took;
 }
@@ -316,15 +314,16 @@ static void write_frame(const struct copy *c, uint32_t *dst, int dst_stride, int
     for (int y = 0; y < h; y++) swizzle_row(dst + (size_t)y * dst_stride, c->pixels + (size_t)y * c->stride, w);
 }
 
-// The X screen into the layer (or the window) when it [changed], when the layer asks for it again
+// The X screen into the layer (or the window) for a [frame] (a game present, or a changed
+// picture), when the layer asks for it again
 // ([redraw], frame_layer_rest), or a frame that waited for a free layer buffer; [begin] is when the
 // copy began. 0 when the window's format cannot take it (the copy stops).
-static int put(struct copy *c, int changed, int redraw, int64_t begin) {
+static int put(struct copy *c, int frame, int redraw, int64_t begin) {
     ANativeWindow_Buffer buffer;
     uint32_t *pixels;
     int stride;
     if (c->layer != NULL) {
-        int got = changed || redraw || c->pending ? frame_layer_lock(c->layer, &pixels, &stride) : 0;
+        int got = frame || redraw || c->pending ? frame_layer_lock(c->layer, &pixels, &stride) : 0;
         if (got > 0) {
             write_frame(c, pixels, stride, c->transform ? c->height : c->width, c->transform ? c->width : c->height);
             frame_layer_post(c->layer);
@@ -334,11 +333,11 @@ static int put(struct copy *c, int changed, int redraw, int64_t begin) {
             // No buffer can be allocated: the game is not held for one; the layer asks for the X
             // screen again on a later display frame (frame_layer_rest).
             c->pending = 0;
-        } else if (changed) {
+        } else if (frame) {
             // A frame no buffer was free for is copied on the next display frame.
             c->pending = 1;
         }
-    } else if (changed && ANativeWindow_lock(c->window, &buffer, NULL) == 0) {
+    } else if (frame && ANativeWindow_lock(c->window, &buffer, NULL) == 0) {
         if (buffer.format != WINDOW_FORMAT_RGBX_8888 && buffer.format != WINDOW_FORMAT_RGBA_8888) {
             LOG("window format %d is not RGBX/RGBA; not copying", buffer.format);
             ANativeWindow_unlockAndPost(c->window);
@@ -366,10 +365,7 @@ static void on_frame(int64_t frame_time_nanos, void *data) {
     if (direct) {
         // Every present counted as shown (the compositor shows each of the game's buffers, back
         // pressure drops none).
-        if (c->checks > 0 && since > 0) {
-            __atomic_fetch_add(&c->fresh, since, __ATOMIC_RELAXED);
-            __atomic_fetch_add(&c->posts, since, __ATOMIC_RELAXED);
-        }
+        if (c->checks > 0 && since > 0) __atomic_fetch_add(&c->fresh, since, __ATOMIC_RELAXED);
         c->seen_presents = presents;
         c->checks++;
         taken(c, presents);
@@ -415,7 +411,8 @@ static void on_frame(int64_t frame_time_nanos, void *data) {
     c->check_ns += begin - checked;
     // Read by nativeChangedFrames on the main thread.
     if (changed) __atomic_fetch_add(&c->changed, 1, __ATOMIC_RELAXED);
-    if (!put(c, changed, redraw, begin)) return;
+    // A game present is copied even when its picture is a repeat: the layer must not go idle.
+    if (!put(c, changed || since > 0, redraw, begin)) return;
     // A changed picture no buffer was free for keeps the X screen's window as it is until it is
     // copied.
     if (!c->pending) taken(c, presents);
@@ -572,14 +569,6 @@ JNIEXPORT jlong JNICALL Java_com_pd2launcher_app_FrameCopy_nativeChangedFrames(J
     (void)cls;
     struct copy *c = (struct copy *)(intptr_t)handle;
     return (jlong)__atomic_load_n(&c->changed, __ATOMIC_RELAXED);
-}
-
-// The buffers that went to the compositor so far ([posts]): what keeps the display from its idle rate.
-JNIEXPORT jlong JNICALL Java_com_pd2launcher_app_FrameCopy_nativePostedFrames(JNIEnv *env, jclass cls, jlong handle) {
-    (void)env;
-    (void)cls;
-    struct copy *c = (struct copy *)(intptr_t)handle;
-    return (jlong)__atomic_load_n(&c->posts, __ATOMIC_RELAXED);
 }
 
 // The game's presents counted so far (a 32-bit count that wraps), or -1 without the counter.

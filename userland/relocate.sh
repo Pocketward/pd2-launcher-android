@@ -7,7 +7,7 @@
 #   - ensures dri/zink_dri.so (Zink's DRI driver name; a link to libdril_dri.so where Mesa's
 #     install left none)
 #   - every ELF's PT_INTERP becomes $USERLAND/lib/ld-linux-aarch64.so.1; absolute RUNPATH/RPATH
-#     entries get the $USERLAND prefix (patchelf, pinned in the tools image)
+#     entries get the $USERLAND prefix (patchelf, pinned in the base image)
 #   - writes etc/: fonts.conf, resolv.conf placeholder, nsswitch.conf, hosts, the CA bundle and
 #     userland.env (the runtime knobs, from userland.env.in; without its LD_LIBRARY_PATH line when
 #     PD2_USERLAND_WITH_GLIBC=1, since our loader searches the tree itself)
@@ -19,7 +19,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [[ "${PD2_USERLAND_IN_CONTAINER:-}" != 1 ]]; then
     RUN_EXTRA=(-e "PD2_USERLAND_WITH_GLIBC=${PD2_USERLAND_WITH_GLIBC:-0}")
-    run_in_tools relocate.sh "$@"
+    run_in_base relocate.sh "$@"
     exit
 fi
 

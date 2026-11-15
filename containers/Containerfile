@@ -1,13 +1,16 @@
-# Build image for the Android app. Every Android toolchain runs only in this image.
-# Everything is pinned: base image by digest, Debian packages by exact version from a dated
-# snapshot (as userland/containers/Containerfile.tools), JDK / command-line tools / NDK by SHA-256.
-# Platforms and build-tools come from sdkmanager, which verifies Google's published checksums.
+# Build image for the Android app (local builds; the CI's app job does not use it). Every Android
+# toolchain of a local build runs only in this image; devdriver/build.sh takes its NDK when the
+# host has none. Everything is pinned: base image by digest, Debian packages by exact version from
+# a dated snapshot, JDK / command-line tools / NDK by SHA-256. Platforms and build-tools come from
+# sdkmanager, which verifies Google's published checksums.
 
-# debian:trixie-slim (multi-arch index digest)
-FROM docker.io/library/debian@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
+# debian:trixie-slim (multi-arch index digest): userland/config.sh's DEBIAN_IMAGE (build.sh passes it)
+ARG DEBIAN_IMAGE
+FROM ${DEBIAN_IMAGE}
 
-# snapshot.debian.org timestamp for trixie, trixie-updates and trixie-security (userland/config.sh's).
-ARG DEBIAN_SNAPSHOT=20261006T000000Z
+# snapshot.debian.org timestamp for trixie, trixie-updates and trixie-security: userland/config.sh's
+# DEBIAN_SNAPSHOT (build.sh passes it).
+ARG DEBIAN_SNAPSHOT
 RUN rm -f /etc/apt/sources.list.d/debian.sources \
     && printf '%s\n' \
         'Types: deb' \

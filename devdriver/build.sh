@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Builds the system-driver bridge's servers for Android (bionic, NDK r27c, API 30) in the NDK
-# container, two builds of one virglrenderer source:
+# Builds the system-driver bridge's servers for Android (bionic, NDK r27c, API 30) in the base
+# image (../containers/Containerfile.base) with the NDK mounted, two builds of one virglrenderer
+# source:
 #   1. Venus (the Venus route): virglrenderer's vtest server and render server with Venus only
 #      (-Dvrend=false: no OpenGL renderer, no libepoxy), plus our patches/virglrenderer/*.patch.
 #   2. VirGL (the VirGL route, OpenGL to the phone's GLES): a second vtest server with virglrenderer's
@@ -11,14 +12,18 @@
 #      EGL_KHR_create_context. A server of its own, so the Venus route's server stays as it is.
 # Output: <out>/virgl_test_server, <out>/virgl_render_server, <out>/virgl_test_server_gl,
 # <out>/SHA256SUMS, <out>/BUILDINFO
-# (the build's identity: the pins, the build type, the SHA-256 of this script, the Containerfiles
-# and every patch; the app's build.sh builds again when it differs from `build.sh --identity`).
+# (the build's identity: the pins, the build type, the base image, the NDK, the SHA-256 of this
+# script and every patch; the app's build.sh builds again when it differs from `build.sh --identity`).
 #
 # Usage: build.sh <out-dir> | build.sh --identity
 #   sources are cached in $PD2_DEVDRIVER_SRC (default devdriver/src in the build cache), the
 #   build tree in $PD2_DEVDRIVER_WORK (default devdriver/build there).
-# The build image is devdriver/Containerfile on top of the Android build image that the app's
-# build.sh builds (localhost/pd2-android-build:<hash>); run that once first.
+# The NDK r27c (27.2.12479018) is mounted at /opt/android-sdk/ndk/27.2.12479018 from the first of:
+#   - $ANDROID_NDK_ROOT, when it is that version (CI: the NDK that sdkmanager installs)
+#   - $ANDROID_HOME/ndk/27.2.12479018, when it is that version
+#   - the NDK of the local Android build image (containers/Containerfile) that the app's build.sh
+#     names in PD2_ANDROID_BUILD_IMAGE (Podman's image mount); so a local build needs no NDK on
+#     the host
 #
 # Pins:
 #   virglrenderer main e18f8c00a9969d41f1cde6b2c7a73af8f518e660 (2026-10-20), MIT; main, not the
@@ -52,6 +57,8 @@ set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 work="${PD2_DEVDRIVER_WORK:-$HOME/.cache/pd2-android/devdriver/build}"
+# shellcheck source=../userland/config.sh
+. "$here/../userland/config.sh"
 
 buildtype="${PD2_DEVDRIVER_BUILDTYPE:-release}"
 VIRGL_COMMIT=e18f8c00a9969d41f1cde6b2c7a73af8f518e660
@@ -63,14 +70,18 @@ VPROTO_URL="https://gitlab.freedesktop.org/virgl/venus-protocol/-/archive/$VPROT
 EPOXY_VERSION=1.5.10
 EPOXY_SHA256=a7ced37f4102b745ac86d6a70a9da399cc139ff168ba6b8002b4d8d43c900c15
 EPOXY_URL="https://github.com/anholt/libepoxy/archive/refs/tags/$EPOXY_VERSION.tar.gz"
+NDK_VERSION=27.2.12479018
+NDK=/opt/android-sdk/ndk/$NDK_VERSION
 
 identity() {
     echo "virglrenderer=$VIRGL_COMMIT $VIRGL_SHA256"
     echo "venus-protocol=$VPROTO_VERSION $VPROTO_SHA256"
     echo "libepoxy=$EPOXY_VERSION $EPOXY_SHA256"
     echo "buildtype=$buildtype"
+    echo "image=$(base_image_name)"
+    echo "ndk=$NDK_VERSION"
     local f
-    for f in "$here/build.sh" "$here/Containerfile" "$here/../containers/Containerfile" "$here"/patches/virglrenderer/*.patch \
+    for f in "$here/build.sh" "$here"/patches/virglrenderer/*.patch \
         "$here"/patches/virglrenderer-gl/*.patch; do
         echo "${f#"$here/"} $(sha256sum < "$f" | cut -d' ' -f1)"
     done
@@ -110,16 +121,26 @@ for p in "$here"/patches/virglrenderer/0001-*.patch "$here"/patches/virglrendere
     echo "applied $(basename "$p") (VirGL server)"
 done
 
-# The image tag hashes the Containerfile and its base, so edits rebuild and the rest is reused.
-base="localhost/pd2-android-build:$(sha256sum "$here/../containers/Containerfile" | cut -c1-16)"
-image="${PD2_NDK_IMAGE:-localhost/pd2-devdriver-ndk:$( (cat "$here/Containerfile"; echo "$base") | sha256sum | cut -c1-16)}"
-if ! podman image exists "$image"; then
-    podman image exists "$base" || { echo "no $base: run the app's build.sh once first" >&2; exit 1; }
-    podman build --build-arg BASE="$base" -t "$image" -f "$here/Containerfile" "$here"
+# The NDK (see above), mounted read-only at $NDK.
+ndk_is_r27c() { grep -qsx "Pkg.Revision = $NDK_VERSION" "$1/source.properties"; }
+if [[ -n "${ANDROID_NDK_ROOT:-}" ]] && ndk_is_r27c "$ANDROID_NDK_ROOT"; then
+    ndk_mount=(-v "$ANDROID_NDK_ROOT:$NDK:ro")
+elif [[ -n "${ANDROID_HOME:-}" ]] && ndk_is_r27c "$ANDROID_HOME/ndk/$NDK_VERSION"; then
+    ndk_mount=(-v "$ANDROID_HOME/ndk/$NDK_VERSION:$NDK:ro")
+elif [[ -n "${PD2_ANDROID_BUILD_IMAGE:-}" ]]; then
+    ndk_mount=(--mount "type=image,source=$PD2_ANDROID_BUILD_IMAGE,destination=$NDK,subpath=$NDK")
+else
+    echo "no NDK $NDK_VERSION: set ANDROID_NDK_ROOT or ANDROID_HOME, or build through the app's build.sh" >&2
+    exit 1
 fi
+engine="$(container_engine)"
+image="$(ensure_base_image)"
 
-podman run --rm -v "$work:/work" -v "$out:/out" -e BUILDTYPE="$buildtype" "$image" bash -euo pipefail -c '
+"$engine" run --rm --platform linux/amd64 "${ndk_mount[@]}" -v "$work:/work" -v "$out:/out" \
+    -e BUILDTYPE="$buildtype" "$image" bash -euo pipefail -c '
 T=/opt/android-sdk/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin
+# An empty pkg-config search path: the base image'\''s own .pc files (its amd64 libdrm, for one) are
+# not for Android.
 cat > /work/cross.ini <<EOF
 [binaries]
 c = '\''$T/aarch64-linux-android30-clang'\''
@@ -127,6 +148,9 @@ cpp = '\''$T/aarch64-linux-android30-clang++'\''
 ar = '\''$T/llvm-ar'\''
 strip = '\''$T/llvm-strip'\''
 pkg-config = '\''pkgconf'\''
+
+[properties]
+pkg_config_libdir = ['\'''\'']
 
 [built-in options]
 c_link_args = ['\''-llog'\'', '\''-landroid'\'']
@@ -151,7 +175,7 @@ $T/llvm-readelf -d /out/virgl_test_server /out/virgl_render_server | grep NEEDED
 # The VirGL server: libepoxy, static and EGL only (it opens the phone'\''s libEGL.so and
 # libGLESv2.so at run time), then the vtest server with vrend only, on EGL (no GBM on Android:
 # patch virglrenderer-gl/0001). Its own cross file finds only that libepoxy.
-sed -e "s|^\[built-in options\]|[properties]\npkg_config_libdir = ['\''/work/epoxy-install/lib/pkgconfig'\'']\n\n[built-in options]|" \
+sed -e "s|^pkg_config_libdir = .*|pkg_config_libdir = ['\''/work/epoxy-install/lib/pkgconfig'\'']|" \
     -e "s|^c_link_args = .*|c_link_args = ['\''-llog'\'', '\''-ldl'\'']|" /work/cross.ini > /work/cross-gl.ini
 meson setup /work/epoxy/out /work/epoxy --cross-file /work/cross-gl.ini --prefix=/work/epoxy-install \
     --libdir=lib --buildtype=$BUILDTYPE -Ddefault_library=static \

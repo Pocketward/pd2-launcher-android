@@ -13,7 +13,6 @@ import android.os.SystemClock
 import android.text.InputType
 import android.util.Log
 import android.view.Choreographer
-import android.view.Display
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -80,11 +79,11 @@ import com.pd2launcher.app.FpsReading
 import com.pd2launcher.app.FrameClock
 import com.pd2launcher.app.FrameCopy
 import com.pd2launcher.app.FrameCounts
-import com.pd2launcher.app.FrameRateVote
+import com.pd2launcher.app.FramePick
 import com.pd2launcher.app.Framebuffer
+import com.pd2launcher.app.GameDisplay
 import com.pd2launcher.app.GameEnvironment
 import com.pd2launcher.app.GameFrameRate
-import com.pd2launcher.app.GameDisplay
 import com.pd2launcher.app.GameInput
 import com.pd2launcher.app.GameResolution
 import com.pd2launcher.app.GameViewLines
@@ -92,14 +91,21 @@ import com.pd2launcher.app.GameViewLog
 import com.pd2launcher.app.InputDispatch
 import com.pd2launcher.app.LauncherSettings
 import com.pd2launcher.app.LauncherStart
+import com.pd2launcher.app.LogArea
+import com.pd2launcher.app.LogPolicy
 import com.pd2launcher.app.MoveDelays
 import com.pd2launcher.app.MoveSource
 import com.pd2launcher.app.PadKeyLines
 import com.pd2launcher.app.PadStateLines
+import com.pd2launcher.app.PanelModes
+import com.pd2launcher.app.PhoneRefreshCap
 import com.pd2launcher.app.PresentServer
 import com.pd2launcher.app.R
+import com.pd2launcher.app.ScreenCapabilityProbe
 import com.pd2launcher.app.ScreenRate
-import com.pd2launcher.app.ScreenRateWatch
+import com.pd2launcher.app.ScreenRateReader
+import com.pd2launcher.app.ScreenRequest
+import com.pd2launcher.app.ScreenRequester
 import com.pd2launcher.app.SessionPaths
 import com.pd2launcher.app.SessionService
 import com.pd2launcher.app.SessionStatus
@@ -199,10 +205,9 @@ enum class GameLayer {
  * window in the middle ([GameResolution.LAUNCHER_WINDOW]), as large as the screen allows, the X
  * screen's other parts past the screen's edges where they do not fit; with Center at its own
  * pixels in the middle. Or the game's own buffers on a layer above it while it
- * presents them there ([PresentServer]), the display asked for its highest mode (at the screen's
- * full rate, [ScreenRate]) or the player's reduced frame rate, which also holds the game to it
- * ([AppSettings.frameRate]), and the player's
- * input into the game: touch and a mouse as the X screen's mouse (touch through gestures, a mouse 1:1),
+ * presents them there ([PresentServer]), the game held to the player's Frame rate
+ * ([AppSettings.frameRate]) and the display asked for a rate that goes with it ([ScreenRequester]),
+ * and the player's input into the game: touch and a mouse as the X screen's mouse (touch through gestures, a mouse 1:1),
  * keyboard keys and Android's keyboard as X keys, the controller as the game's XInput pad
  * (the chord pressed briefly: mouse mode), and the on-screen controls as game keys. The in-game
  * menu ([GameMenu]) opens from the glyph, the chord held, or Back; the game keeps running and
@@ -337,9 +342,8 @@ fun GameView(
     }
     // The controller's mode now (the chord switches it, the Controls screen too).
     var mouseMode by remember { mutableStateOf(false) }
-    // The screen's full rate, live: the Game view's measurement can change it ([ScreenRate]).
-    remember { ScreenRate.load(context) }
-    val fullFrameRate by ScreenRate.full.collectAsState()
+    val panel = remember { PanelModes.of(context.activity()?.display) }
+    val screenRate by ScreenRate.last.collectAsState()
     // The game's own frame rate (its presents, counted where it sends them), for the counter.
     var fps by remember { mutableStateOf<FpsReading?>(null) }
     LaunchedEffect(surface) {
@@ -355,7 +359,7 @@ fun GameView(
         val window = context.activity()?.window
         val previous = window?.attributes?.softInputMode
         window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
-        onDispose { if (previous != null) window?.setSoftInputMode(previous) }
+        onDispose { if (previous != null) window.setSoftInputMode(previous) }
     }
     BackHandler(enabled = live) {
         when (layer) {
@@ -465,7 +469,7 @@ fun GameView(
                     showFps = app.showFps,
                     display = app.gameDisplay,
                     keyboard = keyboard,
-                    frameRate = frameRateLabel(app.frameRate, fullFrameRate),
+                    frameRate = frameRateLabel(app.frameRate, panel),
                     slowerInBackground = app.lowFrameRateInBackground,
                     soundInBackground = soundInBackground,
                     keepScreenOn = app.keepScreenOn,
@@ -512,15 +516,15 @@ fun GameView(
             )
             // Over the menu, which stays behind it.
             if (frameRateInput) {
-                FrameRateInput(app.frameRate, fullFrameRate, { pick ->
-                    AppSettingsStore.update(context) { it.copy(frameRate = pick) }
-                    // At once: the clock and both layers' rate for the display.
-                    surface?.applyFrameRate(pick) ?: FrameClock.setRate(FrameRateVote.rate(fullFrameRate, pick))
-                }) {
-                    frameRateInput = false
-                    // The input measured the full rate again ([com.pd2launcher.app.ScreenRateProbe]): the clock and the vote follow it.
-                    surface?.let { it.applyFrameRate(it.frameRate) }
-                }
+                FrameRateInput(
+                    app.frameRate, panel,
+                    { pick ->
+                        AppSettingsStore.update(context) { it.copy(frameRate = pick) }
+                        surface?.applyFrameRate(pick) ?: FrameClock.setRate(FramePick.onPanel(pick, panel))
+                    },
+                    // Only while the game shows: the reading is of its screen then.
+                    slowerScreenHertz = surface?.let { ScreenRate.slowerThan(FramePick.onPanel(app.frameRate, panel), screenRate) },
+                ) { frameRateInput = false }
             }
         }
     }
@@ -758,10 +762,7 @@ private const val PAD_STATE_LOG_MS = 100L
  * never applies here), and it is the editor Android's keyboard types into. While [suspended]
  * (an overlay layer shows, [GameLayer.suspends]) it lets go of the controller, touch and the mouse and
  * passes keys on, so the controller drives the native screens; the on-screen controls still
- * reach the game ([virtual], [send]). [frameRate]: the player's frame rate, the app's clock's
- * ([FrameClock]) and, where it is below the screen's full rate, the display's; Full
- * ([AppSettings.FULL_FRAME_RATE]): the screen's full rate, which it measures while it shows
- * ([ScreenRate]), and the display's highest mode ([FrameRateVote]).
+ * reach the game ([virtual], [send]).
  */
 private class GameSurface(
     context: Context,
@@ -826,66 +827,40 @@ private class GameSurface(
             if (!value && suspended && keyboard) showKeyboard(false)
         }
 
-    /**
-     * The player's frame rate ([AppSettings.frameRate]), for the next time the surface comes and
-     * for a change of the screen's full rate ([screenRate]).
-     */
+    /** As stored ([AppSettings.frameRate]); [pace] limits it to this display. */
     var frameRate = AppSettings().frameRate
 
-    /**
-     * The display's real rate while the surface shows ([ScreenRate]): the screen's full rate
-     * follows it, and the clock and both layers' vote follow the full rate at once. It counts the
-     * buffers that go to the compositor ([FrameCopy.posted]).
-     */
-    private val screenRate = ScreenRateWatch(
-        context, { display }, { copy?.posted() },
-        // The direct present counts each frame's time on the screen in refreshes of this rate.
-        onRate = { PresentServer.current.value?.setRefreshRate(it) },
-    ) { applyFrameRate(frameRate) }
-
-    /**
-     * The player changed the frame rate to [pick] while the game shows, or the screen's full rate
-     * changed ([screenRate]): the clock follows at once, and both layers ask the display for the
-     * new rate at once (not only with the next surface).
-     */
     fun applyFrameRate(pick: Int) {
         frameRate = pick
-        val (vote, capped) = clockAndVote()
-        copy?.setFrameRate(vote)
-        PresentServer.current.value?.setFrameRate(vote, capped)
+        pace()
     }
 
-    /**
-     * Sets the clock for [frameRate] on the screen's full rate ([ScreenRate.full]; on a display other
-     * than the built-in one its highest mode) and returns the rate the layers ask the display for
-     * (the highest mode while [screenRate] measures, else [FrameRateVote.vote]: the highest mode that is a whole multiple of the player's rate) and whether the
-     * player's rate is below the full rate ([FrameRateVote.cap]). It tells [screenRate] whether the
-     * layers ask for the highest mode, which starts or stops its checks.
-     */
-    private fun clockAndVote(): Pair<Float, Boolean> {
+    /** Only for a new surface and a pick the player confirmed: never for a reading of the screen's rate. */
+    private fun pace(): ScreenRequest {
         val display = display
-        val highest = FrameRateVote.highest(display)
-        val full = if (display == null || display.displayId == Display.DEFAULT_DISPLAY) ScreenRate.full.value else highest
-        val capped = FrameRateVote.cap(full, frameRate) != null
-        val clock = FrameRateVote.rate(full, frameRate)
-        FrameClock.setRate(clock)
-        val top = screenRate.measuring || !capped
-        screenRate.vote(top)
-        val vote = if (top) highest else FrameRateVote.vote(highest, full, frameRate, FrameRateVote.modeRates(display))
-        val multiple = if (top || !capped) 1 else Math.round(vote / clock)
-        // One line in game-view.log for each new clock rate or vote.
-        val line = GameViewLines.pacing(clock, vote, frameRate, full, display?.displayId, capped, multiple)
+        val modes = PanelModes.of(display)
+        val cap = PhoneRefreshCap.read(context)
+        val request = ScreenRequest.of(FramePick.onPanel(frameRate, modes), modes, cap)
+        FrameClock.setRate(request.pick)
+        requester.ask(request, copy)
+        val line = GameViewLines.pacing(frameRate, request, modes, cap, display?.displayId)
         if (line != pacingLogged) {
             pacingLogged = line
             GameViewLog.line(line)
         }
-        return vote to capped
+        return request
     }
 
-    /** The last pacing line in game-view.log ([clockAndVote]). */
     private var pacingLogged = ""
 
     private val window: Window? = context.activity()?.window
+    private val requester = ScreenRequester(window)
+
+    /** For the logs only: the direct present counts each frame's time on the screen in refreshes of the rate read. */
+    private val screenRate = ScreenRateReader(context, { display }) { PresentServer.current.value?.setRefreshRate(it) }
+
+    /** The first seconds of each surface, under the game's own request: only a higher rate counts. */
+    private val capability = ScreenCapabilityProbe(this, null)
     private var callback: Window.Callback? = null
     private var sends = Executors.newSingleThreadExecutor { Thread(it, "pd2-input") }
     private val handler = Handler(Looper.getMainLooper())
@@ -1044,7 +1019,7 @@ private class GameSurface(
                     pad = { state ->
                         game.gamepad.write(state)
                         if (BuildConfig.DEBUG) logPadState(state)
-                        if (AppSettingsStore.current.value.detailedLogging) padStates.next(state, SystemClock.uptimeMillis())?.let(GameViewLog::input)
+                        if (LogPolicy.on(LogArea.INPUT)) padStates.next(state, SystemClock.uptimeMillis())?.let(GameViewLog::input)
                     },
                     relay = ::padSend, onMenu = { onMenu() }, controls = controls,
                     pointerScale = screen.width / GameResolution.OWN_SIZE.first.toFloat(),
@@ -1218,9 +1193,9 @@ private class GameSurface(
                 val returning = copy == null
                 copy?.stop()
                 copyShape = shape
-                // The first surface starts a measurement of the display's rate; a return goes on with what it knows.
                 screenRate.start()
-                val (rate, capped) = clockAndVote()
+                val request = pace()
+                capability.start()
                 // Back on the screen: the game's window has the focus again, also after the
                 // setting was turned off meanwhile (x-input-relay does nothing when it did not take
                 // the focus away); not while an overlay shows that keeps it away ([overlayFocus]).
@@ -1230,15 +1205,16 @@ private class GameSurface(
                 // which rests under the layer, never posts the X screen's older picture. On a new
                 // shape the copy first: it shows the game while the old layer's frames come back.
                 val server = PresentServer.current.value
-                if (returning) server?.attach(holder.surface, rate, capped)
-                copy = FrameCopy.start(holder.surface, framebuffer, screen, shape[0], presentCounter, rate)
-                if (!returning) server?.attach(holder.surface, rate, capped)
-                // The display's rate now; the watch tells each change ([screenRate]).
+                if (returning) server?.attach(holder.surface, request)
+                copy = FrameCopy.start(holder.surface, framebuffer, screen, shape[0], presentCounter, request.rate)
+                if (!returning) server?.attach(holder.surface, request)
+                // A server newer than the last reading has no rate yet.
                 display?.let { server?.setRefreshRate(it.refreshRate) }
             }
             override fun surfaceDestroyed(holder: SurfaceHolder) {
                 leaveScreen()
                 screenRate.stop()
+                capability.stop()
                 PresentServer.current.value?.detach(holder.surface)
                 copy?.stop()
                 copy = null
@@ -1256,7 +1232,7 @@ private class GameSurface(
         if (!PadKeyLines.controllerKey(raw.source, raw.keyCode)) return
         lastPadDevice = raw.deviceId
         val down = raw.action == KeyEvent.ACTION_DOWN
-        val detailed = AppSettingsStore.current.value.detailedLogging
+        val detailed = LogPolicy.on(LogArea.INPUT)
         val target = when {
             !detailed -> ""
             suspended -> "the app's screens (an overlay shows)"
@@ -1606,7 +1582,7 @@ private class GameSurface(
         // and the time of its write into the direct present's pointer split (the service log).
         val source = moving?.takeIf { events.any(::isMove) }
         if (source != null && moved.add(source)) GameViewLog.line(GameViewLines.firstMove(source))
-        val detailed = source != null && AppSettingsStore.current.value.detailedLogging
+        val detailed = source != null && LogPolicy.on(LogArea.POINTER_SPLIT)
         val at = movingAt.takeIf { detailed && it != 0L }
         sends.execute {
             try {

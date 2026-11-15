@@ -96,6 +96,9 @@ fun AppStatusBlock(ui: AppPageUi, left: FocusRequester?, down: FocusRequester) {
                 style = Type.PageTitle.copy(fontWeight = FontWeight.SemiBold), color = Palette.Text,
             )
             Text(text(ui.status.line), style = Type.Hint, color = if (ui.status.tone == Tone.WARNING) Palette.Amber else Palette.Muted)
+            if (com.pd2launcher.app.AppUpdater.TEST_BUILD) {
+                Text(stringResource(R.string.app_update_test_build), style = Type.Hint, color = Palette.Muted)
+            }
         }
         SlimButton(
             stringResource(R.string.app_update_check_now), ui.onCheck,

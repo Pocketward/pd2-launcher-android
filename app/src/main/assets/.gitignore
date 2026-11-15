@@ -1,2 +1,4 @@
 userland/
 runtime/
+# A part of the userland (userland-<name>/) belongs in app/system-driver/assets, never here.
+userland-*/

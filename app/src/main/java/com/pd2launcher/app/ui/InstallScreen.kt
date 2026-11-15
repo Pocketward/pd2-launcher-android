@@ -18,6 +18,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.pd2launcher.app.Failures
 import com.pd2launcher.app.Framebuffer
+import com.pd2launcher.app.LauncherSettings
 import com.pd2launcher.app.Line
 import com.pd2launcher.app.Onboarding
 import com.pd2launcher.app.R
@@ -58,6 +59,8 @@ data class InstallView(
     val amount: Line? = null,
     /** Why the last install did not succeed, in the app's words ([Failures]). */
     val problem: Line?,
+    /** The engine's failure code of a failed install, for the row it belongs to. */
+    val failure: String? = null,
     /**
      * The first task the engine's evidence does not show done, running or not; null once all
      * are ([InstallProgress.standingTask]).
@@ -367,6 +370,7 @@ object InstallProgress {
                     session.gameEnvironmentFailure?.let { Line(R.string.failure_detail, it) }
                 else -> null
             },
+            failure = operation?.failure?.takeIf { state == InstallState.FAILED },
             standing = standingTask(snapshot),
             phase = operation?.phase,
             job = operation?.job,
@@ -536,7 +540,9 @@ object InstallProgress {
         val reached = run?.let { InstallPlan.segments(it.source, it.joined)[it.segment].task }
             ?: view.phase?.let { phase -> InstallPlan.segmentOf(InstallPlan.segments(labels.source, labels.installers), phase, view.job) }
                 ?.let { InstallPlan.segments(labels.source, labels.installers)[it].task }
-        val at = listOfNotNull(reached, standing).maxOrNull()
+        // The engine refused the chosen folder: the import's own row, not the one the run was at.
+        val at = if (view.state == InstallState.FAILED && view.failure == Failures.EXISTING_INVALID) InstallTask.GAME
+        else listOfNotNull(reached, standing).maxOrNull()
         val here = when (view.state) {
             InstallState.STARTING, InstallState.RUNNING, InstallState.STOPPING -> TaskState.RUNNING
             InstallState.STOPPED -> TaskState.STOPPED
@@ -548,7 +554,7 @@ object InstallProgress {
         return InstallPlan.tasks(labels.source, run?.joined ?: labels.installers).map { task ->
             val state = when {
                 done -> TaskState.DONE
-                here == null -> if (standing != null && task < standing) TaskState.DONE else TaskState.WAITING
+                here == null -> if (task < standing) TaskState.DONE else TaskState.WAITING
                 at == null || task < at -> TaskState.DONE
                 task == at -> here
                 else -> TaskState.WAITING
@@ -646,6 +652,16 @@ object InstallProgress {
         state == InstallState.STOPPED && keysHeld -> StartAction.HELD_KEYS
         else -> StartAction.KEY_PAGE
     }
+
+    /**
+     * Install on the source page chose an import: it starts by itself as soon as the engine can
+     * take it: the Download that Continue started (the runtime, [downloadDone]) is complete and no
+     * job runs. Not for a paused or failed import (Resume and Try again stay the player's) and not
+     * for Install Project Diablo 2, which an import never runs.
+     */
+    fun importStartsNow(snapshot: Snapshot?, state: InstallState, importsExisting: Boolean, downloadDone: Boolean): Boolean =
+        importsExisting && downloadDone && state == InstallState.READY && snapshot != null && snapshot.activeJob == null &&
+            snapshot.step != Step.INSTALL_PD2
 
     /** Which page of step 4 shows once Download is done; null before Install. */
     enum class Page {
@@ -972,7 +988,7 @@ fun RepairScreen(
         Rule()
         val update = snapshot?.update ?: Update.UNKNOWN
         // Settings → Game → Check for game updates is off: the engine checks nothing.
-        val checksOff = snapshot?.settings?.updateChecks == false
+        val checksOff = LauncherSettings.pd2UpdatesOff(snapshot?.settings)
         StatusLine(
             if (checksOff) {
                 Tone.PENDING

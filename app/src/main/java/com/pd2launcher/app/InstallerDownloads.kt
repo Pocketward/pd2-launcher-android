@@ -37,9 +37,6 @@ object InstallerDownloads {
      */
     const val CLIENT = "cache/client"
 
-    /** Below the Launcher's managed root: all that Remove removes. */
-    val PATHS = INSTALLERS + CLIENT
-
     /**
      * What the downloads hold, in bytes: the [installers] of Diablo II and Lord of Destruction,
      * and the Project Diablo 2 [client] files.
@@ -75,10 +72,10 @@ object InstallerDownloads {
         data class Failed(val reason: String) : Outcome
     }
 
-    /** Bytes of every file below [PATHS] in [managedRoot]; links are not followed. */
+    /** Bytes of every file below [INSTALLERS] and [CLIENT] in [managedRoot]; links are not followed. */
     fun bytes(managedRoot: File): Long = downloads(managedRoot).bytes
 
-    /** What [PATHS] in [managedRoot] hold, by kind ([Downloads]); links are not followed. */
+    /** What [INSTALLERS] and [CLIENT] in [managedRoot] hold, by kind ([Downloads]); links are not followed. */
     fun downloads(managedRoot: File): Downloads = Downloads(
         installers = INSTALLERS.sumOf { treeBytes(File(managedRoot, it).toPath()) },
         client = treeBytes(File(managedRoot, CLIENT).toPath()),

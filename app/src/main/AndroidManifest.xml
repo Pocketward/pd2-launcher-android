@@ -17,7 +17,13 @@
          the player. Android also asks once to allow installs from this app. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
+    <!-- A game for Android (appCategory, Android 8+; isGame for older launchers and firmware):
+         Android's game mode and the firmware's game modes (MediaTek, HyperOS) treat the app as a
+         game, with their CPU clocks and scheduling (issue 23: on a Poco X6 Pro no thread was busy
+         and the CPU clocks stayed low at 25 to 30 fps). -->
     <application
+        android:appCategory="game"
+        android:isGame="true"
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
@@ -41,11 +47,6 @@
         <service
             android:name=".SessionService"
             android:exported="false" />
-        <!-- Android's installer reports an app update's progress here, through the app's own
-             PendingIntent: not exported. -->
-        <receiver
-            android:name=".AppUpdateReceiver"
-            android:exported="false" />
         <!-- The "PD2 Launcher" root in the Files app and file pickers: the Diablo II folder in
              use. Only the system's document UI (MANAGE_DOCUMENTS) binds it; other apps reach
              files through the URIs it grants. -->
@@ -58,6 +59,17 @@
             <intent-filter>
                 <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
             </intent-filter>
+        </provider>
+        <!-- An app update's checked APK for Android's installer: not exported, read only through
+             the one URI the install grants. -->
+        <provider
+            android:name=".AppUpdateFiles"
+            android:authorities="${applicationId}.updates"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/app_update_files" />
         </provider>
         <!-- Share logs' zip for the app the player picks in the share sheet: not exported, read
              only through the one URI the share grants. -->

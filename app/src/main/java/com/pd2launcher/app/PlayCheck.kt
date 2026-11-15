@@ -32,6 +32,8 @@ object PlayCheck {
         FAILED,
         /** The engine did not answer in [WAIT_MS], or the check could not be sent. */
         NO_ANSWER,
+        /** Not about the check: the author's newer loot filter comes first ([LootFilterStore.updateForPlay]). */
+        LOOT_FILTER,
     }
 
     /** Where a press of Play stands, from the press until the game starts or Play shows again. */
@@ -82,10 +84,10 @@ object PlayCheck {
     }
 
     /**
-     * A press of Play checks first: the engine's update checks are on, or it has no such setting
-     * (an engine before protocol 5 always checks).
+     * A press of Play checks first while PD2's updates are on ([LauncherSettings.pd2Updates]): Check for game
+     * updates is on (an engine before protocol 5 always checks), and both programs are PD2's own.
      */
-    fun checks(snapshot: Snapshot?): Boolean = snapshot?.settings?.updateChecks != false
+    fun checks(snapshot: Snapshot?): Boolean = LauncherSettings.pd2Updates(snapshot?.settings)
 
     /**
      * [state] after the engine's snapshot [next], for each snapshot the app takes, as it takes it:

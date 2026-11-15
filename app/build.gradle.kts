@@ -92,10 +92,10 @@ android {
         // "not compatible" refusal at install. abiFilters limits our own CMake libraries and the
         // libraries inside dependencies (zstd-jni, androidx.graphics.path) alike.
         ndk { abiFilters += "arm64-v8a" }
-        versionName = "0.4.0-beta1"
+        versionName = "0.4.0"
         // A beta build names here the Stable it was made after ("0.3.8" for 0.4.0-beta1 after 0.3.8),
         // and takes its versionCode; a Stable leaves it null ([versionCodeOf]).
-        val betaBase: String? = "0.3.8"
+        val betaBase: String? = null
         versionCode = versionCodeOf(versionName!!, betaBase)
         buildConfigField("String", "SHOWN_VERSION", "\"$versionName${testBuild?.let { " (test $it)" }.orEmpty()}\"")
         buildConfigField("String", "TEST_COMMIT", "\"$testCommit\"")
@@ -248,7 +248,8 @@ tasks.matching { it.name == "preReleaseBuild" }.configureEach {
 // src/test/cpp/frame_pacing_test.c, with Mesa patch 0008's rule written out), and its copy layer's
 // buffers (src/main/cpp/frame_layer.cpp and the copy that uses it, frame_copy.c) and the direct
 // present's newest frame (src/main/cpp/present_server.cpp), against stub Android APIs, by
-// src/test/cpp/frame_layer_test.cpp; Detailed logging's pointer split (src/main/cpp/pointer_split.c,
+// src/test/cpp/frame_layer_test.cpp; the frame split (src/main/cpp/frame_split.c, by
+// src/test/cpp/frame_split_test.c); Detailed logging's pointer split (src/main/cpp/pointer_split.c,
 // by src/test/cpp/pointer_split_test.c, with Mesa patch 0008's ring writer written out); and the
 // game's sound path: the ring between Wine's ALSA plugin
 // and the app (../runtime/pd2-audio/pd2_audio_ring.h) and the resampler
@@ -263,9 +264,10 @@ val nativeHostTestPrograms = mapOf(
     "frame_pacing_test" to listOf("src/test/cpp/frame_pacing_test.c", "src/main/cpp/frame_pacing.c"),
     "frame_layer_test" to listOf(
         "src/test/cpp/frame_layer_test.cpp", "src/test/cpp/frame_copy_harness.c", "src/main/cpp/frame_layer.cpp",
-        "src/main/cpp/frame_pacing.c", "src/main/cpp/pointer_split.c", "src/test/cpp/present_server_harness.cpp",
+        "src/main/cpp/frame_pacing.c", "src/main/cpp/pointer_split.c", "src/main/cpp/frame_split.c", "src/test/cpp/present_server_harness.cpp",
     ),
     "pointer_split_test" to listOf("src/test/cpp/pointer_split_test.c", "src/main/cpp/pointer_split.c"),
+    "frame_split_test" to listOf("src/test/cpp/frame_split_test.c", "src/main/cpp/frame_split.c"),
     "game_audio_test" to listOf("src/test/cpp/game_audio_test.c", "src/main/cpp/game_audio_resampler.c"),
     "hybris_clock_test" to listOf("src/test/cpp/hybris_clock_test.c"),
     "relay_counts_test" to listOf("src/test/cpp/relay_counts_test.c"),

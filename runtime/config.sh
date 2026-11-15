@@ -94,24 +94,13 @@ PREFIX_GENERATION=3
 # --- helpers --------------------------------------------------------------------------------
 
 # Runs a container with the engine. SELinux labels are off for the bind mounts (an enforcing host
-# would refuse the build its own folders otherwise).
+# would refuse the build its own folders otherwise). Docker runs it as the invoking user, so the
+# files it writes are that user's, as with rootless Podman (whose container root is that user).
 engine_run() { # engine-run-arguments...
-    "$(container_engine)" run --rm --security-opt label=disable "$@"
-}
-
-# Builds (once) and prints the image of containers/Containerfile.<name>. Its tag hashes the
-# Containerfile and the Debian pins it is built with.
-runtime_image() { # name
-    local engine image file="$RUNTIME_DIR/containers/Containerfile.$1"
+    local engine user_args=()
     engine="$(container_engine)"
-    image="localhost/pd2-runtime-$1:$( (cat "$file"; echo "$DEBIAN_IMAGE $DEBIAN_SNAPSHOT") | sha256sum | cut -c1-16)"
-    if ! have_image "$engine" "$image"; then
-        "$engine" build --platform linux/amd64 \
-            --build-arg "DEBIAN_IMAGE=$DEBIAN_IMAGE" --build-arg "DEBIAN_SNAPSHOT=$DEBIAN_SNAPSHOT" \
-            -t "$image" -f "$file" "$RUNTIME_DIR/containers" >&2 || return 1
-        archive_image "$engine" "$image"
-    fi
-    echo "$image"
+    [[ "$engine" == docker ]] && user_args=(--user "$(id -u):$(id -g)")
+    "$engine" run --rm --security-opt label=disable "${user_args[@]}" "$@"
 }
 
 # Runs a script of this folder again inside an image, with the folder read-only at /src and the
@@ -127,6 +116,18 @@ run_in() { # image script [args...]
         "${RUN_EXTRA[@]}" "$image" bash "/src/$script" "$@"
 }
 RUN_EXTRA=()
+
+# Runs a mode of a script of this folder that needs no particular CPU (prefix.sh --stage-wine,
+# --finish, --golden: Python's standard library, patchelf, strip, cabextract): on an aarch64 host
+# on the host itself (its own python3, patchelf and cabextract, and its own strip, or $STRIP),
+# because the base image is an amd64 image; elsewhere in the base image.
+run_neutral() { # script [args...]
+    if [[ "$(uname -m)" == aarch64 ]]; then
+        PD2_RUNTIME_CACHE="$RUNTIME_CACHE" STRIP="${STRIP:-strip}" bash "$RUNTIME_DIR/$1" "${@:2}"
+    else
+        run_in "$(ensure_base_image)" "$@"
+    fi
+}
 
 # True inside a container that run_in started.
 in_container() { [[ "${PD2_RUNTIME_IN_CONTAINER:-}" == 1 ]]; }
@@ -182,9 +183,10 @@ part_ready() { # name identity
     [[ -f "$RUNTIME_PARTS/$1/BUILDINFO" && "$(cat "$RUNTIME_PARTS/$1/BUILDINFO")" == "$2" ]]
 }
 
-# The SHA-256 of a finished part's BUILDINFO: what a later part records of it.
+# The SHA-256 of a part's identity (<name>.sh --identity), which is also the SHA-256 of its
+# BUILDINFO once it is built (part_done): what a later part records of it. It needs no built part.
 part_hash() { # name
-    sha256sum < "$RUNTIME_PARTS/$1/BUILDINFO" | cut -d' ' -f1
+    "$RUNTIME_DIR/$1.sh" --identity | sha256sum | cut -d' ' -f1
 }
 
 # Records a part as finished: written last, so a part that stopped half way is built again.

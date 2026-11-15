@@ -1,8 +1,9 @@
 # Checks of every push to main and every pull request: `build.sh check` compiles
-# the debug APK in the pinned build container and runs the release build's lint
-# check (lintVitalRelease). Checks needs no engine, userland or runtime.
-# release.yml builds the full APK and also requires lint before APK export.
-# The build image is cached by its Containerfile, as in release.yml.
+# the debug APK and runs the release build's lint check (lintVitalRelease), with
+# Gradle on the runner (PD2_GRADLE_ON_HOST=1): Temurin 21 and the runner's Android
+# SDK with the pinned packages (.github/actions/android-sdk), as release.yml's apk
+# job. Checks needs no engine, userland or runtime. release.yml builds the full APK
+# and also requires lint before APK export.
 # A push or pull request that changes only Markdown files and docs/ is not checked
 # (owner, 2026-10-29: "if we are just changing markdown files never rebuild"; "make it
 # so CI skips docs only commits"): nothing that builds changed. The publish of a
@@ -28,35 +29,14 @@ jobs:
   app:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      # The build image (SDK, NDK) needs more room than a hosted runner leaves free. In the
-      # background: deleting is slow, and the room is needed only later.
-      - name: Make room on the disk
-        run: |
-          df -h /
-          sudo nohup rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
-            /opt/hostedtoolcache/CodeQL /usr/local/share/powershell /usr/share/swift >/dev/null 2>&1 &
-
-      # build.sh's image under the name build.sh gives it: its tag hashes the Containerfile.
-      - name: Name the build image
-        id: image
-        run: |
-          tag=$(sha256sum containers/Containerfile | cut -c1-16)
-          echo "name=localhost/pd2-android-build:$tag" >> "$GITHUB_OUTPUT"
-          echo "key=android-image-$tag" | tee -a "$GITHUB_OUTPUT"
-
-      - name: Restore the build image
-        id: image-cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/.cache/pd2-android/images/android.tar.zst
-          key: ${{ steps.image.outputs.key }}
+          persist-credentials: false
 
-      - name: Load the build image
-        if: steps.image-cache.outputs.cache-hit == 'true'
-        run: zstd -dc ~/.cache/pd2-android/images/android.tar.zst | podman load
+      - uses: ./.github/actions/android-sdk
 
       # Named as release.yml names its own (by the files that decide what Gradle downloads, and
       # build.sh, whose Gradle tasks for this check decide it too), apart from it: this debug build
@@ -68,27 +48,7 @@ jobs:
             ~/.cache/pd2-android/gradle/caches
             ~/.cache/pd2-android/gradle/wrapper
           key: gradle-checks-${{ hashFiles('gradle/verification-metadata.xml', 'gradle/wrapper/gradle-wrapper.properties', 'gradle.properties', 'build.gradle.kts', 'settings.gradle.kts', 'build.sh') }}
-          restore-keys: |
-            gradle-checks-
-            gradle-
+          restore-keys: gradle-checks-
 
       - name: Compile the debug APK and run the lint check
-        run: ./build.sh check
-
-      - name: Keep the build image
-        id: image-kept
-        if: ${{ !cancelled() && steps.image-cache.outputs.cache-hit != 'true' }}
-        continue-on-error: true
-        env:
-          IMAGE: ${{ steps.image.outputs.name }}
-        run: |
-          mkdir -p ~/.cache/pd2-android/images
-          podman save "$IMAGE" | zstd -T0 -q -o ~/.cache/pd2-android/images/android.tar.zst
-
-      - name: Save the build image
-        if: ${{ !cancelled() && steps.image-kept.outcome == 'success' }}
-        continue-on-error: true
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/pd2-android/images/android.tar.zst
-          key: ${{ steps.image.outputs.key }}
+        run: PD2_GRADLE_ON_HOST=1 ./build.sh check

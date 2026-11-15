@@ -6,11 +6,9 @@ import java.io.File
 /**
  * The system-driver mode: the game's GPU path through the phone's own Vulkan driver. Zink draws
  * through Mesa's Venus ICD, which sends Vulkan over vtest's socket to virglrenderer's server in
- * the APK's native-library folder; the server runs it on the phone's own driver
- * Which Zink ([Zink]): the product Mesa's (main, at
- * userland/config.sh's MESA_COMMIT) wherever the driver meets its needs, else the older Mesa
- * 25.1.9 as glvnd's vendor `pd2sysdrv`
- * (libGLX_pd2sysdrv.so.0 and its libgallium).
+ * the APK's native-library folder; the server runs it on the phone's own driver. The Zink is the
+ * product Mesa's (main, at userland/config.sh's MESA_COMMIT); where the phone's driver does not
+ * meet its needs ([SystemDriverGpu.zinkStarts]), the mode has no Venus route (ADR 0030).
  */
 object SystemDriver {
     /** virglrenderer's vtest server and its render server, bionic, in the APK (build.sh). */
@@ -24,14 +22,11 @@ object SystemDriver {
     const val GL_SERVER_LIBRARY = "libvirgl_test_server_gl.so"
 
     /**
-     * The mode's largest files in the App userland, which the unpack leaves out in release builds
-     * where the mode cannot run (the Venus ICD and the older GL), or the older GL alone where the
-     * product Mesa's Zink runs it. The GL library's version is userland/config.sh's
-     * MESA_SYSDRV_VERSION (a JVM test checks it).
+     * The mode's largest file in the App userland, the Venus ICD, which the unpack leaves out in
+     * release builds where the mode cannot run.
      */
     const val VENUS_LIBRARY = "usr/lib/aarch64-linux-gnu/libvulkan_virtio.so"
-    const val GL_LIBRARY = "usr/lib/aarch64-linux-gnu/libgallium-25.1.9.so"
-    val userlandFiles: Set<String> = setOf(VENUS_LIBRARY, GL_LIBRARY)
+    val userlandFiles: Set<String> = setOf(VENUS_LIBRARY)
 
     /**
      * The libhybris route's files ([GraphicsRoute.LIBHYBRIS], userland build-hybris.sh, in the
@@ -57,14 +52,6 @@ object SystemDriver {
     fun hybrisInApk(context: android.content.Context): Boolean = UserlandAssets.carries(context, UserlandAssets.SYSTEM_DRIVER)
 
     /**
-     * The Zink that the mode uses: [CURRENT], the product Mesa's (main; glvnd vendor `mesa`),
-     * where the phone's driver meets its needs; [OLDER], Mesa 25.1.9's second stack (`pd2sysdrv`,
-     * userland.env's `PD2_APP_WINE_SYSDRV_OLDER_ZINK_*` values), only where the product Mesa's
-     * Zink refuses the driver.
-     */
-    enum class Zink { CURRENT, OLDER }
-
-    /**
      * Debug builds only: with this file in the app's `files/`, the mode's Venus route is used on
      * any GPU, also on an Adreno or a Mali that Turnip or PanVK drives, for tests of the mode on
      * our phones. Its `NAME=value` lines go to the vtest server (GameEnvironment). Release builds
@@ -84,12 +71,21 @@ object SystemDriver {
     const val FORCE_LIBHYBRIS_FILE = "debug/system-driver-libhybris"
 
     /**
-     * The route that a debug build ([debug]) forces: [GraphicsRoute.LIBHYBRIS] with
-     * [FORCE_LIBHYBRIS_FILE], else [GraphicsRoute.VIRGL] with [FORCE_VIRGL_FILE], else
-     * [GraphicsRoute.VENUS] with [FORCE_FILE]; null without any.
+     * The same for the mali-panvk route ([GraphicsRoute.MALI_PANVK]), on any Mali, a CSF one too,
+     * which the route leaves to our PanVK ([MaliPanvk.gpu]): the A/B of mali-panvk against our
+     * PanVK on the CSF Malis (issue 23). It wins over the other three.
+     */
+    const val FORCE_MALI_PANVK_FILE = "debug/system-driver-mali-panvk"
+
+    /**
+     * The route that a debug build ([debug]) forces: [GraphicsRoute.MALI_PANVK] with
+     * [FORCE_MALI_PANVK_FILE], else [GraphicsRoute.LIBHYBRIS] with [FORCE_LIBHYBRIS_FILE], else
+     * [GraphicsRoute.VIRGL] with [FORCE_VIRGL_FILE], else [GraphicsRoute.VENUS] with
+     * [FORCE_FILE]; null without any.
      */
     fun forced(files: File, debug: Boolean = BuildConfig.DEBUG): GraphicsRoute? = when {
         !debug -> null
+        File(files, FORCE_MALI_PANVK_FILE).isFile -> GraphicsRoute.MALI_PANVK
         File(files, FORCE_LIBHYBRIS_FILE).isFile -> GraphicsRoute.LIBHYBRIS
         File(files, FORCE_VIRGL_FILE).isFile -> GraphicsRoute.VIRGL
         File(files, FORCE_FILE).isFile -> GraphicsRoute.VENUS
@@ -100,6 +96,7 @@ object SystemDriver {
     fun forceFile(route: GraphicsRoute): String = when (route) {
         GraphicsRoute.VIRGL -> FORCE_VIRGL_FILE
         GraphicsRoute.LIBHYBRIS -> FORCE_LIBHYBRIS_FILE
+        GraphicsRoute.MALI_PANVK -> FORCE_MALI_PANVK_FILE
         else -> FORCE_FILE
     }
 
@@ -107,11 +104,10 @@ object SystemDriver {
     fun socket(runtimeDir: File) = File(runtimeDir, "vtest.sock")
 
     /**
-     * Whether the unpacked App userland at [userland] has the mode's files for [zink]: the
-     * release unpack leaves them out where the mode could not run ([DriverChoice.skippedFiles]).
+     * Whether the unpacked App userland at [userland] has the mode's files: the release unpack
+     * leaves them out where the mode could not run ([DriverChoice.skippedFiles]).
      */
-    fun filesPresent(userland: File, zink: Zink): Boolean =
-        File(userland, VENUS_LIBRARY).isFile && (zink == Zink.CURRENT || File(userland, GL_LIBRARY).isFile)
+    fun filesPresent(userland: File): Boolean = File(userland, VENUS_LIBRARY).isFile
 
     /** Whether the APK carries the server: both programs in [nativeLibraryDir]. */
     fun serverInApk(nativeLibraryDir: String): Boolean =
@@ -207,7 +203,7 @@ enum class SharedMemory {
 
 /**
  * The phone's own Vulkan driver as [SystemDriverProbe] reads it in the app's process: its
- * device [name], Vulkan [apiVersion] (major, minor), whether the older Zink 25.1.9 can start on it
+ * device [name], Vulkan [apiVersion] (major, minor), whether the product Mesa's Zink can start on it
  * ([zinkStarts]) and how the server shares memory with it ([memory]); [kernel] is the GPU as its
  * kernel driver reports it when that answers (a Mali that PanVK does not drive), else null.
  */
@@ -220,11 +216,6 @@ data class SystemDriverGpu(
     /** The app's buffers can take the game's frames with no copy (dma-buf import, DRM format modifiers). */
     val directPresent: Boolean = false,
     /**
-     * The product Mesa's Zink (main; its hard needs are 26.2.3's) can start on it: the mode then
-     * uses that GL stack and not the older one ([SystemDriver.Zink]).
-     */
-    val zinkCurrent: Boolean = false,
-    /**
      * The driver's VkDriverId (VkPhysicalDeviceDriverProperties); null where the probe cannot read
      * it (Vulkan 1.1 without VK_KHR_driver_properties: Venus then gives Zink its own id, MESA_VENUS).
      */
@@ -235,7 +226,7 @@ data class SystemDriverGpu(
     val geometryShader: Boolean? = null,
     /**
      * Zink's base requirements as the probe reads them, by the names that Zink prints
-     * ([ZINK_BASE_OLDER], [ZINK_BASE_CURRENT]); an item that the probe did not read (an older
+     * ([ZINK_BASE]); an item that the probe did not read (an older
      * probe) is not in it and counts as there.
      */
     val zinkBase: Map<String, Boolean> = emptyMap(),
@@ -243,16 +234,13 @@ data class SystemDriverGpu(
     /** Venus needs Vulkan 1.1 (Mesa vn_instance.h VN_MIN_RENDERER_VERSION; virglrenderer vkr_instance.c). */
     val vulkan11: Boolean get() = apiVersion.first > 1 || (apiVersion.first == 1 && apiVersion.second >= 1)
 
-    /** The Zink the mode uses here: the product Mesa's where it starts, else the older one. */
-    val zink: SystemDriver.Zink get() = if (zinkCurrent) SystemDriver.Zink.CURRENT else SystemDriver.Zink.OLDER
-
     /** Imagination's own driver for its PowerVR GPUs. */
     val powerVr: Boolean get() = driverId == IMAGINATION_PROPRIETARY
 
     /**
      * Samsung's own driver for its Xclipse GPUs: by the driver id, or by the device's name where
      * the probe has no id. Zink over Venus read integer vertex attributes as 0 there (Galaxy S24
-     * Exynos, Xclipse 940, driver 24.0.545, Zink 25.1.9 and 26.1.8) before the Venus server's
+     * Exynos, Xclipse 940, driver 24.0.545, Zinks of Mesa 25.1.9 and 26.1.8) before the Venus server's
      * patch 0009, and D2GL's text takes its layer and flags from such attributes; VirGL with the
      * integer types of server patch virglrenderer-gl/0004 reads them correctly. Its route order is
      * one switch, [DriverChoice.XCLIPSE_VIRGL_FIRST] ([DriverOptions.virglFirst]): VirGL first.
@@ -281,10 +269,11 @@ data class SystemDriverGpu(
 
     /**
      * Imagination's own driver without geometry shaders (PowerVR GE8320 and GE8322): no Venus
-     * route. Mesa 25.1.9's Zink fails on it (zink_screen.c:3411-3415), also through Venus, which
-     * gives Zink the driver's real id (VK_KHR_maintenance7's layered properties,
-     * vn_physical_device.c); the product Mesa's Zink needs robustness2, which these drivers do not
-     * have either. Such a phone goes straight to VirGL where its OpenGL ES driver can run it.
+     * route. The product Mesa's Zink needs robustness2, which these drivers do not have; Mesa
+     * 25.1.9's Zink also failed on them for the missing geometry shaders (zink_screen.c:3411-3415,
+     * also through Venus, which gives Zink the driver's real id: VK_KHR_maintenance7's layered
+     * properties, vn_physical_device.c). Such a phone goes straight to VirGL where its OpenGL ES
+     * driver can run it.
      */
     val powerVrWithoutGeometryShaders: Boolean get() = powerVr && geometryShader == false
 
@@ -305,7 +294,7 @@ data class SystemDriverGpu(
     fun problem(): String? = when {
         !vulkan11 -> "its Vulkan driver is version ${apiVersion.first}.${apiVersion.second}, 1.1 is needed"
         powerVrWithoutGeometryShaders -> "its Vulkan driver (PowerVR, no geometry shaders) is one that OpenGL on Vulkan (Zink) refuses"
-        !zinkStarts && !zinkCurrent -> "its Vulkan driver lacks what OpenGL on Vulkan (Zink) needs (timeline semaphores, imageless framebuffers, render pass 2 or descriptor update templates)"
+        !zinkStarts -> "its Vulkan driver lacks what OpenGL on Vulkan (Zink) needs (timeline semaphores, render pass 2, descriptor update templates, dynamic rendering, robustness2's null descriptors or maintenance5)"
         // Fact (motorola edge 40 Mali-G77 r32p1, Galaxy A32 Mali-G52 r26p0, 2026-10-24): with no readable
         // dma-buf heap, the AHardwareBuffer path (server patch 0005) finds no host-visible memory type
         // that imports an AHardwareBuffer, and Zink waits until its time limit. The probe makes no
@@ -317,8 +306,8 @@ data class SystemDriverGpu(
     }
 
     /**
-     * Zink's base requirements that the driver does not have, for the Zink that the mode uses here
-     * ([zink]): the list of its check_base_requirements ([ZINK_BASE_OLDER], [ZINK_BASE_CURRENT]).
+     * Zink's base requirements that the driver does not have: the list of its
+     * check_base_requirements ([ZINK_BASE]).
      * Zink only warns there ("Some incorrect rendering might occur because the selected Vulkan
      * device (...) doesn't support base Zink requirements: ...") and goes on; on the RP Mini V2
      * (Adreno 650, only logicOp missing) the game's Venus context was then lost ("vkQueueSubmit
@@ -328,40 +317,27 @@ data class SystemDriverGpu(
      * src/virtio/vulkan/vn_physical_device.c vn_physical_device_init_supported_extensions), so the
      * driver's own values are Zink's.
      */
-    fun zinkBaseMissing(): List<String> =
-        (if (zink == SystemDriver.Zink.CURRENT) ZINK_BASE_CURRENT else ZINK_BASE_OLDER).filter { zinkBase[it] == false }
+    fun zinkBaseMissing(): List<String> = ZINK_BASE.filter { zinkBase[it] == false }
 
     /** Why Venus cannot run by Zink's base requirements ([zinkBaseMissing]); null where none is missing. */
     fun zinkBaseProblem(): String? = zinkBaseMissing().takeIf { it.isNotEmpty() }?.let {
         "its Vulkan driver lacks Zink's base requirements (OpenGL on Vulkan): ${it.joinToString(" ")}"
     }
 
-    private fun zinkName() = if (zink == SystemDriver.Zink.CURRENT) "Zink of Mesa main" else "Zink 25.1.9"
-
     companion object {
         /** Zink's base requirements by the names that its warning prints (zink_screen.c check_base_requirements). */
         const val LOGIC_OP = "feats.features.logicOp"
-        const val FILL_MODE_NON_SOLID = "feats.features.fillModeNonSolid"
-        const val SHADER_CLIP_DISTANCE = "feats.features.shaderClipDistance"
         const val SCALAR_BLOCK_LAYOUT = "scalarBlockLayout OR EXT_scalar_block_layout"
         const val MAINTENANCE1 = "have_KHR_maintenance1"
         const val CUSTOM_BORDER_COLOR = "have_EXT_custom_border_color"
         const val LINE_RASTERIZATION = "have_EXT_line_rasterization"
 
-        /** Mesa 25.1.9's list (src/gallium/drivers/zink/zink_screen.c:2722-2729): the older Zink ([SystemDriver.Zink.OLDER]). */
-        val ZINK_BASE_OLDER = listOf(
-            LOGIC_OP, FILL_MODE_NON_SOLID, SHADER_CLIP_DISTANCE, SCALAR_BLOCK_LAYOUT, MAINTENANCE1, CUSTOM_BORDER_COLOR, LINE_RASTERIZATION,
-        )
-
-        /**
-         * The product Mesa's list (main at userland/config.sh's MESA_COMMIT, zink_screen.c:2995-3000;
-         * [SystemDriver.Zink.CURRENT]): no fillModeNonSolid and no shaderClipDistance.
-         */
-        val ZINK_BASE_CURRENT = listOf(LOGIC_OP, SCALAR_BLOCK_LAYOUT, MAINTENANCE1, CUSTOM_BORDER_COLOR, LINE_RASTERIZATION)
+        /** The product Mesa's list (main at userland/config.sh's MESA_COMMIT, zink_screen.c:2995-3000). */
+        val ZINK_BASE = listOf(LOGIC_OP, SCALAR_BLOCK_LAYOUT, MAINTENANCE1, CUSTOM_BORDER_COLOR, LINE_RASTERIZATION)
 
         /**
          * The baseline log line of the Venus way ([DeviceCheckRun]), as VirGL's
-         * ([PhoneGlesDriver.logLine]): whether it can run, with the reason, the Zink and the base
+         * ([PhoneGlesDriver.logLine]): whether it can run, with the reason, the base
          * requirements that are missing, and the driver; [server]: the APK carries the mode's parts.
          */
         fun logLine(phone: SystemDriverGpu?, server: Boolean): String = when {
@@ -374,7 +350,7 @@ data class SystemDriverGpu(
                     null -> "can run ("
                     phone.zinkBaseProblem() -> "cannot run ("
                     else -> "cannot run ($problem; "
-                } + "${phone.zinkName()}, base requirements missing: $missing): ${phone.name}, Vulkan ${phone.apiVersion.first}.${phone.apiVersion.second}"
+                } + "Zink's base requirements missing: $missing): ${phone.name}, Vulkan ${phone.apiVersion.first}.${phone.apiVersion.second}"
             }
         }
 
@@ -429,8 +405,6 @@ object SystemDriverReport {
     /** The probe's lines of Zink's base requirements ([SystemDriverGpu.zinkBase]), by Zink's names. */
     private val ZINK_BASE_KEYS = listOf(
         "logic_op" to SystemDriverGpu.LOGIC_OP,
-        "fill_mode_non_solid" to SystemDriverGpu.FILL_MODE_NON_SOLID,
-        "shader_clip_distance" to SystemDriverGpu.SHADER_CLIP_DISTANCE,
         "scalar_block_layout" to SystemDriverGpu.SCALAR_BLOCK_LAYOUT,
         "maintenance1" to SystemDriverGpu.MAINTENANCE1,
         "custom_border_color" to SystemDriverGpu.CUSTOM_BORDER_COLOR,
@@ -447,14 +421,10 @@ object SystemDriverReport {
         val version = values["api"]?.split('.')?.mapNotNull { it.toIntOrNull() }.orEmpty()
         if (version.size < 2) return null
         fun flag(key: String) = values[key] == "1"
-        // Zink 25.1.9's hard needs (zink_device_info.py required=True, zink_screen.c).
-        val base = flag("maintenance1") && flag("create_renderpass2") && flag("descriptor_update_template") &&
-            flag("timeline_semaphore")
-        val zink = base && flag("imageless_framebuffer")
-        // The product Mesa's Zink (26.2.3, and main at MESA_COMMIT: the same required=True list and
-        // base checks): the same without imageless framebuffers (a00e2722), with dynamic rendering,
-        // robustness2's nullDescriptor and maintenance5.
-        val current = base && flag("dynamic_rendering") && flag("null_descriptor") && flag("maintenance5")
+        // The product Mesa's Zink's hard needs (main at MESA_COMMIT: zink_device_info.py
+        // required=True and zink_screen.c).
+        val zink = flag("maintenance1") && flag("create_renderpass2") && flag("descriptor_update_template") &&
+            flag("timeline_semaphore") && flag("dynamic_rendering") && flag("null_descriptor") && flag("maintenance5")
         // virglrenderer's order (vkr_physical_device.c, vkr_device_memory.c): dma-buf export, else
         // opaque-fd export of any allocation (which vtest refuses; patch 0005 does not count an
         // export of dedicated allocations only), else our heap path for a driver that imports
@@ -470,7 +440,6 @@ object SystemDriverReport {
         return SystemDriverGpu(
             name, version[0] to version[1], zink, memory, kernel,
             directPresent = flag("dma_buf_import") && flag("drm_format_modifier"),
-            zinkCurrent = current,
             driverId = values["driver_id"]?.toIntOrNull(),
             driverVersion = values["driver_version"]?.toLongOrNull(),
             geometryShader = values["geometry_shader"]?.let { it == "1" },

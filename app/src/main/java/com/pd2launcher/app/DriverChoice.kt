@@ -21,8 +21,9 @@ import java.io.IOException
  * Xclipse GPU, [RADV] comes before them where the App userland has it ([DriverChoice.RADV_FOR_PLAYERS],
  * the owner's decision of 2026-10-28). On Imagination's PowerVR GPUs [LIBHYBRIS] comes before both
  * (the owner's decision of 2026-10-28, "Productize libhybris").
- * On an Arm Mali GPU of kbase's job manager (Bifrost v6/v7, Valhall v9), [MALI_PANVK] comes before
- * them where the App userland has it ([DriverChoice.MALI_PANVK_FOR_PLAYERS]).
+ * On an Arm Mali GPU that mali-panvk knows (kbase's job manager: Bifrost v6/v7, Valhall v9; CSF:
+ * v10 to v13), [MALI_PANVK] comes before them where the App userland has it, and on a CSF Mali it
+ * takes the place of our PanVK ([DriverChoice.MALI_PANVK_FOR_PLAYERS]).
  */
 enum class GraphicsRoute(
     /**
@@ -54,9 +55,10 @@ enum class GraphicsRoute(
     RADV(phoneDriver = true),
 
     /**
-     * The community PanVK tree mali-panvk for Arm Mali GPUs on kbase's job manager ([MaliPanvk]):
-     * the product Mesa's Zink on it, on `/dev/mali0`, with no server; the direct present and the
-     * app's clock as with our PanVK, which stays the CSF Malis' driver ([BUILT_IN]).
+     * The community PanVK tree mali-panvk for Arm Mali GPUs on kbase, job manager and CSF
+     * ([MaliPanvk]): the product Mesa's Zink on it, on `/dev/mali0`, with no server; the direct
+     * present and the app's clock as with our PanVK, which drives a CSF Mali only where this route
+     * cannot run ([BUILT_IN]).
      */
     MALI_PANVK(phoneDriver = true),
 
@@ -124,9 +126,9 @@ data class DriverOptions(
      */
     val radv: Boolean = false,
     /**
-     * mali-panvk can run the game: an Arm Mali GPU of kbase's job manager that the tree knows
+     * mali-panvk can run the game: an Arm Mali GPU (kbase job manager or CSF) that the tree knows
      * ([MaliPanvk.gpu]), the route offered here ([MaliPanvk.allowed]) and in the App userland
-     * ([MaliPanvk.filesPresent]). It comes first.
+     * ([MaliPanvk.filesPresent]). It comes first, and our PanVK ([builtIn]) is then no route.
      */
     val maliPanvk: Boolean = false,
     /**
@@ -170,11 +172,11 @@ data class DriverOptions(
             null
         }
 
-    /** Why mali-panvk comes first on a job-manager Mali, for the logs; null where it does not. */
+    /** Why mali-panvk comes first on a Mali that it knows, for the logs; null where it does not. */
     private val maliPanvkOrderReason: String?
         get() = if (maliPanvk) {
             val after = routes.dropWhile { it != GraphicsRoute.MALI_PANVK }.drop(1)
-            "Arm Mali GPU of kbase's job manager: mali-panvk first, " +
+            "Arm Mali GPU that mali-panvk knows (kbase job manager or CSF): mali-panvk first, " +
                 "${if (after.isEmpty()) "no other route" else "the Phone driver's ways ${after.joinToString(", ")} for a pick of it"} " +
                 "(DriverChoice.MALI_PANVK_FOR_PLAYERS)"
         } else {
@@ -305,10 +307,10 @@ object DriverChoice {
 
     /**
      * Whether the mali-panvk route ([GraphicsRoute.MALI_PANVK], the community PanVK tree for Arm
-     * Mali GPUs on kbase's job manager) is offered to players, the one switch of that policy: true,
-     * first on every job-manager Mali that the tree knows where the APK and the unpacked App
-     * userland have it, then VirGL, then Venus ([MALI_VIRGL_FIRST]); false, only where a debug
-     * build has [MaliPanvk.DEBUG_FILE].
+     * Mali GPUs on kbase) is offered to players, the one switch of that policy: true, first on
+     * every Mali that the tree knows (job manager or CSF; on a CSF Mali in place of our PanVK)
+     * where the APK and the unpacked App userland have it, then VirGL, then Venus
+     * ([MALI_VIRGL_FIRST]); false, only where a debug build has [MaliPanvk.DEBUG_FILE].
      */
     const val MALI_PANVK_FOR_PLAYERS = true
 
@@ -340,6 +342,7 @@ object DriverChoice {
      * ([DriverOptions.maliPanvk]) on a job-manager Mali that the tree knows ([MaliPanvk.gpu]: [gpu],
      * or the kernel's GPU beside the [phone] report) where it is offered ([maliPanvkAllowed],
      * [MaliPanvk.allowed]) and the App userland has it ([maliPanvkFiles], as [radvFiles]).
+     * mali-panvk also on a CSF Mali that the tree knows, and then the built-in PanVK is no route.
      */
     fun options(
         gpu: HostGpu?,
@@ -361,10 +364,14 @@ object DriverChoice {
         val venus = serverInApk && modeFiles && phone != null && phone.problem() == null
         val virgl = glServerInApk && gles != null && gles.problem() == null
         val xclipse = xclipseVirglFirst && phone?.xclipse == true
-        val builtIn = gpu != null && DeviceCheck.bundledDriverKnows(gpu)
+        // mali-panvk where it knows the Mali; then our PanVK is not a route there (one App driver).
+        val maliPanvk = maliPanvkAllowed && maliPanvkFiles && MaliPanvk.gpu(gpu, phone) != null
+        val builtInKnows = gpu != null && DeviceCheck.bundledDriverKnows(gpu)
+        val builtIn = builtInKnows && !maliPanvk
         // Qualcomm: VirGL first also after the built-in Turnip, which stays first where it runs the GPU.
         val qualcomm = qualcommVirglFirst && phone?.qualcomm == true
-        val mali = maliVirglFirst && phone?.mali == true && !builtIn
+        // Mali: VirGL first only outside our PanVK's range (MALI_VIRGL_FIRST), also where mali-panvk takes its place.
+        val mali = maliVirglFirst && phone?.mali == true && !builtInKnows
         return DriverOptions(
             builtIn = builtIn,
             venus = venus,
@@ -374,17 +381,17 @@ object DriverChoice {
             mali = venus && virgl && mali && !xclipse && !qualcomm,
             libhybris = hybrisInApk && hybrisFiles && !builtIn && phone != null && libhybrisRuns(phone),
             radv = radvAllowed && radvFiles && !builtIn && phone?.xclipse == true,
-            maliPanvk = maliPanvkAllowed && maliPanvkFiles && !builtIn && MaliPanvk.gpu(gpu, phone) != null,
+            maliPanvk = maliPanvk,
         )
     }
 
     /**
      * Whether the libhybris route can run on [phone]: Imagination's own driver
      * ([SystemDriverGpu.powerVr], the GPUs it was proven on)
-     * with Vulkan 1.1 and what the product Mesa's Zink needs ([SystemDriverGpu.zinkCurrent]: Zink
+     * with Vulkan 1.1 and what the product Mesa's Zink needs ([SystemDriverGpu.zinkStarts]: Zink
      * runs on the driver itself on this route, not through Venus).
      */
-    fun libhybrisRuns(phone: SystemDriverGpu): Boolean = phone.powerVr && phone.vulkan11 && phone.zinkCurrent
+    fun libhybrisRuns(phone: SystemDriverGpu): Boolean = phone.powerVr && phone.vulkan11 && phone.zinkStarts
 
     /**
      * The route the next Play (and the official PD2 launcher) takes: the one of the pick in
@@ -410,11 +417,9 @@ object DriverChoice {
      * The App userland files that a device never loads, which the unpack leaves out: the other
      * GPU family's Vulkan driver (PanVK on an Adreno, Turnip on a Mali; both where only the phone's
      * own driver runs), and in release builds ([debug] false; debug builds keep them for
-     * [SystemDriver.forced]) the system-driver mode's Venus and older GL where the app takes the
-     * built-in route, or where the phone driver's [report] says Venus cannot run (no report, as
-     * after a failed probe of a GPU the built-in driver does not support, keeps them), or only the
-     * older GL where the product Mesa's Zink runs Venus ([SystemDriver.Zink.CURRENT]); the same
-     * where only the phone's own drivers run (a PowerVR without geometry shaders, say, takes VirGL
+     * [SystemDriver.forced]) the system-driver mode's Venus ICD where the app takes the built-in
+     * route, or where the phone driver's [report] says Venus cannot run (no report, as after a
+     * failed probe of a GPU the built-in driver does not support, keeps it); the same where only the phone's own drivers run (a PowerVR without geometry shaders, say, takes VirGL
      * and never loads Venus). In release builds also RADV ([Radv.LIBRARY]), except where the RADV
      * route can run ([DriverOptions.radv]: a Samsung Xclipse GPU by the [report] that the built-in
      * driver does not support) and RADV is offered to players ([radvForPlayers],
@@ -441,7 +446,6 @@ object DriverChoice {
             options.route == GraphicsRoute.BUILT_IN -> SystemDriver.userlandFiles
             report == null -> emptySet()
             !options.venus -> SystemDriver.userlandFiles
-            report.zink == SystemDriver.Zink.CURRENT -> setOf(SystemDriver.GL_LIBRARY)
             else -> emptySet()
         }
         // The libhybris route's libraries: left out the same way, where the route cannot run
@@ -457,7 +461,8 @@ object DriverChoice {
         val radv = if (debug || (radvForPlayers && options.radv && report?.xclipse == true)) emptySet() else setOf(Radv.LIBRARY)
         val maliPanvk = if (debug || (maliPanvkForPlayers && options.maliPanvk)) emptySet() else setOf(MaliPanvk.LIBRARY)
         return when (gpu) {
-            is MaliGpu -> (if (gpu.jobManager) setOf(TURNIP, PANVK) else setOf(TURNIP)) + mode + hybris + radv + maliPanvk
+            // Our PanVK only where it is the route's driver: a CSF Mali that mali-panvk does not run.
+            is MaliGpu -> (if (gpu.jobManager || options.maliPanvk) setOf(TURNIP, PANVK) else setOf(TURNIP)) + mode + hybris + radv + maliPanvk
             is KgslGpu -> setOf(PANVK) + mode + hybris + radv + maliPanvk
             is SystemDriverGpu -> setOf(TURNIP, PANVK) + mode + hybris + radv + maliPanvk
             null -> emptySet()

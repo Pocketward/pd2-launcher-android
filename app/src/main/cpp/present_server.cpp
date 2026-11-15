@@ -9,8 +9,8 @@
 // patch 0008: the game waits for its tick in every present mode). For a game with vsync off (Mesa
 // sends the present mode with each PRESENT) the screen also shows at most one of its frames a
 // tick, a second guard behind Mesa's wait: a frame that comes before the next tick waits as the
-// newest, and the tick shows it (present_server_tick wakes this server's thread); at Full (no
-// lower cap) they go as they come. Frames with vsync on go as they come. The layer sits where the
+// newest, and the tick shows it (present_server_tick wakes this server's thread); with a Frame
+// rate not below the rate asked of the display they go as they come. Frames with vsync on go as they come. The layer sits where the
 // game's window is on the X screen (x-input-relay says where): the whole view for a full-screen game, a windowed
 // game's place otherwise, the copy showing the X screen around it. A buffer goes back to Mesa once the compositor has replaced it, with its release
 // fence. While the game's window is not alone on the X screen (a window over or beside it), or
@@ -44,6 +44,7 @@
 
 #include "frame_pacing.h"
 #include "pointer_split.h"
+#include "frame_split.h"
 
 #include <android/hardware_buffer.h>
 #include <android/log.h>
@@ -226,7 +227,7 @@ struct Server {
     bool shown_any = false;
     int64_t seen_tick_ns = 0;
     bool next_vsync = true;
-    // A Frame rate below the screen's (not Full): frames with vsync off wait for the clock's tick.
+    // A Frame rate below the rate asked of the display: frames with vsync off wait for the clock's tick.
     bool capped = true;
     std::atomic<bool> waits_tick{false};
     int tick_fd = -1;
@@ -239,6 +240,13 @@ struct Server {
     pointer_split split = {};
     uint64_t split_serial = 0;
     split_summary split_last = {};
+    // The frame split (frame_split.h), under [split_lock] too: whether it runs, its window, its
+    // state, and the last window's summary and its number.
+    bool frames_on = false;
+    int64_t frames_window_ns = 0;
+    frame_split frames = {};
+    uint64_t frames_serial = 0;
+    frame_summary frames_last = {};
 
     ~Server() {
         for (int i = 0; i < nfences; i++) close(fences[i]);
@@ -295,7 +303,17 @@ void split_done(Server *s, const split_frame &frame) {
         s->split_last = ended;
         s->split_serial++;
     }
+    frame_summary frames_ended;
+    if (s->frames_on && frame_split_shown(&s->frames, &frame, s->frames_window_ns, &frames_ended)) {
+        s->frames_last = frames_ended;
+        s->frames_serial++;
+    }
     pthread_mutex_unlock(&s->split_lock);
+}
+
+// Under split_lock: Mesa times the game's frames (the word at byte 384) while either split runs.
+void update_stamps(Server *s) {
+    if (s->page != nullptr) __atomic_store_n(&s->page[STAMPS_WORD], s->split_on || s->frames_on ? 1u : 0u, __ATOMIC_RELEASE);
 }
 
 // Under lock: Mesa may send frames here (a client, a layer to show them or no Game view, no window
@@ -993,7 +1011,7 @@ Server *start(JNIEnv *env, jstring socket_path, jstring counter_path) {
         delete s;
         return nullptr;
     }
-    // Mesa times no frame until the pointer split runs (an earlier server's word may remain).
+    // Mesa times no frame until a split runs (an earlier server's word may remain).
     __atomic_store_n(&s->page[STAMPS_WORD], 0u, __ATOMIC_RELEASE);
     update_wanted(s);
     unlink(s->path);
@@ -1188,7 +1206,7 @@ void split_counts(Server *s, bool on, jlong *out) {
     if (on != s->split_on) {
         s->split_on = on;
         split_reset(&s->split);
-        if (s->page != nullptr) __atomic_store_n(&s->page[STAMPS_WORD], on ? 1u : 0u, __ATOMIC_RELEASE);
+        update_stamps(s);
     }
     const split_summary &w = s->split_last;
     out[0] = (jlong)s->split_serial;
@@ -1258,7 +1276,7 @@ void stop(Server *s) {
 } // namespace
 
 // The Game view's surface (a child layer goes on it), asking the display for [frame_rate];
-// [capped]: a Frame rate below the screen's, which frames with vsync off wait for.
+// [capped]: a Frame rate below that rate, which frames with vsync off wait for.
 extern "C" JNIEXPORT void JNICALL Java_com_pd2launcher_app_PresentServer_nativeAttach(
     JNIEnv *env, jclass, jlong handle, jobject surface, jfloat frame_rate, jboolean capped) {
     attach((Server *)(intptr_t)handle, env, surface, frame_rate, capped);
@@ -1301,6 +1319,39 @@ extern "C" JNIEXPORT void JNICALL Java_com_pd2launcher_app_PresentServer_nativeS
     jlong values[SPLIT_COUNTS];
     split_counts((Server *)(intptr_t)handle, on, values);
     env->SetLongArrayRegion(out, 0, SPLIT_COUNTS, values);
+}
+
+// The frame split for the service log into [out] (FRAME_COUNTS numbers; PresentServer.kt reads
+// them in this order): its last window's number (0: none yet), span and frames, then each part's
+// median and 95th percentile in microseconds. [on]: while the game runs; [window_ns]: its window
+// (the logging level's). A change of either forgets the window.
+constexpr int FRAME_COUNTS = 3 + 2 * FRAME_PARTS;
+void frame_counts(Server *s, bool on, int64_t window_ns, jlong *out) {
+    pthread_mutex_lock(&s->split_lock);
+    if (on != s->frames_on || window_ns != s->frames_window_ns) {
+        s->frames_on = on;
+        s->frames_window_ns = window_ns;
+        frame_split_reset(&s->frames);
+        update_stamps(s);
+    }
+    const frame_summary &w = s->frames_last;
+    out[0] = (jlong)s->frames_serial;
+    out[1] = w.span_ns;
+    out[2] = w.frames;
+    for (int k = 0; k < FRAME_PARTS; k++) {
+        out[3 + k] = w.median_us[k];
+        out[3 + FRAME_PARTS + k] = w.p95_us[k];
+    }
+    pthread_mutex_unlock(&s->split_lock);
+}
+
+// The frame split's counts for the service log into [out], a long array of FRAME_COUNTS numbers
+// (frame_counts); [on] and [window_ns] start, stop or change it.
+extern "C" JNIEXPORT void JNICALL Java_com_pd2launcher_app_PresentServer_nativeFrameSplit(JNIEnv *env, jclass, jlong handle, jboolean on,
+                                                                                         jlong window_ns, jlongArray out) {
+    jlong values[FRAME_COUNTS];
+    frame_counts((Server *)(intptr_t)handle, on, window_ns, values);
+    env->SetLongArrayRegion(out, 0, FRAME_COUNTS, values);
 }
 
 // Detailed logging: the Game view wrote a pointer move into x-input-relay's socket at [nanos]

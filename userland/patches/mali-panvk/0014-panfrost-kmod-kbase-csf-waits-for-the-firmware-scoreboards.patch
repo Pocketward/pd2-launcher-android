@@ -1,0 +1,31 @@
+panfrost/kmod: kbase on CSF waits for the firmware's scoreboards, not 16
+
+The CSF submission ends each queue's work with a cache clean and a WAIT on every scoreboard, with
+a mask of 16 (0xffff). A MediaTek Mali-G710 (kbase r32p1, firmware interface 1.1.0)
+has 8 scoreboards (CS_FEATURES), and its firmware stopped the queue at that WAIT with
+CS_INVALID_INSTRUCTION (0x49; patch 0013's log: the instruction 0x03000000ffff0000 at the fault
+address), so Zink's vkCreateDevice failed. The mask is now every scoreboard the firmware reports.
+
+--- a/src/panfrost/lib/kmod/kbase_kmod.c
++++ b/src/panfrost/lib/kmod/kbase_kmod.c
+@@ -2961,6 +2961,9 @@
+    struct kbase_csf_dev *c = kdev->csfq;
+    const unsigned K = kdev->csif.cs_reg_count - 4;
+    const uint64_t A = (uint64_t)K, V = (uint64_t)K + 2;
++   /* Every scoreboard the firmware has (CS_FEATURES): 8 on a G710 with interface 1.1.0, where a
++    * mask of 16 is CS_INVALID_INSTRUCTION; 16 on later firmware. */
++   const uint64_t all_sb = BITFIELD64_MASK(MIN2(kdev->csif.scoreboard_slot_count, 16));
+ 
+    uint32_t mask = signal_queue_mask;
+    for (unsigned i = 0; i < nr_calls; i++)
+@@ -3027,8 +3030,8 @@
+          return 0;
+       kbase_csf_emit(r, cs_ins(CS_OP_MOVE32, V << 48));
+       kbase_csf_emit(r, cs_ins(CS_OP_FLUSH_CACHE2,
+-                               (V << 40) | (0xffffull << 16) | (1u << 4) | 1u)); /* clean */
+-      kbase_csf_emit(r, cs_ins(CS_OP_WAIT, 0xffffull << 16));
++                               (V << 40) | (all_sb << 16) | (1u << 4) | 1u)); /* clean */
++      kbase_csf_emit(r, cs_ins(CS_OP_WAIT, all_sb << 16));
+       kbase_csf_emit(r, cs_ins(CS_OP_ERROR_BARRIER, 0));
+       kbase_csf_emit(r, cs_ins(CS_OP_MOVE48, (A << 48) | (g->seq_va + q * 64)));
+       kbase_csf_emit(r, cs_ins(CS_OP_MOVE48, (V << 48) | 1));

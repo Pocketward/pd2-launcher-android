@@ -19,7 +19,9 @@
 #                 userland's loader; wowbox64.dll beside Wine's modules), pack.py without what
 #                 runtime-cut.txt names
 # `build.sh --version` prints the version the current parts give without building anything (the
-# version of the last pack when its inputs did not change).
+# version of the last pack when its inputs did not change). `build.sh --identity` prints the
+# identity of the packed runtime (parts/runtime's BUILDINFO) without any part built (the release
+# workflow's cache key).
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -28,15 +30,14 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 identity() {
     part_identity "$here/build.sh" "$here/trim.py" "$here/wine-keep.txt" "$here/stage-wineb.py" "$here/pack.py" \
-        "$here/runtime-cut.txt" "$here/dotnet.sh" "$here/containers/Containerfile.wine" \
-        "$here/containers/Containerfile.tools" "debian=$DEBIAN_IMAGE $DEBIAN_SNAPSHOT" \
+        "$here/runtime-cut.txt" "$here/dotnet.sh" "image=$(base_image_name)" \
         "dotnet=$DOTNET_VERSION $DOTNET_RUNTIME_SHA512 $DOTNET_DESKTOP_SHA512" \
         "wine $(part_hash wine)" "wowbox64 $(part_hash wowbox64)" "pd2audio $(part_hash pd2audio)" \
         "prefix $(part_hash prefix)"
 }
 
 case "${1:-}" in
-    --wine) # in the Wine image
+    --wine) # in the base image
         python3 /src/trim.py /cache/parts/wine/full /src/wine-keep.txt /cache/work/runtime/wine-min
         python3 /src/stage-wineb.py /cache/work/runtime/wine-min /cache/parts/wowbox64/wowbox64.dll \
             /cache/work/runtime/wine "$USERLAND/lib/ld-linux-aarch64.so.1"
@@ -46,7 +47,7 @@ case "${1:-}" in
         patchelf --set-rpath '$ORIGIN' "$unix/winealsa.so"
         exit 0
         ;;
-    --pack) # in the tools image
+    --pack) # in the base image
         rm -rf /cache/work/runtime/assets
         python3 /src/pack.py /cache/work/runtime/wine /cache/parts/prefix/prefix /cache/parts/prefix/golden \
             /cache/work/runtime/dotnet /src/runtime-cut.txt /cache/work/runtime/assets
@@ -54,6 +55,10 @@ case "${1:-}" in
         ;;
     --version)
         cat "$RUNTIME_PARTS/runtime/runtime.info" 2>/dev/null | head -n 1
+        exit 0
+        ;;
+    --identity)
+        identity
         exit 0
         ;;
 esac
@@ -68,9 +73,9 @@ if part_ready runtime "$id"; then
 else
     rm -rf "$RUNTIME_WORK/runtime" "$RUNTIME_PARTS/runtime"
     mkdir -p "$RUNTIME_WORK/runtime" "$RUNTIME_PARTS/runtime"
-    run_in "$(runtime_image wine)" build.sh --wine
+    run_in "$(ensure_base_image)" build.sh --wine
     "$here/dotnet.sh"
-    run_in "$(runtime_image tools)" build.sh --pack
+    run_in "$(ensure_base_image)" build.sh --pack
     mv "$RUNTIME_WORK/runtime/assets/runtime.tar.zst" "$RUNTIME_WORK/runtime/assets/runtime.info" "$RUNTIME_PARTS/runtime/"
     part_done runtime "$id"
     rm -rf "$RUNTIME_WORK/runtime"

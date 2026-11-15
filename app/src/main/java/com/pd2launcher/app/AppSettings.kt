@@ -31,12 +31,8 @@ data class AppSettings(
     val gameDisplay: GameDisplay = GameDisplay.FIT,
     /** D2GL's graphics profile the player picked; null: Automatic ([GraphicsProfiles]). */
     val graphicsProfile: GraphicsProfile? = null,
-    /**
-     * The game's frame rate on the screen, in frames a second: a whole number from
-     * [FrameRateVote.MIN] that the player typed, or [FULL_FRAME_RATE]: the screen's full rate. 60
-     * by default. A screen not faster than the value shows its full rate ([FrameRateVote.cap]).
-     */
-    val frameRate: Int = 60,
+    /** The Frame rate as stored: a panel that is slower uses its highest rate ([FramePick.onPanel]). */
+    val frameRate: Int = FramePick.DEFAULT,
     /**
      * While the game is not on the screen (the app in the background, the screen off, the app's own
      * screens over the game), the game is told so (its window loses the focus), and it draws at its
@@ -180,8 +176,6 @@ data class AppSettings(
         /** The older Strict CPU emulation pick (a Boolean): not read, removed at the first save. */
         const val STRICT_CPU_EMULATION = "strict_cpu_emulation"
         const val FRAME_RATE = "frame_rate"
-        /** [frameRate]'s value for Full, the screen's full rate: stored, so a player's Full is not the default. */
-        const val FULL_FRAME_RATE = 0
         /** The older "Limit to 60 fps" switch (a Boolean): on, it was 60, now the default. */
         const val LIMIT_FRAME_RATE = "limit_frame_rate"
         const val LOW_FRAME_RATE_IN_BACKGROUND = "low_frame_rate_in_background"
@@ -234,8 +228,7 @@ data class AppSettings(
                 customSize = (values[CUSTOM_SIZE] as? String)?.let(::parseSize),
                 gameDisplay = GameDisplay.entries.firstOrNull { it.name == values[VIEW_DISPLAY] } ?: defaults.gameDisplay,
                 graphicsProfile = GraphicsProfile.entries.firstOrNull { it.name == values[GRAPHICS_PROFILE] },
-                frameRate = (values[FRAME_RATE] as? Int)?.takeIf { it == FULL_FRAME_RATE || it >= FrameRateVote.MIN }
-                    ?: defaults.frameRate,
+                frameRate = (values[FRAME_RATE] as? Int)?.takeIf { it >= FramePick.MIN } ?: defaults.frameRate,
                 lowFrameRateInBackground = values[LOW_FRAME_RATE_IN_BACKGROUND] as? Boolean ?: defaults.lowFrameRateInBackground,
                 downloadsNoticeAnswered = values[DOWNLOADS_NOTICE_ANSWERED] as? Boolean ?: defaults.downloadsNoticeAnswered,
                 gamePlayed = values[GAME_PLAYED] as? Boolean ?: defaults.gamePlayed,
@@ -263,8 +256,18 @@ object AppSettingsStore {
     /** The latest settings loaded or saved, or the defaults before. */
     val current: StateFlow<AppSettings> = _current.asStateFlow()
 
+    /** An older "Full" becomes a number at each access, not once: Stable and Beta share this file, so an older version can store it again. */
     private fun preferences(context: Context): SharedPreferences =
-        context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+        context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).also { preferences ->
+            numberForFull(preferences) {
+                val modes = PanelModes.builtIn(context)
+                FramePick.onPanel(ScreenCapabilityStore.upTo(context, modes), modes)
+            }
+        }
+
+    internal fun numberForFull(preferences: SharedPreferences, pick: () -> Int) = synchronized(lock) {
+        if (preferences.all[AppSettings.FRAME_RATE] == FramePick.OLDER_FULL) preferences.edit().putInt(AppSettings.FRAME_RATE, pick()).apply()
+    }
 
     fun load(context: Context): AppSettings = load(preferences(context))
 

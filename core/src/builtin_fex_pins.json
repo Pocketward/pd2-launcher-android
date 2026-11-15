@@ -1,0 +1,49 @@
+{
+  "schema": 1,
+  "fex_version": "2609.1",
+  "mirror": {
+    "repository": "Pocketward/pd2-launcher",
+    "tag": "fex-2609.1"
+  },
+  "files": [
+    {
+      "id": "fex-armv8.0",
+      "name": "fex-emu-armv8.0_2609.1-1.j_arm64.deb",
+      "size": 3407810,
+      "sha256": "2c4e97b245bf32374cdafc9c6908727e1948319dc959e941d2bdd21bf23a68cc",
+      "upstream": [
+        "https://launchpad.net/~fex-emu/+archive/ubuntu/fex/+files/fex-emu-armv8.0_2609.1-1~j_arm64.deb",
+        "https://ppa.launchpadcontent.net/fex-emu/fex/ubuntu/pool/main/f/fex-emu-armv8.0/fex-emu-armv8.0_2609.1-1~j_arm64.deb"
+      ]
+    },
+    {
+      "id": "fex-armv8.2",
+      "name": "fex-emu-armv8.2_2609.1-1.j_arm64.deb",
+      "size": 3411742,
+      "sha256": "7418a68b713e1828d71019ec7c29b676fbdfc1825873fd68c7b072432f5f65bc",
+      "upstream": [
+        "https://launchpad.net/~fex-emu/+archive/ubuntu/fex/+files/fex-emu-armv8.2_2609.1-1~j_arm64.deb",
+        "https://ppa.launchpadcontent.net/fex-emu/fex/ubuntu/pool/main/f/fex-emu-armv8.2/fex-emu-armv8.2_2609.1-1~j_arm64.deb"
+      ]
+    },
+    {
+      "id": "fex-armv8.4",
+      "name": "fex-emu-armv8.4_2609.1-1.j_arm64.deb",
+      "size": 3415064,
+      "sha256": "b401af7c1b92c304abb640d0b3eaea81ca900d8597079979915c4edea850474d",
+      "upstream": [
+        "https://launchpad.net/~fex-emu/+archive/ubuntu/fex/+files/fex-emu-armv8.4_2609.1-1~j_arm64.deb",
+        "https://ppa.launchpadcontent.net/fex-emu/fex/ubuntu/pool/main/f/fex-emu-armv8.4/fex-emu-armv8.4_2609.1-1~j_arm64.deb"
+      ]
+    },
+    {
+      "id": "rootfs",
+      "name": "Ubuntu_24_04-2026-08-11.sqsh",
+      "size": 525615104,
+      "sha256": "2854b06d3ff1b8f6e526135bfb6dd5b7b30ab3ab73e79ae933a3d9fed959a178",
+      "upstream": [
+        "https://rootfs.fex-emu.gg/Ubuntu_24_04/2026-08-11/Ubuntu_24_04.sqsh"
+      ]
+    }
+  ]
+}

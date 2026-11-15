@@ -4,23 +4,19 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
-import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
-import android.content.pm.PackageInfo
-import android.content.pm.PackageInstaller
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Process
 import android.os.StatFs
 import android.os.SystemClock
 import android.util.Log
-import androidx.core.content.IntentCompat
+import androidx.core.content.FileProvider
 import com.pd2launcher.app.AppUpdate.Check
 import com.pd2launcher.app.AppUpdate.CheckProblem
 import com.pd2launcher.app.AppUpdate.DownloadProblem
-import com.pd2launcher.app.AppUpdate.InstallOutcome
 import com.pd2launcher.app.AppUpdate.InstallProblem
 import com.pd2launcher.app.AppUpdate.Work
 import java.io.File
@@ -28,15 +24,10 @@ import java.io.IOException
 import java.security.MessageDigest
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
@@ -48,6 +39,9 @@ import kotlinx.serialization.json.Json
  * `files/logs/update.log`, which Save logs packs.
  */
 object AppUpdater {
+    /** A player's test APK ("<version> (test <label>)"): the test channel, which leaves by Stable or Beta ([AppUpdate.rows]). */
+    val TEST_BUILD: Boolean = BuildConfig.SHOWN_VERSION != BuildConfig.VERSION_NAME
+
     private const val TAG = "pd2-update"
     private const val PREFERENCES = "app_update"
     private const val ETAG = "etag"
@@ -74,8 +68,9 @@ object AppUpdater {
     /** HTTP statuses that say the release's file is gone, or has no such part: a check follows. */
     private val GONE = setOf(404, 410, 416)
 
-    /** The install session's status, to [AppUpdateReceiver]. */
-    const val ACTION_STATUS = "com.pd2launcher.app.action.APP_UPDATE_STATUS"
+    /** The authority suffix of [AppUpdateFiles], which gives Android's installer the checked APK. */
+    private const val UPDATE_FILES = ".updates"
+    private const val APK_TYPE = "application/vnd.android.package-archive"
     /** Opens Settings → App: the notice of a new version. */
     const val EXTRA_APP_PAGE = "com.pd2launcher.app.extra.APP_PAGE"
 
@@ -88,8 +83,6 @@ object AppUpdater {
     /** An install's copy for Android is queued or runs: a second Install waits for it. */
     private val installRunning = AtomicBoolean(false)
     @Volatile private var stopRequested = false
-    /** The install session Android has, until it answers or the update is taken back. */
-    @Volatile private var session: Int? = null
     /** [signer] as read once per process, and whether it was read. */
     @Volatile private var signerCertificate: String? = null
     @Volatile private var signerRead = false
@@ -126,9 +119,7 @@ object AppUpdater {
 
     /**
      * Once per process, from the activity: puts back where the update stood, removes what an
-     * update that has installed since left behind, checks when a check is due, and follows the
-     * session for the life of the process ([follow]), also while Android's window is in front
-     * and Android has ended the activity.
+     * update that has installed since left behind, and checks when a check is due.
      */
     fun start(context: Context) {
         if (!started.compareAndSet(false, true)) return
@@ -136,9 +127,6 @@ object AppUpdater {
         worker.execute {
             restore(app)
             checkIfDue(app)
-        }
-        CoroutineScope(SupervisorJob() + Dispatchers.Main).launch {
-            combine(SessionService.status, SourceImport.copy) { status, _ -> status }.collect { follow(app, it) }
         }
     }
 
@@ -207,49 +195,21 @@ object AppUpdater {
         }
     }
 
-    /**
-     * Each session status and folder copy (main thread): a game, a job, a launch or other work
-     * ([AppUpdate.waitFor]) that starts while Android asks the player takes the update back (its
-     * session is abandoned), so a later Yes cannot end them.
-     */
-    private fun follow(context: Context, status: SessionStatus) {
-        val installing = _work.value as? Work.Installing ?: return
-        if (AppUpdate.waitFor(status, copying(), SystemClock.elapsedRealtime()) == null) return
-        takeBack(context, installing.offer, "something started while Android asked")
-    }
-
     /** The activity opened Android's confirmation window. */
     fun confirmationShown() {
         _confirmation.value = null
     }
 
-    /** A session status from Android's installer ([AppUpdateReceiver]). */
-    fun installStatus(context: Context, intent: Intent) {
+    /**
+     * Android's installer screen gave [resultCode] back while this process still runs, so the
+     * update did not install: an install ends the app's process ([AppUpdate.installAnswer]).
+     */
+    fun installAnswered(context: Context, resultCode: Int) {
         val app = context.applicationContext
-        val id = intent.getIntExtra(PackageInstaller.EXTRA_SESSION_ID, -1)
-        val status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)
-        val message = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)
-        log(app, "session $id: status $status${message?.let { " ($it)" }.orEmpty()}")
-        // A session taken back, or one of an earlier try.
-        if (id != session) return
-        val offer = _work.value?.offer ?: return
-        if (status == PackageInstaller.STATUS_PENDING_USER_ACTION) {
-            val confirm = IntentCompat.getParcelableExtra(intent, Intent.EXTRA_INTENT, Intent::class.java)
-            when {
-                confirm == null -> finished(offer, InstallProblem.FAILED)
-                wait() != null -> takeBack(app, offer, "something started before Android asked")
-                else -> _confirmation.value = confirm
-            }
-            return
-        }
-        session = null
-        when (AppUpdate.installOutcome(status)) {
-            // Android replaces the app and ends its process; rarely heard.
-            InstallOutcome.INSTALLED -> _confirmation.value = null
-            InstallOutcome.CANCELLED -> finished(offer, InstallProblem.CANCELLED)
-            InstallOutcome.NO_SPACE -> finished(offer, InstallProblem.NO_SPACE)
-            InstallOutcome.FAILED -> finished(offer, InstallProblem.FAILED)
-        }
+        val installing = _work.value as? Work.Installing ?: return
+        val problem = AppUpdate.installAnswer(resultCode)
+        log(app, "Android's installer closed with result $resultCode: ${problem.name.lowercase()}")
+        finished(installing.offer, problem)
     }
 
     /**
@@ -305,8 +265,8 @@ object AppUpdater {
     // ------------------------------------------------------------ worker thread
 
     private fun restore(context: Context) {
-        // A session an earlier process committed can still have Android's window open (one in
-        // its own task): this process cannot take it back, so it goes. Install makes a new one.
+        // An install session that an older version of the app committed can still have Android's
+        // window open: it goes. This version installs through Android's installer screen.
         abandonSessions(context)
         val prefs = prefs(context)
         prefs.edit().remove(OLD_OFFER).remove(OLD_NOTIFIED).apply()
@@ -420,7 +380,9 @@ object AppUpdater {
         }
         followChannel(context, before)
         val channel = channel()
-        val offer = AppUpdate.newOffer(offers, channel, BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE, _work.value, _refused.value)
+        val offer = AppUpdate.newOffer(
+            offers, channel, BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE, _work.value, _refused.value, testBuild = TEST_BUILD,
+        )
         log(context, "${channel.name.lowercase()} channel: ${offer?.let { "offer ${it.versionName} (code ${it.versionCode})" } ?: "no offer"}")
         if (offer == null) return
         if (automatic) {
@@ -546,59 +508,31 @@ object AppUpdater {
             _work.value = null
             return
         }
-        val installer = context.packageManager.packageInstaller
-        // Sessions an earlier try left (the sign pressed again, or the app closed meanwhile) go
-        // first; their answers no longer count.
-        abandonSessions(context)
-        val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL).apply {
-            setAppPackageName(context.packageName)
-            setSize(file.length())
-            setInstallReason(PackageManager.INSTALL_REASON_USER)
-            // Where the APK came from, a label only: Android 13 and later.
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) setPackageSource(PackageInstaller.PACKAGE_SOURCE_DOWNLOADED_FILE)
-            // The update stays where the app is. A session's default is internal storage only,
-            // which Android refuses for an app on adopted storage.
-            setInstallLocation(PackageInfo.INSTALL_LOCATION_AUTO)
-        }
-        var id: Int? = null
+        // Android's installer screen installs it, and after the update it says "App installed"
+        // with Open, which starts the new version. A session install ends on the home screen.
         try {
-            id = installer.createSession(params)
-            // The bytes Android gets are hashed as they go: they must be the checked ones.
-            val written = installer.openSession(id).use { opened ->
-                val digest = MessageDigest.getInstance("SHA-256")
-                opened.openWrite("base.apk", 0, file.length()).use { out ->
-                    file.inputStream().use { input ->
-                        val buffer = ByteArray(64 shl 10)
-                        while (true) {
-                            val n = input.read(buffer)
-                            if (n < 0) break
-                            digest.update(buffer, 0, n)
-                            out.write(buffer, 0, n)
-                        }
-                    }
-                    opened.fsync(out)
-                }
-                hex(digest.digest())
-            }
+            // The bytes Android's installer reads must be the checked ones.
+            val written = sha256(file)
             if (written != download.sha256) {
                 log(context, "the checked download of ${offer.versionName} changed: it is deleted")
-                installer.abandonSession(id)
                 clearDownload(context)
                 _work.value = Work.Kept(offer, 0, DownloadProblem.REFUSED)
                 return
             }
-            val status = Intent(context, AppUpdateReceiver::class.java).setAction(ACTION_STATUS)
-            val pending = PendingIntent.getBroadcast(context, id, status, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE)
-            session = id
-            installer.openSession(id).use { it.commit(pending.intentSender) }
-            log(context, "update to ${offer.versionName}: session $id is Android's")
-            // Something may have started while the copy ran.
-            if (wait() != null) takeBack(context, offer, "something started during the copy")
+            // Something may have started during the check: the update would end it.
+            if (wait() != null) {
+                log(context, "install of ${offer.versionName}: something started during the check")
+                _work.value = Work.Ready(offer)
+                return
+            }
+            // Only Android's installer reads the file, through this one URI and its read grant.
+            val uri = FileProvider.getUriForFile(context, "${context.packageName}$UPDATE_FILES", file)
+            _confirmation.value = Intent(Intent.ACTION_INSTALL_PACKAGE)
+                .setDataAndType(uri, APK_TYPE)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            log(context, "update to ${offer.versionName}: Android's installer asks")
         } catch (error: Exception) {
             log(context, "install of ${offer.versionName} failed: ${AppUpdate.describe(error)}")
-            session = null
-            id?.let { runCatching { installer.abandonSession(it) } }
-            // A take-back meanwhile has said why already.
             _work.update { if (it is Work.Installing) Work.Ready(offer, InstallProblem.FAILED) else it }
         }
     }
@@ -610,7 +544,6 @@ object AppUpdater {
 
     /** Abandons every install session of this app; their answers no longer count. */
     private fun abandonSessions(context: Context) {
-        session = null
         _confirmation.value = null
         val installer = context.packageManager.packageInstaller
         installer.mySessions.forEach { runCatching { installer.abandonSession(it.sessionId) } }
@@ -618,18 +551,7 @@ object AppUpdater {
 
     // ------------------------------------------------------------ helpers
 
-    /** The committed update goes back to Ready: its session is abandoned, so Android's window can no longer install it. */
-    private fun takeBack(context: Context, offer: Offer, why: String) {
-        val id = session ?: return
-        session = null
-        _confirmation.value = null
-        runCatching { context.packageManager.packageInstaller.abandonSession(id) }
-        log(context, "session $id taken back: $why")
-        _work.value = Work.Ready(offer, InstallProblem.GAME_STARTED)
-    }
-
     private fun finished(offer: Offer, problem: InstallProblem) {
-        session = null
         _confirmation.value = null
         _work.value = Work.Ready(offer, problem)
     }
@@ -783,9 +705,5 @@ object AppUpdater {
     }
 }
 
-/** Android's answers about an app update's install session ([AppUpdater.installStatus]). */
-class AppUpdateReceiver : BroadcastReceiver() {
-    override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action == AppUpdater.ACTION_STATUS) AppUpdater.installStatus(context, intent)
-    }
-}
+/** Gives Android's installer the checked APK of an app update (`files/app-update/`), only through the URI the install grants. */
+class AppUpdateFiles : FileProvider()

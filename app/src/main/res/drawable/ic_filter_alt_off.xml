@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Material Symbols Outlined "filter_alt_off" (Google, Apache License 2.0), weight 400, not filled. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="960"
+    android:viewportHeight="960">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M592 479 535 422 678 240H353L273 160H760Q785 160 796.0 182.0Q807 204 792 224ZM791 904 560 673V760Q560 777 548.5 788.5Q537 800 520 800H440Q423 800 411.5 788.5Q400 777 400 760V513L56 169L112 112L848 848ZM535 422Z" />
+</vector>

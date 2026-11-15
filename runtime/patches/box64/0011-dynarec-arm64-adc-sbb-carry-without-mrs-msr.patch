@@ -1,0 +1,147 @@
+Subject: [PATCH] dynarec/arm64: ADC and SBB load the carry from xFlags without MRS/MSR of NZCV on a CPU with no FlagM
+
+When no native carry reaches an ADC or SBB, the dynarec loads CF (bit 0 of xFlags) into the ARM
+carry. On a CPU with no FlagM (ARMv8.0 to ARMv8.3: for example the Cortex-A73 and Cortex-A53 cores
+of a Snapdragon 662) it did that with MRS NZCV, BFI, MSR NZCV, and SBB with an EOR before them.
+MRS and MSR of NZCV are slow on these cores.
+
+One flag-setting subtract from zero gives the same carry: 0 - (bit 0 << 31) borrows only when
+bit 0 is set, and the ARM carry is the inverse of the borrow.
+- SBB needs the inverse of CF (ARM's SBC subtracts the inverse of its carry): SUBS of xFlags
+  alone. 4 instructions become 1.
+- ADC needs CF: EOR of bit 0, then the SUBS. 3 instructions become 2.
+
+The subtract changes N, Z and V too, where the old sequence kept them. They are dead there: every
+caller of these six emitters is an ADC or an SBB (SETFLAGS(X_ALL, ...)), which writes all the
+flags; the native-flags pass ends a chain of native flags at each instruction that sets flags
+(NAT_FLAG_OP_TOUCH); and this branch runs only when no native carry reaches the instruction
+(IFNATIVE_BEFORE(NF_CF) is false), so no chain reaches it. The LOCK forms restore xFlags and NZCV
+before each try, as before.
+
+No change with FlagM (RMIF), and no change where the instruction takes the native carry.
+
+Why: PD2's D2Lang.dll looks a string key up with an inline strcmp that ends in "sbb eax,eax;
+sbb eax,-1", about 25 million times at each game entry, and the first SBB takes its carry from
+xFlags. That loop is about half of the time between the realm's join answer and the game's logon,
+which the game server limits (issue #17).
+
+Measured 2026-11-10 with a Snapdragon 662 phone (big core at 2112 MHz): the translated
+loop in the game takes 440 ms at a game entry before and 416 ms after (10 single-player entries
+each, the two builds in turn; the ranges 429-448 and 413-424 do not overlap). A native copy of
+the loop: 18.5 ns a probe before, 16.7 ns after with the key strings 16 bytes apart.
+
+Tested: an x86-64 program with 455 forms of ADC and SBB (all operand sizes, register, memory,
+immediate and LOCK forms, the carry from POPFQ, from a compare before a join of two paths and
+through DEC/JNZ loops, each flag consumer by itself) prints the same checksums under Box64 with
+this patch as on a real x86 CPU, in qemu-aarch64 with a CPU model that has no FlagM (cortex-a72)
+and with one that has it (max), with native flags on and off. A copy of the patch with a wrong
+carry fails that test in 119 forms on the model with no FlagM, and in none on the model with
+FlagM. Box64's own tests: 35 of 35 pass with and without the patch.
+---
+--- a/src/dynarec/arm64/dynarec_arm64_emit_math.c
++++ b/src/dynarec/arm64/dynarec_arm64_emit_math.c
+@@ -1004,9 +1004,10 @@ void emit_adc32(dynarec_arm_t* dyn, int ninst, rex_t rex, int s1, int s2, int s3
+         if(cpuext.flagm)
+             RMIF(xFlags, 63, 0b0010);
+         else {
+-            MRS_nzcv(s3);
+-            BFIx(s3, xFlags, 29, 1); // set C
+-            MSR_nzcv(s3);      // load CC into ARM CF
++            // no FlagM: 0 - (!CF<<31) borrows only when CF is clear, so ARM CF = CF. No MRS/MSR of
++            // NZCV, which are slow. N, Z and V change too: ADC writes all the flags, so they are dead here.
++            EORw_mask(s3, xFlags, 0, 0);
++            SUBSw_REG_LSL(wZR, wZR, s3, 31);    // load CC into ARM CF
+         }
+     }
+     IFX(X_AF) {
+@@ -1151,9 +1152,10 @@ void emit_adc8(dynarec_arm_t* dyn, int ninst, int s1, int s2, int s3, int s4)
+         if(cpuext.flagm)
+             RMIF(xFlags, 63, 0b0010);
+         else {
+-            MRS_nzcv(s3);
+-            BFIx(s3, xFlags, 29, 1); // set C
+-            MSR_nzcv(s3);      // load CC into ARM CF
++            // no FlagM: 0 - (!CF<<31) borrows only when CF is clear, so ARM CF = CF. No MRS/MSR of
++            // NZCV, which are slow. N, Z and V change too: ADC writes all the flags, so they are dead here.
++            EORw_mask(s3, xFlags, 0, 0);
++            SUBSw_REG_LSL(wZR, wZR, s3, 31);    // load CC into ARM CF
+         }
+     }
+     IFX(X_AF | X_OF) {
+@@ -1219,9 +1221,10 @@ void emit_adc16(dynarec_arm_t* dyn, int ninst, int s1, int s2, int s3, int s4)
+         if(cpuext.flagm)
+             RMIF(xFlags, 63, 0b0010);
+         else {
+-            MRS_nzcv(s3);
+-            BFIx(s3, xFlags, 29, 1); // set C
+-            MSR_nzcv(s3);      // load CC into ARM CF
++            // no FlagM: 0 - (!CF<<31) borrows only when CF is clear, so ARM CF = CF. No MRS/MSR of
++            // NZCV, which are slow. N, Z and V change too: ADC writes all the flags, so they are dead here.
++            EORw_mask(s3, xFlags, 0, 0);
++            SUBSw_REG_LSL(wZR, wZR, s3, 31);    // load CC into ARM CF
+         }
+     }
+     IFX(X_AF | X_OF) {
+@@ -1343,13 +1346,14 @@ void emit_sbb32(dynarec_arm_t* dyn, int ninst, rex_t rex, int s1, int s2, int s3
+             }
+         }
+     } else {
+-        EORw_mask(s4, xFlags, 0, 0);        // invert CC because it's reverted for SUB on ARM
+-        if(cpuext.flagm)
++        if(cpuext.flagm) {
++            EORw_mask(s4, xFlags, 0, 0);        // invert CC because it's reverted for SUB on ARM
+             RMIF(s4, 63, 0b0010);
+-        else {
+-            MRS_nzcv(s3);
+-            BFIx(s3, s4, 29, 1); // set C
+-            MSR_nzcv(s3);      // load CC into ARM CF
++        } else {
++            // no FlagM: 0 - (CF<<31) borrows only when CF is set, so ARM CF = !CF, as SBC needs it. No
++            // MRS/MSR of NZCV, which are slow. N, Z and V change too: SBB writes all the flags, so they
++            // are dead here.
++            SUBSw_REG_LSL(wZR, wZR, xFlags, 31);    // load inverted CC into ARM CF
+         }
+     }
+     IFX(X_AF) {
+@@ -1496,13 +1500,14 @@ void emit_sbb8(dynarec_arm_t* dyn, int ninst, int s1, int s2, int s3, int s4)
+             }
+         }
+     } else {
+-        EORw_mask(s4, xFlags, 0, 0);        // invert CC because it's reverted for SUB on ARM
+-        if(cpuext.flagm)
++        if(cpuext.flagm) {
++            EORw_mask(s4, xFlags, 0, 0);        // invert CC because it's reverted for SUB on ARM
+             RMIF(s4, 63, 0b0010);
+-        else {
+-            MRS_nzcv(s3);
+-            BFIx(s3, s4, 29, 1); // set C
+-            MSR_nzcv(s3);      // load CC into ARM CF
++        } else {
++            // no FlagM: 0 - (CF<<31) borrows only when CF is set, so ARM CF = !CF, as SBC needs it. No
++            // MRS/MSR of NZCV, which are slow. N, Z and V change too: SBB writes all the flags, so they
++            // are dead here.
++            SUBSw_REG_LSL(wZR, wZR, xFlags, 31);    // load inverted CC into ARM CF
+         }
+     }
+     IFX(X_AF|X_OF|X_CF) {
+@@ -1565,13 +1570,14 @@ void emit_sbb16(dynarec_arm_t* dyn, int ninst, int s1, int s2, int s3, int s4)
+             }
+         }
+     } else {
+-        EORw_mask(s4, xFlags, 0, 0);            // invert CC because it's reverted for SUB on ARM
+-        if(cpuext.flagm)
++        if(cpuext.flagm) {
++            EORw_mask(s4, xFlags, 0, 0);        // invert CC because it's reverted for SUB on ARM
+             RMIF(s4, 63, 0b0010);
+-        else {
+-            MRS_nzcv(s3);
+-            BFIx(s3, s4, 29, 1); // set C, bit 29
+-            MSR_nzcv(s3);      // load CC into ARM CF
++        } else {
++            // no FlagM: 0 - (CF<<31) borrows only when CF is set, so ARM CF = !CF, as SBC needs it. No
++            // MRS/MSR of NZCV, which are slow. N, Z and V change too: SBB writes all the flags, so they
++            // are dead here.
++            SUBSw_REG_LSL(wZR, wZR, xFlags, 31);    // load inverted CC into ARM CF
+         }
+     }
+     IFX(X_AF|X_OF|X_CF) {

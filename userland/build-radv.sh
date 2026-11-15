@@ -5,16 +5,14 @@
 #
 # Source: config.sh's RADV_XC_* pins.
 #   - JimVulkan/radv-xclipse at RADV_XC_COMMIT (MIT), a Mesa 27.0.0-devel tree (Mesa main of
-#     2026-10-19/20) with the Xclipse changes, built by its authors for Android's bionic.
+#     2026-10-19/20) with the Xclipse changes, built by its authors for Android's bionic and for
+#     glibc. The tree's own files serve the glibc X11 build: src/x11, the X11 headers, and
+#     include/xclipse_linux_compat (<android/log.h> to stderr, <sys/system_properties.h> as
+#     environment variables), which its meson.build adds to glibc builds.
 #   - libdrm RADV_XC_LIBDRM_VERSION, built by meson from the tree's subprojects/libdrm.wrap (which
 #     applies the tree's two libdrm patches) and linked into the driver statically: Mesa main needs
 #     libdrm_amdgpu 2.4.133 and Debian 13 has 2.4.124. Mesa's meson.build allows that fallback
 #     only with -Dallow-fallback-for=libdrm.
-#   - Upstream Mesa's files that the tree leaves out and a glibc X11 build needs
-#     (RADV_XC_UPSTREAM_FILES, each checked by SHA-256).
-#   - Our stand-ins for <android/log.h> (stderr) and <sys/system_properties.h> (no properties):
-#     radv-compat/, as include/xclipse_linux_compat, which the tree's meson.build adds to glibc
-#     builds but the tree does not carry.
 #   - Our WSI patches, patches/radv-xclipse/*.patch: patches/mesa/0001-0004 and 0006-0008 (the
 #     cached reads, the present counter, the Game view's pacing, the direct present into the app's
 #     buffers, the fence wait in the present thread, the back pixmap, the app's clock), ported to
@@ -22,7 +20,7 @@
 #     patches ask chain->base.sw where upstream's ask wsi->sw, and 0007's fields of struct
 #     x11_swapchain follow "window" (the tree has no event_conn). Applied exactly (fuzz 0, no
 #     offset). 0005 is OpenGL only.
-# Built in the userland's Mesa image (containers/Containerfile.mesa: gcc for aarch64-linux-gnu,
+# Built in the base image (../containers/Containerfile.base: gcc for aarch64-linux-gnu,
 # Debian 13 arm64 X11 and xcb headers, glslang), with no network in the container (the sources are
 # fetched and checked first): RADV only, the X11 window system (Xvfb; the app sets
 # MESA_VK_WSI_DEBUG=sw), no LLVM (ACO), kcmp off (Android's seccomp policy), for the prefix /usr:
@@ -36,7 +34,9 @@
 # with SETUP, what the setup used): a later run with the same SETUP reuses them, and when only
 # patches/radv-xclipse/ changes, it restores the tree's 4 WSI files, applies the patches again,
 # and ninja rebuilds only what uses them. Each step prints a line; a failure prints its line and
-# command (the ERR trap).
+# command (the ERR trap). `build-radv.sh --identity` prints the output's identity (its BUILDINFO)
+# on the host, before any build (the release workflow's cache key); the sources are fetched only
+# when radv-out does not have it.
 set -Eeuo pipefail
 trap 'echo "build-radv.sh${PD2_USERLAND_IN_CONTAINER:+ (in the image)}: FAILED at line $LINENO: $BASH_COMMAND (exit $?)" >&2' ERR
 
@@ -47,39 +47,54 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 say() { echo "[build-radv $(date +%T)] $*"; }
 fail() { echo "build-radv.sh: $*" >&2; exit 1; }
 
-mesa_image() {
-    local engine image
-    engine="$(container_engine)"
-    image="localhost/pd2-userland-mesa:$( (cat "$USERLAND_SRC/containers/Containerfile.mesa"
-        echo "$DEBIAN_IMAGE $DEBIAN_SNAPSHOT") | sha256sum | cut -c1-16)"
-    if ! have_image "$engine" "$image"; then
-        "$engine" build --platform linux/amd64 \
-            --build-arg "DEBIAN_IMAGE=$DEBIAN_IMAGE" --build-arg "DEBIAN_SNAPSHOT=$DEBIAN_SNAPSHOT" \
-            -t "$image" -f "$USERLAND_SRC/containers/Containerfile.mesa" "$USERLAND_SRC/containers" >&2
-        archive_image "$engine" "$image"
-    fi
-    echo "$image"
+libdir=lib/aarch64-linux-gnu
+MESON_OPTS=(
+    -Dallow-fallback-for=libdrm --force-fallback-for=libdrm -Dlibdrm:default_library=static
+    --prefix=/usr --libdir="$libdir" --buildtype=release -Db_ndebug=true
+    -Dvulkan-drivers=amd -Dgallium-drivers= -Damdgpu-virtio=false -Dallow-kcmp=disabled
+    -Dplatforms=x11 -Dglx=disabled -Degl=disabled -Dgbm=disabled -Dopengl=false
+    -Dgles1=disabled -Dgles2=disabled -Dllvm=disabled -Dvalgrind=disabled -Dlibunwind=disabled
+    -Dlmsensors=disabled -Dvulkan-layers= -Dtools= -Dbuild-tests=false -Dhtml-docs=disabled
+    -Dvideo-codecs= -Dexpat=enabled -Dzstd=enabled -Dshader-cache=enabled -Dxlib-lease=disabled
+)
+# What the source tree and the configured build folder come from; another value needs a new setup.
+setup_identity() {
+    echo "image=${PD2_IMAGE:-}"
+    echo "radv-xclipse=$RADV_XC_COMMIT $RADV_XC_SHA256"
+    echo "libdrm=$RADV_XC_LIBDRM_VERSION $RADV_XC_LIBDRM_SHA256"
+    printf '%s\n' "${MESON_OPTS[@]}"
 }
+patches_identity() {
+    (cd "$here" && find patches/radv-xclipse -type f -name '*.patch' | LC_ALL=C sort | xargs sha256sum)
+}
+# What the output comes from: the setup, the patches, the prefix and this script.
+identity() {
+    setup_identity
+    patches_identity
+    echo "prefix=$USERLAND"
+    echo "build-radv.sh $(sha256sum < "$here/build-radv.sh" | cut -d' ' -f1)"
+}
+if [[ "${1:-}" == --identity ]]; then
+    PD2_IMAGE="${PD2_IMAGE:-$(base_image_name)}" identity
+    exit 0
+fi
 
 if [[ "${PD2_USERLAND_IN_CONTAINER:-}" != 1 ]]; then
-    fetch_source "$RADV_XC_URL" "$RADV_XC_SHA256" >/dev/null
-    fetch_source "$RADV_XC_LIBDRM_URL" "$RADV_XC_LIBDRM_SHA256" >/dev/null
-    fetch_source "$RADV_XC_UPSTREAM_URL" "$RADV_XC_UPSTREAM_SHA256" >/dev/null
-    say "sources checked"
-    image="$(mesa_image)"
-    engine="$(container_engine)"
-    mkdir -p "$USERLAND_CACHE/work"
+    out="$USERLAND_CACHE/radv-out"
+    if ! [[ -d "$out/tree" && -f "$out/BUILDINFO" && "$(< "$out/BUILDINFO")" == "$("$here/build-radv.sh" --identity)" ]]; then
+        fetch_source "$RADV_XC_URL" "$RADV_XC_SHA256" >/dev/null
+        fetch_source "$RADV_XC_LIBDRM_URL" "$RADV_XC_LIBDRM_SHA256" >/dev/null
+        say "sources checked"
+    fi
     # No network in the container: the sources are fetched and checked above.
-    "$engine" run --rm --network=none --platform linux/amd64 \
-        -v "$USERLAND_SRC:/src:ro" -v "$USERLAND_CACHE:/cache" \
-        -e PD2_USERLAND_IN_CONTAINER=1 -e PD2_USERLAND_CACHE=/cache -e "PD2_IMAGE=$image" \
-        "$image" bash /src/build-radv.sh --build
-    run_in_tools build-radv.sh --install
+    RUN_EXTRA=(--network=none)
+    run_in_base build-radv.sh --build
+    RUN_EXTRA=()
+    run_in_base build-radv.sh --install
     exit
 fi
 
 out=/cache/radv-out
-libdir=lib/aarch64-linux-gnu
 lib=usr/$libdir/libvulkan_radeon.so
 icd=usr/share/vulkan/icd.d/radeon_icd.aarch64.json
 # Not usr/share/doc: relocate.sh drops that folder.
@@ -89,33 +104,11 @@ if [[ "${1:-}" == --build ]]; then
     src=/cache/work/radv-src
     build=/cache/work/radv-build
     tree_archive="/cache/sources/$(basename "$RADV_XC_URL")"
-    MESON_OPTS=(
-        -Dallow-fallback-for=libdrm --force-fallback-for=libdrm -Dlibdrm:default_library=static
-        --prefix=/usr --libdir="$libdir" --buildtype=release -Db_ndebug=true
-        -Dvulkan-drivers=amd -Dgallium-drivers= -Damdgpu-virtio=false -Dallow-kcmp=disabled
-        -Dplatforms=x11 -Dglx=disabled -Degl=disabled -Dgbm=disabled -Dopengl=false
-        -Dgles1=disabled -Dgles2=disabled -Dllvm=disabled -Dvalgrind=disabled -Dlibunwind=disabled
-        -Dlmsensors=disabled -Dvulkan-layers= -Dtools= -Dbuild-tests=false -Dhtml-docs=disabled
-        -Dvideo-codecs= -Dexpat=enabled -Dzstd=enabled -Dshader-cache=enabled -Dxlib-lease=disabled
-    )
     WSI_FILES=(src/vulkan/wsi/wsi_common.c src/vulkan/wsi/wsi_common.h src/vulkan/wsi/wsi_common_private.h
         src/vulkan/wsi/wsi_common_x11.c)
-    # What the source tree and the configured build folder come from; another value needs a new setup.
-    setup_identity() {
-        echo "image=${PD2_IMAGE:-}"
-        echo "radv-xclipse=$RADV_XC_COMMIT $RADV_XC_SHA256"
-        echo "libdrm=$RADV_XC_LIBDRM_VERSION $RADV_XC_LIBDRM_SHA256"
-        echo "upstream=$RADV_XC_UPSTREAM_COMMIT $RADV_XC_UPSTREAM_SHA256"
-        printf '%s\n' "${RADV_XC_UPSTREAM_FILES[@]}" "${MESON_OPTS[@]}"
-        (cd /src && find radv-compat -type f | LC_ALL=C sort | xargs sha256sum)
-    }
     sid="$(setup_identity)"
-    pid="$(cd /src && find patches/radv-xclipse -type f -name '*.patch' | LC_ALL=C sort | xargs sha256sum)"
-    # What the output comes from: the setup, the patches, the prefix and this script.
-    id="$sid
-$pid
-prefix=$USERLAND
-build-radv.sh $(sha256sum < /src/build-radv.sh | cut -d' ' -f1)"
+    pid="$(patches_identity)"
+    id="$(identity)"
     # (Files are read only when they exist: a failing command in $(...) would trip the ERR trap.)
     if [[ -d "$out/tree" && -f "$out/BUILDINFO" && "$(< "$out/BUILDINFO")" == "$id" ]]; then
         say "reusing radv-out (BUILDINFO matches)"
@@ -128,18 +121,6 @@ build-radv.sh $(sha256sum < /src/build-radv.sh | cut -d' ' -f1)"
         rm -rf "$src" "$build"
         mkdir -p "$src" "$build"
         tar -xzf "$tree_archive" -C "$src" --strip-components=1
-        [[ ! -e "$src/include/xclipse_linux_compat" ]] || fail "the tree has include/xclipse_linux_compat now: check radv-compat/"
-        cp -r /src/radv-compat "$src/include/xclipse_linux_compat"
-        upstream_paths=()
-        for entry in "${RADV_XC_UPSTREAM_FILES[@]}"; do
-            [[ ! -e "$src/${entry#* }" ]] || fail "the tree has ${entry#* } now: check RADV_XC_UPSTREAM_FILES"
-            upstream_paths+=("mesa-$RADV_XC_UPSTREAM_COMMIT/${entry#* }")
-        done
-        tar -xzf "/cache/sources/$(basename "$RADV_XC_UPSTREAM_URL")" -C "$src" --strip-components=1 "${upstream_paths[@]}"
-        for entry in "${RADV_XC_UPSTREAM_FILES[@]}"; do
-            echo "${entry%% *}  $src/${entry#* }" | sha256sum -c --quiet - || fail "SHA-256 mismatch: ${entry#* }"
-        done
-        say "upstream files restored: ${#RADV_XC_UPSTREAM_FILES[@]}"
         # meson takes the wrap's archive from the package cache (no download in the image).
         mkdir -p "$src/subprojects/packagecache"
         cp "/cache/sources/$(basename "$RADV_XC_LIBDRM_URL")" "$src/subprojects/packagecache/"
@@ -225,7 +206,7 @@ EOF
     exit 0
 fi
 
-# --install (tools image): the build into the staging tree; its files join the system-driver part.
+# --install (base image): the build into the staging tree; its files join the system-driver part.
 staging=/cache/work/staging
 [[ -d "$staging/usr" ]] || fail "no staging tree: run fetch-debian.sh first"
 [[ -f "$out/BUILDINFO" && -d "$out/tree" ]] || fail "no RADV build: run build-radv.sh"

@@ -9,19 +9,15 @@
 //     Mesa's own version, Mesa src/virtio/vulkan/vn_physical_device.c, and that is the value
 //     Zink's driver checks read; Imagination's driver gives its DDK change number, which Zink
 //     main compares with 6554834, DDK 24.1, in zink_screen.c);
-//   - Zink 25.1.9's hard needs (Mesa mesa-25.1.9 src/gallium/drivers/zink/zink_device_info.py
-//     required=True and zink_screen.c): maintenance1, create_renderpass2, imageless_framebuffer,
-//     descriptor_update_template (each an extension or core in the device's version) and the
-//     timelineSemaphore feature; and the geometryShader feature, without which Zink 25.1.9 fails
-//     on Imagination's own driver (zink_screen.c:3411-3415; Venus passes the driver's real id to
-//     Zink through VK_KHR_maintenance7's layered properties, vn_physical_device.c);
+//   - the hard needs of our product Mesa's Zink (main at userland/config.sh's MESA_COMMIT:
+//     src/gallium/drivers/zink/zink_device_info.py required=True and zink_screen.c):
+//     maintenance1, create_renderpass2, descriptor_update_template (each an extension or core in
+//     the device's version), the timelineSemaphore feature, dynamicRendering, maintenance5 and
+//     robustness2's nullDescriptor; and the geometryShader feature, which Imagination's drivers
+//     without it lack (no Venus route there: SystemDriverGpu.powerVrWithoutGeometryShaders);
 //   - Zink's base requirements (check_base_requirements, zink_screen.c: Zink only warns
-//     without them, the app gives no Venus route): logicOp, fillModeNonSolid and
-//     shaderClipDistance (the last two in 25.1.9 only), scalarBlockLayout, custom border colours,
-//     line rasterization;
-//   - Zink 26.2.3's further needs, the same in main at userland/config.sh's MESA_COMMIT (our
-//     product Mesa, which the mode uses where the driver meets them): dynamicRendering,
-//     maintenance5 and robustness2's nullDescriptor;
+//     without them, the app gives no Venus route): logicOp, scalarBlockLayout, custom border
+//     colours, line rasterization;
 //   - how virglrenderer can share host-visible memory (virglrenderer src/venus/
 //     vkr_physical_device.c, the external buffer query with TRANSFER_SRC usage): a dma-buf it can
 //     export, an opaque fd it can export (and whether only of dedicated allocations, which the
@@ -156,39 +152,32 @@ static void probe(char *out)
     }
 
     // Timeline semaphores: the Vulkan 1.2 feature, or VK_KHR_timeline_semaphore's.
-    int timeline = 0, imageless = 0;
+    int timeline = 0;
     if (vkGetPhysicalDeviceFeatures2) {
         VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
         VkPhysicalDeviceTimelineSemaphoreFeatures tl = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES};
-        VkPhysicalDeviceImagelessFramebufferFeatures il = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGELESS_FRAMEBUFFER_FEATURES};
         VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
         if (v12) {
             f2.pNext = &f12;
         } else {
             void **next = &f2.pNext;
             if (has_ext(e, ne, "VK_KHR_timeline_semaphore")) { *next = &tl; next = &tl.pNext; }
-            if (has_ext(e, ne, "VK_KHR_imageless_framebuffer")) { *next = &il; next = &il.pNext; }
         }
         vkGetPhysicalDeviceFeatures2(pd, &f2);
         timeline = v12 ? f12.timelineSemaphore : tl.timelineSemaphore;
-        imageless = v12 ? f12.imagelessFramebuffer : il.imagelessFramebuffer;
     }
-    put(out, "maintenance1=%d\ncreate_renderpass2=%d\ndescriptor_update_template=%d\nimageless_framebuffer=%d\n"
-             "timeline_semaphore=%d\n",
+    put(out, "maintenance1=%d\ncreate_renderpass2=%d\ndescriptor_update_template=%d\ntimeline_semaphore=%d\n",
         v11 || has_ext(e, ne, "VK_KHR_maintenance1"), v12 || has_ext(e, ne, "VK_KHR_create_renderpass2"),
-        v11 || has_ext(e, ne, "VK_KHR_descriptor_update_template"), imageless, timeline);
+        v11 || has_ext(e, ne, "VK_KHR_descriptor_update_template"), timeline);
 
-    // Geometry shaders (a Vulkan 1.0 feature): Zink 25.1.9 fails on Imagination's own driver
-    // without them (zink_screen.c:3411-3415). And the Vulkan 1.0 features of Zink's base
-    // requirements (check_base_requirements: mesa-25.1.9 zink_screen.c:2722-2729, main at
-    // MESA_COMMIT zink_screen.c:2995-3000): logicOp, and in 25.1.9 also fillModeNonSolid and
-    // shaderClipDistance.
+    // Geometry shaders (a Vulkan 1.0 feature, for Imagination's drivers without them). And the
+    // Vulkan 1.0 feature of Zink's base requirements (check_base_requirements, main at
+    // MESA_COMMIT zink_screen.c:2995-3000): logicOp.
     // No line without the query: the app then knows nothing about them and applies no rule.
     if (vkGetPhysicalDeviceFeatures) {
         VkPhysicalDeviceFeatures base = {0};
         vkGetPhysicalDeviceFeatures(pd, &base);
-        put(out, "geometry_shader=%d\nlogic_op=%d\nfill_mode_non_solid=%d\nshader_clip_distance=%d\n",
-            base.geometryShader ? 1 : 0, base.logicOp ? 1 : 0, base.fillModeNonSolid ? 1 : 0, base.shaderClipDistance ? 1 : 0);
+        put(out, "geometry_shader=%d\nlogic_op=%d\n", base.geometryShader ? 1 : 0, base.logicOp ? 1 : 0);
     }
 
     // The rest of Zink's base requirements (maintenance1 is above): scalarBlockLayout (the Vulkan

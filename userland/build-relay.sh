@@ -10,7 +10,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$here/config.sh"
 
 if [[ "${PD2_USERLAND_IN_CONTAINER:-}" != 1 ]]; then
-    run_in_tools build-relay.sh "$@"
+    run_in_base build-relay.sh "$@"
     exit
 fi
 

@@ -1,0 +1,35 @@
+panfrost/kmod: kbase makes the executable zone before the JIT zone
+
+kbase refuses KBASE_IOCTL_MEM_EXEC_INIT once the context has a JIT zone (EPERM,
+kbase_region_tracker_init_exec). The tree initialised JIT first on CSF, so on a MediaTek r32p1
+kbase (Mali-G710, uAPI 1.18) the executable zone was refused, executable BOs fell back to SAME_VA,
+and the GPU faulted at the first shader (a translation fault at 0x41000). Our own backend makes the
+executable zone first too (mesa-kbase kbase_kmod.c). The zone now comes first; JIT follows.
+
+--- a/src/panfrost/lib/kmod/kbase_kmod.c
++++ b/src/panfrost/lib/kmod/kbase_kmod.c
+@@ -509,6 +509,13 @@
+        * if the kernel refuses it; shader BOs then just live in the ordinary zone. */
+       struct kbase_ioctl_mem_exec_init ei = {.va_pages = KBASE_EXEC_ZONE_PAGES};
+ 
++      /* The executable zone before JIT: kbase refuses MEM_EXEC_INIT once the context has a JIT
++       * zone (EPERM; kbase_region_tracker_init_exec), as on a MediaTek r32p1 kbase. */
++      if (pan_kmod_ioctl(fd, KBASE_IOCTL_MEM_EXEC_INIT, &ei)) {
++         kbase_dev->exec_init_err = errno;
++         mesa_logw("kbase: MEM_EXEC_INIT failed (err=%d); executable BOs will be SAME_VA", errno);
++      }
++
+       /* CSF: the kernel's own allocations for this context (tiler heap contexts and chunks)
+        * come from the CUSTOM_VA zone, which a 64-bit context only has once JIT is initialised:
+        * kbase carves it out of SAME_VA then. Without it CS_TILER_HEAP_INIT is ENOMEM for any
+@@ -524,10 +531,6 @@
+             mesa_logw("kbase: MEM_JIT_INIT failed (err=%d); no tiler heap", errno);
+          }
+       }
+-      if (pan_kmod_ioctl(fd, KBASE_IOCTL_MEM_EXEC_INIT, &ei)) {
+-         kbase_dev->exec_init_err = errno;
+-         mesa_logw("kbase: MEM_EXEC_INIT failed (err=%d); executable BOs will be SAME_VA", errno);
+-      }
+    }
+ 
+    kbase_dev->uapi_minor = vc.minor;

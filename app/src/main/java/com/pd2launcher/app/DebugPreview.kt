@@ -117,6 +117,12 @@ object DebugPreview {
     const val PLAY_UPDATING = "play-updating"
     const val PLAY_UPDATE_FAILED = "play-update-failed"
 
+    /** Play over the live session with a copy in Traditional Chinese: the warning under the buttons (issue 19). */
+    const val PLAY_LANGUAGE = "play-language"
+
+    /** The language Play's warning names in the preview [name]: Traditional Chinese for [PLAY_LANGUAGE], else the snapshot's. */
+    fun language(name: String?, snapshot: String?): String? = if (name == PLAY_LANGUAGE) "chi" else snapshot
+
     /** [session] with the update preview [name] in its snapshot (an installed game); null for other previews. */
     fun playUpdate(name: String?, session: SessionStatus): SessionStatus? {
         val status = when (name) {

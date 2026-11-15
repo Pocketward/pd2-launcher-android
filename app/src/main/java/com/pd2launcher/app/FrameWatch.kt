@@ -57,9 +57,10 @@ class FrameWatch {
     /**
      * The line for a look at [now] (elapsed real time, ms), if any: the game [running] or not, its
      * present counter's count [presents] (null: none), and whether it is on the screen [shown];
-     * [frameRate] (the setting's words) and [screenHz] (0: not known) go into the summary.
+     * [frameRate] (the setting) and [screenHz] (the screen's rate as last read, [ScreenRate]; 0: not
+     * known) go into the summary.
      */
-    fun next(now: Long, running: Boolean, presents: Long?, shown: Boolean, frameRate: String, screenHz: Float): String? {
+    fun next(now: Long, running: Boolean, presents: Long?, shown: Boolean, frameRate: Int, screenHz: Float): String? {
         if (running != active) {
             active = running
             if (running) {
@@ -201,7 +202,7 @@ class FrameWatch {
         waitWritten = false
     }
 
-    private fun summary(frameRate: String, screenHz: Float): String {
+    private fun summary(frameRate: Int, screenHz: Float): String {
         val setting = "frame rate setting $frameRate, screen ${if (screenHz > 0f) "${String.format(Locale.ROOT, "%.0f", screenHz)} Hz" else "rate unknown"}"
         if (!counted) return "frames at the game's end: no present counter; $setting"
         if (shownMs < WINDOW_MS) return "frames at the game's end: the game was not on the screen; $setting"
@@ -257,9 +258,11 @@ class FrameWatch {
  *   the app's clock (its ticks a second, from the present counter's page), and how much of the
  *   game's time on the screen ([shown], as for [FrameWatch]) the game's own buffers showed; the X
  *   screen's copy has no present fences, so its frames are not in these counts;
- * - with Detailed logging ([next]'s detailed, read at each look), each 5 s line of the direct
- *   present (`pd2-present` in logcat) with the clock's rate since the line before, and each window
- *   of the pointer split ([PointerSplit.line]).
+ * - each window of the frame split ([FrameSplit.line]: every frame shown, 30 s windows, 10 s with
+ *   Detailed logging; [LogPolicy]);
+ * - with Detailed logging ([next]'s detailed, [LogPolicy]), each 5 s line of the direct present
+ *   (`pd2-present` in logcat) with the clock's rate since the line before, and each window of the
+ *   pointer split ([PointerSplit.line]).
  * Not thread-safe: the session service's frame look uses it alone.
  */
 class PresentWatch {
@@ -279,15 +282,17 @@ class PresentWatch {
     private var lastStats = 0L
     private var statsTicks: Pair<Long, Long>? = null
     private var lastSplit = 0L
+    private var lastFrames = 0L
 
     /**
      * The lines for a look at [now] (elapsed real time, ms): the game [running] or not, the direct
      * present's [counts] (null: no server), the clock's [ticks] (null: no counter), whether the
      * game is on the screen [shown], whether Detailed logging is on, and the direct present's
-     * pointer split ([split]; null: no server).
+     * pointer split ([split]) and frame split ([frames]) (null: no server).
      */
     fun next(
         now: Long, running: Boolean, counts: PresentCounts?, ticks: Long?, shown: Boolean, detailed: Boolean, split: PointerSplit? = null,
+        frames: FrameSplit? = null,
     ): List<String> {
         if (counts != null) last = counts
         if (running != active) {
@@ -305,6 +310,7 @@ class PresentWatch {
             lastStats = counts?.stats ?: 0
             statsTicks = ticks?.let { it to now }
             lastSplit = split?.serial ?: 0
+            lastFrames = frames?.serial ?: 0
             return emptyList()
         }
         if (!running) return emptyList()
@@ -329,6 +335,10 @@ class PresentWatch {
         if (split != null && split.serial != lastSplit) {
             lastSplit = split.serial
             if (detailed && split.serial > 0) lines += split.line()
+        }
+        if (frames != null && frames.serial != lastFrames) {
+            lastFrames = frames.serial
+            if (frames.serial > 0 && frames.frames > 0) lines += frames.line()
         }
         return lines
     }

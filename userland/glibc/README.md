@@ -8,7 +8,7 @@ Debian 13's glibc 2.41 (source package `2.41-12+deb13u4` from snapshot.debian.or
 userland/glibc/build.sh
 ```
 
-It runs in a pinned `debian:trixie-slim` container (`Containerfile`), unpacks the source with `dpkg-source -x` (Debian's `debian/patches/series`), applies `patches/*.patch` with `patch -p1 --fuzz=0`, then configures, builds and installs into `out/install` (the contents of `<U>`).
+It runs in the base image (`../../containers/Containerfile.base`), takes the source package from the base image (`/opt/pd2/src/glibc`, which `Containerfile.base` fetches at that exact version; its SHA-256 sums checked again, no network), unpacks the source with `dpkg-source -x` (Debian's `debian/patches/series`), applies `patches/*.patch` with `patch -p1 --fuzz=0`, then configures, builds and installs into `out/install` (the contents of `<U>`).
 
 ## Patches
 

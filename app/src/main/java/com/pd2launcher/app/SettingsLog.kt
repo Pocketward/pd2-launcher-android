@@ -15,7 +15,7 @@ import java.util.Locale
  */
 object SettingsLog {
     fun line(app: AppSettings, controls: Controls, launcher: LauncherSettings.View?): String = buildString {
-        append("frame rate ").append(if (app.frameRate == AppSettings.FULL_FRAME_RATE) "Full" else app.frameRate.toString())
+        append("frame rate ").append(app.frameRate)
         append(", low frame rate in the background ").append(onOff(app.lowFrameRateInBackground))
         append(", game resolution ").append(app.customSize?.let { (width, height) -> "Custom $width x $height" } ?: "the game's own size")
         append(", display ").append(
@@ -55,6 +55,10 @@ object SettingsLog {
             append(", skip to Battle.net ").append(onOff(launcher.skipToBnet))
             append(", sound in the background ").append(onOff(launcher.soundInBackground))
             append(", game update checks ").append(launcher.gameUpdateChecks?.let(::onOff) ?: "always")
+            append(", custom start options ").append(launcher.customArguments.ifEmpty { "none" })
+            append(", game program ").append(launcher.gameProgram)
+            append(", launcher program ").append(launcher.launcherProgram)
+            append(", launcher custom start options ").append(launcher.launcherCustomArguments.ifEmpty { "none" })
         }
     }
 

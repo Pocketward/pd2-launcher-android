@@ -1,0 +1,535 @@
+# The build of everything the APK carries, as one reusable workflow: release.yml and test-build.yml
+# call it (jobs.build.uses), and then make the APK.
+#
+#   base-image  layer 1: ghcr.io/pocketward/pd2-build-base:<tag> (containers/base-image.sh). It
+#               builds and pushes the image when no image has that tag (the first run after a change
+#               of its inputs), else it only finds it. Every other job waits for it
+#   userland    layer 2: the userland's assets, and its nine parts, each its own package
+#   wine        Wine, wowbox64.dll and the sound plugin, each its own package; nothing when the
+#               runtime's package exists
+#   engine      checks the pinned engine's XInput bridge (always), then the engine's package (built
+#               here; no ARM64 code runs here: the arm64 job attests it)
+#   devdriver   the system-driver mode's servers (devdriver/build.sh) with the NDK from sdkmanager
+#   arm64       on ubuntu-24.04-arm, in every build: the userland's relocated runs
+#               (userland/check-relocated.sh) and the engine's attest (engine/build.sh --attest),
+#               whose engine goes to the apk job as the artifact "engine"; and when the runtime has
+#               no package, the prefix templates (runtime/prefix.sh: Wine runs natively, and the steps
+#               that need no particular CPU run on the runner itself, as no amd64 container runs there)
+#   runtime     runtime/build.sh from the packages of wine, wowbox64, pd2audio and the prefix
+#
+# The slow parts are packages on ghcr.io, as the base image is: data-only images
+# ghcr.io/pocketward/pd2-part-<part>:<tag> (containers/part-image.sh), the tag made from the part's
+# identity, the text its script prints before any build (<script> --identity; userland/pack.sh
+# --version). A job pulls a part whose package exists, checks that its BUILDINFO is that identity,
+# and builds and pushes a part whose package is missing, once; one changed input builds that part
+# (and the parts made from it) again. The packages do not expire. A part that was built before a
+# failure or a timeout is pushed too. The later jobs read the packages, and the apk job reads the
+# userland, the runtime and the system-driver servers there; only the attested engine is an
+# artifact of the run (an attest belongs to its run), for 7 days, as test-build.yml's apk job
+# waits for the owner's approval.
+#
+# Every job that reads a package logs in to ghcr.io with the workflow's own token. Each job here
+# may push a package, so each has packages: write; the caller's apk job reads only (packages: read).
+name: Build
+
+on:
+  workflow_call:
+    inputs:
+      commit:
+        description: The commit to build
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  # The image is about 2.4 GB, and its build needs about twice that on the disk. It is built here
+  # only when its tag is new: the first run after a change of containers/Containerfile.base,
+  # containers/base-packages.lock, userland/packages.lock, DEBIAN_IMAGE or DEBIAN_SNAPSHOT.
+  base-image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+
+      - name: Log in to ghcr.io
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          . userland/config.sh
+          engine=$(container_engine) || { echo "::error::no container engine (podman or docker) on the runner"; exit 1; }
+          "$engine" --version
+          containers/part-image.sh login ||
+            { echo "::error::$engine cannot log in to ghcr.io with the workflow's token"; exit 1; }
+
+      # The package gives this repository read and write access (Actions access), so every read goes
+      # through the login with the workflow's token; a denied read fails here, before the long jobs.
+      - name: Look for the base image
+        id: find
+        run: |
+          . userland/config.sh
+          image=$(base_image_name)
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          if command -v skopeo >/dev/null; then
+            query() { skopeo inspect --raw "docker://$image"; }
+          else
+            query() { "$(container_engine)" manifest inspect "$image"; }
+          fi
+          # Podman's manifest inspect reads a manifest list only: a single image's manifest (which it
+          # then prints in its error) exists.
+          if answer=$(query 2>&1) || grep -q 'schemaVersion' <<<"$answer"; then
+            echo "found $image"
+          elif grep -qiE 'manifest unknown|manifest_unknown|name unknown|name_unknown|no such manifest' <<<"$answer"; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "::notice title=New base image::$image is not on ghcr.io: this job builds and pushes it"
+          else
+            echo "::error::cannot read $image: $answer (the package pd2-build-base must give this repository access: package settings, Manage Actions access)"
+            exit 1
+          fi
+
+      # Not in the background: the build needs the room at once.
+      - name: Make room on the disk
+        if: steps.find.outputs.build == 'true'
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/powershell /usr/share/swift
+          df -h /
+          avail=$(df --output=avail -B1G / | tail -n 1)
+          (( avail >= 10 )) || { echo "::error::only ${avail} GB free on /: the base image's build needs about 10"; exit 1; }
+
+      # ensure_base_image (containers/base-image.sh): build context android/, --platform linux/amd64,
+      # and the OCI source label, which links the package version to this repository.
+      - name: Build the base image
+        if: steps.find.outputs.build == 'true'
+        run: |
+          . userland/config.sh
+          ensure_base_image >/dev/null ||
+            { echo "::error::the base image did not build (containers/Containerfile.base; the log above)"; exit 1; }
+          "$(container_engine)" image inspect "$(base_image_name)" --format '{{.Size}} bytes, labels {{.Labels}}'
+
+      - name: Push the base image
+        if: steps.find.outputs.build == 'true'
+        env:
+          IMAGE: ${{ steps.find.outputs.image }}
+        run: |
+          . userland/config.sh
+          "$(container_engine)" push "$IMAGE" ||
+            { echo "::error::the push of $IMAGE was refused: the workflow's token needs packages: write, and the package needs this repository's Actions access with the role Write"; exit 1; }
+          echo "::notice title=Base image pushed::$IMAGE"
+
+  userland:
+    needs: base-image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+
+      - name: Log in to ghcr.io
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: containers/part-image.sh login
+
+      - name: Look for the userland
+        id: userland
+        run: |
+          status=0
+          containers/part-image.sh query userland || status=$?
+          case $status in
+            0) echo "the userland's package exists: nothing to build" ;;
+            1) echo "build=true" >> "$GITHUB_OUTPUT" ;;
+            *) exit 1 ;;
+          esac
+
+      # In the background: deleting is slow, and the room is needed only later.
+      - name: Make room on the disk
+        if: steps.userland.outputs.build == 'true'
+        run: |
+          df -h /
+          nproc
+          sudo nohup rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/powershell /usr/share/swift >/dev/null 2>&1 &
+
+      - name: Pull the parts that have a package
+        if: steps.userland.outputs.build == 'true'
+        run: containers/part-image.sh fetch xvfb mesa panvk panvk-tools sysdrv hybris radv mali-panvk glibc
+
+      - name: Pull the base image
+        if: steps.userland.outputs.build == 'true'
+        run: |
+          . userland/config.sh
+          "$(container_engine)" pull --platform linux/amd64 "$(base_image_name)"
+
+      # Each part script reuses its part while its BUILDINFO is its identity. check-tree.sh skips the
+      # relocated runs here (no aarch64 host, no binfmt_misc): the arm64 job runs them.
+      - name: Build the userland
+        if: steps.userland.outputs.build == 'true'
+        env:
+          PD2_USERLAND_WITH_GLIBC: 1
+        run: userland/build.sh
+
+      # Also after a failure or a timeout: the parts built before it are kept. A part whose output is
+      # not its identity is not pushed.
+      - name: Push the parts built here
+        if: always() && steps.userland.outputs.build == 'true'
+        run: containers/part-image.sh publish xvfb mesa panvk panvk-tools sysdrv hybris radv mali-panvk glibc
+
+      - name: Push the userland
+        if: steps.userland.outputs.build == 'true'
+        run: containers/part-image.sh publish --need userland
+
+  wine:
+    needs: base-image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+
+      - name: Log in to ghcr.io
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: containers/part-image.sh login
+
+      # Nothing when the runtime has its package: no later job needs these parts then.
+      - name: Look for the parts
+        id: parts
+        run: |
+          status=0
+          containers/part-image.sh query runtime || status=$?
+          case $status in
+            0) echo "the runtime's package exists: nothing to build" ;;
+            1) containers/part-image.sh fetch wine wowbox64 pd2audio ;;
+            *) exit 1 ;;
+          esac
+
+      - name: Make room on the disk
+        if: steps.parts.outputs.missing != ''
+        run: |
+          df -h /
+          sudo nohup rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/powershell /usr/share/swift >/dev/null 2>&1 &
+
+      - name: Pull the base image
+        if: steps.parts.outputs.missing != ''
+        run: |
+          . userland/config.sh
+          "$(container_engine)" pull --platform linux/amd64 "$(base_image_name)"
+
+      # Each script reuses its part while its BUILDINFO is its identity.
+      - name: Build the parts
+        if: steps.parts.outputs.missing != ''
+        run: |
+          runtime/wine.sh
+          runtime/wowbox64.sh
+          runtime/pd2audio.sh
+
+      # Also after a failure or a timeout; the later jobs need all three (fetch --need).
+      - name: Push the parts built here
+        if: always() && steps.parts.outputs.missing != ''
+        run: containers/part-image.sh publish wine wowbox64 pd2audio
+
+  engine:
+    needs: base-image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+
+      # The prefix template carries the engine's XInput bridge, which runtime/config.sh pins by its
+      # size and SHA-256; prefix.sh checks it when it makes the template. The runtime's identity does
+      # not name the engine, so this commit's bridge is checked in every run, also when the runtime
+      # has its package.
+      - name: Check the engine's XInput bridge
+        id: source
+        run: |
+          set -o pipefail
+          . runtime/config.sh
+          src=$(engine/build.sh --source)
+          xxd -r -p "$src/src/install/xinput_bridge.hex" | xz -dc > "$RUNNER_TEMP/xinput1_4.dll"
+          size=$(stat -c %s "$RUNNER_TEMP/xinput1_4.dll")
+          sum=$(sha256sum < "$RUNNER_TEMP/xinput1_4.dll" | cut -d' ' -f1)
+          [[ $size == "$XINPUT_BRIDGE_SIZE" && $sum == "$XINPUT_BRIDGE_SHA256" ]] ||
+            { echo "::error::the engine's XInput bridge ($size bytes, $sum) is not the one runtime/config.sh pins"; exit 1; }
+          echo "the engine's XInput bridge is the pinned one: $size bytes, $sum"
+          # The toolchain that the sources name, and their crates.
+          echo "toolchain=engine-toolchain-$(base_image_tag)-$(cat "$src/rust-toolchain.toml" "$src/Cargo.lock" | sha256sum | cut -c1-32)" |
+            tee -a "$GITHUB_OUTPUT"
+
+      - name: Log in to ghcr.io
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: containers/part-image.sh login
+
+      - name: Look for the engine
+        id: engine
+        run: |
+          status=0
+          containers/part-image.sh query engine || status=$?
+          case $status in
+            0) echo "the engine's package exists: nothing to build" ;;
+            1) echo "build=true" >> "$GITHUB_OUTPUT" ;;
+            *) exit 1 ;;
+          esac
+
+      # A speed-up only: rustup's toolchain and Cargo's downloads (the engine's target folder is not
+      # kept, so the build stays byte-equal).
+      - name: Restore the toolchain
+        id: toolchain
+        if: steps.engine.outputs.build == 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/pd2-android/engine/rustup
+            ~/.cache/pd2-android/engine/cargo/registry
+            ~/.cache/pd2-android/engine/cargo/git
+          key: ${{ steps.source.outputs.toolchain }}
+
+      - name: Pull the base image
+        if: steps.engine.outputs.build == 'true'
+        run: |
+          . userland/config.sh
+          "$(container_engine)" pull --platform linux/amd64 "$(base_image_name)"
+
+      # No ARM64 code runs here: the evidence says package_identity=unattested, and so does the
+      # package; the arm64 job attests the engine in every run.
+      - name: Build the engine
+        if: steps.engine.outputs.build == 'true'
+        env:
+          PD2_RELEASE_BUILD: 1
+        run: engine/build.sh
+
+      - name: Save the toolchain
+        if: always() && steps.engine.outputs.build == 'true' && steps.toolchain.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/pd2-android/engine/rustup
+            ~/.cache/pd2-android/engine/cargo/registry
+            ~/.cache/pd2-android/engine/cargo/git
+          key: ${{ steps.source.outputs.toolchain }}
+
+      - name: Push the engine
+        if: steps.engine.outputs.build == 'true'
+        run: containers/part-image.sh publish --need engine
+
+  devdriver:
+    needs: base-image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+
+      - name: Log in to ghcr.io
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: containers/part-image.sh login
+
+      - name: Look for the system-driver servers
+        id: devdriver
+        run: |
+          status=0
+          containers/part-image.sh query devdriver || status=$?
+          case $status in
+            0) echo "the servers' package exists: nothing to build" ;;
+            1) echo "build=true" >> "$GITHUB_OUTPUT" ;;
+            *) exit 1 ;;
+          esac
+
+      # The NDK only: devdriver/build.sh takes $ANDROID_HOME/ndk/27.2.12479018 (the runner's
+      # ANDROID_NDK_ROOT names its own default NDK).
+      - name: Install the NDK
+        if: steps.devdriver.outputs.build == 'true'
+        uses: ./.github/actions/android-sdk
+        with:
+          packages: ndk;27.2.12479018
+
+      - name: Pull the base image
+        if: steps.devdriver.outputs.build == 'true'
+        run: |
+          . userland/config.sh
+          "$(container_engine)" pull --platform linux/amd64 "$(base_image_name)"
+
+      - name: Build the system-driver servers
+        if: steps.devdriver.outputs.build == 'true'
+        run: devdriver/build.sh ~/.cache/pd2-android/devdriver-out
+
+      - name: Push the system-driver servers
+        if: steps.devdriver.outputs.build == 'true'
+        run: containers/part-image.sh publish --need devdriver
+
+  # All ARM64 code of a build runs here, natively: so the userland and the engine of each APK ran on
+  # real ARM64 hardware in the run that built it. No amd64 container runs on this runner (no x86
+  # emulation): the prefix steps that need no particular CPU run on the runner itself, with
+  # Ubuntu's python3, patchelf and cabextract (run_neutral, runtime/config.sh). The part packages
+  # hold no program, so their amd64 platform does not matter here (they are pulled, never run).
+  arm64:
+    needs: [userland, engine, wine]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+
+      - name: Describe the runner
+        run: |
+          uname -m
+          podman --version || true
+          docker --version || true
+          skopeo --version || true
+          python3 --version
+          df -h /
+
+      - name: Log in to ghcr.io
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: containers/part-image.sh login
+
+      - name: Pull the userland and the engine
+        run: containers/part-image.sh fetch --need userland engine
+
+      - name: Run the relocated userland
+        run: userland/check-relocated.sh app/src/main/assets/userland app/system-driver/assets
+
+      - name: Attest the engine
+        env:
+          PD2_RELEASE_BUILD: 1
+        run: |
+          engine/build.sh --attest
+          grep -x 'package_identity=native-aarch64-binary' ~/.cache/pd2-android/engine-release-out/*.build-evidence.txt
+          tar --zstd -cf "$RUNNER_TEMP/engine.tar.zst" -C ~ .cache/pd2-android/engine-release-out
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: engine
+          path: ${{ runner.temp }}/engine.tar.zst
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+      # Only when no package holds the runtime or the templates.
+      - name: Look for the prefix templates
+        id: prefix
+        run: |
+          status=0
+          containers/part-image.sh query runtime || status=$?
+          case $status in
+            0) echo "the runtime's package exists: no prefix needed" ;;
+            1)
+              status=0
+              containers/part-image.sh query prefix || status=$?
+              case $status in
+                0) echo "the prefix templates' package exists" ;;
+                1) echo "build=true" >> "$GITHUB_OUTPUT" ;;
+                *) exit 1 ;;
+              esac
+              ;;
+            *) exit 1 ;;
+          esac
+
+      # Wine runs in arm64 containers ($DEBIAN_IMAGE); --stage-wine, --finish and --golden run here
+      # on the runner.
+      - name: Make the prefix templates
+        if: steps.prefix.outputs.build == 'true'
+        run: |
+          set -o pipefail
+          sudo apt-get update -qq
+          sudo apt-get install --yes --no-install-recommends cabextract patchelf
+          containers/part-image.sh fetch --need wine wowbox64
+          . runtime/config.sh
+          # The userland's tree, where prefix.sh looks for it.
+          mkdir -p "$USERLAND_TREE"
+          zstd -dc app/src/main/assets/userland/userland.tar.zst | tar -x -p -C "$USERLAND_TREE"
+          runtime/prefix.sh
+
+      - name: Push the prefix templates
+        if: steps.prefix.outputs.build == 'true'
+        run: containers/part-image.sh publish --need prefix
+
+  runtime:
+    needs: [wine, arm64]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+
+      - name: Log in to ghcr.io
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: containers/part-image.sh login
+
+      - name: Look for the runtime
+        id: runtime
+        run: |
+          status=0
+          containers/part-image.sh query runtime || status=$?
+          case $status in
+            0) echo "the runtime's package exists: nothing to build" ;;
+            1) echo "build=true" >> "$GITHUB_OUTPUT" ;;
+            *) exit 1 ;;
+          esac
+
+      - name: Make room on the disk
+        if: steps.runtime.outputs.build == 'true'
+        run: |
+          df -h /
+          sudo nohup rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/powershell /usr/share/swift >/dev/null 2>&1 &
+
+      - name: Pull the parts and the base image
+        if: steps.runtime.outputs.build == 'true'
+        run: |
+          containers/part-image.sh fetch --need wine wowbox64 pd2audio prefix
+          . userland/config.sh
+          "$(container_engine)" pull --platform linux/amd64 "$(base_image_name)"
+
+      # It reuses the four parts by their BUILDINFO: it builds only the runtime itself.
+      - name: Build the runtime
+        if: steps.runtime.outputs.build == 'true'
+        run: runtime/build.sh
+
+      - name: Push the runtime
+        if: steps.runtime.outputs.build == 'true'
+        run: containers/part-image.sh publish --need runtime

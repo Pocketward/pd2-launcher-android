@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Fetches the pinned Debian 13 arm64 packages and extracts them, without maintainer scripts.
 #
-#   fetch-debian.sh            download what packages.lock names (SHA-256 checked), extract
+#   fetch-debian.sh            copy what packages.lock names from the base image's /opt/pd2/debs
+#                              (../containers/Containerfile.base downloads them; SHA-256 and size
+#                              checked again here), extract
 #   fetch-debian.sh --resolve  first resolve packages.txt into packages.lock (arm64 container, apt
 #                              against the snapshot, empty dpkg status so the closure is complete)
 #
@@ -72,7 +74,7 @@ if [[ "${1:-}" == --in-resolver ]]; then
     exit 0
 fi
 
-# --- inside the tools container: download, verify, extract -----------------------------
+# --- inside the base container: copy, verify, extract ----------------------------------
 if [[ "${1:-}" == --in-tools ]]; then
     debs=/cache/debs
     work=/cache/work
@@ -99,7 +101,7 @@ if [[ "${1:-}" == --in-tools ]]; then
     grep -v '^#' /src/packages.lock | while read -r set name version arch sha size url; do
         file="$debs/$(basename "$url")"
         if [[ ! -f "$file" ]] || ! echo "$sha  $file" | sha256sum -c --quiet - 2>/dev/null; then
-            curl -fsSL --retry 3 -o "$file.part" "$url"
+            cp "/opt/pd2/debs/$(basename "$url")" "$file.part"
             mv "$file.part" "$file"
         fi
         echo "$sha  $file" | sha256sum -c --quiet - || { echo "SHA-256 mismatch: $name $version" >&2; exit 1; }
@@ -133,4 +135,4 @@ if [[ "${1:-}" == --resolve || ! -f "$here/packages.lock" ]]; then
     echo "wrote $here/packages.lock ($(grep -vc '^#' "$here/packages.lock") packages)"
 fi
 
-run_in_tools fetch-debian.sh --in-tools
+run_in_base fetch-debian.sh --in-tools

@@ -18,7 +18,7 @@ object UserlandAssets {
     private const val FOLDER = "userland"
     private const val ARCHIVE = "userland.tar.zst"
     private const val MANIFEST = "manifest.json"
-    /** The system-driver mode's part: the Venus ICD and the older GL stack (build-sysdrv.sh). */
+    /** The system-driver mode's part: the Venus ICD (build-sysdrv.sh), RADV, mali-panvk and the libhybris route's files. */
     const val SYSTEM_DRIVER = "userland-system-driver"
 
     /** The parts this APK carries, in order. */

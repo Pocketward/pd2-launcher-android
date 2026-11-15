@@ -4,6 +4,7 @@ import com.pd2launcher.app.control.Command
 import com.pd2launcher.app.control.ExistingProblem
 import com.pd2launcher.app.control.ImportMode
 import com.pd2launcher.app.control.InstallSource
+import com.pd2launcher.app.control.Installation
 import com.pd2launcher.app.control.Job
 import com.pd2launcher.app.control.Installer
 import com.pd2launcher.app.control.SettingChange
@@ -147,7 +148,14 @@ object DiabloSource {
         val continuePicks: Boolean,
         /** 0..1 while the pick is copied. */
         val progress: Float?,
-    )
+    ) {
+        /**
+         * The corner button says Install, not Continue: a folder is chosen and not refused, so its
+         * press starts the import at once and Install shows its progress (the owner, 2026-11-05: no
+         * second Install press). Also while the folder is copied in or checked (disabled).
+         */
+        val continueInstalls: Boolean get() = selected == SourceChoice.EXISTING && !continuePicks
+    }
 
     /**
      * The choice the engine's [snapshot] stands for: its installer, and for Blizzard's download
@@ -171,7 +179,30 @@ object DiabloSource {
     fun pageChoice(selected: SourceChoice?, snapshot: Snapshot?, saved: SourceChoice? = null): SourceChoice =
         selected ?: saved ?: snapshot?.let(::choiceOf)?.takeUnless { it == SourceChoice.BLIZZARD } ?: SourceChoice.DEFAULT
 
-    fun view(selected: SourceChoice, session: SessionStatus, copy: SourceCopy): View {
+    /**
+     * The folder of the engine's chosen import is still there. An import in place makes the app's
+     * copy the game folder, so Start over removes it while the engine keeps the choice: the
+     * player then chooses the folder again (the owner, 2026-11-05).
+     */
+    fun folderExists(path: String): Boolean = java.io.File(path).isDirectory
+
+    /** The engine's installer is a chosen folder that is no longer there ([folderExists]). */
+    fun folderGone(installer: Installer?, exists: (String) -> Boolean = ::folderExists): Boolean =
+        installer is Installer.Existing && !exists(installer.path)
+
+    /**
+     * The player chose Use files you have ([choice]), but the engine, audited and idle, has no
+     * folder it can import: none (it selects Blizzard's download by itself at each start) or one
+     * that is gone ([folderGone]). Setup past the source page then goes back there to choose it.
+     */
+    fun needsFolder(choice: SourceChoice?, session: SessionStatus, exists: (String) -> Boolean = ::folderExists): Boolean {
+        val snapshot = session.snapshot ?: return false
+        if (session.engine != SessionStatus.Engine.CONNECTED || !Onboarding.audited(snapshot) || snapshot.activeJob != null) return false
+        if (snapshot.installation == Installation.READY) return false
+        return folderGone(snapshot.installer, exists) || (choice == SourceChoice.EXISTING && !importsExisting(snapshot, exists))
+    }
+
+    fun view(selected: SourceChoice, session: SessionStatus, copy: SourceCopy, exists: (String) -> Boolean = ::folderExists): View {
         val snapshot = session.snapshot?.takeIf { session.engine == SessionStatus.Engine.CONNECTED }
         fun view(tone: Tone, status: Line, canContinue: Boolean = false, progress: Float? = null) =
             View(selected, tone, status, canContinue, continuePicks = false, progress = progress)
@@ -200,6 +231,8 @@ object DiabloSource {
             SourceChoice.FAST, SourceChoice.BLIZZARD -> view(Tone.OK, Line(R.string.source_blizzard_ready), canContinue = free)
             SourceChoice.EXISTING -> when {
                 installer !is Installer.Existing -> pick(Tone.PENDING, Line(R.string.source_existing_pick))
+                // Start over removed the copy that the import used in place: choose the folder again.
+                !exists(installer.path) -> pick(Tone.PENDING, Line(R.string.source_existing_pick))
                 installer.problem != null -> pick(Tone.ERROR, problem(installer.problem))
                 installer.inPlacePossible -> view(Tone.OK, inPlace((copy as? SourceCopy.Copied)?.projectDiablo), canContinue = free)
                 else -> view(Tone.OK, Line(R.string.source_existing_copy, installer.copyBytes shr 20), canContinue = free)
@@ -237,8 +270,8 @@ object DiabloSource {
         if (existing.inPlacePossible) ImportMode.IN_PLACE else ImportMode.COPY
 
     /** Install for an existing folder imports it instead of asking for keys. */
-    fun importsExisting(snapshot: Snapshot): Boolean =
-        snapshot.installer.let { it is Installer.Existing && it.problem == null }
+    fun importsExisting(snapshot: Snapshot, exists: (String) -> Boolean = ::folderExists): Boolean =
+        snapshot.installer.let { it is Installer.Existing && it.problem == null && exists(it.path) }
 
     /** The engine's refusal of the removal of the downloads' files (an install stage or another job runs). */
     const val DISCARD_REFUSED = "discard-downloads-not-permitted"

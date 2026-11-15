@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Cross-builds Mesa (config.sh's MESA_COMMIT of main) for aarch64 (Debian multiarch, in its own image
-# containers/Containerfile.mesa)
+# Cross-builds Mesa (config.sh's MESA_COMMIT of main) for aarch64 (Debian multiarch, in the base image
+# ../containers/Containerfile.base)
 # and installs it into the staging tree: Zink (OpenGL on Vulkan) without LLVM, softpipe for Xvfb's
 # GLX extension (its swrast_dri.so lists the GLX visuals; the game draws through Zink), virgl for
 # the system-driver mode's VirGL route (GALLIUM_DRIVER=virpipe on the GLX software path: OpenGL
@@ -16,50 +16,40 @@
 #                                   prefix, and the app relocates them with the rest
 # and our patches/mesa/*.patch (see patches/mesa/README.md) on the unpacked source. The build goes
 # to the cache's mesa-out/ with its BUILDINFO (the image, the Mesa pin, this script, the patches),
-# which a later run with the same identity installs without building.
+# which a later run with the same identity installs without building. `build-mesa.sh --identity`
+# prints that identity on the host, before any build (the release workflow's cache key); the
+# Mesa archive is fetched only when mesa-out does not have it.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=config.sh
 . "$here/config.sh"
 
-# The Mesa image's name: the tag hashes its Containerfile and the two Debian pins.
-mesa_image() {
-    local engine image
-    engine="$(container_engine)"
-    image="localhost/pd2-userland-mesa:$( (cat "$USERLAND_SRC/containers/Containerfile.mesa"
-        echo "$DEBIAN_IMAGE $DEBIAN_SNAPSHOT") | sha256sum | cut -c1-16)"
-    if ! have_image "$engine" "$image"; then
-        "$engine" build --platform linux/amd64 \
-            --build-arg "DEBIAN_IMAGE=$DEBIAN_IMAGE" --build-arg "DEBIAN_SNAPSHOT=$DEBIAN_SNAPSHOT" \
-            -t "$image" -f "$USERLAND_SRC/containers/Containerfile.mesa" "$USERLAND_SRC/containers" >&2
-        archive_image "$engine" "$image"
-    fi
-    echo "$image"
-}
-
-if [[ "${PD2_USERLAND_IN_CONTAINER:-}" != 1 ]]; then
-    fetch_source "$MESA_URL" "$MESA_SHA256" >/dev/null
-    image="$(mesa_image)"
-    engine="$(container_engine)"
-    mkdir -p "$USERLAND_CACHE/work"
-    "$engine" run --rm --platform linux/amd64 \
-        -v "$USERLAND_SRC:/src:ro" -v "$USERLAND_CACHE:/cache" \
-        -e PD2_USERLAND_IN_CONTAINER=1 -e PD2_USERLAND_CACHE=/cache -e "PD2_IMAGE=$image" \
-        "$image" bash /src/build-mesa.sh --build
-    run_in_tools build-mesa.sh --install
-    exit
-fi
-
-out=/cache/mesa-out
 identity() {
     echo "image=${PD2_IMAGE:-}"
     echo "mesa=$MESA_COMMIT $MESA_SHA256"
     echo "prefix=$USERLAND"
-    for f in /src/build-mesa.sh /src/patches/mesa/*.patch; do
-        echo "${f#/src/} $(sha256sum < "$f" | cut -d' ' -f1)"
+    for f in "$here/build-mesa.sh" "$here"/patches/mesa/*.patch; do
+        echo "${f#"$here"/} $(sha256sum < "$f" | cut -d' ' -f1)"
     done
 }
+if [[ "${1:-}" == --identity ]]; then
+    # The container's order of file names (no locale there).
+    export LC_ALL=C
+    PD2_IMAGE="${PD2_IMAGE:-$(base_image_name)}" identity
+    exit 0
+fi
+
+if [[ "${PD2_USERLAND_IN_CONTAINER:-}" != 1 ]]; then
+    if [[ ! -d "$USERLAND_CACHE/mesa-out/tree" || "$(cat "$USERLAND_CACHE/mesa-out/BUILDINFO" 2>/dev/null)" != "$("$here/build-mesa.sh" --identity)" ]]; then
+        fetch_source "$MESA_URL" "$MESA_SHA256" >/dev/null
+    fi
+    run_in_base build-mesa.sh --build
+    run_in_base build-mesa.sh --install
+    exit
+fi
+
+out=/cache/mesa-out
 
 if [[ "${1:-}" == --build ]]; then
     id="$(identity)"
@@ -112,7 +102,7 @@ EOF
     exit 0
 fi
 
-# --install (tools image): the build into the staging tree, over Debian's glvnd libraries.
+# --install (base image): the build into the staging tree, over Debian's glvnd libraries.
 staging=/cache/work/staging
 [[ -d "$staging/usr" ]] || { echo "no staging tree: run fetch-debian.sh first" >&2; exit 1; }
 [[ -f "$out/BUILDINFO" && -d "$out/tree" ]] || { echo "no Mesa build: run build-mesa.sh" >&2; exit 1; }

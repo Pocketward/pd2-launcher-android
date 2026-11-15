@@ -2,6 +2,8 @@
 <resources>
     <!-- App updates: a new version of this app (Settings → App, the notice). Not Project Diablo 2's updates. -->
     <string name="app_update_you_have">You have %1$s</string>
+    <!-- Under "You have …" on a player's test APK: Stable and Beta are the ways out of the test build. -->
+    <string name="app_update_test_build">Test build: install Stable or Beta below to leave it.</string>
     <string name="app_update_idle">PD2 Launcher has not looked for a new version yet.</string>
     <string name="app_update_checking">Looking for a new version…</string>
     <!-- Under "You have": when the last check was. -->
@@ -34,8 +36,6 @@
     <string name="app_update_app_closes">The app closes while Android updates it. Your game, characters and settings stay.</string>
     <string name="app_update_allow_note">First, let PD2 Launcher install updates: in Android\'s settings, turn on \"Allow from this source\", then come back. Android can restart the app when you do this.</string>
     <string name="app_update_cancelled">The update was cancelled. Nothing changed.</string>
-    <string name="app_update_put_off">The update stopped because the game or other work started. Tap the install sign again when it ends.</string>
-    <string name="app_update_install_no_space">Android needs more free space to install the update. Free some space, then tap the install sign.</string>
     <string name="app_update_install_failed">Android did not install the update. Tap the install sign to try again.</string>
     <string name="app_update_wait_game">Close the game first. The update closes the app, and the game with it.</string>
     <string name="app_update_wait_launcher">Close the official PD2 launcher first. The update closes the app, and the launcher with it.</string>

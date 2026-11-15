@@ -4,12 +4,15 @@ import java.io.File
 
 /**
  * The mali-panvk route ([GraphicsRoute.MALI_PANVK]): the game's Zink (the product Mesa's) on the
- * community PanVK tree mali-panvk (MIT) for Arm Mali GPUs on kbase's job manager (Bifrost v6/v7,
- * Valhall v9, such as the Mali-G52, G57, G68, G77, G78), which opens `/dev/mali0` itself; no server.
+ * community PanVK tree mali-panvk (MIT) for Arm Mali GPUs on kbase, both of the job manager
+ * (Bifrost v6/v7, Valhall v9, such as the Mali-G52, G57, G68, G77, G78) and of CSF (v10 to v13,
+ * such as the Mali-G610, G615, G710, G715, G720), which opens `/dev/mali0` itself; no server.
  * Built by userland/build-mali-panvk.sh with our WSI patches (the present counter, the direct
  * present into the app's buffers, the app's clock) and our fixes for the tree, into the App
- * userland's system-driver part, beside our PanVK, which stays the driver of the CSF Malis. Only
- * on a job-manager Mali that the tree knows ([maliPanvkKnows]); offered to players while
+ * userland's system-driver part, beside our PanVK, which drives a CSF Mali only where this route
+ * cannot run (the owner, 2026-11-12, after issue 23's test: "default to mali-panvk for the chips
+ * that support it, and we run our own mesa fork when mali panvk doesn't support it"). On every
+ * Mali that the tree knows ([maliPanvkKnows]); offered to players while
  * [DriverChoice.MALI_PANVK_FOR_PLAYERS] is true ([allowed]).
  */
 object MaliPanvk {
@@ -40,12 +43,12 @@ object MaliPanvk {
     fun filesPresent(userland: File): Boolean = File(userland, LIBRARY).isFile && File(userland, ICD).isFile
 
     /**
-     * The JM Mali that the route is for: [gpu] itself (no report of the phone's own driver), or the
+     * The Mali that the route is for: [gpu] itself (no report of the phone's own driver), or the
      * GPU its kernel driver named beside that report ([SystemDriverGpu.kernel]); null where it is
-     * neither a job-manager Mali nor one that mali-panvk knows.
+     * no Mali that mali-panvk knows ([maliPanvkKnows]: a job-manager or a CSF one).
      */
     fun gpu(gpu: HostGpu?, phone: SystemDriverGpu?): MaliGpu? =
-        ((gpu as? MaliGpu) ?: (phone?.kernel as? MaliGpu))?.takeIf { it.jobManager && maliPanvkKnows(it) }
+        ((gpu as? MaliGpu) ?: (phone?.kernel as? MaliGpu))?.takeIf { maliPanvkKnows(it) }
 }
 
 /**

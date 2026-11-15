@@ -129,6 +129,9 @@ class MainActivity : ComponentActivity() {
     private val startedOver = mutableStateOf(false)
     /** The install the player started (or found running), for its tasks and figure. */
     private val installRun = mutableStateOf<InstallRun?>(null)
+
+    /** Install on the source page chose an import: it starts by itself on Install (InstallProgress.importStartsNow). */
+    private val importPending = mutableStateOf(false)
     /** Play or the official PD2 launcher was pressed and the engine has not shown it yet ([Play.launchPending]). */
     private val launchPress = mutableStateOf<Play.LaunchPress?>(null)
     /** The source step's selection while the player chooses; null: the engine's or the default. */
@@ -238,6 +241,7 @@ class MainActivity : ComponentActivity() {
         freshIntent = savedInstanceState == null
         readScreenExtras(intent)
         AppSettingsStore.load(this)
+        deleteSharedPreferences(MEASURED_FULL_RATE_PREFERENCES)
         appUpdate.create(intent, fresh = savedInstanceState == null)
         // An install started and not finished opens on Install; an installed game on Play (Root
         // follows the record, so it loads on every start, before the page is chosen). When Android
@@ -360,13 +364,21 @@ class MainActivity : ComponentActivity() {
         // The download finished while Download was shown: Install follows.
         val installReady = InstallProgress.page(status, imported) != null
         LaunchedEffect(installReady) { if (installReady) nav.value = nav.value.downloadDone() }
+        // The chosen folder is gone (Start over removed the copy an import used in place): past the
+        // source page, the player chooses it again there.
+        val chosenSource = sourceChoice.value ?: AppSettingsStore.current.collectAsState().value.sourceChoice
+        val folderGone = DiabloSource.needsFolder(chosenSource, status)
+        LaunchedEffect(folderGone, nav.value.page) { nav.value = nav.value.folderGone(folderGone) }
         // Start over reset the interrupted stage: straight to the keys, or Install's start button.
         val installPage = InstallProgress.page(status, imported)
         LaunchedEffect(installPage) {
             val snapshot = status.snapshot
             if (startedOver.value && installPage == InstallProgress.Page.KEYS && snapshot != null) {
                 startedOver.value = false
-                nav.value = nav.value.afterStartOver(needsKeys = !DiabloSource.importsExisting(snapshot))
+                nav.value = nav.value.afterStartOver(
+                    needsKeys = !DiabloSource.importsExisting(snapshot),
+                    choosesFolder = DiabloSource.folderGone(snapshot.installer),
+                )
             }
         }
         // The engine refused a CD key at Install: back to the key page, with why under the field.
@@ -445,8 +457,11 @@ class MainActivity : ComponentActivity() {
                         nav.value = when {
                             joins -> nav.value.open(FlowPage.INSTALL)
                             KeysWhileDownloading.keysAtOnce(choice, status.snapshot) -> nav.value.keysWhileDownloading()
+                            // A chosen folder: Install opens and the import starts there by itself.
+                            view.continueInstalls -> nav.value.open(FlowPage.INSTALL)
                             else -> nav.value.afterSource(ready)
                         }
+                        importPending.value = view.continueInstalls
                     }
                 },
                 onBack = onBack,
@@ -510,14 +525,11 @@ class MainActivity : ComponentActivity() {
                 onDispose { settingsShown = false }
             }
             val app by AppSettingsStore.current.collectAsState()
-            // Live: the Frame rate input measures it again while it shows ([ScreenRateProbe]).
-            remember { ScreenRate.load(this) }
-            val fullFrameRate by ScreenRate.full.collectAsState()
             SettingsScreen(
                 launcher = LauncherSettings.view(status.snapshot?.settings, status.engine == SessionStatus.Engine.CONNECTED),
                 app = app,
                 display = remember { GameResolution.display(this) },
-                fullFrameRate = fullFrameRate,
+                panel = remember { PanelModes.of(display) },
                 // The device check's probe, not another on the main thread (its ioctls) each time.
                 gpu = (device as? DeviceCheckState.Done)?.facts?.gpu,
                 // The GPU page shows the route that the next Play takes, as Play's label does.
@@ -566,7 +578,7 @@ class MainActivity : ComponentActivity() {
         } else if (previewName == DebugPreview.REPAIR) {
             // As where the app holds Repair on screen: with the logs, and no way to Settings.
             RepairScreen(status, onCheckAgain = {}, onStartOver = {}, onBack = leavePreview, logs = true)
-        } else if (previewName == DebugPreview.PLAY || DebugPreview.notice(previewName) != null || DebugPreview.playUpdate(previewName, status) != null ||
+        } else if (previewName == DebugPreview.PLAY || previewName == DebugPreview.PLAY_LANGUAGE || DebugPreview.notice(previewName) != null || DebugPreview.playUpdate(previewName, status) != null ||
             DebugPreview.driverOptions(previewName) != null
         ) Box(Modifier.fillMaxSize()) {
             val shown = DebugPreview.playUpdate(previewName, status) ?: status
@@ -579,6 +591,9 @@ class MainActivity : ComponentActivity() {
                 newVersion = appUpdate.newVersionDot(),
                 // The driver previews' route and notice.
                 driver = Play.driverView(DebugPreview.driverOptions(previewName), failed = DebugPreview.driverFailed(previewName)),
+                language = DebugPreview.language(previewName, shown.snapshot?.gameLanguage),
+                gameProgram = LauncherSettings.gameProgram(shown.snapshot?.settings),
+                launcherProgram = LauncherSettings.launcherProgram(shown.snapshot?.settings),
             )
             // Its answers save nothing here.
             DebugPreview.notice(previewName)?.let { DownloadsNotice(it, onRemove = leavePreview, onLater = leavePreview) }
@@ -708,6 +723,9 @@ class MainActivity : ComponentActivity() {
                 ),
                 newVersion = appUpdate.newVersionDot(),
                 stats = playStats(Play.statsActive(started.value, launching, status.playCheck, status.engine)),
+                language = status.snapshot?.takeIf(Onboarding::audited)?.gameLanguage,
+                gameProgram = LauncherSettings.gameProgram(status.snapshot?.settings),
+                launcherProgram = LauncherSettings.launcherProgram(status.snapshot?.settings),
             )
             // Once, after the first game session (never right after the install): the installer
             // downloads can go and, after an import from Android's own storage, so can the Diablo II
@@ -806,12 +824,24 @@ class MainActivity : ComponentActivity() {
                 val install = InstallProgress.view(status, run)
                 // Never back to a step while install work runs: Back leaves the app.
                 BackHandler(enabled = install.working) { moveTaskToBack(true) }
+                // The import that Install on the source page chose starts once the engine is free.
+                val importStarts = importPending.value &&
+                    InstallProgress.importStartsNow(
+                        status.snapshot, install.state, status.snapshot?.let(DiabloSource::importsExisting) == true,
+                        downloadDone = Onboarding.download(status).state == DownloadState.DONE,
+                    )
+                LaunchedEffect(importStarts) {
+                    if (importStarts) startInstall(status)
+                }
                 InstallScreen(
                     install,
                     InstallProgress.tasks(install, run, taskLabels(status)),
                     onStopSafely = { SessionService.send(this, SessionService.ACTION_STOP_SAFELY) },
                     onInstall = { startInstall(status) },
-                    onBack = back,
+                    onBack = {
+                        importPending.value = false
+                        back()
+                    },
                     window = framebuffer.takeIf { status.gameEnvironment },
                 )
             } else {
@@ -870,9 +900,15 @@ class MainActivity : ComponentActivity() {
      * imported, otherwise the key page asks for the CD keys first (its "Agree and install" starts).
      */
     private fun startInstall(status: SessionStatus) {
+        importPending.value = false
         val snapshot = status.snapshot ?: return
         // An import never installs or updates Project Diablo 2 (the owner's rule of 2026-10-26).
         if (snapshot.step == Step.INSTALL_PD2 && InstallerDownloads.imported(SessionPaths(DeviceCheck.dataDir(this)).managedRoot)) return
+        // The chosen folder went with Start over (an import in place): the source page, to choose it again.
+        if (DiabloSource.folderGone(snapshot.installer)) {
+            nav.value = nav.value.chooseFolder()
+            return
+        }
         val existing = snapshot.installer as? Installer.Existing
         val imports = existing != null && DiabloSource.importsExisting(snapshot)
         when (InstallProgress.startAction(snapshot, InstallProgress.view(status).state, imports, SessionService.keysHeld())) {
@@ -1002,7 +1038,10 @@ class MainActivity : ComponentActivity() {
                 val zip = withContext(Dispatchers.IO) {
                     SessionService.checkpointLogs()
                     val launcher = officialLauncherFolder()
-                    LogShare.write(cacheDir, paths, aboutDevice(outcome, launcher), (outcome as? LogShare.ReportOutcome.Saved)?.file, launcher)
+                    LogShare.write(
+                        cacheDir, paths, aboutDevice(outcome, launcher), (outcome as? LogShare.ReportOutcome.Saved)?.file, launcher,
+                        SettingsSnapshot.text(allPreferences(), SessionService.status.value.snapshot?.settings),
+                    )
                 }
                 lifecycle.withStarted { hand(zip) }
                 true
@@ -1061,6 +1100,12 @@ class MainActivity : ComponentActivity() {
     }
 
     /** The official PD2 launcher's folder (ProjectD2) in the game folder in use; null without a game folder. */
+    /** Every preference file of the app ([SettingsSnapshot]), by name, with its keys and values. */
+    private fun allPreferences(): Map<String, Map<String, *>> =
+        File(dataDir, "shared_prefs").listFiles().orEmpty().filter { it.isFile && it.name.endsWith(".xml") }
+            .map { it.name.removeSuffix(".xml") }
+            .associateWith { getSharedPreferences(it, MODE_PRIVATE).all }
+
     private fun officialLauncherFolder(): File? =
         GameFilesProvider.gameFolder(paths, SessionService.status.value.snapshot?.gameFolder?.path)?.let { File(it, LauncherFiles.FOLDER) }
 
@@ -1087,9 +1132,9 @@ class MainActivity : ComponentActivity() {
                 "Android build" to HardwareFacts.androidBuild(
                     Build.MANUFACTURER, Build.BRAND, Build.FINGERPRINT, Build.DISPLAY, Build.VERSION.INCREMENTAL, Build.VERSION.SECURITY_PATCH,
                 ),
-                "GPU" to (facts?.gpu?.name ?: "not found"),
+                "GPU" to (facts?.gpu?.let { gpu -> (gpu as? MaliGpu)?.let { "${it.name} (${it.kernelInterface})" } ?: gpu.name } ?: "not found"),
                 "Graphics route" to "${status.graphicsRoute ?: "none"} (can run: ${facts?.driverOptions?.routes ?: "unknown"}; " +
-                    "phone's own driver: ${facts?.phoneDriver?.let { "${it.name}, Vulkan ${it.apiVersion.first}.${it.apiVersion.second}, Zink ${it.zink}, memory ${it.memory}" } ?: "not probed"}" +
+                    "phone's own driver: ${facts?.phoneDriver?.let { "${it.name}, Vulkan ${it.apiVersion.first}.${it.apiVersion.second}, Zink ${if (it.zinkStarts) "starts" else "refused"}, memory ${it.memory}" } ?: "not probed"}" +
                     "${SystemDriver.forced(filesDir)?.let { "; forced by the debug file: $it" } ?: ""}" +
                     "${if (status.routeChosen) "; chosen in Settings: ${status.graphicsRoute}" else ""}" +
                     "${status.driverFailed?.let { "; last failure: $it" } ?: ""})",
@@ -1132,7 +1177,7 @@ class MainActivity : ComponentActivity() {
         )
     }
 
-    /** The screen for device.txt: the whole panel, the app's window, the density, the rate now and the full rate the app measured. */
+    /** The screen for device.txt ([HardwareFacts.screen]). */
     private fun screenFacts(): String {
         val panel = windowManager.maximumWindowMetrics.bounds
         val window = resources.displayMetrics
@@ -1141,23 +1186,16 @@ class MainActivity : ComponentActivity() {
             window = window.widthPixels to window.heightPixels,
             densityDpi = window.densityDpi,
             hertzNow = display?.refreshRate,
-            fullHertz = ScreenRate.full.value,
+            modes = PanelModes.of(display),
+            cap = PhoneRefreshCap.read(this),
+            measured = ScreenCapabilityStore.load(this),
         )
     }
 
     /** Android's thermal status (a throttled CPU is slower) and power saving, for device.txt. */
     private fun thermalState(): String {
         val power = getSystemService(PowerManager::class.java) ?: return "unknown"
-        val thermal = when (power.currentThermalStatus) {
-            PowerManager.THERMAL_STATUS_NONE -> "none"
-            PowerManager.THERMAL_STATUS_LIGHT -> "light"
-            PowerManager.THERMAL_STATUS_MODERATE -> "moderate"
-            PowerManager.THERMAL_STATUS_SEVERE -> "severe"
-            PowerManager.THERMAL_STATUS_CRITICAL -> "critical"
-            PowerManager.THERMAL_STATUS_EMERGENCY -> "emergency"
-            PowerManager.THERMAL_STATUS_SHUTDOWN -> "shutdown"
-            else -> "level ${power.currentThermalStatus}"
-        }
+        val thermal = PerfWatch.thermal(power.currentThermalStatus)
         return "$thermal; power saving ${if (power.isPowerSaveMode) "on" else "off"}"
     }
 
@@ -1265,7 +1303,7 @@ class MainActivity : ComponentActivity() {
                 if (BuildConfig.DEBUG) Log.d(TAG, "play stats: fetch")
                 val before = PlayStats.current.value
                 PlayStats.current.value = result.stats
-                if (AppSettingsStore.current.value.detailedLogging) {
+                if (LogPolicy.on(LogArea.SERVER_STATUS)) {
                     val lines = listOfNotNull(
                         result.failures.takeIf { it.isNotEmpty() }?.let { "play stats: fetch failed: ${it.joinToString("; ")}" },
                         PlayStats.changeLine(before, result.stats),
@@ -1393,6 +1431,8 @@ class MainActivity : ComponentActivity() {
 
     private companion object {
         const val TAG = "pd2-session"
+        /** The preferences in which earlier versions kept the screen's full rate that they measured. */
+        const val MEASURED_FULL_RATE_PREFERENCES = "screen_rate"
         /** The controllers log's lines in logcat too ([controllerLog]). */
         const val CONTROLLERS_TAG = "pd2-controllers"
         /** How long Share logs and Save logs wait for the engine's report before they go on without one. */

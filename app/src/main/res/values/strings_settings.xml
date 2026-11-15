@@ -32,15 +32,14 @@
     <string name="settings_hint_waiting">Game settings wait for the Launcher to start, a few seconds after the app opens.</string>
     <string name="settings_hint_failed">The Launcher could not save its settings (%1$s). The next Play uses the last saved ones.</string>
 
-    <!-- The groups of the pages. Display: Picture, Frame rate and Screen. Game: PD2 Launcher, Diablo II start options (with what they are) and Loot filters. -->
+    <!-- The groups of the pages. Display: Picture, Frame rate and Screen. Game: PD2 Launcher, the game (the program Play starts and its start options), the official PD2 launcher (its program and its start options) and Loot filters. -->
     <string name="settings_section_picture">Picture</string>
     <string name="settings_section_launcher">PD2 Launcher</string>
-    <string name="settings_section_start_options">Diablo II start options</string>
-    <string name="settings_start_options_hint">Only for Play. The official PD2 launcher has its own options for the games it starts.</string>
-    <!-- Game → Loot filters: greyed out until its own screen exists. -->
+    <string name="settings_section_game_program">Game · what Play starts</string>
+    <string name="settings_section_official_launcher">Official PD2 launcher</string>
+    <!-- Game → Loot filters: the row that opens the Loot filters page. -->
     <string name="settings_loot_filters">Loot filters</string>
-    <string name="settings_loot_filters_body">Not available yet.</string>
-    <string name="settings_loot_filters_manage">Manage</string>
+    <string name="settings_loot_filters_body">Choose a filter from PD2\'s list, or use your own.</string>
     <!-- App → Graphics driver (DriverPage): the owner's texts (2026-10-31 to 2026-11-03). In 0.3.8 a placeholder: a pick changes nothing yet. -->
     <string name="settings_driver_chip">Your graphics chip: %1$s.</string>
     <string name="settings_driver_chip_unknown">Your graphics chip: not known.</string>
@@ -64,16 +63,13 @@
     <string name="driver_in_use">In use</string>
     <string name="driver_way_better">Usually runs better on this graphics chip.</string>
 
-    <!-- Game → Diablo II start options → Renderer: its value, then its sheet (what it does at the top, then the two choices). -->
+    <!-- Game → Diablo II start options → Renderer: its value. -->
     <string name="settings_renderer_glide_recommended">Glide (recommended)</string>
-    <string name="settings_renderer_body">Applies at the next Play. Change it only when the game does not start with Glide.</string>
     <string name="settings_renderer_glide">Glide</string>
     <!-- Display → Renderer, information only (decision 24, the owner's text). -->
     <string name="settings_renderer_value">Renderer: %1$s</string>
     <string name="settings_renderer_set_by_gpu">Set by the GPU driver.</string>
-    <string name="settings_renderer_glide_body">Full screen, drawn by the graphics chip. Recommended.</string>
     <string name="settings_renderer_direct_draw">DirectDraw</string>
-    <string name="settings_renderer_direct_draw_body">The game\'s own older way to draw. Use it only when Glide does not start.</string>
     <!-- Display → Game resolution: the row shows the size; its sheet says what it does at the top. -->
     <string name="settings_section_resolution">Game resolution</string>
     <string name="settings_resolution_body">Applies at the next Play. The size the game draws at, also for the official PD2 launcher and a game it starts. The game\'s own size shows the game as PD2 made it. Its graphics options are in the game: Options, Video Options, D2GL.</string>
@@ -114,9 +110,10 @@
     <string name="settings_frame_rate">Frame rate</string>
     <!-- At the top of the Frame rate input that Settings opens. -->
     <string name="settings_frame_rate_body">Fewer frames a second use less battery and keep the device cooler, but the game moves less smoothly.</string>
-    <!-- The Frame rate input: its unit after the number, and its one help line. -->
+    <!-- The Frame rate input: its unit after the number, and its help line. The second help line is for the in-game menu, while the screen runs slower than the frame rate. -->
     <string name="frame_rate_unit">fps</string>
-    <string name="frame_rate_help">%1$d–%2$d fps. This screen shows at most %2$d.</string>
+    <string name="frame_rate_help">%1$d–%2$d fps. This device can show up to %3$d Hz.</string>
+    <string name="frame_rate_help_slower_screen">%1$d–%2$d fps. This device shows the game at %3$d Hz now.</string>
     <string name="settings_frame_rate_input_wrong">Type a whole number from %1$d to %2$d.</string>
     <string name="settings_frame_rate_ok">OK</string>
     <string name="settings_frame_rate_cancel">Cancel</string>
@@ -126,6 +123,36 @@
     <string name="settings_skip_to_bnet_body">The game opens on the online screen.</string>
     <string name="settings_sound_in_background">Sound in background</string>
     <string name="settings_sound_in_background_body">The game keeps its sound when another app is in front.</string>
+    <string name="settings_custom_arguments">Custom start options</string>
+    <string name="settings_custom_arguments_none">None</string>
+    <string name="settings_custom_arguments_intro">Added after the options above when Play starts the game. For example: -direct</string>
+    <string name="settings_custom_arguments_help">Leave it empty for none. At most %1$d characters.</string>
+    <string name="settings_custom_arguments_wrong">Use at most %1$d characters, and no \" character.</string>
+    <string name="settings_custom_arguments_clear">Clear</string>
+    <string name="settings_launcher_custom_arguments_intro">Added when the app opens the official PD2 launcher. Most players leave it empty.</string>
+    <!-- Game → Start options: the drop-down that holds Skip to Battle.net and Sound in background. Its line: Default, the options that are on, or None. Each option's line: its option, then what it does. -->
+    <string name="settings_start_options">Start options</string>
+    <string name="settings_start_options_default">Default</string>
+    <string name="settings_start_flag">%1$s · %2$s</string>
+    <!-- Game → Game program and Launcher program: a path in the player's Diablo II folder (program_path), and their input. -->
+    <string name="program_folder">Diablo II/</string>
+    <string name="program_path">Diablo II/%1$s</string>
+    <string name="settings_game_program">Game program</string>
+    <string name="settings_game_program_other">Not PD2\'s program: no update or check.</string>
+    <string name="settings_launcher_program_other">Not PD2\'s launcher: Project Diablo 2 is not updated.</string>
+    <string name="settings_game_program_intro">The program in your Diablo II folder that Play starts. Default: %1$s</string>
+    <string name="settings_game_program_help">Change it only for another client. Default puts it back.</string>
+    <string name="settings_launcher_program">Launcher program</string>
+    <string name="settings_launcher_program_intro">The program in your Diablo II folder that the official PD2 launcher button opens. Default: %1$s</string>
+    <string name="settings_launcher_program_help">Change it only for another launcher. The app asks before it opens another one. Default puts it back.</string>
+    <string name="settings_program_default">Default</string>
+    <!-- Why the input does not take a program path (the engine's reasons). %1$d: the most characters. -->
+    <string name="settings_program_empty">Type the path of a program in your Diablo II folder.</string>
+    <string name="settings_program_too_long">Use at most %1$d characters.</string>
+    <string name="settings_program_invalid_character">Remove the character that a path cannot have.</string>
+    <string name="settings_program_outside">Use a path in your Diablo II folder, without \"..\".</string>
+    <string name="settings_program_not_exe">Use the path of an .exe file.</string>
+    <string name="settings_program_missing">There is no such file in your Diablo II folder.</string>
     <!-- Settings → Game → PD2 Launcher → Check for game updates: the Launcher's update checks for Project Diablo 2 (not the app's own updates). -->
     <string name="settings_game_update_checks">Check for game updates</string>
     <string name="settings_game_update_checks_body">Play looks for a new PD2 version first.</string>

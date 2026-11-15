@@ -1,5 +1,6 @@
 package com.pd2launcher.app
 
+import android.app.Activity
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
@@ -7,6 +8,7 @@ import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
 import androidx.activity.ComponentActivity
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -37,6 +39,13 @@ class AppUpdateHost(private val activity: ComponentActivity) {
     private val allowed = mutableStateOf(true)
     /** Counts the returns to the front: the page reads the wall clock again then, as its timer does not run while the device sleeps. */
     private val returns = mutableIntStateOf(0)
+    /**
+     * Android's installer screen for an update. A result comes only while this process lives,
+     * so only when the update did not install ([AppUpdater.installAnswered]).
+     */
+    private val installer = activity.registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        AppUpdater.installAnswered(activity, result.resultCode)
+    }
 
     /** Whether this build gets app updates (Settings → App). */
     val available: Boolean get() = AppUpdater.available(activity)
@@ -49,7 +58,12 @@ class AppUpdateHost(private val activity: ComponentActivity) {
             activity.repeatOnLifecycle(Lifecycle.State.RESUMED) {
                 AppUpdater.confirmation.filterNotNull().collect { confirm ->
                     AppUpdater.confirmationShown()
-                    start(confirm)
+                    try {
+                        installer.launch(confirm)
+                    } catch (error: ActivityNotFoundException) {
+                        Log.w(TAG, "no installer screen: $error")
+                        AppUpdater.installAnswered(activity, Activity.RESULT_FIRST_USER)
+                    }
                 }
             }
         }
@@ -127,6 +141,8 @@ class AppUpdateHost(private val activity: ComponentActivity) {
         return AppUpdate.rows(
             offers, AppUpdate.channel(picked, BuildConfig.VERSION_NAME, open), BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE,
             work, wait, allowed.value, refused, betaOpen = open,
+            // A test APK ("<version> (test <label>)") can install its own Stable again: the way back.
+            testBuild = AppUpdater.TEST_BUILD,
         )
     }
 

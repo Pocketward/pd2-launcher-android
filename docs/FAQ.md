@@ -8,10 +8,12 @@ Short answers to questions that players often ask. For a different problem, open
 - [Why does the game not fill my screen?](#why-does-the-game-not-fill-my-screen)
 - [Performance at a high Custom game resolution](#performance-at-a-high-custom-game-resolution)
 - [Can the game use a different aspect ratio, for example 4:3?](#can-the-game-use-a-different-aspect-ratio-for-example-43)
+- [Do you support mods?](#do-you-support-mods)
 - [Which devices and graphics chips work?](#which-devices-and-graphics-chips-work)
 - [The app says that my device is not supported](#the-app-says-that-my-device-is-not-supported)
 - [How do I use a controller?](#how-do-i-use-a-controller)
 - [Can I use a mouse and a keyboard?](#can-i-use-a-mouse-and-a-keyboard)
+- [How do I paste a trade message into the chat?](#how-do-i-paste-a-trade-message-into-the-chat)
 - [How do I open the game on the online screen?](#how-do-i-open-the-game-on-the-online-screen)
 
 **The official PD2 launcher**
@@ -129,13 +131,22 @@ For single player, some mods let the game use other aspect ratios, for example 4
 
 For online play, use **Game's own size** and keep **Check for game updates** on.
 
+### Do you support mods?
+
+No, we do not officially support mods. Many of the app's optimizations are made specifically for Project Diablo 2, so a mod can run slower or not at all. Our support for mods goes only as far as these settings in **Settings → Game**:
+
+- **Game program:** the program that **Play** starts, with its **Start options** and **Custom start options**.
+- **Launcher program:** the program of the official PD2 launcher's button, with its own **Custom start options**.
+
+To keep a mod as it is, turn off **Check for game updates** in **Settings → Game**.
+
 ### Which devices and graphics chips work?
 
 The app needs an ARM64 device with Android 11 or later, 4 KB memory pages and a supported graphics chip (GPU). Android does not install the app on Android 10 or earlier. See [What your device needs](../README.md#what-your-device-needs) and [Supported graphics chips](../README.md#supported-graphics-chips) in the README. When the app starts for the first time, it checks your device and tells you what is missing.
 
-The beta versions also have the App driver for more graphics chips, a driver that is new for each of them: Samsung Xclipse and older Arm Mali GPUs (such as the Mali-G52, G57, G68 and G77). The Pixel 10 and Pixel 11 (PowerVR GPU) use the Phone driver. The check asks you first (**Try anyway**). If the App driver has an error in a game, **Play** tells you, and you can pick the Phone driver (your phone's own driver) in **Settings → Display → GPU**. It can be slower.
+The app also has the App driver for more graphics chips, a driver that is new for each of them: Samsung Xclipse and older Arm Mali GPUs (such as the Mali-G52, G57, G68 and G77). The Pixel 10 and Pixel 11 (PowerVR GPU) use the Phone driver. The check asks you first (**Try anyway**). If the App driver has an error in a game, **Play** tells you, and you can pick the Phone driver (your phone's own driver) in **Settings → Display → GPU**. It can be slower.
 
-In the beta versions you can also pick the driver yourself in **Settings → Display → GPU**: the **App driver** (the launcher's own driver), the **Phone driver** (your phone's own driver) or the **Software driver** (the processor draws the game, which can be really slow). At the first start, the app picks the driver for your graphics chip. After that, the driver changes only when you pick another one: the app never changes it after an error. If a driver has an error, **Play** tells you which driver it was, with a button to **Settings → Display → GPU**. On the first game with a new driver, the app asks **Does the game work?**. Tap **It works**, or hold **Quit** to stop the game and open **Settings → Display → GPU**.
+You can also pick the driver yourself in **Settings → Display → GPU**: the **App driver** (the launcher's own driver), the **Phone driver** (your phone's own driver) or the **Software driver** (the processor draws the game, which can be really slow). At the first start, the app picks the driver for your graphics chip. After that, the driver changes only when you pick another one: the app never changes it after an error. If a driver has an error, **Play** tells you which driver it was, with a button to **Settings → Display → GPU**. On the first game with a new driver, the app asks **Does the game work?**. Tap **It works**, or hold **Quit** to stop the game and open **Settings → Display → GPU**.
 
 ### The app says that my device is not supported
 
@@ -154,6 +165,19 @@ If a controller has wrong buttons, send us the logs (see [How do I send logs?](#
 ### Can I use a mouse and a keyboard?
 
 Yes. A USB or Bluetooth mouse moves the game's cursor. Its left, right and middle buttons and its wheel work as on a PC. A USB or Bluetooth keyboard works as on a PC. With no keyboard, tap **Keyboard** in the in-game menu to open Android's keyboard. A mouse or a keyboard does not hide the on-screen controls. Only a controller hides them.
+
+### How do I paste a trade message into the chat?
+
+Use the clipboard of Android's keyboard. Android's keyboard types the text that you paste into the game, the same as when you type it yourself.
+
+1. In a different app, for example Discord or a browser, copy the message.
+2. Go back to the game. In the in-game menu, tap **Keyboard**.
+3. Tap the Enter key on Android's keyboard to open the game's chat line.
+4. For a whisper, type `/w *AccountName ` (the account name, then a space) or `/w CharacterName `.
+5. Open the keyboard's clipboard and tap the message. In Gboard, tap the clipboard icon. If Gboard asks, tap **Turn on Clipboard**, then copy the message again.
+6. Close Android's keyboard to see the chat line, because the keyboard covers it. Make sure that the line is correct, then open the keyboard again and tap Enter to send it.
+
+Copy a message on one line only: each line break in the text sends the chat line at that point. If the chat line is not open when you paste, the game reads the letters as its hotkeys.
 
 ### How do I open the game on the online screen?
 
@@ -248,7 +272,7 @@ After the install, you can turn Play Protect and Auto Blocker on again. The name
 
 ### How do I send logs?
 
-1. In **Settings → Help**, turn on **Detailed logging**. The app records its own details at once, and the game's details from the next **Play** or official PD2 launcher.
+1. In **Settings → Help**, turn on **Detailed logging**. The app records its own details at once, and the game's details from the next **Play** or official PD2 launcher. [Logs](LOGS.md) tells what each level records.
 2. Make the problem occur again.
 3. In **Settings → Help**, tap **Save logs**, and pick a folder, for example Downloads.
 4. Attach the file to an [issue](https://github.com/Pocketward/pd2-launcher-android/issues). Write your device's model, its Android version and its GPU (the **Check** screen shows them), and what occurred.

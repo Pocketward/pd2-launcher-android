@@ -145,8 +145,8 @@ object DriverPage {
     /**
      * The APK's engine has [SOFTWARE_CAPABILITY]: the device check needs it before the engine's
      * first welcome (the session starts only after the check passed), for a device where no GPU
-     * route runs ([DeviceFacts.software]). The 0.4.0 line's engine.lock pins v0.1.13 or newer,
-     * whose welcome names it (a JVM test checks the pin); at run time the welcome still decides
+     * route runs ([DeviceFacts.software]). The APK's engine is the engine of the same commit,
+     * whose welcome names it (a JVM test checks its source); at run time the welcome still decides
      * ([softwareRuns]).
      */
     const val BUNDLED_ENGINE_SOFTWARE = true

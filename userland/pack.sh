@@ -2,7 +2,7 @@
 # Packs the relocated staging tree into out/userland.tar.zst plus out/manifest.json and copies
 # both into the APK's assets (../app/src/main/assets/userland/, gitignored).
 #   archive   GNU tar, entries sorted by name, mtime 0, owner/group 0, hard links dereferenced
-#             (--hard-dereference), compressed with zstd (pinned in the tools image), level 19
+#             (--hard-dereference), compressed with zstd (pinned in the base image), level 19
 #   manifest  {"version", "placeholder", "prefix", "archive": {name, size, sha256}, "entries":
 #             [{path, type, mode, size, sha256 | target}], "critical", "absent", "engine_needed"},
 #             entries sorted by path
@@ -18,9 +18,9 @@
 #   absent    paths that must not exist: glibc reads etc/ld.so.cache from its sysconfdir
 #   version   the first 16 hex digits of a SHA-256 over this directory's inputs (scripts except
 #             mesa-update.sh, pins, package lock, x-input-relay's source and header, patches, our
-#             PanVK backend's files in mesa-kbase/, the compat headers of RADV for Xclipse and
-#             mali-panvk in radv-compat/, the opt-in switch, and with glibc its patches and build
-#             files), so equal inputs give an equal version
+#             PanVK backend's files in mesa-kbase/, the compat headers of mali-panvk in
+#             radv-compat/, the base image, the opt-in switch, and with glibc its
+#             patches and build file; no Markdown file), so equal inputs give an equal version
 #   glibc     with PD2_USERLAND_WITH_GLIBC=1, the manifest's "glibc" key is build-glibc.sh's record
 #             (BUILDINFO fields, patch SHA-256s, SHA-256 of every installed file)
 #   parts     the tree's files that an APK can leave out, each list in the cache's work/parts/<name>.files
@@ -33,16 +33,42 @@
 #             fields with its own entries, no critical or absent path, and a version made from its
 #             entries. The app unpacks the main archive and the parts it carries into one tree
 #             (UserlandAssets).
+# `pack.sh --version` prints that version on the host, before any build (the release workflow's
+# cache key of the userland's assets).
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=config.sh
 . "$here/config.sh"
 
+version() {
+    local inputs
+    inputs="$(
+        cd "$here"
+        {
+            # mesa-update.sh only moves the pin (config.sh and the patches, which count); it builds nothing.
+            find . -maxdepth 1 -type f \( -name '*.sh' -o -name '*.in' -o -name '*.c' -o -name '*.h' -o -name 'packages.*' \) \
+                ! -name mesa-update.sh
+            # Markdown files (the patches' README.md) build nothing.
+            find ./patches ./mesa-kbase ./hybris ./radv-compat -type f ! -name '*.md'
+            if [[ "${PD2_USERLAND_WITH_GLIBC:-0}" == 1 ]]; then
+                find ./glibc/patches ./glibc/build.sh -type f ! -name '*.md'
+            fi
+        } | LC_ALL=C sort | xargs sha256sum
+        echo "image=${PD2_IMAGE:?}"
+        echo "glibc=${PD2_USERLAND_WITH_GLIBC:-0}"
+    )"
+    sha256sum <<<"$inputs" | cut -c1-16
+}
+if [[ "${1:-}" == --version ]]; then
+    PD2_IMAGE="${PD2_IMAGE:-$(base_image_name)}" version
+    exit 0
+fi
+
 if [[ "${PD2_USERLAND_IN_CONTAINER:-}" != 1 ]]; then
     mkdir -p "$USERLAND_OUT"
     RUN_EXTRA=(-v "$USERLAND_OUT:/out" -e "PD2_USERLAND_WITH_GLIBC=${PD2_USERLAND_WITH_GLIBC:-0}")
-    run_in_tools pack.sh "$@"
+    run_in_base pack.sh "$@"
     mkdir -p "$USERLAND_ASSETS"
     cp "$USERLAND_OUT/userland.tar.zst" "$USERLAND_OUT/manifest.json" "$USERLAND_ASSETS/"
     echo "copied to $USERLAND_ASSETS"
@@ -62,20 +88,7 @@ root=/cache/work/staging
 out=/out
 [[ -f "$root/etc/userland.env" ]] || { echo "tree not relocated: run relocate.sh first" >&2; exit 1; }
 
-version="$(
-    cd /src
-    {
-        # mesa-update.sh only moves the pin (config.sh and the patches, which count); it builds nothing.
-        find . -maxdepth 1 -type f \( -name '*.sh' -o -name '*.in' -o -name '*.c' -o -name '*.h' -o -name 'packages.*' \) \
-            ! -name mesa-update.sh
-        find ./containers ./patches ./mesa-kbase ./hybris ./radv-compat -type f
-        if [[ "${PD2_USERLAND_WITH_GLIBC:-0}" == 1 ]]; then
-            find ./glibc/patches ./glibc/build.sh ./glibc/Containerfile -type f
-        fi
-    } | LC_ALL=C sort | xargs sha256sum
-    echo "glibc=${PD2_USERLAND_WITH_GLIBC:-0}"
-)"
-version="$(sha256sum <<<"$version" | cut -c1-16)"
+version="$(version)"
 
 glibc_record=""
 if [[ "${PD2_USERLAND_WITH_GLIBC:-0}" == 1 ]]; then

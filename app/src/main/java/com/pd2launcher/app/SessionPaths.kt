@@ -72,6 +72,11 @@ class SessionPaths(val data: String) {
      * ([GameEnvironment.start]).
      */
     val hybrisStatus = File(runtimeDir, "hybris-status")
+    /**
+     * The phone's language fonts ([SystemFontList]), written before the engine starts; the engine
+     * reads it as `PD2_SYSTEM_FONTS` ([engineEnvironment]) and links these fonts into Wine.
+     */
+    val systemFonts = File(runtimeDir, "system-fonts")
     /** The Unix sockets the session binds below [data]: their paths must fit `sun_path`. */
     val sockets: List<File> get() = listOf(presentSocket, vtestSocket)
 
@@ -137,9 +142,6 @@ class SessionPaths(val data: String) {
      */
     val managedGame = File(managedRoot, PrefixState.GAME_LOCATION)
 
-    /** What a new prefix needs back: the player's registry values and the installers' state ([PrefixState]). */
-    val prefixState = File(managedRoot, PrefixState.FOLDER)
-
     /**
      * The player's own files, apart from any install: no install, update, Start over or folder
      * copy touches it.
@@ -190,11 +192,11 @@ class SessionPaths(val data: String) {
      * (`PD2_APP_WINE_<NAME>` as `<NAME>`), the Compatibility driver's (`PD2_APP_WINE_COMPATIBILITY_<NAME>`
      * as `PD2_APP_COMPATIBILITY_<NAME>`, which the engine uses for a Play with that driver), the
      * font and X locale configuration, Box64's quiet settings, the [presentCounter] and the
-     * [presentSocket]; and the [receivedBytes] file for the engine itself.
+     * [presentSocket]; and the [receivedBytes] and [systemFonts] files for the engine itself.
      * The GPU values are the Adreno's (Turnip) unless [libhybris] (the phone's own Vulkan driver in
      * the game's process: [hybrisValues], with the phone's API level [sdk]), [virgl] (the phone's
      * own OpenGL ES driver through the VirGL route: [virglValues]), [systemDriver] (the phone's own
-     * Vulkan driver through Venus with [zink]: [systemDriverValues]), [radv] (our RADV on a Samsung
+     * Vulkan driver through Venus: [systemDriverValues]), [radv] (our RADV on a Samsung
      * Xclipse GPU, the RADV route: [radvValues]), [maliPanvk] (mali-panvk on a Mali of kbase's job
      * manager, the mali-panvk route: [maliPanvkValues]) or [mali] (a CSF Mali GPU, our PanVK:
      * [maliValues]), or [software] (the Software driver, [GraphicsRoute.SOFTWARE]: [softwareValues],
@@ -209,7 +211,6 @@ class SessionPaths(val data: String) {
         devDriver: Boolean = BuildConfig.DEBUG,
         noconform: Boolean = false,
         systemDriver: Boolean = false,
-        zink: SystemDriver.Zink = SystemDriver.Zink.OLDER,
         virgl: Boolean = false,
         libhybris: Boolean = false,
         sdk: Int = 0,
@@ -234,7 +235,7 @@ class SessionPaths(val data: String) {
             software -> softwareValues(wine)
             libhybris -> hybrisValues(values, wine, devDriver, sdk, forcedLibhybrisValues)
             virgl -> virglValues(values, wine, devDriver)
-            systemDriver -> systemDriverValues(values, wine, devDriver, zink)
+            systemDriver -> systemDriverValues(values, wine, devDriver)
             radv -> radvValues(values, wine, devDriver)
             maliPanvk -> maliPanvkValues(values, wine, devDriver)
             mali -> maliValues(values, wine, devDriver)
@@ -247,7 +248,8 @@ class SessionPaths(val data: String) {
             "BOX64_LOG=0" + "BOX64_NOBANNER=1" +
             "PD2_PRESENT_COUNTER=${presentCounter.path}" +
             "PD2_PRESENT_SOCKET=${presentSocket.path}" +
-            "PD2_RECEIVED_BYTES_FILE=${receivedBytes.path}"
+            "PD2_RECEIVED_BYTES_FILE=${receivedBytes.path}" +
+            "${SystemFontList.VARIABLE}=${systemFonts.path}"
     }
 
     /**
@@ -259,7 +261,6 @@ class SessionPaths(val data: String) {
     fun engineEnvironmentOn(
         gpu: HostGpu?,
         route: GraphicsRoute?,
-        zink: SystemDriver.Zink,
         sdk: Int,
         forcedLibhybrisValues: List<Pair<String, String>>,
         read: () -> VulkanDriverReading,
@@ -267,7 +268,6 @@ class SessionPaths(val data: String) {
         mali = (gpu as? MaliGpu)?.jobManager == false,
         noconform = (gpu as? KgslGpu)?.let { adrenoWithoutMultiview(it.chipId) } ?: false,
         systemDriver = route == GraphicsRoute.VENUS,
-        zink = zink,
         virgl = route == GraphicsRoute.VIRGL,
         libhybris = route == GraphicsRoute.LIBHYBRIS,
         sdk = sdk,
@@ -311,9 +311,7 @@ class SessionPaths(val data: String) {
     /**
      * In the system-driver mode: userland.env's set (`PD2_APP_WINE_SYSDRV_<NAME>`) as `<NAME>`,
      * each replacing the [wine] value of its name (the Venus ICD in place of Turnip's, the vtest
-     * socket, OpenGL 3.3), and with the [SystemDriver.Zink.OLDER] Zink its own values too
-     * (`PD2_APP_WINE_SYSDRV_OLDER_ZINK_<NAME>`: the second GL stack's glvnd vendor; the
-     * [SystemDriver.Zink.CURRENT] one keeps [wine]'s "mesa"); without Turnip's own (`TU_DEBUG`;
+     * socket, OpenGL 3.3); without Turnip's own (`TU_DEBUG`;
      * the Compatibility driver's values are left out too); with [devDriver] (debug builds),
      * `files/kbase/hostenv`'s values over those ([debugHostValues]), for Mesa's and Venus's debug
      * output in tests.
@@ -322,16 +320,9 @@ class SessionPaths(val data: String) {
         values: List<Pair<String, String>>,
         wine: List<Pair<String, String>>,
         devDriver: Boolean,
-        zink: SystemDriver.Zink,
     ): List<Pair<String, String>> {
-        val own = values.filter { (key, _) -> key.startsWith(SYSDRV) && !key.startsWith(SYSDRV_OLDER_ZINK) }
-            .map { (key, value) -> key.removePrefix(SYSDRV) to value }
-        val older = if (zink == SystemDriver.Zink.OLDER) {
-            values.filter { (key, _) -> key.startsWith(SYSDRV_OLDER_ZINK) }.map { (key, value) -> key.removePrefix(SYSDRV_OLDER_ZINK) to value }
-        } else {
-            emptyList()
-        }
-        val over = (own + older + if (devDriver) debugHostValues() else emptyList()).toMap()
+        val own = values.filter { (key, _) -> key.startsWith(SYSDRV) }.map { (key, value) -> key.removePrefix(SYSDRV) to value }
+        val over = (own + if (devDriver) debugHostValues() else emptyList()).toMap()
         return wine.filterNot { (key, _) -> key in over || key == "TU_DEBUG" } + over.toList()
     }
 
@@ -476,8 +467,6 @@ class SessionPaths(val data: String) {
         private const val COMPATIBILITY = "PD2_APP_WINE_COMPATIBILITY_"
         /** Such a value for the system-driver mode, given as `<NAME>` in that mode only. */
         private const val SYSDRV = "PD2_APP_WINE_SYSDRV_"
-        /** Such a value only with the older Zink ([SystemDriver.Zink.OLDER]). */
-        private const val SYSDRV_OLDER_ZINK = "PD2_APP_WINE_SYSDRV_OLDER_ZINK_"
         /** Such a value for the VirGL route, given as `<NAME>` on that route only (an empty one: no `<NAME>`). */
         private const val VIRGL = "PD2_APP_WINE_VIRGL_"
         /** Such a value for the libhybris route, given as `<NAME>` on that route only (an empty one: no `<NAME>`). */

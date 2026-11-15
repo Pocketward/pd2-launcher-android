@@ -1,0 +1,119 @@
+panfrost/kmod: kbase on CSF logs the kernel interface and a faulting instruction
+
+For a choice between our kbase backend and this tree's on CSF Malis (issue 23), the logs must show
+what tells kernels apart for this backend and where it fails. At CSF start, one line names the
+agreed uAPI, the firmware's global interface version, the CSG and CS slots, and whether
+MEM_JIT_INIT and MEM_EXEC_INIT were accepted. A queue fault names CS_INVALID_INSTRUCTION (0x49,
+Arm's mali_base_csf_kernel.h); for the faulting queue it logs the ring's insert and CS_EXTRACT
+positions and the instruction before CS_EXTRACT, with its opcode, and the instruction at the
+sideband address when that address is in the ring. It also logs the four 64-bit words at the
+sideband address when the address is mapped on the CPU (a SAME_VA BO has the same address
+there); that read goes through /proc/self/mem, so an unmapped address gives a line and no fault.
+
+--- a/src/panfrost/lib/kmod/kbase_kmod.c
++++ b/src/panfrost/lib/kmod/kbase_kmod.c
+@@ -283,6 +283,10 @@
+     * exception handlers, and CS_TILER_HEAP_INIT_1_13. */
+    bool group_create_1_6;
+    bool tiler_heap_init_1_13;
++   /* For the CSF start line: the agreed uAPI minor and the errno of the memory set-up calls
++    * (0: accepted). */
++   uint32_t uapi_minor;
++   int jit_init_err, exec_init_err;
+ };
+ 
+ static void kbase_queue_init(struct kbase_queue *q);
+@@ -515,13 +519,18 @@
+             .max_allocations = 255,
+             .phys_pages = KBASE_CSF_JIT_VA_PAGES,
+          };
+-         if (pan_kmod_ioctl(fd, KBASE_IOCTL_MEM_JIT_INIT, &jit))
++         if (pan_kmod_ioctl(fd, KBASE_IOCTL_MEM_JIT_INIT, &jit)) {
++            kbase_dev->jit_init_err = errno;
+             mesa_logw("kbase: MEM_JIT_INIT failed (err=%d); no tiler heap", errno);
++         }
+       }
+-      if (pan_kmod_ioctl(fd, KBASE_IOCTL_MEM_EXEC_INIT, &ei))
++      if (pan_kmod_ioctl(fd, KBASE_IOCTL_MEM_EXEC_INIT, &ei)) {
++         kbase_dev->exec_init_err = errno;
+          mesa_logw("kbase: MEM_EXEC_INIT failed (err=%d); executable BOs will be SAME_VA", errno);
++      }
+    }
+ 
++   kbase_dev->uapi_minor = vc.minor;
+    const struct pan_kmod_driver drv_info = {
+       .version = {.major = vc.major, .minor = vc.minor},
+    };
+@@ -2438,6 +2447,15 @@
+       .scoreboard_slot_count = (cs_features >> 8) & 0xff,
+       .unpreserved_cs_reg_count = 4,
+    };
++   /* One line with what tells kernels apart for this backend (issue 23: a MediaTek r32p1 kbase
++    * reports uAPI 1.18 but lacks calls and layouts of 1.18). */
++   const uint32_t glb = req.out.glb_version;
++   mesa_logi("kbase: CSF uAPI 1.%u, firmware interface %u.%u.%u, %u CSG slots x %u CS, "
++             "MEM_JIT_INIT %s, MEM_EXEC_INIT %s",
++             kdev->uapi_minor, glb >> 24, (glb >> 16) & 0xff, glb & 0xffff,
++             kdev->csif.csg_slot_count, kdev->csif.cs_slot_count,
++             kdev->jit_init_err ? strerror(kdev->jit_init_err) : "ok",
++             kdev->exec_init_err ? strerror(kdev->exec_init_err) : "ok");
+ 
+    struct kbase_csf_dev *c = calloc(1, sizeof(*c));
+    if (!c)
+@@ -2562,14 +2580,52 @@
+             uint32_t status;
+             memcpy(&sideband, &notes[o + 24], sizeof(sideband));
+             memcpy(&status, &notes[o + 32], sizeof(status));
+-            mesa_loge("kbase: queue group %u: %s (type %u), status 0x%08x (exception 0x%02x), "
++            mesa_loge("kbase: queue group %u: %s (type %u), status 0x%08x (exception 0x%02x%s), "
+                       "sideband 0x%016" PRIx64 ", queue %u",
+                       handle, kind < ARRAY_SIZE(kinds) ? kinds[kind] : "unknown", kind, status,
+-                      status & 0xff, sideband, kind == 1 ? notes[o + 36] : 0);
++                      status & 0xff, (status & 0xff) == 0x49 ? ", CS_INVALID_INSTRUCTION" : "",
++                      sideband, kind == 1 ? notes[o + 36] : 0);
++            /* A queue fault's sideband can be a GPU address in the command stream; a SAME_VA
++             * BO has the same address on the CPU. Read through /proc/self/mem, which answers
++             * EIO for an address that is not mapped, so the read never faults. The top byte of a
++             * CS instruction is its opcode. */
++            if (kind == 1 && sideband) {
++               uint64_t words[4];
++               const int mem = open("/proc/self/mem", O_RDONLY | O_CLOEXEC);
++               const ssize_t n = mem >= 0 ? pread(mem, words, sizeof(words), (off_t)sideband) : -1;
++               if (mem >= 0)
++                  close(mem);
++               if (n == (ssize_t)sizeof(words))
++                  mesa_loge("kbase: at the sideband address: 0x%016" PRIx64 " 0x%016" PRIx64
++                            " 0x%016" PRIx64 " 0x%016" PRIx64 " (opcodes 0x%02x 0x%02x 0x%02x 0x%02x)",
++                            words[0], words[1], words[2], words[3], (unsigned)(words[0] >> 56),
++                            (unsigned)(words[1] >> 56), (unsigned)(words[2] >> 56),
++                            (unsigned)(words[3] >> 56));
++               else
++                  mesa_loge("kbase: the sideband address is not mapped on the CPU");
++            }
+             pthread_mutex_lock(&c->lock);
+             list_for_each_entry(struct pan_kmod_kbase_csf_group, g, &c->groups, link) {
+-               if (g->handle == handle)
+-                  g->faulted = true;
++               if (g->handle != handle)
++                  continue;
++               g->faulted = true;
++               /* Where the queue's firmware stopped in its ring: CS_EXTRACT and the instruction
++                * before it, and the instruction at the sideband address when it is in the ring. */
++               const unsigned q = notes[o + 36];
++               if (kind == 1 && q < g->nr_queues && g->ring[q].cpu && g->ring[q].output) {
++                  const struct kbase_csf_ring *r = &g->ring[q];
++                  const uint64_t extract = r->output[0], n = KBASE_CSF_RING_SIZE / 8;
++                  const uint64_t before = extract >= 8 ? r->cpu[((extract - 8) / 8) % n] : 0;
++                  const bool in_ring = sideband >= r->va && sideband < r->va + KBASE_CSF_RING_SIZE;
++                  const uint64_t at = in_ring ? r->cpu[(sideband - r->va) / 8] : 0;
++                  mesa_loge("kbase: queue %u ring: insert %" PRIu64 ", extract %" PRIu64
++                            ", the instruction before extract 0x%016" PRIx64 " (opcode 0x%02x)%s",
++                            q, r->insert, extract, before, (unsigned)(before >> 56),
++                            in_ring ? "; the sideband address is in this ring" : "");
++                  if (in_ring)
++                     mesa_loge("kbase: at the sideband address: 0x%016" PRIx64 " (opcode 0x%02x)",
++                               at, (unsigned)(at >> 56));
++               }
+             }
+             pthread_mutex_unlock(&c->lock);
+          }

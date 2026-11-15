@@ -253,6 +253,7 @@ class SessionService : Service() {
     private var stopAsked = false
     /** The device's memory lines while the game runs ([MemoryLog.Watch]); worker thread only. */
     private val memoryWatch = MemoryLog.Watch()
+    private val perfWatch = PerfWatch()
     /** The engine's snapshots in the service log, a line for each change ([SnapshotLines]): the snapshot collection, Share logs and the service's end. */
     private val snapshotLines = SnapshotLines({ log(it) })
     /** The game's frames in the service log ([FrameWatch]); the frame look only. */
@@ -343,27 +344,25 @@ class SessionService : Service() {
                 delay(FrameWatch.POLL_MS)
                 val status = _status.value
                 val running = status.snapshot?.game == Game.RUNNING || status.launcherGame
-                if (!running) counter = null
                 if (!running && !frameWatch.active && !presentWatch.active) continue
                 if (running && counter == null) counter = PresentCounter.reader(paths.presentCounter)
+                // Read before the reader goes at the game's end: that look's summary needs the last ticks.
+                val presents = counter?.presents()
+                val ticks = counter?.ticks()
+                if (!running) counter = null
                 val settings = AppSettingsStore.current.value
-                val rate = settings.frameRate
                 val now = SystemClock.elapsedRealtime()
-                frameWatch.next(
-                    now, running, counter?.presents(), appForeground,
-                    if (rate == AppSettings.FULL_FRAME_RATE) "Full" else rate.toString(), ScreenRate.full.value,
-                )?.let(::log)
+                frameWatch.next(now, running, presents, appForeground, settings.frameRate, ScreenRate.last.value)?.let(::log)
                 val server = PresentServer.current.value
+                val detailed = settings.detailedLogging
                 presentWatch.next(
-                    now, running, server?.counts(), counter?.ticks(), appForeground, settings.detailedLogging,
-                    server?.split(settings.detailedLogging && running),
+                    now, running, server?.counts(), ticks, appForeground, LogPolicy.on(LogArea.PRESENT_STATS, detailed),
+                    server?.split(LogPolicy.on(LogArea.POINTER_SPLIT, detailed) && running),
+                    server?.frameSplit(LogPolicy.on(LogArea.FRAME_SPLIT, detailed) && running, LogPolicy.windowMs(detailed)),
                 ).forEach(::log)
                 // Detailed logging: D2GL's settings, read only, at the game's start and at each change.
-                if (running && settings.detailedLogging) {
-                    d2glWatch.next {
-                        GameFilesProvider.gameFolder(paths, status.snapshot?.gameFolder?.path)
-                            ?.let { File(it, "${LauncherFiles.FOLDER}/${D2glSettings.FILE}") }
-                    }?.let(::log)
+                if (running && LogPolicy.on(LogArea.D2GL_SETTINGS, detailed)) {
+                    d2glWatch.next { projectFolder()?.let { File(it, D2glSettings.FILE) } }?.let(::log)
                 } else {
                     d2glWatch.reset()
                 }
@@ -603,7 +602,7 @@ class SessionService : Service() {
      * as there.
      */
     private fun presentDriverOptions(unpackWrites: Boolean = phonePicked()): DriverOptions {
-        var options = if (driverOptions.venus && !unpackWrites && !SystemDriver.filesPresent(paths.userland, systemDriverZink)) {
+        var options = if (driverOptions.venus && !unpackWrites && !SystemDriver.filesPresent(paths.userland)) {
             driverOptions.copy(venus = false)
         } else {
             driverOptions
@@ -743,15 +742,9 @@ class SessionService : Service() {
         return true
     }
 
-    /**
-     * The Zink that the system-driver mode uses here ([SystemDriverGpu.zink]): the product Mesa's
-     * where the phone's driver meets its needs, else the older one (also when no report answers).
-     */
-    private val systemDriverZink: SystemDriver.Zink get() = phoneDriverReport()?.zink ?: SystemDriver.Zink.OLDER
-
     /** The engine's environment for this GPU and the running engine's route ([SessionPaths.engineEnvironmentOn]). */
     private fun engineEnvironment(): List<String> = paths.engineEnvironmentOn(
-        gpu, engineRoute, systemDriverZink, Build.VERSION.SDK_INT,
+        gpu, engineRoute, Build.VERSION.SDK_INT,
         forcedLibhybrisValues = if (BuildConfig.DEBUG && forcedRoute() == GraphicsRoute.LIBHYBRIS) forcedRouteValues() else emptyList(),
         read = { VulkanDriverProbe.read(paths.vulkanProbeMarker) },
     )
@@ -1241,6 +1234,30 @@ class SessionService : Service() {
     }
 
     /**
+     * Whether `taskset <mask> true` runs here ([EngineCores.accepts]): firmware that refuses
+     * taskset's `sched_setaffinity` ends it with status 1 (issue #13). Debug builds: the file of
+     * [SessionPaths.tasksetFailsForTest] makes it fail, as on that firmware.
+     */
+    private fun tasksetRuns(mask: String): Boolean {
+        if (BuildConfig.DEBUG && paths.tasksetFailsForTest.exists()) {
+            log("taskset check: refused by the debug switch ${paths.tasksetFailsForTest.name}")
+            return false
+        }
+        return try {
+            val check = ProcessBuilder(LittleCores.TASKSET, mask, "/system/bin/true").redirectErrorStream(true).start()
+            val ended = check.waitFor(TASKSET_CHECK_MS, TimeUnit.MILLISECONDS)
+            if (!ended) check.destroyForcibly()
+            val output = check.inputStream.bufferedReader().readText().trim()
+            (ended && check.exitValue() == 0).also { ok ->
+                if (!ok) log("taskset check: ${if (ended) "status ${check.exitValue()}" else "no end in $TASKSET_CHECK_MS ms"}${if (output.isEmpty()) "" else ": $output"}")
+            }
+        } catch (error: IOException) {
+            log("taskset check: $error")
+            false
+        }
+    }
+
+    /**
      * The older game folder of a failed update ([UpgradeImport]) after [command]: Start over sets
      * nothing up, so it goes to the engine again; another source the player chose stands
      * ([UpgradeImport.DECLINED]).
@@ -1352,7 +1369,7 @@ class SessionService : Service() {
         }
         when (engineRoute) {
             GraphicsRoute.VENUS -> log(
-                "graphics: route VENUS, the phone's own Vulkan driver (system-driver mode, Zink ${systemDriverZink.name.lowercase()})" +
+                "graphics: route VENUS, the phone's own Vulkan driver (system-driver mode)" +
                     "$how: ${phoneDriverReport() ?: gpu ?: "no GPU named"}",
             )
             GraphicsRoute.VIRGL -> log(
@@ -1370,7 +1387,7 @@ class SessionService : Service() {
                     "${phoneDriverReport() ?: gpu ?: "no GPU named"}",
             )
             GraphicsRoute.MALI_PANVK -> log(
-                "graphics: route MALI_PANVK, mali-panvk for a Mali of kbase's job manager (Zink current, /dev/mali0, no server)" +
+                "graphics: route MALI_PANVK, mali-panvk on the Mali's kbase driver (Zink current, /dev/mali0, no server)" +
                     "${if (DriverChoice.MALI_PANVK_FOR_PLAYERS) "" else ", offered by the debug file files/${MaliPanvk.DEBUG_FILE}"}$how: " +
                     "${MaliPanvk.gpu(gpu, phoneDriverReport()) ?: gpu ?: "no GPU named"}",
             )
@@ -1382,11 +1399,25 @@ class SessionService : Service() {
         if (!enginePath.isFile) throw IOException("the engine is not in the APK ($enginePath)")
         val loader = paths.loader.path
         log("UBWC flag hint: ${UbwcFlagHint.choice(gpu, read = { VulkanDriverProbe.read(paths.vulkanProbeMarker) }).describeOn(engineRoute)}")
+        val fonts = SystemFontList.write(paths.systemFonts)
+        log("phone fonts: $fonts language fonts listed for Wine")
+        // On the CPUs outside the little cores, with all it starts (EngineCores).
+        val cores = LittleCores.othersOfDevice()
+        val mask = LittleCores.mask(cores)
+        val pinned = mask != null && File(LittleCores.TASKSET).canExecute() && EngineCores.accepts { tasksetRuns(mask) }
+        val (engineProgram, engineArguments) = EngineCores.command(mask, pinned, listOf(loader, enginePath.path, "--engine"))
+        log(
+            when {
+                mask == null -> "engine: on every CPU (one cluster, or its clocks cannot be read)"
+                pinned -> "engine: on CPUs ${cores.joinToString(",")} with all it starts, through taskset (Xvfb on the little cores)"
+                else -> "engine: on every CPU: this phone refuses taskset"
+            },
+        )
         val pair = Spawner.socketPair()
         val process = try {
-            // Started through the userland's loader.
+            // Started through the userland's loader (and taskset, above).
             starter.start(
-                "engine", loader, listOf(loader, enginePath.path, "--engine"),
+                "engine", engineProgram, engineArguments,
                 engineEnvironment() + gameSessionEnvironment(), pair.child,
                 // Each line also to the official PD2 launcher's run while one is open (with its
                 // time, as in engine.log); debug builds: the engine's own lines
@@ -1809,8 +1840,8 @@ class SessionService : Service() {
     }
 
     /**
-     * `wineserver -k` for the Managed prefix: the engine binary's `--stop-wine` runs Wine-GE's
-     * wineserver through App-provided FEX with the game's Wine environment, as the engine runs
+     * `wineserver -k` for the Managed prefix: the engine binary's `--stop-wine` runs the
+     * wineserver of the app's Wine with the game's Wine environment, as the engine runs
      * its guests, so it works whether or not an engine is running. Waits at most
      * [WINESERVER_TIMEOUT_MS]; after that, what it started goes (its process group), and so does
      * every other process of the app's user ID but the engine ([uidCleanup]): the wineserver and
@@ -1986,7 +2017,7 @@ class SessionService : Service() {
                 (if (tells) "Play tells of the error" else if (forced) "forced by the debug file: Play shows nothing" else "Play shows nothing yet") +
                 (if (noFrameGames > 0) "; games with no frame in a row: $noFrameGames of ${PhoneDriverFailure.NO_FRAME_GAMES_TO_TELL}" else ""),
         )
-        if (!tells || route == null) return
+        if (!tells) return
         // The line says which driver; the server's own error text is not for the player. Kept until
         // the next game: a session that starts again shows it too ([startingStatus]).
         RouteState.keepNotice(this, route, RouteState.APP_VERSION)
@@ -2017,6 +2048,7 @@ class SessionService : Service() {
             log("Play not taken: its update check, question or update runs ($current)")
             return
         }
+        if (lootFilterFirst()) return
         val snapshot = _status.value.snapshot
         if (!PlayCheck.checks(snapshot)) {
             log("Play: game update checks are off; the game starts as installed")
@@ -2044,6 +2076,45 @@ class SessionService : Service() {
         log("Play: looking for a new Project Diablo 2 version first (Check again, seq $seq)")
         _status.update { status -> (status.playCheck as? PlayCheck.State.Checking)?.let { status.copy(playCheck = it.copy(seq = seq)) } ?: status }
         followLater(PlayCheck.WAIT_MS)
+    }
+
+    /** Play's loot filter update runs ([lootFilterFirst]). Worker thread only. */
+    private var lootFilterRuns = false
+    /** Play's loot filter update ended: the next [play] goes on with the game. Worker thread only. */
+    private var lootFilterDone = false
+
+    /**
+     * Play: with an author's loot filter in use, the author's newer file first, as the official PD2
+     * launcher at its start ([LootFilterStore.updateForPlay]; it waits a few seconds at most, and a
+     * failure keeps the filter in use). True while it runs: [play] runs again when it ends.
+     */
+    private fun lootFilterFirst(): Boolean {
+        if (lootFilterDone) {
+            lootFilterDone = false
+            return false
+        }
+        if (lootFilterRuns) return true
+        if (!LootFilterStore.updatesAtPlay(this)) return false
+        val game = GameFilesProvider.gameFolder(paths, _status.value.snapshot?.gameFolder?.path)
+        lootFilterRuns = true
+        setPlayCheck(PlayCheck.State.Starting(PlayCheck.Note.LOOT_FILTER))
+        scope.launch(Dispatchers.IO) {
+            val line = try {
+                LootFilterStore.updateForPlay(this@SessionService, game)
+            } catch (error: Exception) {
+                "loot filter update failed (${AppUpdate.describe(error)}); the filter in use stays"
+            }
+            post {
+                line?.let { log("Play: $it") }
+                lootFilterRuns = false
+                if ((_status.value.playCheck as? PlayCheck.State.Starting)?.note == PlayCheck.Note.LOOT_FILTER) setPlayCheck(null)
+                lootFilterDone = true
+                play()
+                // A Play that stopped before the update's place (a launch or a job runs) does not skip the next one's update.
+                lootFilterDone = false
+            }
+        }
+        return true
     }
 
     /** [followPlayCheck] again after [delayMs], also when no change of the session comes. */
@@ -2239,13 +2310,14 @@ class SessionService : Service() {
             syncSaves("before Play", forLaunch = true)
             log("Play: settings: ${settingsLine(settings)}")
             log("Play: ${inputLine(settings)}")
+            log("Play: ${GameConfigFiles.fingerprints(projectFolder())}")
             launchSent = sendCommand(
                 Command.LaunchGame(
                     display = DisplaySize(width.toLong(), height.toLong()),
                     graphicsDriver = settings.graphicsDriver,
                     graphicsProfile = GraphicsProfiles.forPlay(settings.graphicsProfile, gpu),
                     strictMemoryOrder = false,
-                    detailedLogging = settings.detailedLogging,
+                    detailedLogging = LogPolicy.on(LogArea.ENGINE, settings.detailedLogging),
                 ),
             )?.let { it to SystemClock.elapsedRealtime() }
             // The engine prepares the game's files once it has the command: the wait counts from the
@@ -2328,7 +2400,7 @@ class SessionService : Service() {
             return
         }
         val settings = AppSettingsStore.load(this)
-        beginLauncherRun(settings.detailedLogging)
+        beginLauncherRun(LogPolicy.on(LogArea.LAUNCHER_LINES, settings.detailedLogging))
         launchRequested(SystemClock.elapsedRealtime())
         if (game.serverLost()) {
             log("the system-driver server ended; restarting the game environment")
@@ -2370,7 +2442,7 @@ class SessionService : Service() {
             log("official launcher: settings: ${settingsLine(settings)}")
             log("official launcher: ${inputLine(settings)}")
             launcherLog.note("settings: ${settingsLine(settings)}")
-            sendCommand(Command.OpenOfficialLauncher(strictMemoryOrder = false, detailedLogging = settings.detailedLogging))
+            sendCommand(Command.OpenOfficialLauncher(strictMemoryOrder = false, detailedLogging = LogPolicy.on(LogArea.ENGINE, settings.detailedLogging)))
                 ?.also { launchRequested(SystemClock.elapsedRealtime()) }
         }
         if (seq == null) {
@@ -2479,7 +2551,7 @@ class SessionService : Service() {
             status.snapshot?.game == Game.RUNNING || status.snapshot?.activeJob != null || status.launcherGame ||
                 installEnvironment || launching
         }
-        SaveSyncFolder.run(this, paths, why, AppSettingsStore.load(this).detailedLogging, busy.takeUnless { forLaunch }, ::log)
+        SaveSyncFolder.run(this, paths, why, LogPolicy.on(LogArea.SAVE_SYNC_FILES, AppSettingsStore.load(this).detailedLogging), busy.takeUnless { forLaunch }, ::log)
     }
 
     /** [syncSaves] on the sync's own thread: after the game or the official launcher, and from Settings. */
@@ -2783,7 +2855,7 @@ class SessionService : Service() {
     }
 
     private fun stopGameEnvironment() {
-        // Wine's processes (wineserver, the wine64-preloaders under FEX) outlive Xvfb otherwise.
+        // Wine's processes (the wineserver and the programs it serves) outlive Xvfb otherwise.
         wineserverKill()
         game.stop()
         xScreen = null
@@ -2964,8 +3036,32 @@ class SessionService : Service() {
         val running = status.snapshot?.game == Game.RUNNING || status.launcherGame
         if (!running && !memoryWatch.running) return
         memoryWatch.next(running, MemoryLog.read(), SystemClock.elapsedRealtime())?.let(::log)
+        if (!running) {
+            perfWatch.reset()
+            return
+        }
+        val processes = UidCleanup.scan(File("/proc"), Os.getuid(), Os.getpid(), ::owner)
         // The game's environment, once for each Wine program.
-        if (running) programEnvironments.next(UidCleanup.scan(File("/proc"), Os.getuid(), Os.getpid(), ::owner)).forEach(::log)
+        programEnvironments.next(processes).forEach(::log)
+        // Basic logging too, every 30 s; Detailed logging every 10 s (LogPolicy).
+        if (LogPolicy.on(LogArea.PERF)) perfWatch.next(perfLook(processes), Os.sysconf(OsConstants._SC_CLK_TCK), LogPolicy.windowMs())?.let(::log)
+    }
+
+    /** What [perfWatch] reads now, with the app's other [processes]. */
+    private fun perfLook(processes: List<UidProcess>): PerfWatch.Look {
+        val proc = File("/proc")
+        val game = processes.firstOrNull { it.name.equals(LauncherGame.PROCESS, ignoreCase = true) }
+        val power = getSystemService(PowerManager::class.java)
+        return PerfWatch.Look(
+            now = SystemClock.elapsedRealtime(),
+            presents = PresentCounter.read(paths.presentCounter),
+            processTicks = PerfWatch.processTicks(proc, processes, Os.getpid()),
+            gameThreadTicks = game?.let { PerfWatch.threadTicks(proc, it.pid) }.orEmpty(),
+            clusters = PerfWatch.clusters(File("/sys/devices/system/cpu/cpufreq")),
+            thermal = power?.let { PerfWatch.thermal(it.currentThermalStatus) } ?: "unknown",
+            headroom = power?.getThermalHeadroom(0)?.takeUnless { it.isNaN() },
+            shown = appForeground,
+        )
     }
 
     /**
@@ -3061,6 +3157,10 @@ class SessionService : Service() {
         LauncherSettings.view(_status.value.snapshot?.settings, _status.value.engine == SessionStatus.Engine.CONNECTED),
     )
 
+    /** The game folder's ProjectD2, where Project Diablo 2 keeps its settings files; null without a game folder. */
+    private fun projectFolder(): File? =
+        GameFilesProvider.gameFolder(paths, _status.value.snapshot?.gameFolder?.path)?.let { File(it, LauncherFiles.FOLDER) }
+
     /** [InputSources.line] for the input devices there are now and [settings]' Touch and the chord. */
     private fun inputLine(settings: AppSettings): String {
         val devices = ArrayList<InputFacts>()
@@ -3133,6 +3233,8 @@ class SessionService : Service() {
         )
         private const val TAG = "pd2-session"
         private const val ENGINE_TAG = "pd2-engine"
+        /** The longest wait for the one taskset check of the app's process ([EngineCores]). */
+        private const val TASKSET_CHECK_MS = 2_000L
         private const val ENGINE_LINE = "pd2-launcher:"
         const val ACTION_START = "com.pd2launcher.app.action.START"
         /** Try again after the engine or the userland failed: a fresh start, its failures forgotten ([RestartPolicy]). */

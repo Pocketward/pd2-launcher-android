@@ -130,12 +130,15 @@ object HardwareFacts {
      * The screen for `device.txt`: the whole [panel] (width, height in pixels, the bounds of
      * Android's maximum window metrics, turned as the screen is now), the app's [window] inside it
      * (without the bars of the system, so it can be shorter: 1920 x 1025 in a 1920 x 1080 panel),
-     * the density, the rate now ([hertzNow], null when unknown) and the full rate that the app
-     * measured ([fullHertz], 0 or less when not measured).
+     * the density, the rate now ([hertzNow], null when unknown), the rates of the panel's [modes] and
+     * the highest rate the phone's own settings allow ([cap]; nothing where they set no limit) and
+     * the rate measured for the app ([measured]; nothing before a measurement of this panel).
      */
-    fun screen(panel: Pair<Int, Int>, window: Pair<Int, Int>, densityDpi: Int, hertzNow: Float?, fullHertz: Float): String {
+    fun screen(panel: Pair<Int, Int>, window: Pair<Int, Int>, densityDpi: Int, hertzNow: Float?, modes: PanelModes, cap: PhoneRefreshCap, measured: ScreenCapability?): String {
         val now = hertzNow?.let { String.format(Locale.ROOT, "%.0f Hz now", it) } ?: "rate unknown"
-        val full = fullHertz.takeIf { it > 0f }?.let { String.format(Locale.ROOT, ", full rate %.0f Hz", it) } ?: ""
-        return "panel ${panel.first} x ${panel.second}, window ${window.first} x ${window.second}, $densityDpi dpi, $now$full"
+        val rates = modes.modes.map { Math.round(it.rate) }.distinct().sorted().takeIf { it.isNotEmpty() }?.let { ", modes ${it.joinToString("/")} Hz" } ?: ""
+        val limit = cap.limit?.let { String.format(Locale.ROOT, ", the phone's limit %.0f Hz", it) } ?: ""
+        val shows = measured?.takeIf { it.isOf(modes) }?.let { ", measured up to ${it.hertz} Hz" } ?: ""
+        return "panel ${panel.first} x ${panel.second}, window ${window.first} x ${window.second}, $densityDpi dpi, $now$rates$limit$shows"
     }
 }

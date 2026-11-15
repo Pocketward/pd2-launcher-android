@@ -1,0 +1,7 @@
+# const-random (ahash's compile-time-rng, which a GPUI dependency turns on)
+# puts random constants into the executable unless this seed is set. With it,
+# two builds of one commit give the same bytes. The value is public, as the
+# constants are in every published executable anyway. Cargo reads this file
+# when it runs in the checkout; a seed in the environment takes precedence.
+[env]
+CONST_RANDOM_SEED = "pd2-launcher"

@@ -1,7 +1,6 @@
-/* Stand-in for Android's <sys/system_properties.h> in a glibc build of the radv-xclipse and
- * mali-panvk trees (see ../android/log.h). A glibc process has no Android properties: every read
- * finds none, so the trees' switches come from their environment variables only (the trees read
- * those first). */
+/* Stand-in for Android's <sys/system_properties.h> in a glibc build of the mali-panvk tree (see
+ * ../android/log.h). A glibc process has no Android properties: every read finds none, so the
+ * tree's switches come from its environment variables only (the tree reads those first). */
 #ifndef PD2_XCLIPSE_COMPAT_SYSTEM_PROPERTIES_H
 #define PD2_XCLIPSE_COMPAT_SYSTEM_PROPERTIES_H
 

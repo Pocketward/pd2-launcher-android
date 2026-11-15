@@ -1,9 +1,0 @@
-# The PD2 Launcher engine that the APK runs: engine/build.sh builds it, without its window, from
-# the sources of the desktop Launcher's public repository (url) at the commit below. The tag names
-# that commit's release; a pin without a tag names a commit only. source_sha256 is the SHA-256 of
-# the lines that sha256sum prints for every file of the commit, sorted by path; a build checks it
-# first. `engine/build.sh --pin <tag>` sets tag, commit and source_sha256 from the repository.
-url=https://github.com/Pocketward/pd2-launcher.git
-tag=v0.1.14
-commit=ca3d8fcc207f31ef8d9ed4c47913fa63ff8e5883
-source_sha256=b951670943f07fff77bd02c33a6c8f78691e45c2006a4c5180cb9f873181c9b9

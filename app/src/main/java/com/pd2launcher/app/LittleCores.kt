@@ -6,7 +6,7 @@ import java.io.IOException
 /**
  * The CPUs of the slowest cluster: those whose highest frequency is the lowest of the device's
  * (`cpufreq/cpuinfo_max_freq`). Helper programs that stream frames through memory (Xvfb) run
- * there, off the big cores whose shared cache the game's main thread under FEX depends on.
+ * there, off the big cores whose shared cache the game's main thread depends on.
  * None on a device with one cluster or unreadable frequencies.
  */
 object LittleCores {
@@ -17,24 +17,70 @@ object LittleCores {
         return maxFrequencies.filterValues { it == lowest }.keys.sorted()
     }
 
+    /**
+     * The CPUs outside the slowest cluster ([of]): on a phone with a big cluster (and a prime
+     * core), those. Empty where [of] is (one cluster, or unreadable frequencies).
+     */
+    fun others(maxFrequencies: Map<Int, Long>): List<Int> {
+        val little = of(maxFrequencies)
+        return if (little.isEmpty()) emptyList() else maxFrequencies.keys.filter { it !in little }.sorted()
+    }
+
     /** `taskset`'s hexadecimal mask for [cpus], or null for none. */
     fun mask(cpus: List<Int>): String? =
         if (cpus.isEmpty() || cpus.any { it !in 0..62 }) null
         else cpus.fold(0L) { mask, cpu -> mask or (1L shl cpu) }.toString(16)
 
     /** This device's little cores. */
-    fun ofDevice(): List<Int> {
+    fun ofDevice(): List<Int> = of(deviceFrequencies())
+
+    /** This device's CPUs outside the little cores ([others]). */
+    fun othersOfDevice(): List<Int> = others(deviceFrequencies())
+
+    /** Android's taskset, which the app may run on its own processes. */
+    const val TASKSET = "/system/bin/taskset"
+
+    /** Each CPU's highest frequency; empty when one of them cannot be read. */
+    private fun deviceFrequencies(): Map<Int, Long> {
         val cpus = File("/sys/devices/system/cpu").listFiles().orEmpty()
             .mapNotNull { Regex("cpu([0-9]+)").matchEntire(it.name)?.groupValues?.get(1)?.toInt() }
-        val frequencies = cpus.associateWith { cpu ->
+        return cpus.associateWith { cpu ->
             try {
                 File("/sys/devices/system/cpu/cpu$cpu/cpufreq/cpuinfo_max_freq").readText().trim().toLong()
             } catch (_: Exception) {
-                return emptyList()
+                return emptyMap()
             }
         }
-        return of(frequencies)
     }
+}
+
+/**
+ * The engine's start on the CPUs outside the little cores ([LittleCores.others]) through taskset,
+ * so that the wineserver, Game.exe and every other program the engine starts inherit them, while
+ * Xvfb stays on the little cores ([LittleCoresStart]). The game's main thread hands its work to its
+ * other threads one item at a time, each a wineserver round trip and a wake-up of another thread;
+ * with all of them on the fast cores a game entry's loading phase took 576 ms instead of 637 ms on
+ * a phone with an SM6115 chip (5 entries each, 2026-11-13), with the same frame rate in town.
+ * Firmware that refuses taskset's `sched_setaffinity` (issue #13) is found once per app process by
+ * `taskset <mask> true` ([accepts]); the engine then starts as before.
+ */
+object EngineCores {
+    /** The result of [accepts] for this app process, once it ran. */
+    @Volatile private var checked: Boolean? = null
+
+    /**
+     * The engine's program and arguments: [command] (its program first) through taskset with
+     * [mask], or [command] as it is when there is no mask or taskset was refused.
+     */
+    fun command(mask: String?, accepted: Boolean, command: List<String>): Pair<String, List<String>> =
+        if (mask != null && accepted) LittleCores.TASKSET to listOf("taskset", mask) + command
+        else command.first() to command
+
+    /**
+     * Whether taskset with [mask] runs a program on this phone: [check] runs once per app process
+     * (`taskset <mask> true`, exit status 0), later calls give its result.
+     */
+    fun accepts(check: () -> Boolean): Boolean = checked ?: check().also { checked = it }
 }
 
 /**

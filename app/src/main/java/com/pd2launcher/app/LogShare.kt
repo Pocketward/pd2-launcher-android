@@ -25,8 +25,10 @@ import kotlinx.coroutines.withTimeoutOrNull
  * `device.txt` (what the app knows about this device and the installation), the logs of the
  * processes the app starts and its own (`files/logs`, under `app/`, the official PD2 launcher's
  * runs among them: [OfficialLauncherLog]), the official launcher's own logs from the game folder
- * (under `launcher/`, [LauncherFiles.shareTexts]), the engine's diagnostics and the report it saves
- * for the share (under `engine/`), handed to Android's share sheet. None holds a CD key: the app
+ * (under `launcher/`, [LauncherFiles.shareTexts]), Project Diablo 2's own settings files from the game
+ * folder (under `game-config/`, [GameConfigFiles.shareTexts]), every setting the app keeps
+ * (`settings.txt`, [SettingsSnapshot]), the engine's diagnostics and the report it saves for the
+ * share (under `engine/`), handed to Android's share sheet. None holds a CD key: the app
  * never logs one, the official launcher has none, and the engine's diagnostics and report leave
  * out process arguments.
  * The app's own logs are not redacted: they can name the player's characters and network
@@ -172,9 +174,10 @@ object LogShare {
 
     /**
      * Packs a new zip into [folder] after removing those earlier shares and saves left more than
-     * [KEEP_MS] before [now]: [about], the official launcher's own logs in [launcher] (the game
-     * folder's ProjectD2, [LauncherFiles.shareTexts]) and the files of [entries] (from [paths] and
-     * the engine's [report]). Returns the zip.
+     * [KEEP_MS] before [now]: [about], [settings] as [SettingsSnapshot.FILE] (null: none), the
+     * official launcher's own logs and Project Diablo 2's settings files in [launcher] (the game
+     * folder's ProjectD2, [LauncherFiles.shareTexts], [GameConfigFiles.shareTexts]) and the files of
+     * [entries] (from [paths] and the engine's [report]). Returns the zip.
      */
     fun write(
         cacheDir: File,
@@ -182,6 +185,7 @@ object LogShare {
         about: String,
         report: File?,
         launcher: File? = null,
+        settings: String? = null,
         now: Long = System.currentTimeMillis(),
     ): File {
         val folder = folder(cacheDir)
@@ -189,7 +193,9 @@ object LogShare {
         folder.listFiles()?.filter { now - it.lastModified() >= KEEP_MS }?.forEach { it.delete() }
         val target = File(folder, fileName(now))
         try {
-            pack(target, about, entries(paths.logs, paths.engineDiagnostics, report), LauncherFiles.shareTexts(launcher))
+            val texts = listOfNotNull(settings?.let { SettingsSnapshot.FILE to it }) +
+                LauncherFiles.shareTexts(launcher) + GameConfigFiles.shareTexts(launcher)
+            pack(target, about, entries(paths.logs, paths.engineDiagnostics, report), texts)
         } catch (error: IOException) {
             target.delete()
             throw error

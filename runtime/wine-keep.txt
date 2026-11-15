@@ -174,3 +174,13 @@ rundll32.exe
 [i386]
 msvcrt20.dll
 olepro32.dll
+
+# Other launchers (issue 19: the Chinese server's PD2LauncherCN.exe, a Delphi program with
+# sciter.dll): the launcher and sciter.dll import winspool.drv, which imports compstui.dll;
+# sciter.dll imports usp10.dll. Without winspool.drv the launcher does not start ("Library
+# winspool.drv not found", c0000135). winspool's Unix library is left out (trim.py NO_UNIX): the
+# launcher starts and draws without it.
+[i386]
+winspool.drv
+compstui.dll
+usp10.dll

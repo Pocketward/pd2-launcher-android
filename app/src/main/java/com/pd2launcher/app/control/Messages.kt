@@ -19,10 +19,11 @@ import kotlinx.serialization.json.JsonClassDiscriminator
 // null when absent), as serde writes it. Integers: u32 and u64 are Long, u8 Int.
 
 /**
- * The protocol version this app speaks (the engine's `PROTOCOL`). 7: the game folder is outside the
- * disposable prefix, so an engine of an earlier protocol, which looks for it in the prefix, is refused.
+ * The protocol version this app speaks (the engine's `PROTOCOL`). 8: the snapshot names the installed
+ * copy's language ([Snapshot.gameLanguage]). 7: the game folder is outside the disposable prefix, so an
+ * engine of an earlier protocol, which looks for it in the prefix, is refused.
  */
-const val PROTOCOL: Int = 7
+const val PROTOCOL: Int = 8
 
 /** The JSON settings both directions use: internally tagged by `type`, strict. */
 val ControlJson: Json = Json { classDiscriminator = "type" }
@@ -314,6 +315,37 @@ sealed class SettingChange {
      */
     @Serializable @SerialName("install_source")
     data class InstallSource(val source: com.pd2launcher.app.control.InstallSource) : SettingChange()
+
+    /**
+     * The player's own start options (protocol 8), which Play adds after the Launcher's own when
+     * it starts the game; empty for none. The engine refuses more than 200 characters, a control
+     * character or a double quote ([com.pd2launcher.app.LauncherSettings.typedCustomArguments]).
+     */
+    @Serializable @SerialName("custom_arguments")
+    data class CustomArguments(val arguments: String) : SettingChange()
+
+    /**
+     * The program Play starts (protocol 8): a path in the game folder, `ProjectD2/Game.exe` by
+     * default. The engine refuses the paths that
+     * [com.pd2launcher.app.LauncherSettings.typedProgramPath] refuses, and a file that is not in
+     * the game folder (`program-path-missing`).
+     */
+    @Serializable @SerialName("game_program")
+    data class GameProgram(val path: String) : SettingChange()
+
+    /**
+     * The program the official PD2 launcher button opens (protocol 8): a path in the game folder,
+     * `ProjectD2/PD2Launcher.exe` by default, with the rules of [GameProgram].
+     */
+    @Serializable @SerialName("launcher_program")
+    data class LauncherProgram(val path: String) : SettingChange()
+
+    /**
+     * The player's own start options for the official PD2 launcher (protocol 8), with the rules of
+     * [CustomArguments]; empty for none.
+     */
+    @Serializable @SerialName("launcher_custom_arguments")
+    data class LauncherCustomArguments(val arguments: String) : SettingChange()
 }
 
 /**
@@ -364,6 +396,11 @@ data class Snapshot(
     @SerialName("launch_preflight_passed") val launchPreflightPassed: Boolean,
     @SerialName("unresolved_journal") val unresolvedJournal: Boolean,
     @SerialName("game_software_rendering") val gameSoftwareRendering: Boolean,
+    /**
+     * The installed copy's language as Diablo II names it (`eng`, `chi`, `kor`, ...), when the engine
+     * read it. PD2 needs `eng`; another one is a warning on Play, never a gate.
+     */
+    @SerialName("game_language") val gameLanguage: String?,
     /** The last audit found the game environment set up: Install's first task is done. */
     @SerialName("environment_ready") val environmentReady: Boolean,
     val downloads: Downloads,
@@ -649,6 +686,14 @@ data class Settings(
     @SerialName("update_checks") val updateChecks: Boolean? = null,
     /** Where Blizzard's installers come from (protocol 6). */
     @SerialName("install_source") val installSource: InstallSource,
+    /** The player's own start options for Play, after the Launcher's own; empty for none (protocol 8). */
+    @SerialName("custom_arguments") val customArguments: String,
+    /** The program Play starts, a path in the game folder (protocol 8). */
+    @SerialName("game_program") val gameProgram: String,
+    /** The program the official PD2 launcher button opens, a path in the game folder (protocol 8). */
+    @SerialName("launcher_program") val launcherProgram: String,
+    /** The player's own start options for the official PD2 launcher; empty for none (protocol 8). */
+    @SerialName("launcher_custom_arguments") val launcherCustomArguments: String,
     val persistence: SettingsPersistence,
 )
 

@@ -246,7 +246,7 @@ private sealed interface PreviewStep {
 
 /**
  * One preview: the Game view's [layer] at the start, the menu's [tab] and state ([asking],
- * [launcher], [frameRate], 0 for Full; [tilesOn]: every tile on, Android's keyboard shown as up;
+ * [launcher], [frameRate]; [tilesOn]: every tile on, Android's keyboard shown as up;
  * [mouseActive]: the controller in mouse mode),
  * the player's [controls], the Frame rate input open over the menu, or only the fps counter
  * ([fpsOnly]); then [steps], from [startMs] after the start.
@@ -256,7 +256,7 @@ private class PreviewScreen(
     val tab: MenuTab = MenuTab.QUICK,
     val asking: Boolean = false,
     val launcher: Boolean = false,
-    val frameRate: Int = AppSettings.FULL_FRAME_RATE,
+    val frameRate: Int = FramePick.DEFAULT,
     val tilesOn: Boolean = false,
     val mouseActive: Boolean = false,
     val controls: Controls = PLAYER_CONTROLS,
@@ -378,7 +378,7 @@ private fun OverlayPreview(screen: PreviewScreen, onScreenAtStart: Boolean, pref
     var controls by remember { mutableStateOf(screen.controls) }
     var mouseActive by remember { mutableStateOf(screen.mouseActive) }
     var touch by remember { mutableStateOf(TouchMode.TRACKPAD) }
-    val full = remember { ScreenRate.load(context) }
+    val panel = remember { PanelModes.builtIn(context) }
     val pad = remember { VirtualPad {} }
     val buttons = remember { CustomButtons {} }
     val fps = FpsReading(60f, null)
@@ -426,7 +426,7 @@ private fun OverlayPreview(screen: PreviewScreen, onScreenAtStart: Boolean, pref
                     showFps = showFps,
                     display = display,
                     keyboard = keyboard,
-                    frameRate = frameRateLabel(frameRate, full),
+                    frameRate = frameRateLabel(frameRate, panel),
                     slowerInBackground = slower,
                     soundInBackground = sound,
                     keepScreenOn = keepOn,
@@ -471,7 +471,7 @@ private fun OverlayPreview(screen: PreviewScreen, onScreenAtStart: Boolean, pref
                 onEditOnScreen = { go(GameLayer.EDIT) },
             )
             if (frameRateInput) {
-                FrameRateInput(frameRate, full, { frameRate = it }) { frameRateInput = false }
+                FrameRateInput(frameRate, panel, { frameRate = it }) { frameRateInput = false }
             }
         }
     }

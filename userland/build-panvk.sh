@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds Mesa's PanVK (Vulkan driver "panfrost") for aarch64 with our kernel backend for Arm's
 # mali_kbase (mesa-kbase/), separately from Turnip: the same Mesa commit (PANVK_MESA_* in config.sh,
-# which name MESA_*), but its own image (containers/Containerfile.panvk) and cache (PANVK_CACHE).
+# which name MESA_*), but its own cache (PANVK_CACHE).
 #
 #   1. the Mesa tree: the pinned archive (in the userland cache's sources/, shared with build-mesa.sh);
 #      patches/mesa/*-wsi-*.patch, the Vulkan WSI series Mesa's build
@@ -24,12 +24,29 @@
 # BUILDINFO is the build's identity (build_identity in config.sh: image, package lock, prefix, the
 # Mesa and uAPI pins, this script, the patches and every mesa-kbase/ file); while it matches, the
 # outputs are used as they are and nothing is built. The host tools are rebuilt when the image
-# that built them changes (their IMAGE file).
+# that built them changes (their IMAGE file). `build-panvk.sh --identity` prints that identity on
+# the host, before any build (the release workflow's cache key).
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=config.sh
 . "$here/config.sh"
+
+# The WSI series shared with Turnip first, then PanVK's own.
+patches=()
+for set in mesa mesa-panvk; do
+    while IFS= read -r p; do patches+=("$p"); done < <(find "$here/patches/$set" -name "$([[ $set == mesa ]] && echo '*-wsi-*.patch' || echo '*.patch')" | LC_ALL=C sort)
+done
+identity() {
+    local kbase_files
+    mapfile -t kbase_files < <(find "$here/mesa-kbase" -type f | LC_ALL=C sort)
+    build_identity "mesa=$PANVK_MESA_COMMIT $PANVK_MESA_SHA256" "kbase-uapi=$KBASE_UAPI_COMMIT" \
+        "${KBASE_UAPI_FILES[@]/#/uapi }" "$here/build-panvk.sh" "${patches[@]}" "${kbase_files[@]}"
+}
+if [[ "${1:-}" == --identity ]]; then
+    PD2_IMAGE="${PD2_IMAGE:-$(base_image_name)}" identity
+    exit 0
+fi
 
 if [[ "${PD2_USERLAND_IN_CONTAINER:-}" != 1 ]]; then
     RUN_EXTRA=(-e "PD2_PANVK_STAGE=${PD2_PANVK_STAGE:-0}")
@@ -46,14 +63,7 @@ mkdir -p "$kb/sources" "$work" "$out"
 libdir=lib/aarch64-linux-gnu
 lib="$USERLAND/usr/$libdir/libvulkan_panfrost.so"
 
-# The WSI series shared with Turnip first, then PanVK's own.
-patches=()
-for set in mesa mesa-panvk; do
-    while IFS= read -r p; do patches+=("$p"); done < <(find "$here/patches/$set" -name "$([[ $set == mesa ]] && echo '*-wsi-*.patch' || echo '*.patch')" | sort)
-done
-mapfile -t kbase_files < <(find "$here/mesa-kbase" -type f | LC_ALL=C sort)
-identity="$(build_identity "mesa=$PANVK_MESA_COMMIT $PANVK_MESA_SHA256" "kbase-uapi=$KBASE_UAPI_COMMIT" \
-    "${KBASE_UAPI_FILES[@]/#/uapi }" "$here/build-panvk.sh" "${patches[@]}" "${kbase_files[@]}")"
+identity="$(identity)"
 if [[ -f "$out/libvulkan_panfrost.so" && "$(cat "$out/BUILDINFO" 2>/dev/null)" == "$identity" ]]; then
     echo "reusing $out (BUILDINFO matches)"
 else

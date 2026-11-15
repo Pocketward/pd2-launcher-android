@@ -26,6 +26,14 @@ object LauncherSettings {
          * setting (it always checks), so the row does not show.
          */
         val gameUpdateChecks: Boolean?,
+        /** Settings → Game's "Custom start options": added after the options above when Play starts the game; empty for none. */
+        val customArguments: String,
+        /** Settings → Game's "Game program": the program Play starts, a path in the game folder. */
+        val gameProgram: String,
+        /** Settings → Game's "Launcher program": the program the official PD2 launcher button opens. */
+        val launcherProgram: String,
+        /** The official PD2 launcher's "Custom start options"; empty for none. */
+        val launcherCustomArguments: String,
         /** Changes are taken: the engine is connected and has loaded its settings. */
         val editable: Boolean,
         /** The engine could not save or load them (its stable reason code). */
@@ -38,6 +46,10 @@ object LauncherSettings {
             skipToBnet = it.skipToBnet,
             soundInBackground = it.soundInBackground,
             gameUpdateChecks = it.updateChecks,
+            customArguments = it.customArguments,
+            gameProgram = it.gameProgram,
+            launcherProgram = it.launcherProgram,
+            launcherCustomArguments = it.launcherCustomArguments,
             editable = connected && it.persistence != SettingsPersistence.Loading,
             failure = (it.persistence as? SettingsPersistence.Failed)?.reason,
         )
@@ -59,6 +71,138 @@ object LauncherSettings {
     fun soundInBackground(enabled: Boolean): Command = Command.ChangeSettings(SettingChange.SoundInBackground(enabled))
 
     fun gameUpdateChecks(enabled: Boolean): Command = Command.ChangeSettings(SettingChange.UpdateChecks(enabled))
+
+    /** The most characters of [View.customArguments], as the engine allows. */
+    const val CUSTOM_ARGUMENTS_MAX = 200
+
+    /**
+     * The custom start options that the player typed, trimmed, as the engine takes them: at most
+     * [CUSTOM_ARGUMENTS_MAX] characters (Unicode code points, as the engine counts them), no
+     * control character and no double quote; null for any other text. Empty text is none.
+     */
+    fun typedCustomArguments(text: String): String? = text.trim().takeIf { typed ->
+        typed.codePointCount(0, typed.length) <= CUSTOM_ARGUMENTS_MAX && typed.none { it.isISOControl() || it == '"' }
+    }
+
+    /** Sets the custom start options ([typedCustomArguments]'s text). */
+    fun customArguments(arguments: String): Command = Command.ChangeSettings(SettingChange.CustomArguments(arguments))
+
+    /** Sets the official PD2 launcher's custom start options ([typedCustomArguments]'s text). */
+    fun launcherCustomArguments(arguments: String): Command =
+        Command.ChangeSettings(SettingChange.LauncherCustomArguments(arguments))
+
+    /** The program Play starts unless the player chose another one: PD2's own. */
+    const val DEFAULT_GAME_PROGRAM = "ProjectD2/Game.exe"
+
+    /** The program the official PD2 launcher button opens unless the player chose another one. */
+    const val DEFAULT_LAUNCHER_PROGRAM = "ProjectD2/PD2Launcher.exe"
+
+    /** The most characters of a program path, as the engine allows. */
+    const val PROGRAM_PATH_MAX = 200
+
+    /** The program Play starts ([Settings.gameProgram]); the default before the engine sent its settings. */
+    fun gameProgram(settings: Settings?): String = settings?.gameProgram ?: DEFAULT_GAME_PROGRAM
+
+    /** The program the official PD2 launcher button opens ([Settings.launcherProgram]); the default before the engine sent its settings. */
+    fun launcherProgram(settings: Settings?): String = settings?.launcherProgram ?: DEFAULT_LAUNCHER_PROGRAM
+
+    /** Play starts another program than PD2's: no update check, and the engine does not check or set it up. */
+    fun otherGameProgram(settings: Settings?): Boolean = gameProgram(settings) != DEFAULT_GAME_PROGRAM
+
+    /** The official PD2 launcher button opens another program than PD2's launcher. */
+    fun otherLauncherProgram(settings: Settings?): Boolean = launcherProgram(settings) != DEFAULT_LAUNCHER_PROGRAM
+
+    /**
+     * Whether the app looks for and installs Project Diablo 2's updates: Check for game updates is on (or the engine has
+     * no such setting), and both programs are PD2's own. Another Game program or Launcher program (a mod, a translated
+     * copy) turns them off, so an update never writes over it (owner, 2026-11-14).
+     */
+    fun pd2Updates(settings: Settings?): Boolean =
+        settings?.updateChecks != false && !otherGameProgram(settings) && !otherLauncherProgram(settings)
+
+    /** The engine sent its settings and PD2's updates are off ([pd2Updates]): the "Update checks off" fact. */
+    fun pd2UpdatesOff(settings: Settings?): Boolean = settings != null && !pd2Updates(settings)
+
+    /** A program path that the player typed, as the engine takes it ([path]), or why the engine refuses it ([reason]). */
+    sealed interface TypedProgram {
+        data class Path(val path: String) : TypedProgram
+
+        data class Refused(val reason: String) : TypedProgram
+    }
+
+    /**
+     * A program path in the game folder as the engine takes it: trimmed, `\` as `/`, with no empty
+     * or `.` part. Refused (the engine's reason codes): empty (`program-path-empty`), more than
+     * [PROGRAM_PATH_MAX] characters (`program-path-too-long`), a control character or a `:` after
+     * the start (`program-path-invalid-character`), `/` or `\` first or a drive such as `C:`
+     * (`program-path-absolute`), a `..` part (`program-path-parent`), or not a `.exe` file
+     * (`program-path-not-exe`). Whether the file is there is [programMissing].
+     */
+    fun typedProgramPath(text: String): TypedProgram {
+        val typed = text.trim()
+        val refused = when {
+            typed.isEmpty() -> "program-path-empty"
+            typed.codePointCount(0, typed.length) > PROGRAM_PATH_MAX -> "program-path-too-long"
+            typed.any { it.isISOControl() } -> "program-path-invalid-character"
+            else -> null
+        }
+        if (refused != null) return TypedProgram.Refused(refused)
+        val slashes = typed.replace('\\', '/')
+        if (slashes.startsWith('/') || slashes.getOrNull(1) == ':') return TypedProgram.Refused("program-path-absolute")
+        if (':' in slashes) return TypedProgram.Refused("program-path-invalid-character")
+        val parts = slashes.split('/').filter { it.isNotEmpty() && it != "." }
+        if (".." in parts) return TypedProgram.Refused("program-path-parent")
+        val name = parts.lastOrNull()
+        if (name == null || slashes.endsWith('/') || name.length <= ".exe".length || !name.lowercase().endsWith(".exe")) {
+            return TypedProgram.Refused("program-path-not-exe")
+        }
+        val path = parts.joinToString("/")
+        // PD2's own programs in another case are PD2's programs: the default's spelling (as the engine).
+        return TypedProgram.Path(listOf(DEFAULT_GAME_PROGRAM, DEFAULT_LAUNCHER_PROGRAM).firstOrNull { it.equals(path, ignoreCase = true) } ?: path)
+    }
+
+    /**
+     * Whether the game folder ([gameFolder]; null: not known now) holds no file at the program
+     * [path] ([typedProgramPath]'s), or only one through a symbolic link on its way: the engine
+     * refuses both (`program-path-missing`; it opens the program with no symbolic link). PD2's own
+     * programs are never missing here: Default always saves.
+     */
+    fun programMissing(gameFolder: File?, path: String): Boolean {
+        gameFolder ?: return false
+        if (path == DEFAULT_GAME_PROGRAM || path == DEFAULT_LAUNCHER_PROGRAM) return false
+        return try {
+            val file = File(gameFolder.canonicalFile, path)
+            !file.isFile || file.canonicalPath != file.absolutePath
+        } catch (_: IOException) {
+            true
+        }
+    }
+
+    /** The engine's refusal of a program path whose file is not in the game folder ([programMissing]). */
+    const val PROGRAM_MISSING = "program-path-missing"
+
+    /** Every reason the engine can refuse a program path for. */
+    val PROGRAM_PROBLEMS = listOf(
+        "program-path-empty", "program-path-too-long", "program-path-invalid-character", "program-path-absolute",
+        "program-path-parent", "program-path-not-exe", PROGRAM_MISSING,
+    )
+
+    /** The help line of a refused program path ([TypedProgram.Refused.reason], or the engine's refusal). */
+    @StringRes
+    fun programPathProblem(reason: String): Int = when (reason) {
+        "program-path-empty" -> R.string.settings_program_empty
+        "program-path-too-long" -> R.string.settings_program_too_long
+        "program-path-absolute", "program-path-parent" -> R.string.settings_program_outside
+        "program-path-not-exe" -> R.string.settings_program_not_exe
+        PROGRAM_MISSING -> R.string.settings_program_missing
+        else -> R.string.settings_program_invalid_character
+    }
+
+    /** Sets the program Play starts ([typedProgramPath]'s path). */
+    fun gameProgram(path: String): Command = Command.ChangeSettings(SettingChange.GameProgram(path))
+
+    /** Sets the program the official PD2 launcher button opens ([typedProgramPath]'s path). */
+    fun launcherProgram(path: String): Command = Command.ChangeSettings(SettingChange.LauncherProgram(path))
 }
 
 /**

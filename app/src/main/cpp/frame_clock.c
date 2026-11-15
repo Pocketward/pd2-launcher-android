@@ -1,7 +1,6 @@
 // The app's clock: the virtual display's vertical blank (Mesa patch 0008). It ticks at the rate
-// the player picked (Settings, Game, Frame rate: 60 or 30 frames a second; Full: the panel's
-// highest rate) for the game environment's lifetime, on the screen and off it, whatever rate the
-// phone's screen runs at. Each tick counts up the word at byte 256 of the present counter's page
+// the player picked for the game environment's lifetime, on the screen and off it, whatever
+// rate the phone's screen runs at. Each tick counts up the word at byte 256 of the present counter's page
 // and wakes Mesa's waiters; the word at byte 320 is non-zero while it ticks. The game waits in Mesa
 // for a tick before each present, in every present mode (vsync on, D2GL's default, or off), so it
 // draws at most that many frames a second. While the

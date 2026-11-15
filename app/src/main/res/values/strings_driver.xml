@@ -47,7 +47,7 @@
     <!-- The App driver for the chip is the default (RADV on Samsung Xclipse, mali-panvk on an older Mali; DriverOptions.newLauncherDriver). The Phone driver is the player's pick on the GPU page; new words 2026-11-04, for the owner's approval. -->
     <string name="phone_driver_title_launcher">The app driver for this graphics chip is new</string>
     <string name="phone_driver_body_launcher">Only a few phones with this graphics chip have run the game. If the app driver fails, pick the phone driver in Settings → Display → GPU. It can be slower. The game may not work at all. Do not use Blizzard\'s installers on this phone: they are the least likely to work.</string>
-    <string name="phone_driver_forced">A test forced this (files/debug/system-driver).</string>
+    <string name="phone_driver_forced">A test forced this (a file in files/debug).</string>
     <!-- The check page behind the dialog. -->
     <string name="phone_driver_check_title">Device check</string>
     <string name="phone_driver_check_intro">The app needs your answer before it continues.</string>

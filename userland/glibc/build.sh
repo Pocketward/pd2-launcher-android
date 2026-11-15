@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Builds our glibc for the App userland: Debian 13's glibc source package with Debian's own
-# patch series, then our Android patches (patches/*.patch), cross-compiled for aarch64 in a
-# pinned container and installed into out/install (the contents of <U>).
+# patch series, then our Android patches (patches/*.patch), cross-compiled for aarch64 in the
+# base image (../../containers/Containerfile.base) and installed into out/install (the contents of <U>).
 #
 # Usage: userland/glibc/build.sh
 # Output: userland/glibc/out/install/{lib,usr,etc}, out/BUILDINFO, out/build.log.
 set -euo pipefail
 
-# The install prefix: ../config.sh's USERLAND, which the host passes into the container.
+# The install prefix: ../config.sh's USERLAND, and the image, which the host passes into the container.
 if [ "${PD2_GLIBC_IN_CONTAINER:-}" != 1 ]; then
     # shellcheck source=../config.sh
     . "$(dirname "${BASH_SOURCE[0]}")/../config.sh"
@@ -16,12 +16,9 @@ else
     U=$PD2_GLIBC_PREFIX
 fi
 
-# debian:trixie-slim multi-arch index digest and snapshot (same pins as ../config.sh).
-DEBIAN_IMAGE=docker.io/library/debian@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
-DEBIAN_SNAPSHOT=20261006T000000Z
-
 # Debian 13 glibc source package; the SHA-256 sums were recorded when it was first fetched
-# from the snapshot above and are verified in every build.
+# from snapshot.debian.org and are verified in every build. The base image holds these three files
+# (/opt/pd2/src/glibc, ../../containers/Containerfile.base): no download here.
 GLIBC_DEB_VERSION=2.41-12+deb13u4
 GLIBC_DSC=glibc_2.41-12+deb13u4.dsc
 GLIBC_DSC_SHA256=0915324aa646bb99abfaa9aa6ecb734b30babd28454a3e51f3152912370fbd3e
@@ -33,21 +30,12 @@ GLIBC_DEBIAN_SHA256=dda4153511bfd543502d18e5bc9323110996fe9c531f14ae3fad6eb17f02
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [ "${PD2_GLIBC_IN_CONTAINER:-}" != 1 ]; then
-    if command -v podman >/dev/null 2>&1; then engine=podman
-    elif command -v docker >/dev/null 2>&1; then engine=docker
-    else echo "refusing: no container engine (podman or docker) found" >&2; exit 1; fi
-    cache="${PD2_USERLAND_CACHE:-$HOME/.cache/pd2-android/userland}/glibc"
-    image="$(glibc_image_name)"
-    if ! have_image "$engine" "$image"; then
-        "$engine" build --platform linux/amd64 \
-            --build-arg "DEBIAN_IMAGE=$DEBIAN_IMAGE" --build-arg "DEBIAN_SNAPSHOT=$DEBIAN_SNAPSHOT" \
-            -t "$image" -f "$HERE/Containerfile" "$HERE" >&2
-        archive_image "$engine" "$image"
-    fi
-    mkdir -p "$cache/src" "$HERE/out"
-    exec "$engine" run --rm --platform linux/amd64 \
-        -v "$HERE:/src:ro" -v "$cache:/cache" -v "$HERE/out:/out" \
-        -e PD2_GLIBC_IN_CONTAINER=1 -e "PD2_GLIBC_PREFIX=$U" -e "JOBS=${JOBS:-$(nproc)}" \
+    engine="$(container_engine)"
+    image="$(ensure_base_image)"
+    mkdir -p "$HERE/out"
+    exec "$engine" run --rm --platform linux/amd64 --network=none \
+        -v "$HERE:/src:ro" -v "$HERE/out:/out" \
+        -e PD2_GLIBC_IN_CONTAINER=1 -e "PD2_GLIBC_PREFIX=$U" -e "PD2_IMAGE=$image" -e "JOBS=${JOBS:-$(nproc)}" \
         "$image" bash /src/build.sh
 fi
 
@@ -55,12 +43,9 @@ fi
 exec > >(tee /out/build.log) 2>&1
 echo "== glibc $GLIBC_DEB_VERSION for $U"
 
-src=/cache/src
-if [ ! -f "$src/$GLIBC_DSC" ]; then
-    echo "== fetching the source package from snapshot.debian.org ($DEBIAN_SNAPSHOT)"
-    apt-get update -qq
-    (cd "$src" && apt-get source --download-only "glibc=$GLIBC_DEB_VERSION")
-fi
+src=/opt/pd2/src/glibc
+[ -f "$src/$GLIBC_DSC" ] ||
+    { echo "the base image has no $GLIBC_DSC in $src: its Containerfile.base names another glibc version" >&2; exit 1; }
 echo "== verifying source checksums"
 (cd "$src" && sha256sum -c - <<EOF
 $GLIBC_DSC_SHA256  $GLIBC_DSC
@@ -158,12 +143,11 @@ cp /build/glibc/sysdeps/unix/sysv/linux/aarch64/arch-syscall.h /out/arch-syscall
 
 {
     echo "glibc_debian_version=$GLIBC_DEB_VERSION"
-    echo "debian_image=$DEBIAN_IMAGE"
-    echo "debian_snapshot=$DEBIAN_SNAPSHOT"
+    echo "image=$PD2_IMAGE"
     echo "prefix=$U"
     echo "compiler=$(aarch64-linux-gnu-gcc-14 --version | head -n1)"
     echo "kernel_headers=$(dpkg-query -W -f '${Version}' linux-libc-dev-arm64-cross)"
-    for f in build.sh Containerfile; do echo "input=$f $(sha256sum < "/src/$f" | cut -d' ' -f1)"; done
+    for f in build.sh; do echo "input=$f $(sha256sum < "/src/$f" | cut -d' ' -f1)"; done
     for p in /src/patches/*.patch; do echo "patch=$(basename "$p") $(sha256sum < "$p" | cut -d' ' -f1)"; done
 } > /out/BUILDINFO
 echo "== installed into out/install:"

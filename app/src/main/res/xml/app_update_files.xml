@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- An app update's checked APK (AppUpdater, files/app-update/): the only files the updates
+     provider serves, to Android's installer through the URI that the install grants. -->
+<paths>
+    <files-path name="update" path="app-update/" />
+</paths>

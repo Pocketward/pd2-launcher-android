@@ -68,6 +68,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.pd2launcher.app.Line
 import com.pd2launcher.app.R
 import com.pd2launcher.app.Tone
@@ -225,6 +226,13 @@ fun LauncherButton(
      * the label. Null: none. Only drawn: the layout and the focus stay as they are.
      */
     dot: String? = null,
+    /**
+     * A small second line under the label, inside the button (Play's and the official PD2
+     * launcher's program, "Diablo II/ProjectD2/Game.exe"); it ends with "…" where it does not fit.
+     * [detailWarning]: in amber (a dark amber on a filled teal button). Null: none.
+     */
+    detail: String? = null,
+    detailWarning: Boolean = false,
 ) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
@@ -272,7 +280,23 @@ fun LauncherButton(
         contentAlignment = Alignment.Center,
     ) {
         val mark = if (dot != null) Modifier.drawBehind { drawDot() } else Modifier
-        Text(label, mark, style = style, color = ink, textAlign = TextAlign.Center, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+        if (detail == null) {
+            Text(label, mark, style = style, color = ink, textAlign = TextAlign.Center, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+        } else {
+            val detailInk = when {
+                !enabled -> Palette.Faint
+                kind == Kind.PRIMARY -> if (detailWarning) Palette.OnTealWarning else Palette.OnTeal.copy(alpha = 0.72f)
+                detailWarning -> Palette.Amber
+                else -> Palette.Muted
+            }
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(label, mark, style = style, color = ink, textAlign = TextAlign.Center, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                Text(
+                    detail, style = Type.Hint.copy(fontSize = 12.sp, lineHeight = 15.sp, fontWeight = FontWeight.Medium), color = detailInk,
+                    textAlign = TextAlign.Center, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
     }
 }
 

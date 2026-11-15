@@ -2,9 +2,8 @@
 # Builds the userland parts of the system-driver mode, the game's GPU path for GPUs that Turnip and
 # PanVK do not drive: Zink -> Mesa's Venus ICD -> vtest's socket -> virglrenderer's server in the
 # APK (devdriver/) -> the phone's own Vulkan driver.
-# Two cross builds for aarch64 in the Mesa image (containers/Containerfile.mesa), as build-mesa.sh:
-#
-#   1. Venus, Mesa main at $MESA_COMMIT (the same archive as build-mesa.sh) with all our patches/mesa/*.patch
+# A cross build for aarch64 in the base image (../containers/Containerfile.base), as build-mesa.sh:
+# Venus, Mesa main at $MESA_COMMIT (the same archive as build-mesa.sh) with all our patches/mesa/*.patch
 #      (the software WSI series: Zink presents through the Vulkan driver's WSI, so the present
 #      counter, the Game view's pacing and the back pixmap work as with Turnip) and
 #      patches/mesa-sysdrv/*.patch (Venus only: the vtest socket and Venus's debug options from
@@ -20,78 +19,49 @@
 #      wrap that names another release). The patches apply with --fuzz=0, so mesa-update.sh
 #      checks and refreshes patches/mesa-sysdrv/ with the others when the pin moves.
 #      Installs libvulkan_virtio.so and virtio_icd.aarch64.json.
-#   2. A second GL stack, Mesa $MESA_SYSDRV_VERSION, Zink only, with patches/mesa/0005 (the
-#      sub-image bounds fix D2GL needs; the WSI patches are not needed: this build has no Vulkan
-#      driver) and patches/mesa-sysdrv-gl/*.patch (Zink gives the two sides of a varying the same
-#      component ranges, and keeps the GLSL450 memory model before SPIR-V 1.5: drivers that check
-#      the stage interface by exact range, and Vulkan 1.1 drivers, need both; and it does texture
-#      transfers through the CPU on Qualcomm's driver, which hangs the GPU in the draw-based PBO
-#      upload). The product Mesa's
-#      Zink (26.2 and main) needs VK_KHR_maintenance5 and refuses Vulkan 1.3 drivers such as
-#      Samsung's Xclipse driver; 25.1.9 also takes drivers without robustness2 and dynamic rendering
-#      (the older Mali drivers). It is a glvnd vendor of its own, "pd2sysdrv": its libGLX_mesa
-#      becomes libGLX_pd2sysdrv.so.0 (file name and soname, patchelf), beside
-#      libgallium-$MESA_SYSDRV_VERSION.so, which it needs by name, in the userland's library
-#      folder; the mode's Wine processes pick it with __GLX_VENDOR_LIBRARY_NAME=pd2sysdrv
-#      (userland.env), a variable the engine passes on, and every other process keeps
-#      build-mesa.sh's "mesa" vendor. Built for its own libdir, lib/aarch64-linux-gnu/system-driver,
-#      which stays empty, so no path compiled into it names build-mesa.sh's DRI stubs; it installs
-#      no dri/ stub. Its EGL and share/ files are not installed (Wine draws through GLX here).
-#        gallium-drivers=zink, vulkan-drivers=, platforms=x11, glx=dri, egl=enabled, glvnd=enabled
+# The mode's OpenGL is build-mesa.sh's Zink (glvnd vendor "mesa"), the one GL stack of every mode
+# (ADR 0030: no second, older Zink).
 #
 # The installed files are listed as the userland's part "system-driver" (work/parts/, pack.sh): an
 # archive of their own that an APK can leave out.
-# Outputs in the cache's sysdrv-out/ with BUILDINFO (the image, both Mesa pins, the prefix, this
-# script, the patches); a later run with the same identity installs without building.
+# Outputs in the cache's sysdrv-out/ with BUILDINFO (the image, the Mesa and Venus protocol pins,
+# the prefix, this script, the patches); a later run with the same identity installs without building.
+# `build-sysdrv.sh --identity` prints that identity on the host, before any build (the release
+# workflow's cache key); the sources are fetched only when sysdrv-out does not have it.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=config.sh
 . "$here/config.sh"
 
-mesa_image() {
-    local engine image
-    engine="$(container_engine)"
-    image="localhost/pd2-userland-mesa:$( (cat "$USERLAND_SRC/containers/Containerfile.mesa"
-        echo "$DEBIAN_IMAGE $DEBIAN_SNAPSHOT") | sha256sum | cut -c1-16)"
-    if ! have_image "$engine" "$image"; then
-        "$engine" build --platform linux/amd64 \
-            --build-arg "DEBIAN_IMAGE=$DEBIAN_IMAGE" --build-arg "DEBIAN_SNAPSHOT=$DEBIAN_SNAPSHOT" \
-            -t "$image" -f "$USERLAND_SRC/containers/Containerfile.mesa" "$USERLAND_SRC/containers" >&2
-        archive_image "$engine" "$image"
-    fi
-    echo "$image"
+identity() {
+    echo "image=${PD2_IMAGE:-}"
+    echo "mesa=$MESA_COMMIT $MESA_SHA256"
+    echo "venus-protocol=$VENUS_PROTOCOL_VERSION $VENUS_PROTOCOL_SHA256"
+    echo "prefix=$USERLAND"
+    for f in "$here/build-sysdrv.sh" "$here"/patches/mesa/*.patch "$here"/patches/mesa-sysdrv/*.patch; do
+        echo "${f#"$here"/} $(sha256sum < "$f" | cut -d' ' -f1)"
+    done
 }
+if [[ "${1:-}" == --identity ]]; then
+    # The container's order of file names (no locale there).
+    export LC_ALL=C
+    PD2_IMAGE="${PD2_IMAGE:-$(base_image_name)}" identity
+    exit 0
+fi
 
 if [[ "${PD2_USERLAND_IN_CONTAINER:-}" != 1 ]]; then
-    fetch_source "$MESA_URL" "$MESA_SHA256" >/dev/null
-    fetch_source "$VENUS_PROTOCOL_URL" "$VENUS_PROTOCOL_SHA256" >/dev/null
-    fetch_source "$MESA_SYSDRV_URL" "$MESA_SYSDRV_SHA256" >/dev/null
-    image="$(mesa_image)"
-    engine="$(container_engine)"
-    mkdir -p "$USERLAND_CACHE/work"
-    "$engine" run --rm --platform linux/amd64 \
-        -v "$USERLAND_SRC:/src:ro" -v "$USERLAND_CACHE:/cache" \
-        -e PD2_USERLAND_IN_CONTAINER=1 -e PD2_USERLAND_CACHE=/cache -e "PD2_IMAGE=$image" \
-        "$image" bash /src/build-sysdrv.sh --build
-    run_in_tools build-sysdrv.sh --install
+    if [[ ! -d "$USERLAND_CACHE/sysdrv-out/tree" || "$(cat "$USERLAND_CACHE/sysdrv-out/BUILDINFO" 2>/dev/null)" != "$("$here/build-sysdrv.sh" --identity)" ]]; then
+        fetch_source "$MESA_URL" "$MESA_SHA256" >/dev/null
+        fetch_source "$VENUS_PROTOCOL_URL" "$VENUS_PROTOCOL_SHA256" >/dev/null
+    fi
+    run_in_base build-sysdrv.sh --build
+    run_in_base build-sysdrv.sh --install
     exit
 fi
 
 out=/cache/sysdrv-out
 libdir=lib/aarch64-linux-gnu
-vendor=pd2sysdrv
-gallium=libgallium-$MESA_SYSDRV_VERSION.so
-identity() {
-    echo "image=${PD2_IMAGE:-}"
-    echo "mesa=$MESA_COMMIT $MESA_SHA256"
-    echo "venus-protocol=$VENUS_PROTOCOL_VERSION $VENUS_PROTOCOL_SHA256"
-    echo "mesa-sysdrv=$MESA_SYSDRV_VERSION $MESA_SYSDRV_SHA256"
-    echo "prefix=$USERLAND"
-    for f in /src/build-sysdrv.sh /src/patches/mesa/*.patch /src/patches/mesa-sysdrv/*.patch /src/patches/mesa-sysdrv-gl/*.patch; do
-        echo "${f#/src/} $(sha256sum < "$f" | cut -d' ' -f1)"
-    done
-}
 
 if [[ "${1:-}" == --build ]]; then
     id="$(identity)"
@@ -150,29 +120,12 @@ EOF
     install -D -m 0644 "$work/venus-dest$USERLAND/usr/share/vulkan/icd.d/virtio_icd.aarch64.json" \
         "$out/tree/usr/share/vulkan/icd.d/virtio_icd.aarch64.json"
 
-    # --- 2. Zink, Mesa $MESA_SYSDRV_VERSION ----------------------------------------------------
-    src="$work/gl-src"
-    mkdir -p "$src"
-    tar -xJf "/cache/sources/$(basename "$MESA_SYSDRV_URL")" -C "$src" --strip-components=1
-    for p in "${MESA_SYSDRV_GL_SHARED_PATCHES[@]/#//src/patches/mesa/}" /src/patches/mesa-sysdrv-gl/*.patch; do
-        patch -d "$src" -p1 --forward --fuzz=0 --quiet < "$p"
-        echo "gl: applied ${p#/src/patches/}"
-    done
-    meson setup "$work/gl-build" "$src" "${common[@]}" --libdir="$libdir/system-driver" \
-        -Dgallium-drivers=zink -Dvulkan-drivers= -Dglx=dri -Degl=enabled -Dglvnd=enabled -Dopengl=true \
-        > "$work/gl-setup.log" 2>&1 || { tail -40 "$work/gl-setup.log"; exit 1; }
-    ninja -C "$work/gl-build" -j"$(nproc)" > "$work/gl-ninja.log" 2>&1 || { tail -60 "$work/gl-ninja.log"; exit 1; }
-    DESTDIR="$work/gl-dest" meson install -C "$work/gl-build" --strip --no-rebuild > /dev/null
-    g="$work/gl-dest$USERLAND/usr/$libdir/system-driver"
-    install -D -m 0755 "$g/libGLX_mesa.so.0.0.0" "$out/tree/usr/$libdir/libGLX_$vendor.so.0"
-    install -D -m 0755 "$g/$gallium" "$out/tree/usr/$libdir/$gallium"
-
     rm -rf "$work"
     echo "$id" > "$out/BUILDINFO"
     exit 0
 fi
 
-# --install (tools image, which has patchelf): the build into the staging tree.
+# --install (base image): the build into the staging tree.
 staging=/cache/work/staging
 [[ -d "$staging/usr" ]] || { echo "no staging tree: run fetch-debian.sh first" >&2; exit 1; }
 [[ -f "$out/BUILDINFO" && -d "$out/tree" ]] || { echo "no system-driver build: run build-sysdrv.sh" >&2; exit 1; }
@@ -180,13 +133,8 @@ cp -a "$out/tree/." "$staging/"
 # The mode's files are a part of their own (pack.sh), which an APK can leave out.
 mkdir -p /cache/work/parts
 (cd "$out/tree" && find . -type f | sed 's|^\./||' | LC_ALL=C sort) > /cache/work/parts/system-driver.files
-glx="$staging/usr/$libdir/libGLX_$vendor.so.0"
-patchelf --set-soname "libGLX_$vendor.so.0" "$glx"
 icd="$staging/usr/share/vulkan/icd.d/virtio_icd.aarch64.json"
 want="$USERLAND/usr/$libdir/libvulkan_virtio.so"
 got="$(jq -r .ICD.library_path "$icd")"
 [[ "$got" == "$want" ]] || { echo "Venus ICD library_path is $got, want $want" >&2; exit 1; }
-aarch64-linux-gnu-readelf -d "$glx" | grep -q "Shared library: \[$gallium\]" ||
-    { echo "libGLX_$vendor.so.0 does not need $gallium" >&2; exit 1; }
-[[ -f "$staging/usr/$libdir/$gallium" ]] || { echo "system-driver GL install incomplete: no $gallium" >&2; exit 1; }
-echo "system driver installed: Venus $MESA_VERSION (${MESA_COMMIT:0:12}, ICD -> $got), Zink $MESA_SYSDRV_VERSION as glvnd vendor $vendor"
+echo "system driver installed: Venus $MESA_VERSION (${MESA_COMMIT:0:12}, ICD -> $got)"

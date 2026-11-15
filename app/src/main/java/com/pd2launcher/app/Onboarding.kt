@@ -97,6 +97,20 @@ data class FlowNav(val stack: List<FlowPage> = listOf(FlowPage.CHECK)) {
 
     fun open(next: FlowPage): FlowNav = if (next == page) this else copy(stack = stack + next)
 
+    /**
+     * The source page, to choose the folder again: back to it when it is in the stack (no second
+     * copy of a page), else opened on top.
+     */
+    /**
+     * Past the source page with a chosen folder that is gone ([DiabloSource.folderGone]; for
+     * example the app opened again after Start over): back to the source page, else unchanged.
+     */
+    fun folderGone(gone: Boolean): FlowNav =
+        if (gone && page != FlowPage.CHECK && page != FlowPage.SOURCE) chooseFolder() else this
+
+    fun chooseFolder(): FlowNav =
+        if (FlowPage.SOURCE in stack) copy(stack = stack.subList(0, stack.indexOf(FlowPage.SOURCE) + 1)) else open(FlowPage.SOURCE)
+
     /** The previous page; Check stays (Back there leaves the app). */
     fun back(): FlowNav = if (stack.size > 1) copy(stack = stack.dropLast(1)) else this
 
@@ -122,7 +136,9 @@ data class FlowNav(val stack: List<FlowPage> = listOf(FlowPage.CHECK)) {
      * Start over (Repair, during setup) reset an interrupted stage: straight to the key page, or
      * Install's start button when the source needs no keys (an installed Diablo II is imported).
      */
-    fun afterStartOver(needsKeys: Boolean): FlowNav = when {
+    fun afterStartOver(needsKeys: Boolean, choosesFolder: Boolean = false): FlowNav = when {
+        // The imported folder went with the installation: the source page, to choose it again.
+        choosesFolder -> chooseFolder()
         needsKeys -> open(FlowPage.KEYS)
         page == FlowPage.KEYS -> back()
         else -> open(FlowPage.INSTALL)

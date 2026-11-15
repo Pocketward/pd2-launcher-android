@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Settings → Game → Loot filters: the Loot filters page (LootFiltersPage.kt). -->
+    <string name="loot_title">Loot filters</string>
+    <string name="loot_help">What is a loot filter?</string>
+    <string name="loot_own">Your files</string>
+    <string name="loot_add">Add a file</string>
+    <string name="loot_in_use_tag">In use</string>
+    <string name="loot_author_page">Author\'s page</string>
+    <string name="loot_keep">Keep my own copy</string>
+    <string name="loot_use">Use this filter</string>
+    <string name="loot_in_use_button">In use</string>
+
+    <string name="loot_no_network_saved">No network. This list is from your last visit.</string>
+    <string name="loot_try_again">Try again</string>
+
+    <string name="loot_remove_in_use">This file is in use. Use another filter first.</string>
+    <string name="loot_use_failed_own">This file could not be put in use. Try again.</string>
+    <string name="loot_add_failed">The file could not be added. Try again.</string>
+    <string name="loot_remove_failed">The file could not be removed. Try again.</string>
+    <string name="loot_failed">Something did not work. Try again.</string>
+    <string name="loot_wait_game">Close the game first: loot filters change while the game is closed.</string>
+    <string name="loot_wait_starting">The game starts now. Change the filter after it closes.</string>
+    <string name="loot_wait_work">PD2 Launcher works on the game folder now. Try again when it is done.</string>
+    <string name="loot_wait_no_game">Install the game first.</string>
+    <string name="loot_no_browser">No browser opened the page.</string>
+
+    <!-- Settings → Game: the Loot filters row -->
+    <string name="settings_loot_filters_none">No filter chosen</string>
+    <!-- P1 on a phone (owner, 2026-11-06; mock docs/design/loot-filters/mock/phone.html#1): the first page, then an author's filters. -->
+    <string name="loot_back_list">‹ Loot filters</string>
+    <string name="loot_section_in_use">In use</string>
+    <string name="loot_section_help">Help</string>
+    <string name="loot_section_device">On this device</string>
+    <string name="loot_section_authors">PD2\'s authors</string>
+    <string name="loot_no_filter">No filter chosen</string>
+    <string name="loot_help_body">PD2\'s loot filter page, in your browser.</string>
+    <string name="loot_opens_browser">%1$s, opens in your browser</string>
+    <plurals name="loot_own_count">
+        <item quantity="one">%1$d file</item>
+        <item quantity="other">%1$d files</item>
+    </plurals>
+    <!-- E1 + F2, the final design (owner, 2026-11-06; mock docs/design/loot-filters/mock/e1f2.html). -->
+    <string name="loot_rule_online">Updates at each Play</string>
+    <string name="loot_rule_own">Your own filters. They do not update.</string>
+    <string name="loot_rule_own_file">Your own file. It does not update.</string>
+    <string name="loot_no_description">No description from the author</string>
+    <string name="loot_copy_of">Copy of %1$s\'s filter</string>
+    <string name="loot_added_here">Added from this device</string>
+    <string name="loot_slot_downloading">Downloading…</string>
+    <string name="loot_slot_failed">Did not download</string>
+    <string name="loot_slot_copied">Copied to Your files</string>
+    <string name="loot_slot_removed">Removed</string>
+    <string name="loot_undo">Undo</string>
+    <string name="loot_remove_short">Remove</string>
+    <string name="loot_loading_title">Loading the filters</string>
+    <string name="loot_loading_body">From the author\'s folder on GitHub.</string>
+    <string name="loot_error_title">The filters did not load</string>
+    <string name="loot_error_body">GitHub can be busy for a short time. The filter in use still works.</string>
+    <string name="loot_own_empty_title">No files yet</string>
+    <string name="loot_own_empty_body">Add a .filter file, or keep a copy of an author\'s filter.</string>
+    <string name="loot_works_next_start">Works from the next game start.</string>
+    <string name="loot_managed_outside_named">The official PD2 launcher manages your loot filter now: %1$s. You can pick a filter here, but when you open the official launcher again, it puts its own filter back.</string>
+    <string name="loot_managed_outside">Your loot filter was changed outside this app, for example in the official PD2 launcher. You can pick a filter here, but when you open the official launcher again, it can put its own filter back.</string>
+    <string name="loot_by_launcher">Official PD2 launcher</string>
+    <string name="loot_set_outside">Set outside this app</string>
+    <string name="loot_no_filter_note">No filter in use yet.</string>
+    <string name="loot_choose_one">Choose one below.</string>
+    <string name="loot_authors_offline">No network: PD2\'s authors need the internet.</string>
+    <string name="loot_not_filter_banner">Choose a .filter file. This one is not a loot filter.</string>
+</resources>

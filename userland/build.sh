@@ -5,7 +5,7 @@
 #   build-mesa.sh     Mesa (main at config.sh's MESA_COMMIT): Zink, softpipe, GLX and EGL for glvnd,
 #                     Turnip (KGSL) and its ICD JSON
 #   build-panvk.sh    Mesa's PanVK with our kbase backend (Mali) and its ICD JSON (PD2_PANVK_STAGE=1)
-#   build-sysdrv.sh   the system-driver part: Mesa's Venus ICD, Mesa 25.1.9's Zink as "pd2sysdrv"
+#   build-sysdrv.sh   the system-driver part: Mesa's Venus ICD
 #   build-hybris.sh   the libhybris route: libhybris and our Vulkan ICD (part "system-driver" too)
 #   build-radv.sh     RADV for Samsung's Xclipse GPUs (radv-xclipse, MIT) into the system-driver part
 #   build-mali-panvk.sh  the community PanVK tree mali-panvk (MIT) for Mali GPUs, beside our PanVK,

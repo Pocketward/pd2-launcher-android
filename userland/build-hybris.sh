@@ -3,8 +3,7 @@
 # the product Mesa's Zink, the Khronos loader and our ICD libvulkan_pd2hybris.so (hybris/), which
 # loads the phone's own Vulkan driver (/vendor/lib64/hw/vulkan.*.so, bionic) into the game's glibc
 # process through libhybris.
-# One cross build for aarch64 in the libhybris image (containers/Containerfile.hybris, from the
-# Mesa image):
+# One cross build for aarch64 in the base image (../containers/Containerfile.base):
 #   1. libhybris at $LIBHYBRIS_COMMIT with patches/libhybris/*.patch (stock firmware: the TLS access
 #      patcher, the bionic TLS area, the slot-1 shadow, ELF TLS, CFI stubs, BoringSSL), against
 #      Halium's android-headers at $HYBRIS_HEADERS_COMMIT; only hybris/common: libhybris-common.so.1
@@ -19,64 +18,43 @@
 # writes that list anew.
 # Outputs in the cache's hybris-out/ with BUILDINFO (the image, the pins, the prefix, this script,
 # the patches, the ICD's sources); a later run with the same identity installs without building.
+# `build-hybris.sh --identity` prints that identity on the host, before any build (the release
+# workflow's cache key); the sources are fetched only when hybris-out does not have it.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=config.sh
 . "$here/config.sh"
 
-mesa_image_name() {
-    echo "localhost/pd2-userland-mesa:$( (cat "$USERLAND_SRC/containers/Containerfile.mesa"
-        echo "$DEBIAN_IMAGE $DEBIAN_SNAPSHOT") | sha256sum | cut -c1-16)"
+identity() {
+    echo "image=${PD2_IMAGE:-}"
+    echo "libhybris=$LIBHYBRIS_COMMIT $LIBHYBRIS_SHA256"
+    echo "android-headers=$HYBRIS_HEADERS_COMMIT $HYBRIS_HEADERS_SHA256"
+    echo "prefix=$USERLAND"
+    for f in "$here/build-hybris.sh" "$here"/patches/libhybris/*.patch "$here"/hybris/*; do
+        echo "${f#"$here"/} $(sha256sum < "$f" | cut -d' ' -f1)"
+    done
 }
-
-# The libhybris image: the Mesa image plus autotools and the arm64 Vulkan headers; the tag hashes
-# Containerfile.hybris and the Mesa image's name.
-hybris_image() {
-    local engine mesa image
-    engine="$(container_engine)"
-    mesa="$(mesa_image_name)"
-    image="localhost/pd2-userland-hybris:$( (cat "$USERLAND_SRC/containers/Containerfile.hybris"; echo "$mesa") | sha256sum | cut -c1-16)"
-    if ! have_image "$engine" "$image"; then
-        if ! have_image "$engine" "$mesa"; then
-            "$engine" build --platform linux/amd64 \
-                --build-arg "DEBIAN_IMAGE=$DEBIAN_IMAGE" --build-arg "DEBIAN_SNAPSHOT=$DEBIAN_SNAPSHOT" \
-                -t "$mesa" -f "$USERLAND_SRC/containers/Containerfile.mesa" "$USERLAND_SRC/containers" >&2
-            archive_image "$engine" "$mesa"
-        fi
-        "$engine" build --platform linux/amd64 --build-arg "MESA_IMAGE=$mesa" \
-            -t "$image" -f "$USERLAND_SRC/containers/Containerfile.hybris" "$USERLAND_SRC/containers" >&2
-        archive_image "$engine" "$image"
-    fi
-    echo "$image"
-}
+if [[ "${1:-}" == --identity ]]; then
+    # The container's order of file names (no locale there).
+    export LC_ALL=C
+    PD2_IMAGE="${PD2_IMAGE:-$(base_image_name)}" identity
+    exit 0
+fi
 
 if [[ "${PD2_USERLAND_IN_CONTAINER:-}" != 1 ]]; then
-    fetch_source "$LIBHYBRIS_URL" "$LIBHYBRIS_SHA256" >/dev/null
-    fetch_source "$HYBRIS_HEADERS_URL" "$HYBRIS_HEADERS_SHA256" >/dev/null
-    image="$(hybris_image)"
-    engine="$(container_engine)"
-    mkdir -p "$USERLAND_CACHE/work"
-    "$engine" run --rm --platform linux/amd64 \
-        -v "$USERLAND_SRC:/src:ro" -v "$USERLAND_CACHE:/cache" \
-        -e PD2_USERLAND_IN_CONTAINER=1 -e PD2_USERLAND_CACHE=/cache -e "PD2_IMAGE=$image" \
-        "$image" bash /src/build-hybris.sh --build
-    run_in_tools build-hybris.sh --install
+    if [[ ! -d "$USERLAND_CACHE/hybris-out/tree" || "$(cat "$USERLAND_CACHE/hybris-out/BUILDINFO" 2>/dev/null)" != "$("$here/build-hybris.sh" --identity)" ]]; then
+        fetch_source "$LIBHYBRIS_URL" "$LIBHYBRIS_SHA256" >/dev/null
+        fetch_source "$HYBRIS_HEADERS_URL" "$HYBRIS_HEADERS_SHA256" >/dev/null
+    fi
+    run_in_base build-hybris.sh --build
+    run_in_base build-hybris.sh --install
     exit
 fi
 
 out=/cache/hybris-out
 libdir=lib/aarch64-linux-gnu
 licenses=usr/share/licenses/pd2-libhybris
-identity() {
-    echo "image=${PD2_IMAGE:-}"
-    echo "libhybris=$LIBHYBRIS_COMMIT $LIBHYBRIS_SHA256"
-    echo "android-headers=$HYBRIS_HEADERS_COMMIT $HYBRIS_HEADERS_SHA256"
-    echo "prefix=$USERLAND"
-    for f in /src/build-hybris.sh /src/patches/libhybris/*.patch /src/hybris/*; do
-        echo "${f#/src/} $(sha256sum < "$f" | cut -d' ' -f1)"
-    done
-}
 
 if [[ "${1:-}" == --build ]]; then
     id="$(identity)"
@@ -155,7 +133,7 @@ if [[ "${1:-}" == --build ]]; then
     exit 0
 fi
 
-# --install (tools image): the build into the staging tree, as part of "system-driver".
+# --install (base image): the build into the staging tree, as part of "system-driver".
 staging=/cache/work/staging
 [[ -d "$staging/usr" ]] || { echo "no staging tree: run fetch-debian.sh first" >&2; exit 1; }
 [[ -f "$out/BUILDINFO" && -d "$out/tree" ]] || { echo "no libhybris build: run build-hybris.sh" >&2; exit 1; }

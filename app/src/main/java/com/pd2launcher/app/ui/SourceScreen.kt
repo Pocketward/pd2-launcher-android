@@ -56,7 +56,8 @@ fun SourceScreen(
         backButton = true,
         lead = if (progress != null) ({ Figure((progress * 100).toInt(), text(view.status)) }) else null,
         action = {
-            CornerPill(stringResource(R.string.source_continue), onContinue, Kind.PRIMARY, enabled = view.canContinue, focusRequester = focus)
+            val label = if (view.continueInstalls) R.string.install_action_install else R.string.source_continue
+            CornerPill(stringResource(label), onContinue, Kind.PRIMARY, enabled = view.canContinue, focusRequester = focus)
         },
     ) {
         Option(SourceChoice.FAST, R.string.source_fast, R.string.source_fast_body, view.selected, !copying, onSelect)
@@ -98,7 +99,7 @@ fun sourceNote(view: DiabloSource.View): Note? = when {
     view.progress != null -> null
     view.tone == Tone.ERROR -> Note.PROBLEM
     !view.canContinue -> Note.WAITS
-    view.selected == SourceChoice.EXISTING && !view.continuePicks -> Note.FOUND
+    view.continueInstalls -> Note.FOUND
     else -> null
 }
 

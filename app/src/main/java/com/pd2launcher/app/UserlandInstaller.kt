@@ -164,7 +164,7 @@ class UserlandInstaller(
 
     /**
      * Checks [manifest]'s unpacked version again, as [CriticalFiles] walks it: code under Wine runs
-     * as the app and can reach this tree, and a changed loader, library, userland.env or FEX would
+     * as the app and can reach this tree, and a changed loader, library or userland.env would
      * run in every later engine start, the one that gets the CD keys too. Anything that differs
      * makes the version incomplete (its record goes, or whatever is in its folder's place, a link
      * say), so [install] unpacks it again through staging, without whatever was added. Nothing is

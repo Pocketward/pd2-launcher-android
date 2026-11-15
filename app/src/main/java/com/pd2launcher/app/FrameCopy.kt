@@ -1,8 +1,5 @@
 package com.pd2launcher.app
 
-import android.content.Context
-import android.hardware.display.DisplayManager
-import android.view.Display
 import android.view.Surface
 import java.io.File
 import java.io.IOException
@@ -76,14 +73,7 @@ class FrameCopy private constructor(private var handle: Long) {
         )
     }
 
-    /**
-     * The buffers that went to the compositor since the start: the copy's own, and the game's
-     * presents while its own layer shows (one buffer each); null once stopped. Without new ones
-     * Android lowers the display's rate ([RateWatch]). Call on the thread that calls [stop].
-     */
-    fun posted(): Long? = if (handle != 0L) nativePostedFrames(handle) else null
-
-    /** Its layer asks the display for [frameRate] from now on ([FrameRateVote]). Call on the thread that calls [stop]. */
+    /** Its layer asks the display for [frameRate] from now on ([ScreenRequester]). Call on the thread that calls [stop]. */
     fun setFrameRate(frameRate: Float) {
         if (handle != 0L) nativeSetFrameRate(handle, frameRate)
     }
@@ -110,7 +100,7 @@ class FrameCopy private constructor(private var handle: Long) {
          * a rotation: on display hardware that cannot rotate, a rotation puts every frame through
          * GPU composition. [presentCounter] is the game's present counter
          * ([SessionPaths.presentCounter]); without it [counts] has no presents and the game is not
-         * paced. [frameRate] is the rate asked of the display ([FrameRateVote]; 0: none).
+         * paced. [frameRate] is the rate asked of the display ([ScreenRequester]; 0: none).
          */
         fun start(
             surface: Surface, framebuffer: Framebuffer, header: XwdHeader, displayRotation: Int, presentCounter: File?,
@@ -150,9 +140,6 @@ class FrameCopy private constructor(private var handle: Long) {
         private external fun nativeShownPresents(handle: Long): Long
 
         @JvmStatic
-        private external fun nativePostedFrames(handle: Long): Long
-
-        @JvmStatic
         private external fun nativeSetFrameRate(handle: Long, frameRate: Float)
 
         @JvmStatic
@@ -161,133 +148,6 @@ class FrameCopy private constructor(private var handle: Long) {
         @JvmStatic
         private external fun nativeStop(handle: Long)
     }
-}
-
-/**
- * The frame rate the player picks (Settings → Display): the screen's full rate, or a reduced frame
- * rate where the screen is faster. The full rate is the rate the screen really shows when the
- * Game view asks it for its highest mode ([ScreenRate]); a phone's settings can hold it below the
- * highest mode (for example, Smooth Display off: 120 Hz modes, 60 frames a second shown). It
- * is the rate of the app's clock ([rate], [FrameClock]), which holds the game to it, with vsync on
- * or off, whatever rate the display runs at. The Game view asks the display for the same rate
- * (`ASurfaceTransaction_setFrameRate`, [vote]), and for the highest mode at the full rate: the
- * vote lets a 90 or 120 Hz phone leave 60 Hz, where the display's own heuristic would keep a layer
- * that posts 60 times a second, and lets a display run slower at a reduced rate. Only a hint to
- * the display: the game's pace never depends on it.
- */
-object FrameRateVote {
-    /** The lowest frame rate a player can type: Diablo II's own 25 steps a second. */
-    const val MIN = 25
-
-    /**
-     * The highest refresh rate of [display]'s modes at its current resolution; 0 without a display.
-     * The modes are what the panel can do, not what the phone's settings let it do ([ScreenRate]).
-     */
-    fun highest(display: Display?): Float {
-        display ?: return 0f
-        return highestMode(display)?.refreshRate ?: display.refreshRate
-    }
-
-    /** The mode of [highest]: [display]'s mode with the highest refresh rate at its current resolution. */
-    fun highestMode(display: Display): Display.Mode? {
-        val mode = display.mode
-        return display.supportedModes
-            .filter { it.physicalWidth == mode.physicalWidth && it.physicalHeight == mode.physicalHeight }
-            .maxByOrNull { it.refreshRate }
-    }
-
-    /** The built-in display's highest mode ([highest]). */
-    fun highest(context: Context): Float =
-        highest(context.getSystemService(DisplayManager::class.java)?.getDisplay(Display.DEFAULT_DISPLAY))
-
-    /**
-     * The highest whole frame rate a player can type on a screen whose full rate is [full]: that
-     * rate, rounded (a 60 Hz panel's modes read 60.000004 or 59.94); 0 without a display.
-     */
-    fun most(full: Float): Int = if (full > 0f) Math.round(full) else 0
-
-    /**
-     * The player's [pick] where the screen's full rate ([full]) is faster than it, else null: the
-     * full rate (Full, kept as 0; a pick from another, faster screen; a pick under [MIN]).
-     */
-    fun cap(full: Float, pick: Int?): Int? = pick?.takeIf { it >= MIN && it < most(full) }
-
-    /**
-     * What the player typed ([text]) stores on a screen whose full rate is [full] and whose highest
-     * mode is [highest]: a whole number from [MIN] to the screen's most; the highest mode's rate
-     * as Full (0). On a screen the phone holds below its highest mode (for example, Smooth
-     * Display off: 60 of 120) the most stays the number, so the pick stays 60 when the phone lets
-     * the screen go faster later (the user's decision of 2026-10-23). Null for anything else.
-     */
-    fun typed(text: String, full: Float, highest: Float): Int? {
-        val value = text.trim().toIntOrNull() ?: return null
-        val most = most(full)
-        return when {
-            most < MIN || value < MIN || value > most -> null
-            value == most(highest) -> AppSettings.FULL_FRAME_RATE
-            else -> value
-        }
-    }
-
-    /** The number the input shows for the stored [pick]: the pick where it applies, else the screen's most. */
-    fun shown(pick: Int, full: Float): Int = cap(full, pick) ?: most(full)
-
-    /** One step of the D-pad's up and down in the Frame rate input. */
-    const val STEP = 5
-
-    /**
-     * [value] moved by [steps] of [STEP] on the step grid, inside [MIN] and the screen's most
-     * ([full]): 60 up is 65, 144 down is 140, 141 up is 144 (the most).
-     */
-    fun stepped(value: Int, steps: Int, full: Float): Int {
-        val most = most(full)
-        if (most < MIN) return value
-        val grid = if (steps > 0) Math.floorDiv(value, STEP) else -Math.floorDiv(-value, STEP)
-        return ((grid + steps) * STEP).coerceIn(MIN, most)
-    }
-
-    /** The clock's rate on a screen whose full rate is [full]: the [pick] where it applies, else the full rate. */
-    fun rate(full: Float, pick: Int?): Float = cap(full, pick)?.toFloat() ?: full
-
-    /** The refresh rates of [display]'s modes at its current resolution; empty without a display. */
-    fun modeRates(display: Display?): List<Float> {
-        display ?: return emptyList()
-        val mode = display.mode
-        return display.supportedModes
-            .filter { it.physicalWidth == mode.physicalWidth && it.physicalHeight == mode.physicalHeight }
-            .map { it.refreshRate }
-    }
-
-    /**
-     * The highest of [modes] that is not above the full rate ([full], within [RATE_SLACK]) and is a
-     * whole multiple of the [pick] (within [MULTIPLE_SLACK] of the multiple, for 59.94 and 119.88
-     * modes); null when no mode fits.
-     */
-    fun multiple(full: Float, pick: Int, modes: List<Float>): Float? =
-        modes.filter { rate ->
-            val ratio = rate / pick
-            rate <= full + RATE_SLACK && Math.round(ratio) >= 1 && Math.abs(ratio - Math.round(ratio)) <= MULTIPLE_SLACK
-        }.maxOrNull()
-
-    private const val RATE_SLACK = 0.5f
-    private const val MULTIPLE_SLACK = 0.01f
-
-    /**
-     * The rate the Game view's layers ask the display for: for a [pick] that applies on a screen
-     * whose full rate is [full], the highest of the display's [modes] that is a whole multiple of
-     * the pick and not above the full rate ([multiple]), else the pick itself; with no pick that
-     * applies, the highest mode ([highest]), so that the display runs as fast as the phone lets it
-     * and [ScreenRate] sees how fast that is. The game stays capped by the app's clock at the pick
-     * ([rate]); the display's rate is only a hint, and a whole multiple of the pick shows every
-     * frame for the same number of display frames.
-     */
-    fun vote(highest: Float, full: Float, pick: Int?, modes: List<Float> = emptyList()): Float {
-        val capped = cap(full, pick) ?: return highest
-        return multiple(full, capped, modes) ?: capped.toFloat()
-    }
-
-    /** The time between two of the clock's ticks at [fps] ticks a second ([FrameClock]); 60 a second without a rate. */
-    fun intervalNanos(fps: Float): Long = (1_000_000_000.0 / (if (fps > 0f) fps else 60f)).toLong()
 }
 
 /**

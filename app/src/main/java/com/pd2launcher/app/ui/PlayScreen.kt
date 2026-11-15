@@ -53,6 +53,7 @@ import com.pd2launcher.app.PlayerDriver
 import com.pd2launcher.app.DriverOptions
 import com.pd2launcher.app.GraphicsRoute
 import com.pd2launcher.app.HostGpu
+import com.pd2launcher.app.LauncherSettings
 import com.pd2launcher.app.Line
 import com.pd2launcher.app.Onboarding
 import com.pd2launcher.app.OperationStart
@@ -330,7 +331,7 @@ object Play {
                     UpdateView(
                         UpdateState.FAILED, canStart,
                         // With Check for game updates off, the files could not be kept as they are.
-                        problem = if (operation?.failure == CLIENT_NOT_KEPT) R.string.update_client_not_kept else R.string.update_client_failed,
+                        problem = if (operation.failure == CLIENT_NOT_KEPT) R.string.update_client_not_kept else R.string.update_client_failed,
                         client = true,
                     )
                 operation?.status == OperationStatus.CANCELLED -> UpdateView(UpdateState.STOPPED, canStart, client = true)
@@ -399,6 +400,15 @@ object Play {
      */
     fun statsActive(started: Boolean, launching: Boolean, playCheck: PlayCheck.State?, engine: SessionStatus.Engine): Boolean =
         started && !launching && playCheck !is PlayCheck.State.Starting && engine == SessionStatus.Engine.CONNECTED
+
+    /**
+     * The program path inside the main button ("Diablo II/<it>"): the game [program] while the
+     * button reads Play; null while it reads Update, Check files, Stop or Resume.
+     */
+    fun programShown(update: UpdateView, program: String): String? = program.takeIf { update.state == UpdateState.NONE }
+
+    /** Play's buttons say in amber, and one line under them, that Play starts another program than PD2's. */
+    fun otherProgram(program: String): Boolean = program != LauncherSettings.DEFAULT_GAME_PROGRAM
 
     /** The main button takes a press (as far as the update goes; "Getting ready…" disables it too). */
     fun primaryEnabled(update: UpdateView): Boolean = when (update.state) {
@@ -497,6 +507,28 @@ object Play {
         options?.let { DriverChoice.route(it, forced, chosen) }?.let { DriverPage.label(it) }
 
     /**
+     * The name of the installed copy's language when it is not English ([Snapshot.gameLanguage]), for
+     * the warning under Play: Project Diablo 2 needs an English Diablo II, and on another language the
+     * game can stop with an error (issue 19). Null for English or a language not known yet.
+     */
+    @StringRes
+    fun languageName(code: String?): Int? = when (code) {
+        null, "eng" -> null
+        "esp" -> R.string.language_spanish
+        "deu" -> R.string.language_german
+        "fra" -> R.string.language_french
+        "por" -> R.string.language_portuguese
+        "ita" -> R.string.language_italian
+        "jpn" -> R.string.language_japanese
+        "kor" -> R.string.language_korean
+        "sin" -> R.string.language_simplified_chinese
+        "chi" -> R.string.language_traditional_chinese
+        "pol" -> R.string.language_polish
+        "rus" -> R.string.language_russian
+        else -> R.string.language_other
+    }
+
+    /**
      * The one line of facts under Play: the renderer the next launch uses (the driver's:
      * [com.pd2launcher.app.GlideFirst] sets it before each Play; Glide, or DirectDraw on the
      * Software driver, [software]), the GPU it runs on,
@@ -508,7 +540,7 @@ object Play {
         if (snapshot?.settings != null) add(Line(if (software) R.string.play_fact_direct_draw else R.string.play_fact_glide))
         if (!gpu.isNullOrBlank()) add(Line(R.string.play_fact_plain, gpu))
         if (snapshot != null && clientDiffers(snapshot)) return@buildList
-        if (snapshot?.settings?.updateChecks == false) {
+        if (LauncherSettings.pd2UpdatesOff(snapshot?.settings)) {
             add(Line(R.string.update_checks_off))
             return@buildList
         }
@@ -534,6 +566,7 @@ fun playCheckWaiting(state: PlayCheck.State?): Int? = when (state) {
         PlayCheck.Note.NO_NETWORK -> R.string.play_check_no_network
         PlayCheck.Note.FAILED -> R.string.play_check_failed
         PlayCheck.Note.NO_ANSWER -> R.string.play_check_no_answer
+        PlayCheck.Note.LOOT_FILTER -> R.string.play_loot_filter
         null -> null
     }
     else -> null
@@ -599,6 +632,12 @@ fun PlayScreen(
     /** The button under the error line after a failure ([Play.DriverView.failed]): opens Settings → Display → GPU. */
     onOpenGpu: () -> Unit = {},
     stats: PlayStats.Stats? = null,
+    /** The installed copy's language ([Snapshot.gameLanguage]): a warning under the buttons when it is not English. */
+    language: String? = null,
+    /** The program Play starts, a path in the game folder ([LauncherSettings.gameProgram]): the small line inside Play. */
+    gameProgram: String = LauncherSettings.DEFAULT_GAME_PROGRAM,
+    /** The program the official PD2 launcher button opens ([LauncherSettings.launcherProgram]): the small line inside it. */
+    launcherProgram: String = LauncherSettings.DEFAULT_LAUNCHER_PROGRAM,
 ) {
     val focus = remember { FocusRequester() }
     InitialFocus(focus, waiting == null)
@@ -651,12 +690,15 @@ fun PlayScreen(
                 middle = {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         val command = Play.primaryCommand(update)
+                        // The program Play starts, inside it (owner, 2026-11-08): only while it reads Play, not Update.
                         LauncherButton(
                             stringResource(Play.primaryLabel(update)),
                             { if (update.state == Play.UpdateState.NONE) onPlay() else command?.let(onCommand) },
                             Modifier.width(width),
                             if (update.working) Kind.SECONDARY else Kind.PRIMARY,
                             enabled = waiting == null && !launching && Play.primaryEnabled(update), focusRequester = focus, height = 68.dp, style = Type.Play,
+                            detail = Play.programShown(update, gameProgram)?.let { stringResource(R.string.program_path, it) },
+                            detailWarning = Play.otherProgram(gameProgram),
                         )
                         Spacer(Modifier.height(BUTTON_GAP))
                         if (playWithout) {
@@ -666,12 +708,27 @@ fun PlayScreen(
                         }
                         LauncherButton(
                             stringResource(R.string.play_official_launcher), onOfficialLauncher ?: {}, Modifier.width(width),
-                            Kind.TONAL, enabled = onOfficialLauncher != null && waiting == null && !launching, height = 48.dp,
+                            Kind.TONAL, enabled = onOfficialLauncher != null && waiting == null && !launching, height = 56.dp,
+                            detail = stringResource(R.string.program_path, launcherProgram),
+                            detailWarning = launcherProgram != LauncherSettings.DEFAULT_LAUNCHER_PROGRAM,
                         )
                     }
                 },
                 below = {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        // Another game program than PD2's: Play neither updates nor checks it.
+                        if (Play.otherProgram(gameProgram)) {
+                            Text(
+                                stringResource(R.string.play_other_game), Modifier.padding(top = 10.dp).width(width + 40.dp),
+                                style = Type.Hint, color = Palette.Amber, textAlign = TextAlign.Center,
+                            )
+                        } else if (launcherProgram != LauncherSettings.DEFAULT_LAUNCHER_PROGRAM) {
+                            // Another launcher program: PD2's update would write over what it manages.
+                            Text(
+                                stringResource(R.string.play_other_launcher), Modifier.padding(top = 10.dp).width(width + 40.dp),
+                                style = Type.Hint, color = Palette.Amber, textAlign = TextAlign.Center,
+                            )
+                        }
                         // The phone's own driver hangs from the buttons, so the main button keeps its place while it fits.
                         if (driver != null) DriverRouteView(driver, onOpenGpu, Modifier.padding(top = 12.dp).width(width))
                         Spacer(Modifier.height(10.dp))
@@ -681,8 +738,17 @@ fun PlayScreen(
                                 Spacer(Modifier.height(4.dp))
                                 TextLink(stringResource(R.string.action_try_again), onTryAgain)
                             }
-                        } else if (facts.isNotEmpty()) {
-                            Text(facts.map { text(it) }.joinToString("  ·  "), style = Type.Hint, color = Palette.Muted, textAlign = TextAlign.Center)
+                        } else {
+                            Play.languageName(language)?.let { name ->
+                                Text(
+                                    stringResource(R.string.play_game_language, stringResource(name)),
+                                    Modifier.width(width + 40.dp).padding(bottom = 4.dp),
+                                    style = Type.Hint, color = Palette.Amber, textAlign = TextAlign.Center,
+                                )
+                            }
+                            if (facts.isNotEmpty()) {
+                                Text(facts.map { text(it) }.joinToString("  ·  "), style = Type.Hint, color = Palette.Muted, textAlign = TextAlign.Center)
+                            }
                         }
                         if (playAfterUpdate && update.state == Play.UpdateState.RUNNING) {
                             Spacer(Modifier.height(4.dp))

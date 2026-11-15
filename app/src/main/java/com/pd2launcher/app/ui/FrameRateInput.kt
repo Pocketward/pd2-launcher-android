@@ -30,6 +30,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -60,35 +61,41 @@ import androidx.compose.ui.window.DialogWindowProvider
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import com.pd2launcher.app.AppSettings
-import com.pd2launcher.app.FrameRateVote
+import com.pd2launcher.app.FramePick
+import com.pd2launcher.app.PanelModes
+import com.pd2launcher.app.PhoneRefreshCap
 import com.pd2launcher.app.R
-import com.pd2launcher.app.ScreenRateProbe
+import com.pd2launcher.app.ScreenCapability
+import com.pd2launcher.app.ScreenCapabilityProbe
+import com.pd2launcher.app.ScreenCapabilityStore
 import com.pd2launcher.app.input.Controls
 import com.pd2launcher.app.input.PadLayouts
 import com.pd2launcher.app.input.PointerSpeed
 import java.util.Locale
 
 /**
- * The Frame rate input, from Settings and from the in-game menu: the number in use in a field
- * ([current], the stored [AppSettings.frameRate]; Full: the screen's most), "fps" after it, all
- * of it selected. Opened by a tap, Android's number keyboard opens at once; with a controller,
- * the D-pad's up and down change it by [FrameRateVote.STEP] ([NumberInput]). OK takes a whole
- * number from [FrameRateVote.MIN] to the screen's most ([full], its full rate,
- * [com.pd2launcher.app.ScreenRate]; the display's highest mode is stored as Full, a held screen's
- * most as its number, [FrameRateVote.typed]) and gives [onSet] the value to store; any other
- * number turns the help line into what to type, and the dialog stays. While it shows it measures
- * the full rate again ([ScreenRateProbe]): the caller gives the live [full], so the limit and the
- * help line follow that measurement. [intro]: what the setting does, under the title (Settings).
+ * The Frame rate input, from Settings and from the in-game menu. The help line says what the
+ * screen can show ([ScreenCapability]); [slowerScreenHertz]: instead, the rate the screen shows the
+ * game at now, where that is below the Frame rate in use (the in-game menu only). [measures]: the
+ * input measures what the screen can show while it shows (Settings only: in the in-game menu the
+ * request for the highest mode would change the screen's mode during the game). [intro]: what the
+ * setting does, under the title (Settings).
  */
 @Composable
-internal fun FrameRateInput(current: Int, full: Float, onSet: (Int) -> Unit, intro: String? = null, onClose: () -> Unit) {
+internal fun FrameRateInput(
+    current: Int,
+    panel: PanelModes,
+    onSet: (Int) -> Unit,
+    slowerScreenHertz: Int? = null,
+    intro: String? = null,
+    measures: Boolean = false,
+    onClose: () -> Unit,
+) {
     val context = LocalContext.current
-    val highest = remember { FrameRateVote.highest(context) }
-    val most = FrameRateVote.most(full)
-    val start = FrameRateVote.shown(current, full)
-    // The number the field got as the dialog opened (the full rate can change meanwhile).
-    val opened = remember { start }
+    val cap = remember { PhoneRefreshCap.read(context) }
+    val measured by remember { ScreenCapabilityStore.measured(context) }.collectAsState()
+    val most = FramePick.most(panel)
+    val start = FramePick.onPanel(current, panel)
     NumberInput(
         title = stringResource(R.string.settings_frame_rate),
         intro = intro,
@@ -96,13 +103,16 @@ internal fun FrameRateInput(current: Int, full: Float, onSet: (Int) -> Unit, int
         suffix = stringResource(R.string.frame_rate_unit),
         decimal = false,
         maxLength = 3,
-        help = stringResource(R.string.frame_rate_help, FrameRateVote.MIN, most),
-        wrong = stringResource(R.string.settings_frame_rate_input_wrong, FrameRateVote.MIN, most),
-        step = { text, steps -> FrameRateVote.stepped(text.trim().toIntOrNull() ?: start, steps, full).toString() },
-        // OK on the number as it came keeps the stored pick (Full shown as a held screen's 60 stays Full).
-        accept = { text -> text.trim() == opened.toString() || FrameRateVote.typed(text, full, highest)?.also(onSet) != null },
+        help = if (slowerScreenHertz != null) {
+            stringResource(R.string.frame_rate_help_slower_screen, FramePick.MIN, most, slowerScreenHertz)
+        } else {
+            stringResource(R.string.frame_rate_help, FramePick.MIN, most, ScreenCapability.upTo(measured, panel, cap))
+        },
+        wrong = stringResource(R.string.settings_frame_rate_input_wrong, FramePick.MIN, most),
+        step = { text, steps -> FramePick.stepped(text.trim().toIntOrNull() ?: start, steps, panel).toString() },
+        accept = { text -> FramePick.typed(text, panel)?.also { if (it != current) onSet(it) } != null },
         onClose = onClose,
-        measuresScreen = true,
+        whileShown = if (measures) { window, view -> ScreenCapabilityProbe(view, window).also { it.start() }::stop } else null,
     )
 }
 
@@ -151,8 +161,8 @@ internal fun speedText(value: Float): String = String.format(Locale.ROOT, "%.2f"
  * the keyboard, whose Done is OK. OK gives the text to [accept], which keeps it and says so, and
  * then the dialog closes. With the keyboard up the dialog keeps above it: where the room is short,
  * Cancel and OK move up beside the title, so they always show. A controller's A selects and B is
- * Back, as on the native screens. [measuresScreen]: its window measures the screen's full rate
- * while it shows ([ScreenRateProbe], the Frame rate input).
+ * Back, as on the native screens. [whileShown] runs with the dialog's window and view as it
+ * shows, and what it returns runs as it goes.
  */
 @Composable
 private fun NumberInput(
@@ -167,7 +177,7 @@ private fun NumberInput(
     step: (String, Int) -> String,
     accept: (String) -> Boolean,
     onClose: () -> Unit,
-    measuresScreen: Boolean = false,
+    whileShown: ((Window, View) -> () -> Unit)? = null,
 ) {
     var refused by remember { mutableStateOf(false) }
     var field by remember { mutableStateOf<EditText?>(null) }
@@ -198,9 +208,9 @@ private fun NumberInput(
                 }
             }
             val base = window?.let(::withNavigationKeys)
-            val probe = if (measuresScreen) window?.let { ScreenRateProbe(it, view) }?.also { it.start() } else null
+            val shown = window?.let { whileShown?.invoke(it, view) }
             onDispose {
-                probe?.stop()
+                shown?.invoke()
                 if (window != null && base != null) window.callback = base
             }
         }
@@ -383,7 +393,7 @@ internal fun numberField(
     setOnEditorActionListener { _, action, event ->
         val enter = action == EditorInfo.IME_NULL && event?.keyCode == KeyEvent.KEYCODE_ENTER
         val key = action == EditorInfo.IME_ACTION_DONE || action == EditorInfo.IME_ACTION_NEXT
-        if (key || (enter && event?.action == KeyEvent.ACTION_UP)) (onNext ?: onDone)()
+        if (key || (enter && event.action == KeyEvent.ACTION_UP)) (onNext ?: onDone)()
         key || enter
     }
     if (onStep != null || onRight != null) setOnKeyListener { _, code, event ->

@@ -17,7 +17,7 @@ import java.util.Locale
  *   dispatch ([InputDispatch]), whether the app is
  *   the top resumed activity, why the game is told that it is away or back, the overlays over the
  *   game, the controller's mode, the app's pointer and the pointer area, the screen's rates and
- *   the clock ([GameViewLines], [ScreenRateLines]);
+ *   the clock ([GameViewLines]);
  * - `input.log`: while Detailed logging is on (from the moment it is turned on), the controller's
  *   keys and the states the game's pad gets ([PadKeyLines], [PadStateLines]); never a key of a
  *   keyboard or of Android's keyboard. A file of its own, so its many lines never rotate the
@@ -53,7 +53,7 @@ object GameViewLog {
 
     /** One line in `input.log`, only while Detailed logging is on. */
     fun input(text: String) {
-        if (AppSettingsStore.current.value.detailedLogging) input?.line(text)
+        if (LogPolicy.on(LogArea.INPUT)) input?.line(text)
     }
 }
 
@@ -148,18 +148,28 @@ object GameViewLines {
     fun mode(mouse: Boolean, deviceId: Int?, why: String): String =
         "${deviceId?.let { "controller $it" } ?: "controller"}: ${if (mouse) "mouse mode on" else "pad mode"} ($why)"
 
-    /**
-     * The clock's rate and the layers' vote changed: the clock at [clock] ticks a second, the
-     * layers ask the display [displayId] for [vote] Hz, for the player's [frameRate]
-     * ([AppSettings.FULL_FRAME_RATE]: Full) on the screen's [full] rate; [capped]: below it;
-     * [multiple]: the vote is this many times the frame rate (the whole multiple, [FrameRateVote.vote]).
-     */
-    fun pacing(clock: Float, vote: Float, frameRate: Int, full: Float, displayId: Int?, capped: Boolean, multiple: Int = 1): String = String.format(
-        Locale.ROOT, "pacing: clock %.1f ticks/s, the layers ask for %.1f Hz (%s, full rate %.1f Hz, display %s)%s",
-        clock, vote, (if (multiple > 1) "$multiple x the " else "") + "frame rate setting " +
-            (if (frameRate == AppSettings.FULL_FRAME_RATE) "Full" else frameRate.toString()), full,
-        displayId?.toString() ?: "unknown", if (capped) ", capped" else "",
-    )
+    fun pacing(stored: Int, request: ScreenRequest, modes: PanelModes, cap: PhoneRefreshCap, displayId: Int?): String {
+        val asks = request.mode?.let { mode ->
+            val multiple = request.multiple?.takeIf { it > 1 }?.let { ", $it x the clock" } ?: ""
+            String.format(Locale.ROOT, "for %.1f Hz (mode %d%s)", mode.rate, mode.id, multiple)
+        } ?: "for no rate"
+        return "pacing: clock ${request.pick} ticks/s (frame rate setting $stored), asks display ${displayId ?: "unknown"} $asks; " +
+            "modes ${modes.modes.map { it.rate }.sorted().joinToString("/") { hertz(it) }.ifEmpty { "unknown" }} Hz, " +
+            "the phone's peak_refresh_rate ${cap.peak?.let(::hertz) ?: "none"}, min_refresh_rate ${cap.min?.let(::hertz) ?: "none"}"
+    }
+
+    /** A measurement of the [ScreenCapability]: the screen held [hertz]; [before] and [after]: what the screen can show up to. */
+    fun capability(hertz: Int, asksHighest: Boolean, before: Int, after: Int): String =
+        "screen capability: the screen held $hertz Hz ${under(asksHighest)}; can show up to $after Hz" + if (after != before) " (was $before)" else ""
+
+    fun noCapability(asksHighest: Boolean): String = "screen capability: no rate held ${under(asksHighest)}; nothing new"
+
+    private fun under(asksHighest: Boolean) = if (asksHighest) "while the Frame rate input asked for the highest mode" else "under the game's request"
+
+    fun screen(displayId: Int, rate: Float, mode: Float): String =
+        "screen: display $displayId at ${hertz(rate)} Hz (mode ${hertz(mode)} Hz)"
+
+    private fun hertz(rate: Float): String = String.format(Locale.ROOT, "%.1f", rate)
 
     fun displayName(display: GameDisplay) = when (display) {
         GameDisplay.FIT -> "Fit to screen"

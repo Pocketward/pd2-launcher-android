@@ -15,7 +15,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$here/config.sh"
 
 identity() {
-    part_identity "debian=$DEBIAN_IMAGE $DEBIAN_SNAPSHOT" "$here/pd2audio.sh" "$RUNTIME_DIR/containers/Containerfile.wine" \
+    part_identity "image=$(base_image_name)" "$here/pd2audio.sh" \
         "$here/pd2-audio/pcm_pd2.c" "$here/pd2-audio/pd2_audio_ring.h" "$here/pd2-audio/pcm_pd2_test.c"
 }
 
@@ -32,7 +32,7 @@ if ! in_container; then
     fi
     rm -rf "$RUNTIME_PARTS/pd2audio"
     mkdir -p "$RUNTIME_PARTS/pd2audio"
-    run_in "$(runtime_image wine)" pd2audio.sh
+    run_in "$(ensure_base_image)" pd2audio.sh
     part_done pd2audio "$id"
     exit 0
 fi

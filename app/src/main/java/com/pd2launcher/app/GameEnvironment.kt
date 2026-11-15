@@ -131,9 +131,8 @@ class GameEnvironment(
         }
         // Before the game: its Mesa asks for the app's buffers when it makes its swapchain.
         if (PresentServer.start(paths.presentSocket, paths.presentCounter) == null) log("no direct present: the X screen only")
-        // The virtual display's vertical blank at the player's frame rate (Settings → Display) on the
-        // screen's full rate ([ScreenRate]); the Game view sets it again for its screen.
-        val clockRate = FrameRateVote.rate(ScreenRate.read(context), AppSettingsStore.load(context).frameRate)
+        // The built-in display's modes here: the Game view sets the clock again for its own display.
+        val clockRate = FramePick.onPanel(AppSettingsStore.load(context).frameRate, PanelModes.builtIn(context))
         if (!FrameClock.start(paths.presentCounter, clockRate)) log("no frame clock: the game draws as fast as it can")
         val env = paths.userlandProgramEnvironment()
         val bin = File(paths.userland, "usr/bin")
@@ -451,7 +450,7 @@ class GameEnvironment(
          * `@/tmp/.X11-unix/X<n>` is shared by every app on the device).
          */
         const val DISPLAY = BuildConfig.X_DISPLAY
-        private const val TASKSET = "/system/bin/taskset"
+        private const val TASKSET = LittleCores.TASKSET
         /** A `NAME=value` line of the debug file for the vtest server ([systemDriverDebugValues]). */
         private val DEBUG_VALUE = Regex("^[A-Za-z_][A-Za-z0-9_]*=.*$")
         /** Debug builds' failing taskset ([SessionPaths.tasksetFailsForTest]): a shell that writes toybox's line and exits 1. */

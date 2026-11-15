@@ -3,7 +3,7 @@
 
 Keeps the loader, wineserver, the modules of the keep list on the PE sides its sections name
 ([both], [i386], [x86_64]: the 64-bit side) with their Unix libraries, wine.inf, Wine's fonts and
-the NLS files without the CJK code pages.
+the NLS files without the CJK code pages (but 936).
 Prints the sizes per part."""
 import os
 import shutil
@@ -43,6 +43,9 @@ for rel in ["bin/wine", "bin/wineserver", f"lib/wine/{A64}-unix/wine", f"lib/win
             "lib/x86_64-linux-gnu/libgcc_s.so.1", "share/wine/wine.inf", "share/wine/fonts"]:
     if os.path.lexists(os.path.join(full, rel)):
         cp(rel)
+# Kept modules whose Unix library is left out: no program that needs the module was seen to need it
+# (wine-keep.txt says why each is kept).
+NO_UNIX = {"winspool.drv"}
 missing = []
 for n, sides in names:
     found = False
@@ -52,14 +55,16 @@ for n, sides in names:
             cp(rel)
             found = True
     so = f"lib/wine/{A64}-unix/{n.rsplit('.', 1)[0]}.so"
-    if os.path.exists(os.path.join(full, so)):
+    if n not in NO_UNIX and os.path.exists(os.path.join(full, so)):
         cp(so)
     if not found:
         missing.append(n)
-# NLS: all but the CJK double-byte code pages (932, 936, 949, 950 and their EUC/ISO forms).
+# NLS: all but the CJK double-byte code pages (932, 949, 950 and their EUC/ISO forms). 936 (Simplified
+# Chinese) stays: the Chinese server's client (issue 19) runs with it, and without its table Wine's 64-bit
+# processes crash in ucrtbase.
 nls = os.path.join(full, "share/wine/nls")
 for n in sorted(os.listdir(nls)):
-    if n in ("c_932.nls", "c_936.nls", "c_949.nls", "c_950.nls", "c_1361.nls", "c_20932.nls", "c_20949.nls",
+    if n in ("c_932.nls", "c_949.nls", "c_950.nls", "c_1361.nls", "c_20932.nls", "c_20949.nls",
              "c_10001.nls", "c_10002.nls", "c_10003.nls", "c_10008.nls"):
         continue
     cp(f"share/wine/nls/{n}")

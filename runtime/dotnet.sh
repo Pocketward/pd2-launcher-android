@@ -29,4 +29,4 @@ fi
 
 fetch "$DOTNET_RUNTIME_URL" "$DOTNET_RUNTIME_SHA512" >/dev/null
 fetch "$DOTNET_DESKTOP_URL" "$DOTNET_DESKTOP_SHA512" >/dev/null
-run_in "$(runtime_image tools)" dotnet.sh
+run_in "$(ensure_base_image)" dotnet.sh

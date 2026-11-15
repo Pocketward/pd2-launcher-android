@@ -1,7 +1,7 @@
-/* Stand-in for Android's <android/log.h> in a glibc build of the radv-xclipse tree and of the
- * mali-panvk tree, which has radv-xclipse's util and Vulkan runtime (build-radv.sh and
- * build-mali-panvk.sh put this folder at include/xclipse_linux_compat, which the trees'
- * meson.build adds for glibc Linux builds; neither tree at its pinned commit carries the folder).
+/* Stand-in for Android's <android/log.h> in a glibc build of the mali-panvk tree, which has
+ * radv-xclipse's util and Vulkan runtime (build-mali-panvk.sh puts this folder at
+ * include/xclipse_linux_compat, which the tree's meson.build adds for glibc Linux builds; the tree
+ * at its pinned commit does not carry the folder; radv-xclipse carries its own since v1.9.0).
  * Logs go to stderr. */
 #ifndef PD2_XCLIPSE_COMPAT_ANDROID_LOG_H
 #define PD2_XCLIPSE_COMPAT_ANDROID_LOG_H

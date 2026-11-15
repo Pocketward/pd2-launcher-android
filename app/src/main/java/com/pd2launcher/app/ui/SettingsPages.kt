@@ -40,10 +40,13 @@ enum class SettingsPage(@param:StringRes val title: Int, @param:DrawableRes val 
             )
             GAME -> listOf(
                 RowGroup(R.string.settings_section_launcher, SettingsRow.GAME_UPDATE_CHECKS),
+                // Each program with its start options (owner, 2026-11-08; mock docs/design/program-paths):
+                // Skip to Battle.net and Sound in background inside the Start options drop-down.
                 RowGroup(
-                    R.string.settings_section_start_options, SettingsRow.SKIP_TO_BNET, SettingsRow.SOUND_IN_BACKGROUND,
-                    hint = R.string.settings_start_options_hint,
+                    R.string.settings_section_game_program, SettingsRow.GAME_PROGRAM, SettingsRow.START_OPTIONS,
+                    SettingsRow.SKIP_TO_BNET, SettingsRow.SOUND_IN_BACKGROUND, SettingsRow.CUSTOM_ARGUMENTS,
                 ),
+                RowGroup(R.string.settings_section_official_launcher, SettingsRow.LAUNCHER_PROGRAM, SettingsRow.LAUNCHER_CUSTOM_ARGUMENTS),
                 RowGroup(R.string.settings_loot_filters, SettingsRow.LOOT_FILTERS),
             )
             CONTROLS -> listOf(
@@ -74,8 +77,8 @@ enum class SettingsPage(@param:StringRes val title: Int, @param:DrawableRes val 
      * The row that takes the focus when L1 or R1 opens the page, or when the rows go from under the
      * focus, the same each time: the first that shows ([shown]) and can take it
      * ([SettingsRow.takesFirstFocus]; [editable]: the Launcher's settings take a change). Where
-     * none can (Game while the Launcher's settings take no change: its rows are its grey switches
-     * and Loot filters), the first grey switch, which the controller can reach and read.
+     * none can, the first grey switch, which the controller can reach and read. Game's Loot filters
+     * row always can, so Game's first focus is its first switch, else Loot filters.
      */
     fun firstRow(shown: (SettingsRow) -> Boolean, editable: Boolean): SettingsRow {
         val rows = groups.flatMap { it.rows }.filter(shown)
@@ -95,7 +98,7 @@ enum class SettingsPage(@param:StringRes val title: Int, @param:DrawableRes val 
         DISPLAY -> PageLine(
             listOf(
                 Line(R.string.settings_size, facts.size.first, facts.size.second),
-                if (facts.frameRate > 0) Line(R.string.game_fps, facts.frameRate) else Line(R.string.game_fps_unknown),
+                Line(R.string.game_fps, facts.frameRate),
             ),
         )
         GAME -> {
@@ -140,6 +143,14 @@ enum class SettingsPage(@param:StringRes val title: Int, @param:DrawableRes val 
     }
 }
 
+/**
+ * The Start options row's value: null while Skip to Battle.net is on and Sound in background off
+ * (the defaults; the row says "Default"), else the start options that are on ("-skiptobnet",
+ * "-sndbkg"), an empty list when none is.
+ */
+fun startOptionsOn(skipToBnet: Boolean, soundInBackground: Boolean): List<String>? =
+    if (skipToBnet && !soundInBackground) null else listOfNotNull("-skiptobnet".takeIf { skipToBnet }, "-sndbkg".takeIf { soundInBackground })
+
 /** The renderer as the Game page's Renderer row and the list name it: "Glide (recommended)" or "DirectDraw". */
 fun rendererValue(renderer: Renderer): Line =
     Line(if (renderer == Renderer.DIRECT_DRAW) R.string.settings_renderer_direct_draw else R.string.settings_renderer_glide_recommended)
@@ -156,6 +167,16 @@ enum class SettingsRow {
     GAME_UPDATE_CHECKS,
     SLOWER_IN_BACKGROUND,
     SOUND_IN_BACKGROUND,
+    /** Game's Custom start options: the player's own options after the Launcher's, which open their input ([CustomArgumentsInput]). */
+    CUSTOM_ARGUMENTS,
+    /** Game's Game program: the program Play starts, which opens its input ([ProgramPathInput]). */
+    GAME_PROGRAM,
+    /** Game's Start options: the drop-down that holds [SKIP_TO_BNET] and [SOUND_IN_BACKGROUND] ([SettingsNav.startOptionsOpen]). */
+    START_OPTIONS,
+    /** Game's Launcher program: the program the official PD2 launcher button opens ([ProgramPathInput]). */
+    LAUNCHER_PROGRAM,
+    /** The official PD2 launcher's Custom start options ([CustomArgumentsInput]). */
+    LAUNCHER_CUSTOM_ARGUMENTS,
     RENDERER,
     LOOT_FILTERS,
     ON_SCREEN_CONTROLS,
@@ -178,25 +199,34 @@ enum class SettingsRow {
 
     /**
      * Whether the row shows now: Check for game updates only with an engine that has the setting
-     * ([gameUpdateChecks]), and the app-update rows only in a build that gets app updates
-     * ([updates]); every other row always.
+     * ([gameUpdateChecks]), the app-update rows only in a build that gets app updates
+     * ([updates]), and Skip to Battle.net and Sound in background only while the Start options
+     * drop-down is open ([startOptionsOpen]); every other row always.
      */
-    fun shown(gameUpdateChecks: Boolean, updates: Boolean): Boolean = when (this) {
+    fun shown(gameUpdateChecks: Boolean, updates: Boolean, startOptionsOpen: Boolean = false): Boolean = when (this) {
         GAME_UPDATE_CHECKS -> gameUpdateChecks
         APP_STATUS, UPDATE_CHANNEL -> updates
+        SKIP_TO_BNET, SOUND_IN_BACKGROUND -> startOptionsOpen
         else -> true
     }
+
+    /** Skip to Battle.net and Sound in background: the rows inside the Start options drop-down, set in under it. */
+    val inStartOptions: Boolean get() = this == SKIP_TO_BNET || this == SOUND_IN_BACKGROUND
 
     /**
      * Whether the row can hold its page's first focus: a row that the Settings screen gives the
      * page's requester, and that is not grey. The Launcher's switches are grey unless [editable];
-     * the Loot filters and Renderer rows are always grey, and Check now is grey during a check.
+     * the Renderer row is always grey, and Check now is grey during a check.
      */
     fun takesFirstFocus(editable: Boolean): Boolean = when (this) {
         GAME_RESOLUTION, ON_SCREEN_CONTROLS, GAME_FOLDER, UPDATE_CHANNEL, ABOUT, DETAILED_LOGGING -> true
         // Display's GPU row opens its sub page in every build (the rows there take a pick, DriverPage.SELECTABLE).
         GPU -> true
-        GAME_UPDATE_CHECKS, SKIP_TO_BNET, SOUND_IN_BACKGROUND -> editable
+        // Game's Loot filters row opens its page (owner, 2026-11-05).
+        LOOT_FILTERS -> true
+        GAME_UPDATE_CHECKS, SKIP_TO_BNET, SOUND_IN_BACKGROUND, CUSTOM_ARGUMENTS,
+        GAME_PROGRAM, START_OPTIONS, LAUNCHER_PROGRAM, LAUNCHER_CUSTOM_ARGUMENTS,
+        -> editable
         else -> false
     }
 }
@@ -220,7 +250,7 @@ class RowGroup(
 data class SettingsFacts(
     /** The X screen the next Play uses ([com.pd2launcher.app.GameResolution.forPlay]). */
     val size: Pair<Int, Int>,
-    /** The frame rate as the player reads it ([com.pd2launcher.app.FrameRateVote.shown]); 0: not known. */
+    /** In use on this display ([com.pd2launcher.app.FramePick.onPanel]), not as stored. */
     val frameRate: Int,
     val launcher: LauncherSettings.View?,
     val touch: TouchMode,
@@ -274,13 +304,22 @@ class SettingsNav {
     var profiles by mutableStateOf(false)
     var frameRates by mutableStateOf(false)
     var pointerSpeed by mutableStateOf(false)
+    var customArguments by mutableStateOf(false)
+    var gameProgram by mutableStateOf(false)
+    var launcherProgram by mutableStateOf(false)
+    var launcherCustomArguments by mutableStateOf(false)
+    /** Game's Start options drop-down is open: Skip to Battle.net and Sound in background show under it. Closed at first. */
+    var startOptionsOpen by mutableStateOf(false)
     /** Display's GPU sub page shows over Settings ([com.pd2launcher.app.ui.GpuPage]); Back returns to its row. */
     var gpu by mutableStateOf(false)
+    /** Game's Loot filters page shows over Settings ([com.pd2launcher.app.ui.LootFiltersPage]); Back returns to its row. */
+    var lootFilters by mutableStateOf(false)
     val scroll: Map<SettingsPage, ScrollState> = SettingsPage.entries.associateWith { ScrollState(0) }
     val listScroll = ScrollState(0)
 
     /** A sheet or an input shows over the page: it takes Back, and L1 and R1 do not step. */
-    val popup: Boolean get() = resolutions || customSize || displays || profiles || frameRates || pointerSpeed || gpu
+    val popup: Boolean get() = resolutions || customSize || displays || profiles || frameRates || pointerSpeed || customArguments || gameProgram ||
+            launcherProgram || launcherCustomArguments || gpu || lootFilters
 
     /**
      * Play's Settings button and Repair's: the last page that was open (Display at first); a phone
@@ -352,6 +391,11 @@ class SettingsNav {
         profiles = false
         frameRates = false
         pointerSpeed = false
+        customArguments = false
+        gameProgram = false
+        launcherProgram = false
+        launcherCustomArguments = false
         gpu = false
+        lootFilters = false
     }
 }

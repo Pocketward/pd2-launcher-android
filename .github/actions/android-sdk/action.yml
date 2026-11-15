@@ -1,0 +1,39 @@
+# Temurin 21 and the pinned Android SDK packages on a GitHub-hosted runner, for the jobs that run
+# Gradle or the NDK on the runner itself (PD2_GRADLE_ON_HOST=1 ./build.sh, devdriver/build.sh): the
+# runner's own SDK ($ANDROID_HOME) with the packages of containers/Containerfile and
+# app/build.gradle.kts, which sdkmanager installs and checks against Google's checksums. The local
+# build takes them from the build image (containers/Containerfile) instead.
+name: Android SDK
+description: Temurin 21.0.12.1+1 and the pinned Android SDK packages
+inputs:
+  packages:
+    description: The sdkmanager packages, separated by spaces
+    default: platforms;android-28 platforms;android-36 build-tools;36.0.0 ndk;27.2.12479018 cmake;3.22.1
+runs:
+  using: composite
+  steps:
+    # Temurin 21.0.12.1+1, the JDK of containers/Containerfile, by its exact version: setup-java
+    # turns it into 21.0.12+1.1 (normalizeJavaVersionToSemver) and matches that exactly against the
+    # release's version_data (major.minor.security+patch.build); Adoptium's own semver for it,
+    # 21.0.12+101.0.LTS, would not match an exact request.
+    - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+      with:
+        distribution: temurin
+        java-version: 21.0.12.1+1
+
+    - name: Install the pinned Android SDK packages
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+      run: |
+        sdk=$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager
+        [[ -x $sdk ]] || { echo "::error::no sdkmanager in $ANDROID_HOME/cmdline-tools/latest"; exit 1; }
+        yes | "$sdk" --licenses >/dev/null || true
+        read -r -a packages <<<"$PACKAGES"
+        "$sdk" --install "${packages[@]}" >/dev/null
+        java=$(java -version 2>&1)
+        echo "$java"
+        grep -q 'version "21\.0\.12\.1"' <<<"$java" || { echo "::error::java is not Temurin 21.0.12.1"; exit 1; }
+        for package in "${packages[@]}"; do
+          echo "$package: $(sed -n 's/^Pkg.Revision=//p' "$ANDROID_HOME/${package//;//}/source.properties")"
+        done

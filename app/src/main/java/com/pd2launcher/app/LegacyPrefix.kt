@@ -815,18 +815,9 @@ class LegacyPrefix(
         }
 
         /**
-         * The registry file [target] with its Blizzard Entertainment keys (and their subkeys)
-         * replaced by [source]'s. A key is a `[path] time` line and the lines up to the next key.
+         * The registry file [registry] without its Blizzard Entertainment keys (and their subkeys).
+         * A key is a `[path] time` line and the lines up to the next key.
          */
-        fun mergeKeys(target: String, source: String): String {
-            val kept = blocks(target).filterNot(::gameKey)
-            val moved = blocks(source).filter(::gameKey)
-            if (moved.isEmpty()) return target
-            val head = kept.joinToString("").trimEnd('\n') + "\n\n"
-            return head + moved.joinToString("") { it.trimEnd('\n') + "\n\n" }.trimEnd('\n') + "\n"
-        }
-
-        /** The registry file [registry] without its Blizzard Entertainment keys (and their subkeys). */
         fun withoutKeys(registry: String): String {
             val all = blocks(registry)
             val kept = all.filterNot(::gameKey)

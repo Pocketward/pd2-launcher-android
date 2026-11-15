@@ -24,13 +24,9 @@ class PresentServer private constructor(private val handle: Long) {
     private val lock = Any()
     @Volatile private var stopped = false
 
-    /**
-     * The Game view's [surface] carries the game's layer, asking the display for [frameRate];
-     * [capped]: a Frame rate below the screen's ([FrameRateVote.cap]), which the screen shows a game
-     * with vsync off at.
-     */
-    fun attach(surface: Surface, frameRate: Float, capped: Boolean) = synchronized(lock) {
-        if (!stopped) nativeAttach(handle, surface, frameRate, capped)
+    /** The Game view's [surface] carries the game's layer, which asks the display for the [request]'s rate. */
+    fun attach(surface: Surface, request: ScreenRequest) = synchronized(lock) {
+        if (!stopped) nativeAttach(handle, surface, request.rate, request.abovePick)
     }
 
     /** The Game view's [surface] has a new size ([width] x [height]): the game's layer stays and shows at it. */
@@ -38,9 +34,8 @@ class PresentServer private constructor(private val handle: Long) {
         if (!stopped) nativeResize(handle, surface, width, height)
     }
 
-    /** The game's layer asks the display for [frameRate] from now on ([FrameRateVote]); [capped] as for [attach]. */
-    fun setFrameRate(frameRate: Float, capped: Boolean) = synchronized(lock) {
-        if (!stopped) nativeSetFrameRate(handle, frameRate, capped)
+    fun setFrameRate(request: ScreenRequest) = synchronized(lock) {
+        if (!stopped) nativeSetFrameRate(handle, request.rate, request.abovePick)
     }
 
     /**
@@ -77,6 +72,18 @@ class PresentServer private constructor(private val handle: Long) {
     }
 
     /**
+     * The frame split ([FrameSplit]): [on] while the game runs, over windows of [windowMs] (the
+     * logging level's, [LogPolicy.windowMs]). Mesa times the game's frames while it is on; a change
+     * forgets the window. The last window's summary; null once the server stopped.
+     */
+    fun frameSplit(on: Boolean, windowMs: Long): FrameSplit? = synchronized(lock) {
+        if (stopped) return null
+        val values = LongArray(FrameSplit.SIZE)
+        nativeFrameSplit(handle, on, windowMs * 1_000_000L, values)
+        FrameSplit.of(values)
+    }
+
+    /**
      * The game's window alone on the X screen, where it is ([window]); null while it is not (a
      * window over or beside it, or none named yet): the X screen shows.
      */
@@ -110,7 +117,7 @@ class PresentServer private constructor(private val handle: Long) {
         }
     }
 
-    private fun stop() = synchronized(lock) {
+    private fun stop(): Unit = synchronized(lock) {
         if (stopped) return
         stopped = true
         nativeStop(handle)
@@ -195,6 +202,9 @@ class PresentServer private constructor(private val handle: Long) {
 
         @JvmStatic
         private external fun nativeSplit(handle: Long, on: Boolean, out: LongArray)
+
+        @JvmStatic
+        private external fun nativeFrameSplit(handle: Long, on: Boolean, windowNanos: Long, out: LongArray)
 
         @JvmStatic
         private external fun nativePointerMoved(nanos: Long)
@@ -311,6 +321,51 @@ data class PointerSplit(
         fun of(v: LongArray) = PointerSplit(
             v[0], v[1], v[2].toInt(), v[3].toInt(), v[4].toInt(), v.slice(5 until 5 + PARTS.size), v.slice(5 + PARTS.size until SIZE),
         )
+    }
+}
+
+/**
+ * The split of the time of each frame that the direct present showed, for the last window
+ * (present_server.cpp, frame_split.h; a window ends at the first frame [LogPolicy.windowMs] after
+ * its first): its number ([serial], 0: none yet), the time from its first frame to its last
+ * ([spanNanos]), the [frames] in it, and each part's median and 95th percentile in microseconds
+ * ([medianMicros], [p95Micros], in [PARTS]' order; -1: not known). Every frame shown counts, with
+ * or without pointer moves. Acquire and present are D2GL's render thread's: the time between its
+ * present and its next acquire is its time between frames, and with acquire -> present it makes the
+ * frame's whole time on that thread.
+ */
+data class FrameSplit(
+    val serial: Long,
+    val spanNanos: Long,
+    val frames: Int,
+    val medianMicros: List<Long>,
+    val p95Micros: List<Long>,
+) {
+    /** The service log's line for this window. */
+    fun line(): String {
+        val head = String.format(Locale.ROOT, "frame split (%.0f s): %d frames", spanNanos / 1e9, frames)
+        fun part(i: Int) = if (medianMicros[i] < 0) {
+            "${PARTS[i]} not known"
+        } else {
+            String.format(Locale.ROOT, "%s %.1f / %.1f", PARTS[i], medianMicros[i] / 1e3, p95Micros[i] / 1e3)
+        }
+        return "$head; median / p95 in ms: " + PARTS.indices.joinToString("; ") { part(it) } + "; $RENDER_THREAD"
+    }
+
+    companion object {
+        /** The parts, as frame_split.h's enum frame_part has them. */
+        val PARTS = listOf(
+            "present -> next acquire", "acquire -> present", "present -> GPU done", "present -> clock", "clock -> apply",
+            "apply -> screen", "clock -> latch",
+        )
+
+        /** The end of each line: whose times acquire and present are. */
+        const val RENDER_THREAD = "acquire and present are D2GL's render thread's"
+
+        /** How many numbers nativeFrameSplit gives (present_server.cpp's FRAME_COUNTS). */
+        val SIZE = 3 + 2 * PARTS.size
+
+        fun of(v: LongArray) = FrameSplit(v[0], v[1], v[2].toInt(), v.slice(3 until 3 + PARTS.size), v.slice(3 + PARTS.size until SIZE))
     }
 }
 

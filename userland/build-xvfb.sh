@@ -10,15 +10,27 @@
 # needs /tmp and a hard link, os/utils.c LockServer) and a build-time shell for xkbcomp.
 # The build goes to the cache's xvfb-out/ with its BUILDINFO (build_identity in config.sh: image,
 # package lock, prefix, X server pin, the compiled-in paths, this script, the patches), which a
-# later run with the same identity installs without building.
+# later run with the same identity installs without building. `build-xvfb.sh --identity` prints that
+# identity on the host, before any build (the release workflow's cache key).
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=config.sh
 . "$here/config.sh"
 
+identity() {
+    build_identity "xserver=$XSERVER_VERSION $XSERVER_SHA256" "shell=$ANDROID_SHELL" \
+        "xkm-output-dir=$XKM_OUTPUT_DIR" "$here/build-xvfb.sh" "$here"/patches/xserver/*.patch
+}
+if [[ "${1:-}" == --identity ]]; then
+    # The container's order of file names (no locale there).
+    export LC_ALL=C
+    PD2_IMAGE="${PD2_IMAGE:-$(base_image_name)}" identity
+    exit 0
+fi
+
 if [[ "${PD2_USERLAND_IN_CONTAINER:-}" != 1 ]]; then
-    run_in_tools build-xvfb.sh "$@"
+    run_in_base build-xvfb.sh "$@"
     exit
 fi
 
@@ -29,8 +41,7 @@ dest="$work/xvfb-dest"
 out=/cache/xvfb-out
 [[ -d "$sysroot/usr/include" ]] || { echo "no sysroot: run fetch-debian.sh first" >&2; exit 1; }
 
-identity="$(build_identity "xserver=$XSERVER_VERSION $XSERVER_SHA256" "shell=$ANDROID_SHELL" \
-    "xkm-output-dir=$XKM_OUTPUT_DIR" "$here/build-xvfb.sh" "$here"/patches/xserver/*.patch)"
+identity="$(identity)"
 if [[ -f "$out/Xvfb" && "$(cat "$out/BUILDINFO" 2>/dev/null)" == "$identity" ]]; then
     echo "reusing ${out#/cache/} (BUILDINFO matches)"
 else

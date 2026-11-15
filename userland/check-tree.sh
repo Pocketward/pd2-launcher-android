@@ -14,8 +14,7 @@
 #   - PanVK (build-panvk.sh) is there: its ICD JSON and libvulkan_panfrost.so, every library it
 #     needs in the tree
 #   - the system-driver mode (build-sysdrv.sh) is there: the Venus ICD JSON and libvulkan_virtio.so,
-#     the second GL stack as glvnd vendor "pd2sysdrv" (libGLX_pd2sysdrv.so.0, also its soname),
-#     every library they need in the tree
+#     every library it needs in the tree
 #   - the libhybris route (build-hybris.sh) is there: its ICD JSON, libvulkan_pd2hybris.so,
 #     libhybris-common.so.1, its linker plugin libhybris/linker/q.so and its licence texts, every
 #     library they need in the tree
@@ -31,16 +30,17 @@
 #     the engine's libraries (ENGINE_NEEDED) are in it, and so is every library an ELF in it needs;
 #     the absent paths are not in the tree
 #   - when the manifest has a "glibc" record (PD2_USERLAND_WITH_GLIBC=1): every recorded file is in
-#     the tree with its SHA-256; the record's patch, build.sh and Containerfile hashes are those
+#     the tree with its SHA-256; the record's patch and build.sh hashes are those
 #     in glibc/; ld.so and libc.so.6 equal glibc/out/install's copies stripped as build-glibc.sh
 #     strips them and carry our version string; both loader paths resolve to our loader; no regular file of Debian's
 #     libc6 .deb is left in the tree (files in the record are ours, even where byte-identical to
 #     Debian's, such as gconv-modules)
 #     and etc/userland.env does not set LD_LIBRARY_PATH
 #   - last, the tree rewritten for a scratch data folder as the app rewrites it (padded binaries,
-#     exact text files) holds no placeholder, and with the host's qemu-aarch64 binfmt handler
-#     Xvfb prints its usage and xkbcomp its version from there:
-#     interpreter, run paths and the loader's own folders all at the padded path
+#     exact text files) holds no placeholder, and on an aarch64 host or with the host's qemu-aarch64
+#     binfmt handler Xvfb prints its usage and xkbcomp its version from there:
+#     interpreter, run paths and the loader's own folders all at the padded path (on an aarch64
+#     host without the amd64 base image, check-relocated.sh does these runs on the host)
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -49,11 +49,12 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [[ "${PD2_USERLAND_IN_CONTAINER:-}" != 1 ]]; then
     # The host's binfmt_misc, which the container does not see: with qemu-aarch64 there (its F flag
-    # makes it work in the container), the relocated tree's programs run below.
+    # makes it work in the container), or on an aarch64 host, the relocated tree's programs run below.
     binfmt=0
     grep -qsx enabled /proc/sys/fs/binfmt_misc/qemu-aarch64 && binfmt=1
+    [[ "$(uname -m)" == aarch64 ]] && binfmt=1
     RUN_EXTRA=(-v "$USERLAND_OUT:/out:ro" -e "PD2_HOST_BINFMT_AARCH64=$binfmt")
-    run_in_tools check-tree.sh "$@"
+    run_in_base check-tree.sh "$@"
     exit
 fi
 
@@ -154,23 +155,16 @@ else
     bad "PanVK missing (usr/share/vulkan/icd.d/panfrost_icd.aarch64.json, libvulkan_panfrost.so)"
 fi
 
-# The system-driver mode (build-sysdrv.sh): the Venus ICD, and the second GL stack as glvnd's vendor
-# "pd2sysdrv" (libGLX_pd2sysdrv.so.0, its soname too) with the libgallium it needs, every library
-# they need in the tree.
+# The system-driver mode (build-sysdrv.sh): the Venus ICD, every library it needs in the tree.
 venus="$tree/usr/lib/aarch64-linux-gnu/libvulkan_virtio.so"
-sysglx="$tree/usr/lib/aarch64-linux-gnu/libGLX_pd2sysdrv.so.0"
-if [[ -f "$tree/usr/share/vulkan/icd.d/virtio_icd.aarch64.json" && -f "$venus" && -f "$sysglx" ]]; then
-    aarch64-linux-gnu-readelf -d "$sysglx" | grep -q 'Library soname: \[libGLX_pd2sysdrv.so.0\]' \
-        || bad "libGLX_pd2sysdrv.so.0: its soname is not libGLX_pd2sysdrv.so.0"
-    for elf in "$venus" "$sysglx"; do
-        for lib in $(aarch64-linux-gnu-readelf -d "$elf" | sed -n 's/.*(NEEDED).*\[\(.*\)\]$/\1/p'); do
-            [[ -e "$tree/usr/lib/aarch64-linux-gnu/$lib" || -e "$tree/lib/aarch64-linux-gnu/$lib" ]] \
-                || bad "${elf#"$tree/"}: $lib not in the tree"
-        done
+if [[ -f "$tree/usr/share/vulkan/icd.d/virtio_icd.aarch64.json" && -f "$venus" ]]; then
+    for lib in $(aarch64-linux-gnu-readelf -d "$venus" | sed -n 's/.*(NEEDED).*\[\(.*\)\]$/\1/p'); do
+        [[ -e "$tree/usr/lib/aarch64-linux-gnu/$lib" || -e "$tree/lib/aarch64-linux-gnu/$lib" ]] \
+            || bad "${venus#"$tree/"}: $lib not in the tree"
     done
-    echo "system driver: Venus ICD and the pd2sysdrv GL vendor present, every NEEDED library is in the tree"
+    echo "system driver: Venus ICD present, every NEEDED library is in the tree"
 else
-    bad "system driver missing (virtio_icd.aarch64.json, libvulkan_virtio.so, libGLX_pd2sysdrv.so.0)"
+    bad "system driver missing (virtio_icd.aarch64.json, libvulkan_virtio.so)"
 fi
 
 # The libhybris route (build-hybris.sh): our ICD with its JSON, libhybris-common.so.1 and its linker
@@ -376,9 +370,9 @@ for rel, want in g['files'].items():
 patches = {n: sha(os.path.join(patchdir, n)) for n in sorted(os.listdir(patchdir)) if n.endswith('.patch')}
 if g['buildinfo']['patches'] != patches:
     bad.append('recorded patch hashes differ from glibc/patches')
-inputs = {n: sha(os.path.join(os.path.dirname(patchdir), n)) for n in ('build.sh', 'Containerfile')}
+inputs = {n: sha(os.path.join(os.path.dirname(patchdir), n)) for n in ('build.sh',)}
 if g['buildinfo'].get('inputs') != inputs:
-    bad.append('recorded build.sh/Containerfile hashes differ from glibc/')
+    bad.append('recorded build.sh hash differs from glibc/')
 ldso, libc = 'usr/lib/ld-linux-aarch64.so.1', 'usr/lib/aarch64-linux-gnu/libc.so.6'
 for rel, built in ((ldso, 'ld-linux-aarch64.so.1'), (libc, 'libc.so.6')):
     data = open(os.path.join(tree, rel), 'rb').read()
@@ -414,39 +408,9 @@ fi
 
 echo "archive: $(stat -c %s "$archive") bytes; regular files: $(find "$tree" -type f | wc -l); unpacked: $(du -sb "$tree" | cut -f1) bytes"
 
-# The tree rewritten for $data as the app rewrites it (UserlandInstaller), then run from there.
-python3 - "$tree" "$manifest" "$data" <<'EOF' || fail=1
-import json, os, sys
-tree, manifest, data = sys.argv[1:]
-m = json.load(open(manifest))
-P = m['placeholder'].encode()
-exact = data.encode()
-padded = exact + b'/' * (len(P) - len(exact))
-for e in m['entries']:
-    if not e.get('placeholders'):
-        continue
-    path = os.path.join(tree, e['path'])
-    old = open(path, 'rb').read()
-    new, at = bytearray(), 0
-    for o in e['placeholders']:
-        assert old[o:o + len(P)] == P, e['path']
-        new += old[at:o] + (exact if e.get('text') else padded)
-        at = o + len(P)
-    new += old[at:]
-    mode = os.stat(path).st_mode
-    os.chmod(path, mode | 0o200)
-    open(path, 'wb').write(new)
-    os.chmod(path, mode)
-left = []
-for dirpath, _, files in os.walk(tree):
-    for n in files:
-        f = os.path.join(dirpath, n)
-        if not os.path.islink(f) and P[:32] in open(f, 'rb').read():
-            left.append(os.path.relpath(f, tree))
-if left:
-    sys.exit(f'FAIL: the placeholder is left in {left}')
-print(f'rewritten for {data}: no placeholder left')
-EOF
+# The tree rewritten for $data as the app rewrites it (UserlandInstaller), then run from there
+# (check-relocated.sh does the same on an aarch64 host, without a container).
+python3 "$here/rewrite-placeholder.py" "$tree" "$data" "$manifest" || fail=1
 if [[ "${PD2_HOST_BINFMT_AARCH64:-0}" == 1 ]]; then
     bin="$data/files/userland/current/usr/bin"
     # Each: the command, then what its output must hold.
@@ -461,7 +425,7 @@ if [[ "${PD2_HOST_BINFMT_AARCH64:-0}" == 1 ]]; then
         fi
     done
 else
-    echo "relocated runs skipped: no qemu-aarch64 binfmt handler on this host"
+    echo "relocated runs skipped: no aarch64 host and no qemu-aarch64 binfmt handler"
 fi
 rm -rf "$data"
 [[ "$fail" == 0 ]] && echo "check-tree: OK"

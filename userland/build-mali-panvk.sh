@@ -24,7 +24,7 @@
 #     its dma-buf on a MediaTek gralloc; see
 #     their README.md), after the WSI series and in the same exact way. The tree itself stays as
 #     it is: it changes only through these patches.
-# Built in the PanVK image (containers/Containerfile.panvk: LLVM 19 for the host tools), with no
+# Built in the base image (../containers/Containerfile.base: LLVM 19 for the host tools), with no
 # network in the container (the sources are fetched and checked first): the host tools
 # (mesa_clc, vtn_bindgen2, panfrost_compile) natively from this tree, as its OpenCL kernels are
 # its own; then the driver, cross aarch64 against the userland's staged sysroot (as build-panvk.sh),
@@ -35,12 +35,14 @@
 # usr/share/mali-panvk/mali_panvk_icd.aarch64.json naming it at the userland's prefix, and in
 # usr/share/licenses/mali-panvk/ the tree's LICENSE, android/NOTICE.txt, THIRD_PARTY_NOTICES.md and
 # COPYRIGHT-HOLDERS.txt: the copyright lines of the tree's own files that its NOTICE.txt does not
-# name) with BUILDINFO; --install (tools image) copies it into the staging tree and adds its files
+# name) with BUILDINFO; --install (base image) copies it into the staging tree and adds its files
 # to the system-driver part's list. The source tree, the host tools and the configured build
 # folder stay in MALI_PANVK_CACHE/work: a later run with the same SETUP reuses them, and when only
 # the patches change, it restores the tree's files that the patches change, applies the patches
 # again, and ninja rebuilds only what uses them. Each step prints a line; a failure prints its line and
-# command (the ERR trap).
+# command (the ERR trap). `build-mali-panvk.sh --identity` prints the output's identity (its
+# BUILDINFO) on the host, before any build (the release workflow's cache key); the sources are
+# fetched only when mali-panvk-out does not have it.
 set -Eeuo pipefail
 trap 'echo "build-mali-panvk.sh${PD2_USERLAND_IN_CONTAINER:+ (in the image)}: FAILED at line $LINENO: $BASH_COMMAND (exit $?)" >&2' ERR
 
@@ -51,25 +53,65 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 say() { echo "[build-mali-panvk $(date +%T)] $*"; }
 fail() { echo "build-mali-panvk.sh: $*" >&2; exit 1; }
 
+libdir=lib/aarch64-linux-gnu
+MESON_OPTS=(
+    --prefix="$USERLAND/usr" --libdir="$libdir" --buildtype=release -Db_ndebug=true
+    -Dvulkan-drivers=panfrost -Dgallium-drivers= -Dplatforms=x11
+    -Dopengl=false -Dgles1=disabled -Dgles2=disabled -Dglx=disabled -Degl=disabled -Dgbm=disabled
+    -Dmesa-clc=system -Dprecomp-compiler=system -Dllvm=disabled -Dpanfrost-rust=false
+    -Dvalgrind=disabled -Dlibunwind=disabled -Dlmsensors=disabled -Dallow-kcmp=disabled
+    -Dvulkan-layers= -Dtools= -Dbuild-tests=false -Dhtml-docs=disabled -Dvideo-codecs=
+    -Dexpat=enabled -Dzstd=enabled -Dshader-cache=enabled -Dperfetto=false
+)
+HOST_OPTS=(
+    --buildtype=release -Db_ndebug=true
+    -Dplatforms= -Dgallium-drivers= -Dvulkan-drivers=panfrost
+    -Dopengl=false -Dgles1=disabled -Dgles2=disabled -Dglx=disabled -Degl=disabled -Dgbm=disabled
+    -Dllvm=enabled -Dshared-llvm=enabled -Dmesa-clc=enabled -Dprecomp-compiler=enabled
+    -Dvulkan-layers= -Dtools= -Dbuild-tests=false -Dvalgrind=disabled -Dlibunwind=disabled
+    -Dlmsensors=disabled -Dzstd=disabled -Dxmlconfig=disabled -Dshader-cache=disabled
+    -Dhtml-docs=disabled -Dpanfrost-rust=false -Dvideo-codecs= -Dperfetto=false
+)
+# What the source tree, the host tools and the configured build folder come from (the image,
+# the package lock, the prefix, the pins, the options, the compat headers); another value needs
+# a new setup.
+setup_identity() {
+    build_identity "mali-panvk=$MALI_PANVK_COMMIT $MALI_PANVK_SHA256" \
+        "upstream=$MALI_PANVK_UPSTREAM_COMMIT $MALI_PANVK_UPSTREAM_SHA256"
+    printf '%s\n' "${MALI_PANVK_UPSTREAM_FILES[@]}" "${MESON_OPTS[@]}" "${HOST_OPTS[@]}"
+    (cd "$here" && find radv-compat -type f | LC_ALL=C sort | xargs sha256sum)
+}
+patches_identity() {
+    (cd "$here" && find patches/radv-xclipse patches/mali-panvk -type f -name '*.patch' | LC_ALL=C sort | xargs sha256sum)
+}
+# What the output comes from: the setup, the patches and this script.
+identity() {
+    setup_identity
+    patches_identity
+    echo "build-mali-panvk.sh $(sha256sum < "$here/build-mali-panvk.sh" | cut -d' ' -f1)"
+}
+if [[ "${1:-}" == --identity ]]; then
+    PD2_IMAGE="${PD2_IMAGE:-$(base_image_name)}" identity
+    exit 0
+fi
+
 if [[ "${PD2_USERLAND_IN_CONTAINER:-}" != 1 ]]; then
-    fetch_source "$MALI_PANVK_URL" "$MALI_PANVK_SHA256" >/dev/null
-    fetch_source "$MALI_PANVK_UPSTREAM_URL" "$MALI_PANVK_UPSTREAM_SHA256" >/dev/null
-    say "sources checked"
-    image="$(panvk_image)"
-    engine="$(container_engine)"
-    mkdir -p "$USERLAND_CACHE/work" "$MALI_PANVK_CACHE"
+    out="$MALI_PANVK_CACHE/mali-panvk-out"
+    if ! [[ -d "$out/tree" && -f "$out/BUILDINFO" && "$(< "$out/BUILDINFO")" == "$("$here/build-mali-panvk.sh" --identity)" ]]; then
+        fetch_source "$MALI_PANVK_URL" "$MALI_PANVK_SHA256" >/dev/null
+        fetch_source "$MALI_PANVK_UPSTREAM_URL" "$MALI_PANVK_UPSTREAM_SHA256" >/dev/null
+        say "sources checked"
+    fi
+    mkdir -p "$MALI_PANVK_CACHE"
     # No network in the container: the sources are fetched and checked above.
-    "$engine" run --rm --network=none --platform linux/amd64 \
-        -v "$USERLAND_SRC:/src:ro" -v "$USERLAND_CACHE:/cache" -v "$MALI_PANVK_CACHE:/mali" \
-        -e PD2_USERLAND_IN_CONTAINER=1 -e PD2_USERLAND_CACHE=/cache -e "PD2_IMAGE=$image" \
-        "$image" bash /src/build-mali-panvk.sh --build
+    RUN_EXTRA=(--network=none -v "$MALI_PANVK_CACHE:/mali")
+    run_in_base build-mali-panvk.sh --build
     RUN_EXTRA=(-v "$MALI_PANVK_CACHE:/mali")
-    run_in_tools build-mali-panvk.sh --install
+    run_in_base build-mali-panvk.sh --install
     exit
 fi
 
 out=/mali/mali-panvk-out
-libdir=lib/aarch64-linux-gnu
 lib=usr/$libdir/mali-panvk/libvulkan_panfrost.so
 icd=usr/share/mali-panvk/mali_panvk_icd.aarch64.json
 # Not usr/share/doc: relocate.sh drops that folder.
@@ -83,43 +125,13 @@ if [[ "${1:-}" == --build ]]; then
     host=/mali/work/host-tools
     tree_archive="/cache/sources/$(basename "$MALI_PANVK_URL")"
     upstream_archive="/cache/sources/$(basename "$MALI_PANVK_UPSTREAM_URL")"
-    MESON_OPTS=(
-        --prefix="$USERLAND/usr" --libdir="$libdir" --buildtype=release -Db_ndebug=true
-        -Dvulkan-drivers=panfrost -Dgallium-drivers= -Dplatforms=x11
-        -Dopengl=false -Dgles1=disabled -Dgles2=disabled -Dglx=disabled -Degl=disabled -Dgbm=disabled
-        -Dmesa-clc=system -Dprecomp-compiler=system -Dllvm=disabled -Dpanfrost-rust=false
-        -Dvalgrind=disabled -Dlibunwind=disabled -Dlmsensors=disabled -Dallow-kcmp=disabled
-        -Dvulkan-layers= -Dtools= -Dbuild-tests=false -Dhtml-docs=disabled -Dvideo-codecs=
-        -Dexpat=enabled -Dzstd=enabled -Dshader-cache=enabled -Dperfetto=false
-    )
-    HOST_OPTS=(
-        --buildtype=release -Db_ndebug=true
-        -Dplatforms= -Dgallium-drivers= -Dvulkan-drivers=panfrost
-        -Dopengl=false -Dgles1=disabled -Dgles2=disabled -Dglx=disabled -Degl=disabled -Dgbm=disabled
-        -Dllvm=enabled -Dshared-llvm=enabled -Dmesa-clc=enabled -Dprecomp-compiler=enabled
-        -Dvulkan-layers= -Dtools= -Dbuild-tests=false -Dvalgrind=disabled -Dlibunwind=disabled
-        -Dlmsensors=disabled -Dzstd=disabled -Dxmlconfig=disabled -Dshader-cache=disabled
-        -Dhtml-docs=disabled -Dpanfrost-rust=false -Dvideo-codecs= -Dperfetto=false
-    )
     # Our patches, in this order: the WSI series of radv-xclipse, then our fixes for this tree.
     PATCHES=(/src/patches/radv-xclipse/*.patch /src/patches/mali-panvk/*.patch)
     # The tree's files that they change (each patch changes files of the tree; it adds none).
     mapfile -t PATCHED_FILES < <(sed -n 's|^+++ b/\([^[:space:]]*\).*|\1|p' "${PATCHES[@]}" | LC_ALL=C sort -u)
-    # What the source tree, the host tools and the configured build folder come from (the image,
-    # the package lock, the prefix, the pins, the options, the compat headers); another value needs
-    # a new setup.
-    setup_identity() {
-        build_identity "mali-panvk=$MALI_PANVK_COMMIT $MALI_PANVK_SHA256" \
-            "upstream=$MALI_PANVK_UPSTREAM_COMMIT $MALI_PANVK_UPSTREAM_SHA256"
-        printf '%s\n' "${MALI_PANVK_UPSTREAM_FILES[@]}" "${MESON_OPTS[@]}" "${HOST_OPTS[@]}"
-        (cd /src && find radv-compat -type f | LC_ALL=C sort | xargs sha256sum)
-    }
     sid="$(setup_identity)"
-    pid="$(cd /src && find patches/radv-xclipse patches/mali-panvk -type f -name '*.patch' | LC_ALL=C sort | xargs sha256sum)"
-    # What the output comes from: the setup, the patches and this script.
-    id="$sid
-$pid
-build-mali-panvk.sh $(sha256sum < /src/build-mali-panvk.sh | cut -d' ' -f1)"
+    pid="$(patches_identity)"
+    id="$(identity)"
     # (Files are read only when they exist: a failing command in $(...) would trip the ERR trap.)
     if [[ -d "$out/tree" && -f "$out/BUILDINFO" && "$(< "$out/BUILDINFO")" == "$id" ]]; then
         say "reusing mali-panvk-out (BUILDINFO matches)"
@@ -170,14 +182,19 @@ EOF
     fi
 
     # The patches, when the tree does not have this set yet: the tree's own files that they change
-    # back (with the time of now, so ninja rebuilds what uses them), then each patch, exactly.
+    # back (with the time of now, so ninja rebuilds what uses them), also those that the set before
+    # changed (.pd2-patched-files: a patch taken out leaves nothing of it), then each patch, exactly.
     if [[ -f "$src/.pd2-patches" && "$(< "$src/.pd2-patches")" == "$pid" ]]; then
         say "patches: already in the tree"
     else
-        say "patches: the tree's ${#PATCHED_FILES[@]} files that they change restored"
+        mapfile -t restored < <({
+            printf '%s\n' "${PATCHED_FILES[@]}"
+            if [[ -f "$src/.pd2-patched-files" ]]; then cat "$src/.pd2-patched-files"; fi
+        } | LC_ALL=C sort -u)
+        say "patches: the tree's ${#restored[@]} files that they or the set before change restored"
         rm -f "$src/.pd2-wsi-patches" "$src/.pd2-patches"
         tar -xzf "$tree_archive" -C "$src" --strip-components=1 --touch \
-            "${PATCHED_FILES[@]/#/mali-panvk-$MALI_PANVK_COMMIT/}"
+            "${restored[@]/#/mali-panvk-$MALI_PANVK_COMMIT/}"
         for p in "${PATCHES[@]}"; do
             patch -d "$src" -p1 --forward --fuzz=0 --no-backup-if-mismatch < "$p" > "$build/patch.log" 2>&1 ||
                 { cat "$build/patch.log"; fail "$(basename "$p") does not apply to the tree"; }
@@ -187,6 +204,7 @@ EOF
             fi
             say "patch applied: $(basename "$(dirname "$p")")/$(basename "$p")"
         done
+        printf '%s\n' "${PATCHED_FILES[@]}" > "$src/.pd2-patched-files"
         echo "$pid" > "$src/.pd2-patches"
     fi
 
@@ -241,7 +259,7 @@ EOF
     exit 0
 fi
 
-# --install (tools image): the build into the staging tree; its files join the system-driver part.
+# --install (base image): the build into the staging tree; its files join the system-driver part.
 staging=/cache/work/staging
 [[ -d "$staging/usr" ]] || fail "no staging tree: run fetch-debian.sh first"
 [[ -f "$out/BUILDINFO" && -d "$out/tree" ]] || fail "no mali-panvk build: run build-mali-panvk.sh"

@@ -28,6 +28,7 @@
     <string name="failure_d2_key_check">The Diablo II key is not correct. Check the key and Try again.</string>
     <string name="failure_lod_key_check">The Lord of Destruction key is not correct. Check the key and Try again.</string>
     <string name="failure_installer">Blizzard\'s installer stopped with an error. Check both CD keys and Try again.</string>
+    <string name="failure_existing_invalid">The Diablo II folder you chose is no longer there or has changed. Go back and choose it again.</string>
     <string name="failure_install">The install didn\'t finish. Try again. What is already downloaded is kept.</string>
     <!-- The game environment did not start for the install: the session service's reason. -->
     <string name="failure_detail">%1$s</string>

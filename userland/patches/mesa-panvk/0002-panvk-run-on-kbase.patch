@@ -23,6 +23,10 @@ panvk: run on Arm's mali_kbase through the kbase pan_kmod backend
   mapped there instead of at an address from the VA heaps.
 - vkSetEvent tells the kernel the CPU changed a sync object (pan_kmod_dev_notify_sync_update), so
   a group suspended on the event's wait runs again.
+- A logical device opens the kbase node again for its own kbase context
+  (panvk_physical_device_open_kmod_fd): kbase sets up one context per open file, so a dup() of
+  the physical device's fd, as for DRM, cannot make a second one. The physical device keeps the
+  node's path. The fd is closed when the backend refuses it.
 
 --- a/src/panfrost/vulkan/csf/panvk_vX_cmd_buffer.c
 +++ b/src/panfrost/vulkan/csf/panvk_vX_cmd_buffer.c
@@ -359,7 +363,15 @@ panvk: run on Arm's mali_kbase through the kbase pan_kmod backend
     instance->vk.physical_devices.destroy = panvk_destroy_physical_device;
 --- a/src/panfrost/vulkan/panvk_physical_device.c
 +++ b/src/panfrost/vulkan/panvk_physical_device.c
-@@ -72,11 +72,21 @@ PER_ARCH_FUNCS(12);
+@@ -14,6 +14,7 @@
+ #include <sys/stat.h>
+ 
+ #include "util/disk_cache.h"
++#include "util/os_file.h"
+ #include "util/os_misc.h"
+ #include "util/u_atomic.h"
+ #include "git_sha1.h"
+@@ -72,11 +73,28 @@ PER_ARCH_FUNCS(12);
  PER_ARCH_FUNCS(13);
  PER_ARCH_FUNCS(14);
  
@@ -379,10 +391,33 @@ panvk: run on Arm's mali_kbase through the kbase pan_kmod backend
 +    * panvk_enumerate_kbase), which the kbase pan_kmod backend drives. */
 +   const char *path = drm_device ? drm_device->nodes[DRM_NODE_RENDER]
 +                                 : panvk_kbase_device_path();
++   if (!drm_device &&
++       snprintf(device->kbase_node, sizeof(device->kbase_node), "%s", path) >=
++          (int)sizeof(device->kbase_node)) {
++      return panvk_errorf(instance, VK_ERROR_INCOMPATIBLE_DRIVER,
++                          "kbase device path too long: '%s'", path);
++   }
++
     int fd = open(path, O_RDWR | O_CLOEXEC);
     if (fd < 0) {
        return panvk_errorf(instance, VK_ERROR_INCOMPATIBLE_DRIVER,
-@@ -112,6 +122,10 @@ get_drm_device_ids(struct panvk_physical_device *device,
+@@ -105,6 +123,15 @@ create_kmod_dev(struct panvk_physical_device *device,
+    return VK_SUCCESS;
+ }
+ 
++int
++panvk_physical_device_open_kmod_fd(const struct panvk_physical_device *device)
++{
++   if (device->kbase_node[0])
++      return open(device->kbase_node, O_RDWR | O_CLOEXEC);
++
++   return os_dupfd_cloexec(device->kmod.dev->fd);
++}
++
+ static VkResult
+ get_drm_device_ids(struct panvk_physical_device *device,
+                    const struct panvk_instance *instance,
+@@ -112,6 +139,10 @@ get_drm_device_ids(struct panvk_physical_device *device,
  {
     struct stat st;
  
@@ -395,12 +430,29 @@ panvk: run on Arm's mali_kbase through the kbase pan_kmod backend
                         "failed to query render node stat");
 --- a/src/panfrost/vulkan/panvk_physical_device.h
 +++ b/src/panfrost/vulkan/panvk_physical_device.h
-@@ -106,6 +106,9 @@ VkResult panvk_physical_device_init(struct panvk_physical_device *device,
+@@ -58,6 +58,9 @@ struct panvk_physical_device {
+       dev_t render_rdev;
+    } drm;
+ 
++   /* The mali_kbase node this device was opened from; empty on DRM. */
++   char kbase_node[256];
++
+    struct {
+       const struct pan_blendable_format *blendable;
+       const struct pan_format *all;
+@@ -106,6 +109,16 @@ VkResult panvk_physical_device_init(struct panvk_physical_device *device,
  
  void panvk_physical_device_finish(struct panvk_physical_device *device);
  
 +/* The mali_kbase device node: PANVK_KBASE_DEVICE, else /dev/mali0. */
 +const char *panvk_kbase_device_path(void);
++
++/* A new kernel fd for a logical device, owned by the caller; -1 with errno
++ * set on failure. On kbase a new open of the node: a kbase context is set up
++ * once per open file and is one GPU address space, so a dup() of the physical
++ * device's fd cannot make a second one. On DRM a dup() of that fd. */
++int panvk_physical_device_open_kmod_fd(
++   const struct panvk_physical_device *device);
 +
  
  VkSampleCountFlags panvk_get_sample_counts(unsigned arch,
@@ -506,7 +558,26 @@ panvk: run on Arm's mali_kbase through the kbase pan_kmod backend
  
 --- a/src/panfrost/vulkan/panvk_vX_device.c
 +++ b/src/panfrost/vulkan/panvk_vX_device.c
-@@ -82,9 +82,13 @@ panvk_device_init_mempools(struct panvk_device *dev)
+@@ -10,6 +10,9 @@
+  * SPDX-License-Identifier: MIT
+  */
+ 
++#include <string.h>
++#include <unistd.h>
++
+ #include "drm-uapi/panthor_drm.h"
+ 
+ #include "vk_cmd_enqueue_entrypoints.h"
+@@ -35,7 +38,7 @@
+ #include "genxml/gen_macros.h"
+ 
+ #include "kmod/pan_kmod.h"
+-#include "util/os_file.h"
++#include "util/log.h"
+ #include "util/u_printf.h"
+ #include "pan_props.h"
+ #include "pan_samples.h"
+@@ -82,9 +85,13 @@ panvk_device_init_mempools(struct panvk_device *dev)
  
     panvk_pool_init(&dev->mempools.rw, dev, NULL, NULL, &rw_pool_props);
  
@@ -522,7 +593,7 @@ panvk: run on Arm's mali_kbase through the kbase pan_kmod backend
        .slab_size = 16 * 1024,
        .label = "Device RW uncached memory pool",
        .owns_bos = false,
-@@ -418,23 +422,32 @@ init_va_heap(struct panvk_va_heap *heap, uint64_t start, uint64_t end)
+@@ -418,23 +425,32 @@ init_va_heap(struct panvk_va_heap *heap, uint64_t start, uint64_t end)
  static void
  init_va_heaps(struct panvk_device *device, uint64_t user_va_start, uint64_t user_va_end)
  {
@@ -564,7 +635,35 @@ panvk: run on Arm's mali_kbase through the kbase pan_kmod backend
     init_va_heap(&device->as.heaps[PANVK_EXEC_VA_HEAP], user_va_start,
                  MIN3(user_va_end, device->as.heaps[PANVK_NO_EXEC_VA_HEAP].start,
                       device->as.heaps[PANVK_FIXED_VA_HEAP].start));
-@@ -548,7 +561,7 @@ panvk_per_arch(create_device)(struct panvk_physical_device *physical_device,
+@@ -513,11 +529,25 @@ panvk_per_arch(create_device)(struct panvk_physical_device *physical_device,
+       .free = panvk_kmod_free,
+       .priv = &device->vk.alloc,
+    };
++   int kmod_fd = panvk_physical_device_open_kmod_fd(physical_device);
++   if (kmod_fd < 0) {
++      /* Logged here too: a release build of Mesa prints no vk_errorf text. */
++      mesa_loge("panvk: the logical device cannot open its kernel device: %s", strerror(errno));
++      result = panvk_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
++                            "cannot open the device's kernel fd: %s",
++                            strerror(errno));
++      goto err_finish_dev;
++   }
++
+    device->kmod.dev = pan_kmod_dev_create(
+-      os_dupfd_cloexec(physical_device->kmod.dev->fd),
+-      physical_device->kmod.dev->flags, &device->kmod.allocator);
++      kmod_fd, physical_device->kmod.dev->flags, &device->kmod.allocator);
+ 
+    if (!device->kmod.dev) {
++      int err = errno;
++      close(kmod_fd);
++      /* The kernel backend logs its failing step; this line names the logical device. */
++      mesa_loge("panvk: the logical device's kernel device could not be set up (errno %d: %s)",
++                err, strerror(err));
+       result = panvk_errorf(instance, VK_ERROR_OUT_OF_HOST_MEMORY,
+                             "cannot create device");
+       goto err_finish_dev;
+@@ -548,7 +578,7 @@ panvk_per_arch(create_device)(struct panvk_physical_device *physical_device,
  
  #if PAN_ARCH >= 10
     const struct drm_panthor_csif_info *csif_info =

@@ -41,6 +41,8 @@ object Palette {
     val Pressed = Text.copy(alpha = 0.1f)
     val Teal = Color(0xFF34B8A7)
     val OnTeal = Color(0xFF05201C)
+    /** A warning on a filled [Teal] button (Play's line for another game program): a dark amber, 4.8:1 on it. */
+    val OnTealWarning = Color(0xFF5A2A05)
     /**
      * Warnings, and the attention dot of a warning or a new version ([StatusMark] WARNING, the App
      * line, the chip, Play's Version): an amber-orange between the brand's gold (#E3AA3E, the "II"

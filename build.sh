@@ -9,32 +9,25 @@
 # to build/outputs, as one without the userland cannot run. The JVM tests, where the repository
 # has them (app/src/test), run on the debug variant. It also runs the release build's lint check
 # (lintVitalRelease), which must pass before either check or release succeeds.
-# `build.sh mockup` and `build.sh spike` build development apps that are not part of the
-# public source.
 # PD2_SYSTEM_DRIVER=0 builds the APK without the system-driver mode's parts (the game on the
 # phone's own Vulkan driver): no virglrenderer server and no userland part
 # app/system-driver/assets/userland-system-driver (Gradle property pd2.systemDriver=false). The
 # default (1) builds the server (devdriver/build.sh) when needed and includes both.
 # `build.sh verification-metadata` writes gradle/verification-metadata.xml again (after a
 # dependency or plugin changes): the SHA-256 of everything Gradle downloads for the debug and
-# release builds and the tests (and the mock-up and spike, where present), which Gradle checks on
-# every build. The release's signing check is skipped there: that run only resolves.
+# release builds and the tests, which Gradle checks on every build. The release's signing check is
+# skipped there: that run only resolves.
+# PD2_GRADLE_ON_HOST=1 (the CI workflows only, on a GitHub-hosted runner) runs Gradle on the host
+# instead of in the build container: Temurin 21 and the runner's Android SDK with the pinned
+# packages (build-tools 36.0.0, NDK 27.2.12479018, CMake 3.22.1, platforms android-28 and
+# android-36, which sdkmanager installs), checked first. A local build never sets it.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 target="${1:-app}"
 release_apk=app/build/outputs/apk/release/app-release.apk
 after=""
-# The mock-up and the spike are targets only where their folders are.
-targets="app|release|check"
-for module in mockup spike; do
-    [[ -d "$here/$module" ]] && targets+="|$module"
-done
-targets+="|verification-metadata"
-if [[ ("$target" == mockup || "$target" == spike) && ! -d "$here/$target" ]]; then
-    echo "usage: build.sh [$targets] (there is no $target folder here)" >&2
-    exit 2
-fi
+targets="app|release|check|verification-metadata"
 case "$target" in
     app) tasks=":app:assembleDebug :app:testDebugUnitTest" ;;
     release)
@@ -44,8 +37,6 @@ case "$target" in
     # The release variant's lint check needs no release key: its signing guard (preReleaseBuild)
     # is skipped.
     check) tasks=":app:assembleDebug :app:testDebugUnitTest :app:lintVitalRelease -x :app:preReleaseBuild" ;;
-    mockup) tasks=":mockup:assembleDebug" ;;
-    spike) tasks=":spike:assembleDebug" ;;
     verification-metadata)
         tasks="--write-verification-metadata sha256 help :app:assembleDebug :app:testDebugUnitTest :app:assembleRelease -x :app:preReleaseBuild"
         ;;
@@ -83,11 +74,6 @@ if [[ -n "${PD2_TEST_BUILD:-}" ]]; then
 fi
 # Without unit tests the test task would only compile the debug variant again.
 [[ -d "$here/app/src/test" ]] || tasks="${tasks/ :app:testDebugUnitTest/}"
-if [[ "$target" == verification-metadata ]]; then
-    for module in mockup spike; do
-        if [[ -d "$here/$module" ]]; then tasks+=" :$module:assembleDebug"; fi
-    done
-fi
 
 cache="${PD2_ANDROID_CACHE:-$HOME/.cache/pd2-android}"
 
@@ -96,11 +82,6 @@ if [[ "${PD2_ANDROID_IN_CONTAINER:-}" == 1 ]]; then
     exit 1
 fi
 
-# test-build.yml is written from release.yml (test-build-workflow.py): a change of one without the
-# other fails here.
-if [[ "$target" == check && -f "$here/test-build-workflow.py" ]]; then
-    python3 "$here/test-build-workflow.py" --check
-fi
 if [[ "$target" == check && -f "$here/app/src/test/scripts/release-gate-test.sh" ]]; then
     bash "$here/app/src/test/scripts/release-gate-test.sh"
 fi
@@ -111,61 +92,77 @@ if [[ "$target" == check && -f "$here/app/src/test/scripts/beta-base-gate-test.s
     bash "$here/app/src/test/scripts/beta-base-gate-test.sh"
 fi
 
-if command -v podman >/dev/null 2>&1; then
-    engine=podman
-elif command -v docker >/dev/null 2>&1; then
-    engine=docker
-else
-    echo "refusing: no container engine (podman or docker) found; Gradle is never run on the host" >&2
-    exit 1
-fi
-
-# Image tag is a hash of the Containerfile, so edits rebuild and unchanged files reuse the cache.
-hash="$(sha256sum "$here/containers/Containerfile" | cut -c1-16)"
-image="localhost/pd2-android-build:$hash"
-
-# Network: the default first, host networking as the fallback (netavark/pasta issues on some hosts).
+on_host="${PD2_GRADLE_ON_HOST:-}"
+[[ -z "$on_host" || "$on_host" == 1 ]] || { echo "PD2_GRADLE_ON_HOST must be 1 or unset" >&2; exit 2; }
+image=""
 net_args=()
-try_build() {
-    "$engine" build --platform linux/amd64 "${net_args[@]}" -t "$image" -f "$here/containers/Containerfile" "$here/containers"
-}
-if ! "$engine" image inspect "$image" >/dev/null 2>&1; then
-    if ! try_build; then
-        echo "build with default networking failed; retrying with --network host" >&2
-        net_args=(--network host)
-        try_build
+if [[ "$on_host" == 1 ]]; then
+    # The versions of containers/Containerfile and app/build.gradle.kts.
+    java_version="$(java -version 2>&1 | sed -n 's/.* version "\([^"]*\)".*/\1/p' | head -n 1)" || true
+    [[ "$java_version" == 21 || "$java_version" == 21.* ]] ||
+        { echo "refusing: PD2_GRADLE_ON_HOST=1 needs Java 21 (java -version says ${java_version:-nothing})" >&2; exit 1; }
+    [[ -n "${ANDROID_HOME:-}" ]] || { echo "refusing: PD2_GRADLE_ON_HOST=1 needs ANDROID_HOME" >&2; exit 1; }
+    for package in build-tools/36.0.0 ndk/27.2.12479018 cmake/3.22.1 platforms/android-28 platforms/android-36; do
+        [[ -f "$ANDROID_HOME/$package/source.properties" ]] ||
+            { echo "refusing: PD2_GRADLE_ON_HOST=1 needs $ANDROID_HOME/$package (sdkmanager)" >&2; exit 1; }
+    done
+else
+    if command -v podman >/dev/null 2>&1; then
+        engine=podman
+    elif command -v docker >/dev/null 2>&1; then
+        engine=docker
+    else
+        echo "refusing: no container engine (podman or docker) found; Gradle is never run on the host" >&2
+        exit 1
+    fi
+
+    # Image tag is a hash of the Containerfile and the two Debian pins it is built with (from
+    # userland/config.sh), so edits rebuild and unchanged files reuse the cache.
+    debian_pins=("DEBIAN_IMAGE=$(sed -n 's/^DEBIAN_IMAGE=//p' "$here/userland/config.sh")"
+        "DEBIAN_SNAPSHOT=$(sed -n 's/^DEBIAN_SNAPSHOT=//p' "$here/userland/config.sh")")
+    hash="$( (cat "$here/containers/Containerfile"; printf '%s\n' "${debian_pins[@]}") | sha256sum | cut -c1-16)"
+    image="localhost/pd2-android-build:$hash"
+
+    # Network: the default first, host networking as the fallback (netavark/pasta issues on some hosts).
+    try_build() {
+        "$engine" build --platform linux/amd64 "${net_args[@]}" --build-arg "${debian_pins[0]}" --build-arg "${debian_pins[1]}" \
+            -t "$image" -f "$here/containers/Containerfile" "$here/containers"
+    }
+    if ! "$engine" image inspect "$image" >/dev/null 2>&1; then
+        if ! try_build; then
+            echo "build with default networking failed; retrying with --network host" >&2
+            net_args=(--network host)
+            try_build
+        fi
     fi
 fi
 
 mkdir -p "$cache/gradle" "$cache/m2" "$cache/home"
 
 # The Launcher engine (the standalone ARM64 Launcher without its window, which engine/build.sh
-# builds from the sources engine.lock pins) goes into the APK as a native library.
+# builds from this commit's engine files) goes into the APK as a native library.
 # PD2_ENGINE_BINARY names it; the default is the newest build in $cache/engine-out. A release
-# takes only the newest engine of $cache/engine-release-out whose build evidence names the pinned
-# commit and sources (source_sha256) and its own SHA-256, whatever PD2_ENGINE_BINARY says, and it
-# must be a release build (PD2_RELEASE_BUILD=1: no dev CD keys, Wine's quiet logs) by its build
-# evidence.
+# takes only the newest engine of $cache/engine-release-out whose build evidence names this
+# commit's engine files (engine_tree, engine/build.sh --tree) and its own SHA-256, whatever
+# PD2_ENGINE_BINARY says, and it must be a release build (PD2_RELEASE_BUILD=1: no dev CD keys,
+# Wine's quiet logs) that attested its standalone ARM64 identity
+# (package_identity=native-aarch64-binary; engine/build.sh --attest) by its build evidence.
 engine_dir=engine-out
 [[ "$target" == release ]] && engine_dir=engine-release-out
 if [[ "$target" == release ]]; then
-    pin() { sed -n "s/^$1=//p" "$here/engine.lock" | head -n 1; }
+    engine_tree="$("$here/engine/build.sh" --tree)"
     evidence() { sed -n "s/^$1=//p" "$2.build-evidence.txt" 2>/dev/null | head -n 1; }
     engine_binary=""
-    if [[ -n "$(pin source_sha256)" ]]; then
-        while IFS= read -r candidate; do
-            if [[ "$(evidence git_commit "$candidate")" == "$(pin commit)" &&
-                "$(evidence source_sha256 "$candidate")" == "$(pin source_sha256)" &&
-                "$(evidence sha256 "$candidate")" == "$(sha256sum < "$candidate" | cut -d' ' -f1)" ]]; then
-                engine_binary="$candidate"
-                break
-            fi
-        done < <(ls -t "$cache/$engine_dir"/pd2-launcher-*-aarch64 2>/dev/null || true)
-    fi
+    while IFS= read -r candidate; do
+        if [[ "$(evidence engine_tree "$candidate")" == "$engine_tree" &&
+            "$(evidence sha256 "$candidate")" == "$(sha256sum < "$candidate" | cut -d' ' -f1)" ]]; then
+            engine_binary="$candidate"
+            break
+        fi
+    done < <(ls -t "$cache/$engine_dir"/pd2-launcher-*-aarch64 2>/dev/null || true)
     if [[ -z "$engine_binary" ]]; then
-        echo "refusing: a release APK needs the engine built from the sources engine.lock pins (commit $(pin commit)," \
-            "source_sha256 $(pin source_sha256)) in $cache/$engine_dir (PD2_RELEASE_BUILD=1 engine/build.sh);" \
-            "PD2_ENGINE_BINARY is not used for a release" >&2
+        echo "refusing: a release APK needs the engine of this commit's engine files (engine_tree $engine_tree)" \
+            "in $cache/$engine_dir (PD2_RELEASE_BUILD=1 engine/build.sh); PD2_ENGINE_BINARY is not used for a release" >&2
         exit 1
     fi
 else
@@ -174,6 +171,12 @@ fi
 engine_staged="$here/app/engine/arm64-v8a/libpd2launcher.so"
 if [[ "$target" == release ]] && ! grep -qx 'release_build=1' "$engine_binary.build-evidence.txt" 2>/dev/null; then
     echo "refusing: a release APK needs a release engine, whose build evidence says release_build=1 (PD2_RELEASE_BUILD=1 engine/build.sh); found: ${engine_binary:-none}" >&2
+    exit 1
+fi
+if [[ "$target" == release ]] && ! grep -qx 'package_identity=native-aarch64-binary' "$engine_binary.build-evidence.txt"; then
+    echo "refusing: a release APK needs an engine that attested its standalone ARM64 identity, whose build evidence says" \
+        "package_identity=native-aarch64-binary (PD2_RELEASE_BUILD=1 engine/build.sh --attest on an ARM64 host or under qemu-user);" \
+        "found: $(sed -n 's/^package_identity=//p' "$engine_binary.build-evidence.txt") in $engine_binary" >&2
     exit 1
 fi
 if [[ -n "$engine_binary" && -f "$engine_binary" ]]; then
@@ -204,7 +207,7 @@ if [[ "$system_driver" == 1 && ("$target" == app || "$target" == release) ]]; th
         [[ "$(cat "$devdriver_out/BUILDINFO" 2>/dev/null)" != "$("$here/devdriver/build.sh" --identity)" ]]; then
         echo "building the system-driver server into $devdriver_out (devdriver/build.sh)"
         PD2_DEVDRIVER_SRC="${PD2_DEVDRIVER_SRC:-$cache/devdriver/src}" PD2_DEVDRIVER_WORK="${PD2_DEVDRIVER_WORK:-$cache/devdriver/build}" \
-            "$here/devdriver/build.sh" "$devdriver_out"
+            PD2_ANDROID_BUILD_IMAGE="$image" "$here/devdriver/build.sh" "$devdriver_out"
     fi
     for server in virgl_test_server virgl_render_server virgl_test_server_gl; do
         staged="$here/app/system-driver/jniLibs/arm64-v8a/lib$server.so"
@@ -274,6 +277,7 @@ if [[ "$target" == app || "$target" == release ]]; then
 fi
 
 run_args=(--rm -v "$here:/work" -v "$cache:/cache")
+signing_file=""
 
 # Release signing (docs/BUILDING.md): the release key's folder, outside the
 # repository, mounted read-only; app/build.gradle.kts reads release-signing.properties there.
@@ -284,14 +288,24 @@ if [[ "$target" == release ]]; then
         exit 1
     fi
     run_args+=(-v "$signing_dir:/signing:ro" -e PD2_RELEASE_SIGNING=/signing/release-signing.properties)
+    signing_file="$signing_dir/release-signing.properties"
 fi
-if [[ "$engine" == podman ]]; then
+if [[ "$on_host" == 1 ]]; then
+    :
+elif [[ "$engine" == podman ]]; then
     run_args+=(--userns=keep-id)
 else
     run_args+=(--user "$(id -u):$(id -g)")
 fi
 
 run_gradle() {
+    if [[ "$on_host" == 1 ]]; then
+        # As in the container: the caches in $cache; apksigner and zipalign of build-tools 36.0.0.
+        (cd "$here" && env ANDROID_USER_HOME="$cache" GRADLE_USER_HOME="$cache/gradle" MAVEN_USER_HOME="$cache/m2" \
+            ${signing_file:+PD2_RELEASE_SIGNING="$signing_file"} PATH="$ANDROID_HOME/build-tools/36.0.0:$PATH" \
+            sh -c "./gradlew --no-daemon $tasks$after")
+        return
+    fi
     "$engine" run "${run_args[@]}" "$@" \
         -e PD2_ANDROID_IN_CONTAINER=1 \
         -e HOME=/cache/home \
@@ -315,7 +329,7 @@ lint_failure() {
 }
 # AGP reads ANDROID_USER_HOME as its ".android" directory, so the debug keystore is $cache/debug.keystore.
 if ! run_gradle "${net_args[@]}" 2>&1 | tee "$run_log"; then
-    if [[ ${#net_args[@]} -eq 0 ]] && network_failure; then
+    if [[ "$on_host" != 1 && ${#net_args[@]} -eq 0 ]] && network_failure; then
         echo "gradle run failed on the network; retrying with --network host" >&2
         run_gradle --network host
     else
@@ -328,10 +342,6 @@ if ! run_gradle "${net_args[@]}" 2>&1 | tee "$run_log"; then
     fi
 fi
 
-if [[ "$target" == mockup || "$target" == spike ]]; then
-    echo "APK: $here/$target/build/outputs/apk/debug/$target-debug.apk"
-    exit 0
-fi
 if [[ "$target" == check ]]; then
     if [[ -d "$here/app/src/test" ]]; then
         echo "check passed: the debug APK compiles, the JVM tests pass and the release lint check passes"

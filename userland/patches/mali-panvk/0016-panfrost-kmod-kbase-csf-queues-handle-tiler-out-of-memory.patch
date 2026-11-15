@@ -1,0 +1,33 @@
+panfrost/kmod: kbase on CSF lets the queues handle tiler out of memory
+
+PanVK's command streams install a handler for the tiler's out-of-memory exception
+(cs_set_exception_handler, MALI_CS_EXCEPTION_TYPE_TILER_OOM): incremental rendering, which draws a
+render pass in parts when the tiler heap is full. kbase gives the exception to that handler only
+for a group made with BASE_CSF_TILER_OOM_EXCEPTION_FLAG in csi_handlers (csf/mali_base_csf_kernel.h).
+The tree left the field 0, so kbase grew the heap itself up to its maximum, and a render pass that
+needed more made the group fatal (a lost device). Our own backend sets the flag too (mesa-kbase
+kbase_kmod_csf.c). The 1.6 layout of patch 0012 has no such field: nothing changes on such a kernel.
+
+--- a/src/panfrost/lib/kmod/kbase_kmod.c
++++ b/src/panfrost/lib/kmod/kbase_kmod.c
+@@ -2274,6 +2274,8 @@ struct kbase_ioctl_cs_tiler_heap_term {
+    _IOW(KBASE_IOCTL_TYPE, 43, struct kbase_ioctl_cs_queue_group_term)
+ #define KBASE_IOCTL_CS_TILER_HEAP_INIT                                                            \
+    _IOWR(KBASE_IOCTL_TYPE, 48, union kbase_ioctl_cs_tiler_heap_init)
++/* csf/mali_base_csf_kernel.h: the group's CSIs have their own handler for this exception. */
++#define BASE_CSF_TILER_OOM_EXCEPTION_FLAG (1u << 0)
+ #define KBASE_IOCTL_CS_QUEUE_GROUP_CREATE_1_6                                                     \
+    _IOWR(KBASE_IOCTL_TYPE, 42, union kbase_ioctl_cs_queue_group_create_1_6)
+ #define KBASE_IOCTL_CS_TILER_HEAP_INIT_1_13                                                       \
+@@ -2725,6 +2727,11 @@ pan_kmod_kbase_csf_group_create(struct pan_kmod_dev *dev, unsigned nr_queues,
+          .tiler_max = 1,
+          .fragment_max = max_fragment,
+          .compute_max = max_compute,
++         /* The firmware runs the queue's own tiler OOM handler (cs_set_exception_handler):
++          * PanVK's incremental rendering. Without it kbase grows the heap itself up to its
++          * maximum, and a render pass that needs more makes the group fatal. The 1.6 layout
++          * below has no such field. */
++         .csi_handlers = BASE_CSF_TILER_OOM_EXCEPTION_FLAG,
+       },
+    };
+    int ret = -1;

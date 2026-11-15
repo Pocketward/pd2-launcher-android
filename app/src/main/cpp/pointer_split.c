@@ -1,6 +1,7 @@
 // Detailed logging's split of the pointer's delay after the app's write into x-input-relay's
 // socket (pointer_split.h).
 #include "pointer_split.h"
+#include "split_stats.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -40,25 +41,6 @@ void split_move(struct pointer_split *s, int64_t written) {
     s->count++;
 }
 
-// From [from] to [to] in whole microseconds, at least 0.
-static int32_t micros(int64_t from, int64_t to) {
-    int64_t d = to - from;
-    if (d <= 0) return 0;
-    d = (d + 500) / 1000;
-    return d > INT32_MAX ? INT32_MAX : (int32_t)d;
-}
-
-static int ascending(const void *a, const void *b) {
-    int32_t x = *(const int32_t *)a, y = *(const int32_t *)b;
-    return (x > y) - (x < y);
-}
-
-// The value at [percent] of the [n] values of [sorted], by the nearest rank.
-static int32_t rank(const int32_t *sorted, int n, int percent) {
-    int i = (n * percent + 99) / 100 - 1;
-    return sorted[i < 0 ? 0 : i >= n ? n - 1 : i];
-}
-
 // The window's summary into [out]; the next window starts empty.
 static void summarize(struct pointer_split *s, struct split_summary *out) {
     memset(out, 0, sizeof(*out));
@@ -66,15 +48,8 @@ static void summarize(struct pointer_split *s, struct split_summary *out) {
     out->moves = s->samples;
     out->frames = s->frames;
     out->not_counted = s->not_counted;
-    for (int k = 0; k < SPLIT_PARTS && s->samples > 0; k++) {
-        qsort(s->us[k], (size_t)s->samples, sizeof(int32_t), ascending);
-        // A time not known is -1 (clock -> latch without a latch time): not in the ranks.
-        int unknown = 0;
-        while (unknown < s->samples && s->us[k][unknown] < 0) unknown++;
-        int known = s->samples - unknown;
-        out->median_us[k] = known > 0 ? rank(s->us[k] + unknown, known, 50) : -1;
-        out->p95_us[k] = known > 0 ? rank(s->us[k] + unknown, known, 95) : -1;
-    }
+    // A time not known is -1 (clock -> latch without a latch time): not in the ranks.
+    for (int k = 0; k < SPLIT_PARTS && s->samples > 0; k++) split_ranks(s->us[k], s->samples, &out->median_us[k], &out->p95_us[k]);
     s->since = s->last = 0;
     s->samples = s->frames = s->not_counted = 0;
 }
@@ -96,14 +71,14 @@ int split_shown(struct pointer_split *s, const struct split_frame *frame, struct
             continue;
         }
         int n = s->samples++;
-        s->us[SPLIT_WRITE_ACQUIRE][n] = micros(written, frame->acquired);
-        s->us[SPLIT_ACQUIRE_PRESENT][n] = micros(frame->acquired, frame->presented);
-        s->us[SPLIT_PRESENT_CLOCK][n] = micros(frame->presented, frame->clock);
-        s->us[SPLIT_PRESENT_GPU][n] = micros(frame->presented, frame->gpu_done);
-        s->us[SPLIT_CLOCK_APPLY][n] = micros(frame->clock, frame->applied);
-        s->us[SPLIT_APPLY_SCREEN][n] = micros(frame->applied, frame->screen);
-        s->us[SPLIT_CLOCK_LATCH][n] = frame->latched > 0 ? micros(frame->clock, frame->latched) : -1;
-        s->us[SPLIT_WRITE_SCREEN][n] = micros(written, frame->screen);
+        s->us[SPLIT_WRITE_ACQUIRE][n] = split_micros(written, frame->acquired);
+        s->us[SPLIT_ACQUIRE_PRESENT][n] = split_micros(frame->acquired, frame->presented);
+        s->us[SPLIT_PRESENT_CLOCK][n] = split_micros(frame->presented, frame->clock);
+        s->us[SPLIT_PRESENT_GPU][n] = split_micros(frame->presented, frame->gpu_done);
+        s->us[SPLIT_CLOCK_APPLY][n] = split_micros(frame->clock, frame->applied);
+        s->us[SPLIT_APPLY_SCREEN][n] = split_micros(frame->applied, frame->screen);
+        s->us[SPLIT_CLOCK_LATCH][n] = frame->latched > 0 ? split_micros(frame->clock, frame->latched) : -1;
+        s->us[SPLIT_WRITE_SCREEN][n] = split_micros(written, frame->screen);
         counted = 1;
     }
     if (took) {
