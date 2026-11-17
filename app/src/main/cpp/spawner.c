@@ -16,6 +16,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -111,13 +112,26 @@ static void free_strings(char **strings) {
     free(strings);
 }
 
-// Returns the child's pid, or -errno. [fd3]: a descriptor the child gets as its descriptor 3, or -1.
+#define MAX_INHERITED 4
+
+// Returns the child's pid, or -errno. [inherited]: descriptors the child gets as its descriptors
+// 3, 4, ... in that order.
 JNIEXPORT jint JNICALL Java_com_pd2launcher_app_Spawner_nativeSpawn(
     JNIEnv *env, jclass clazz, jstring path, jobjectArray argv, jobjectArray envp, jint stdin_fd,
-    jint output_fd, jint fd3) {
+    jint output_fd, jintArray inherited) {
     (void)clazz;
     int result = 0;
     pid_t pid = 0;
+    jsize count = (*env)->GetArrayLength(env, inherited);
+    if (count > MAX_INHERITED) return -EINVAL;
+    jint sources[MAX_INHERITED];
+    (*env)->GetIntArrayRegion(env, inherited, 0, count, sources);
+    // Each inherited descriptor is copied above the child's numbers first: a dup2 onto a number
+    // that a later source still is would close that source in the child, and a dup2 onto itself
+    // would leave it close-on-exec on Androids whose posix_spawn predates POSIX's rule for that
+    // case. The copies are close-on-exec; the child gets only their dup2s.
+    int copies[MAX_INHERITED];
+    for (jsize i = 0; i < count; i++) copies[i] = -1;
     // Each copy only while the one before worked: a failed one may leave an exception pending,
     // and no other JNI call may follow it.
     char **child_argv = copy_strings(env, argv);
@@ -127,13 +141,9 @@ JNIEXPORT jint JNICALL Java_com_pd2launcher_app_Spawner_nativeSpawn(
         result = -ENOMEM;
         goto out;
     }
-    // A descriptor that already is 3 is copied first: a dup2 onto itself would leave it
-    // close-on-exec on Androids whose posix_spawn predates POSIX's rule for that case. Without
-    // the copy the child would start without it, so the spawn fails instead.
-    int fd3_copy = -1;
-    if (fd3 == 3) {
-        fd3_copy = fcntl(fd3, F_DUPFD_CLOEXEC, 4);
-        if (fd3_copy < 0) {
+    for (jsize i = 0; i < count; i++) {
+        copies[i] = fcntl(sources[i], F_DUPFD_CLOEXEC, 3 + count);
+        if (copies[i] < 0) {
             result = -errno;
             goto out;
         }
@@ -150,7 +160,7 @@ JNIEXPORT jint JNICALL Java_com_pd2launcher_app_Spawner_nativeSpawn(
     posix_spawn_file_actions_adddup2(&actions, stdin_fd, 0);
     posix_spawn_file_actions_adddup2(&actions, output_fd, 1);
     posix_spawn_file_actions_adddup2(&actions, output_fd, 2);
-    if (fd3 >= 0) posix_spawn_file_actions_adddup2(&actions, fd3_copy >= 0 ? fd3_copy : fd3, 3);
+    for (jsize i = 0; i < count; i++) posix_spawn_file_actions_adddup2(&actions, copies[i], 3 + i);
 
     // A new session, no blocked signals, and default dispositions: the app's
     // runtime blocks and handles signals the child must not inherit.
@@ -172,7 +182,6 @@ JNIEXPORT jint JNICALL Java_com_pd2launcher_app_Spawner_nativeSpawn(
     result = posix_spawn(&pid, child_path, &actions, &attr, child_argv, child_envp);
     umask(umask_before);
     posix_spawn_file_actions_destroy(&actions);
-    if (fd3_copy >= 0) close(fd3_copy);
     posix_spawnattr_destroy(&attr);
     if (result != 0) {
         result = -result;
@@ -199,10 +208,44 @@ JNIEXPORT jint JNICALL Java_com_pd2launcher_app_Spawner_nativeSpawn(
     result = pid;
 
 out:
+    for (jsize i = 0; i < count; i++) {
+        if (copies[i] >= 0) close(copies[i]);
+    }
     if (child_path) (*env)->ReleaseStringUTFChars(env, path, child_path);
     free_strings(child_argv);
     free_strings(child_envp);
     return result;
+}
+
+// A listening AF_UNIX stream socket bound to the file [path], close-on-exec (a child gets it only
+// as an inherited descriptor); a file left at that path is removed first. Returns the descriptor,
+// or -errno (-ENAMETOOLONG when the path does not fit sun_path).
+JNIEXPORT jint JNICALL Java_com_pd2launcher_app_Spawner_nativeListen(JNIEnv *env, jclass clazz,
+                                                                     jstring path, jint backlog) {
+    (void)clazz;
+    struct sockaddr_un address;
+    memset(&address, 0, sizeof(address));
+    address.sun_family = AF_UNIX;
+    const char *chars = (*env)->GetStringUTFChars(env, path, NULL);
+    if (chars == NULL) return -ENOMEM;
+    size_t length = strlen(chars);
+    int result = 0;
+    if (length >= sizeof(address.sun_path)) {
+        result = -ENAMETOOLONG;
+    } else {
+        memcpy(address.sun_path, chars, length + 1);
+    }
+    (*env)->ReleaseStringUTFChars(env, path, chars);
+    if (result != 0) return result;
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) return -errno;
+    unlink(address.sun_path);
+    if (bind(fd, (struct sockaddr *)&address, sizeof(address)) != 0 || listen(fd, backlog) != 0) {
+        result = -errno;
+        close(fd);
+        return result;
+    }
+    return fd;
 }
 
 // A connected AF_UNIX stream pair, both ends close-on-exec (the child's end
@@ -224,7 +267,7 @@ JNIEXPORT jintArray JNICALL Java_com_pd2launcher_app_Spawner_nativeSocketPair(JN
     return result;
 }
 
-// A new, empty memfd named [name], close-on-exec (a child gets it only as its descriptor 3), that
+// A new, empty memfd named [name], close-on-exec (a child gets it only as an inherited descriptor), that
 // can grow but never shrink (F_SEAL_SHRINK): the app maps it, and a process of the app's user that
 // reached it through /proc and cut it shorter would end the app with SIGBUS on its next read;
 // Xvfb only grows it to the framebuffer's size. Returns the descriptor, or -errno.

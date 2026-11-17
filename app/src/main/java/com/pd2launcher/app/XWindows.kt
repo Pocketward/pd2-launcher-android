@@ -4,6 +4,7 @@ import android.net.LocalSocket
 import android.net.LocalSocketAddress
 import java.io.ByteArrayOutputStream
 import java.io.EOFException
+import java.io.File
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
@@ -35,15 +36,13 @@ object XWindows {
     data class Window(val width: Int, val height: Int)
 
     /**
-     * The windows that show on the X screen of [display] (":0", Xvfb's abstract socket
-     * `@/tmp/.X11-unix/X0`), bottom to top, or null when Xvfb does not answer, refuses the
-     * connection or the answer is broken.
+     * The windows that show on the X screen that listens on [socketFile] ([XSocket]), bottom to
+     * top, or null when Xvfb does not answer, refuses the connection or the answer is broken.
      */
-    fun showing(display: String): List<Window>? {
-        val number = display.removePrefix(":").substringBefore('.').toIntOrNull() ?: return null
+    fun showing(socketFile: File): List<Window>? {
         val socket = LocalSocket()
         return try {
-            socket.connect(LocalSocketAddress("/tmp/.X11-unix/X$number", LocalSocketAddress.Namespace.ABSTRACT))
+            socket.connect(LocalSocketAddress(socketFile.path, LocalSocketAddress.Namespace.FILESYSTEM))
             socket.soTimeout = TIMEOUT_MS
             windows(socket.inputStream, socket.outputStream)
         } catch (_: IOException) {

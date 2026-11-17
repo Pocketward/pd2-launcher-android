@@ -44,9 +44,6 @@ class Framebuffer private constructor(
     }
 
     companion object {
-        /** Xvfb's descriptor for it: the third after standard input, output and error. */
-        const val XVFB_DESCRIPTOR = 3
-
         /** A memfd [memory] (owned by the result, which [close] closes). */
         fun inMemory(memory: ParcelFileDescriptor): Framebuffer = Framebuffer(
             open = { ParcelFileDescriptor.AutoCloseInputStream(memory.dup()).channel },

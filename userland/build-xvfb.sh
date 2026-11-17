@@ -6,8 +6,8 @@
 #   XKM output dir     XKM_OUTPUT_DIR      xkb/ddxLoad.c:63-87 (falls back to /tmp/), xkb_output_dir
 #   XKB data           XKB_BASE_DIRECTORY  xkb/xkbInit.c:90 (also -xkbdir at run time), xkb_dir
 #   GLX swrast driver  DRI_DRIVER_PATH     include/meson.build:215 (from dri.pc dridriverdir)
-# and Android needs two source changes (patches/xserver/): -nolock for every uid (the lock file
-# needs /tmp and a hard link, os/utils.c LockServer) and a build-time shell for xkbcomp.
+# and Android needs source changes (patches/xserver/README.md): -nolock for every uid, a build-time
+# shell for xkbcomp, the framebuffer in an inherited memfd, and the listener on an inherited socket.
 # The build goes to the cache's xvfb-out/ with its BUILDINFO (build_identity in config.sh: image,
 # package lock, prefix, X server pin, the compiled-in paths, this script, the patches), which a
 # later run with the same identity installs without building. `build-xvfb.sh --identity` prints that

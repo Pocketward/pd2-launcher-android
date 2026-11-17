@@ -2761,7 +2761,7 @@ class SessionService : Service() {
                     if (pixels != null) launcherLog.screen(OfficialLauncherLog.picture(pixels.header.width, pixels.header.height, pixels::pixel))
                 }
                 // Only while the launcher runs alone: the windows of its game or updater are not its own.
-                val windows = if (LauncherHang.watched(processes)) withContext(Dispatchers.IO) { XWindows.showing(GameEnvironment.DISPLAY) } else null
+                val windows = if (LauncherHang.watched(processes)) withContext(Dispatchers.IO) { XWindows.showing(paths.xSocket) } else null
                 val shown = windows?.isNotEmpty()
                 if (shown != null && shown != windowShown) {
                     windowShown = shown
@@ -3097,7 +3097,7 @@ class SessionService : Service() {
      * sound needs nothing here: Wine finds its ALSA configuration in `XDG_RUNTIME_DIR`).
      */
     private fun gameSessionEnvironment(): List<String> = listOf(
-        "DISPLAY=${GameEnvironment.DISPLAY}",
+        "DISPLAY=${XSocket.display(paths.xSocket)}",
         "PD2_GAMEPAD_FILE=${GameEnvironment.gamepadFile(paths).path}",
     )
 

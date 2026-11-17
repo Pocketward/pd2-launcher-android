@@ -50,6 +50,11 @@ class SessionPaths(val data: String) {
      */
     val presentSocket = File(runtimeDir, "present.sock")
     /**
+     * The X screen's socket ([XSocket]): the app binds it and Xvfb listens on it; its path is
+     * the DISPLAY of every X client (the engine and its Wine processes, x-input-relay).
+     */
+    val xSocket = File(runtimeDir, "X0")
+    /**
      * The bytes this app has received (Android's count for its user, which Blizzard's downloader
      * under Wine shares), written by the session service while a job downloads or installs
      * ([ReceivedBytes]); the engine reads it as `PD2_RECEIVED_BYTES_FILE` ([engineEnvironment]),
@@ -78,7 +83,7 @@ class SessionPaths(val data: String) {
      */
     val systemFonts = File(runtimeDir, "system-fonts")
     /** The Unix sockets the session binds below [data]: their paths must fit `sun_path`. */
-    val sockets: List<File> get() = listOf(presentSocket, vtestSocket)
+    val sockets: List<File> get() = listOf(presentSocket, vtestSocket, xSocket)
 
     /** The Launcher's managed root, `<launcher home>/game`. */
     val managedRoot = File(launcherHome, "game")

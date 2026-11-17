@@ -1,0 +1,82 @@
+--- a/hw/vfb/InitOutput.c
++++ b/hw/vfb/InitOutput.c
+@@ -55,6 +55,7 @@
+ #endif                          /* HAVE_MMAP */
+ #include <sys/stat.h>
+ #include <errno.h>
++#include <fcntl.h>
+ #ifndef WIN32
+ #include <sys/param.h>
+ #endif
+@@ -64,6 +65,7 @@
+ #include <sys/shm.h>
+ #endif                          /* HAS_SHM */
+ #include "dix.h"
++#include "opaque.h"
+ #include "miline.h"
+ #include "glx_extinit.h"
+ #include "randrstr.h"
+@@ -117,6 +119,9 @@
+ 
+ static Bool vfbPixmapDepths[33];
+ 
++/* -listenfd: an inherited, listening socket that is the server's only listener, -1 none */
++static int listenfd = -1;
++
+ #ifdef HAVE_MMAP
+ static char *pfbdir = NULL;
+ /* -fbfd: screen 0's framebuffer in this inherited descriptor (a memfd), -1 none */
+@@ -251,6 +256,7 @@
+     ErrorF("-blackpixel n          pixel value for black\n");
+     ErrorF("-whitepixel n          pixel value for white\n");
+ 
++    ErrorF("-listenfd fd           listen only on inherited listening socket fd\n");
+ #ifdef HAVE_MMAP
+     ErrorF
+         ("-fbdir directory       put framebuffers in mmap'ed files in directory\n");
+@@ -373,6 +379,13 @@
+         return 2;
+     }
+ 
++    if (strcmp(argv[i], "-listenfd") == 0) {    /* -listenfd descriptor */
++        CHECK_FOR_REQUIRED_ARGUMENTS(1);
++        listenfd = atoi(argv[++i]);
++        NoListenAll = TRUE;
++        return 2;
++    }
++
+     if (strcmp(argv[i], "-fbfd") == 0) {        /* -fbfd descriptor */
+         CHECK_FOR_REQUIRED_ARGUMENTS(1);
+         fbfd = atoi(argv[++i]);
+@@ -1029,6 +1042,13 @@
+ 
+     xorgGlxCreateVendor();
+ 
++    /* The listener stays across server resets (ResetWellKnownSockets keeps it).
++     * A child the server starts (xkbcomp) must not inherit it. */
++    if (listenfd >= 0 && serverGeneration == 1) {
++        fcntl(listenfd, F_SETFD, FD_CLOEXEC);
++        ListenOnOpenFD(listenfd, FALSE);
++    }
++
+     for (i = 1; i <= 32; i++) {
+         if (vfbPixmapDepths[i]) {
+             if (NumFormats >= MAXFORMATS)
+--- a/hw/vfb/man/Xvfb.man
++++ b/hw/vfb/man/Xvfb.man
+@@ -70,6 +70,15 @@
+ This option only exists on machines that have the mmap and msync system
+ calls.
+ .TP 4
++.B "\-listenfd \fIdescriptor\fP"
++This option makes the already open, listening socket \fIdescriptor\fP the
++server inherited (for example a Unix socket its parent bound to a file in a
++private folder) the server's only listener: no other listening socket is
++created, as with \fB\-nolisten\fP for every transport, and no lock file.
++Clients connect with \fBDISPLAY\fP set to the socket's path. The server
++never removes the socket's file. The server's own \fBDISPLAY\fP must not
++name that path.
++.TP 4
+ .B "\-fbfd \fIdescriptor\fP"
+ This option puts screen 0's framebuffer, laid out as with \fB\-fbdir\fP,
+ in the already open file \fIdescriptor\fP the server inherited (for

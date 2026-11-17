@@ -78,11 +78,10 @@ class ProcessStarter(
     private val logsByName = HashMap<String, RotatingLog>()
 
     /**
-     * Starts [path] with [argv] and [env] as [name]; [stdin] (null: /dev/null) and [fd3] (the
-     * child's descriptor 3, when given) stay owned by the caller. Each line of its output also
-     * goes to [mirror], when there is one. [rewrite] gives each line as its log writes it (null:
-     * left out): the expected lines of a helper can go in one line. [onExit] runs on the reaper
-     * thread after the exit is logged.
+     * Starts [path] with [argv] and [env] as [name]; [stdin] (null: /dev/null) and [inherited]
+     * (the child's descriptors 3, 4, ... in order) stay owned by the caller. Each line of its output also
+     * goes to [mirror], when there is one. [onExit] runs on the reaper thread after the exit is
+     * logged.
      */
     fun start(
         name: String,
@@ -90,9 +89,8 @@ class ProcessStarter(
         argv: List<String>,
         env: List<String>,
         stdin: ParcelFileDescriptor? = null,
-        fd3: ParcelFileDescriptor? = null,
+        inherited: List<ParcelFileDescriptor> = emptyList(),
         mirror: ((String) -> Unit)? = null,
-        rewrite: (String) -> String? = { it },
         onExit: (OwnedProcess, ExitStatus) -> Unit = { _, _ -> },
     ): OwnedProcess {
         val wrapper = harness()
@@ -119,7 +117,7 @@ class ProcessStarter(
             // Held until the process is registered, so its exit cannot be handled first.
             synchronized(lock) {
                 var started: OwnedProcess? = null
-                val pid = Spawner.spawn(program, arguments, env, stdin ?: devNull!!, pipe[1], fd3) { status ->
+                val pid = Spawner.spawn(program, arguments, env, stdin ?: devNull!!, pipe[1], inherited) { status ->
                     synchronized(lock) { OwnedProcesses.remove(started?.pid ?: -1) }
                     // The exit is handled whatever the logging does: the spawner drops an
                     // exception here, and with it the exit, so the engine would show as running.
@@ -151,7 +149,7 @@ class ProcessStarter(
         startLine = line
         serviceLog.line(line, startedAt)
         Log.i(TAG, line)
-        Thread({ drain(pipe[0], log, drained, open, rewrite, lines) }, "pd2-log-$name").apply { isDaemon = true }.start()
+        Thread({ drain(pipe[0], log, drained, open, lines) }, "pd2-log-$name").apply { isDaemon = true }.start()
         return process
     }
 
@@ -161,10 +159,9 @@ class ProcessStarter(
         log: RotatingLog,
         drained: CountDownLatch,
         open: () -> Unit,
-        rewrite: (String) -> String?,
         mirror: ((String) -> Unit)?,
     ) {
-        val output = StampedOutput(log, open, rewrite, mirror)
+        val output = StampedOutput(log, open, mirror)
         try {
             ParcelFileDescriptor.AutoCloseInputStream(read).use { input: FileInputStream ->
                 val buffer = ByteArray(8192)
@@ -328,19 +325,17 @@ class UidCleanup(
  * pieces), each with the time the app read it ([RotatingLog.stamp]), which is when the process
  * wrote it, give or take the pipe: one stamp and one write of the file for each read ([feed]). A
  * line with no newline at the end of the output gets its stamp too ([end]). [open] runs before the
- * first write (the start line, [ProcessStarter]); [rewrite] gives each line as the log writes it
- * (null: left out); each line also goes to [mirror] as it came.
+ * first write (the start line, [ProcessStarter]); each line also goes to [mirror].
  */
 class StampedOutput(
     private val log: RotatingLog,
     private val open: () -> Unit = {},
-    private val rewrite: (String) -> String? = { it },
     private val mirror: ((String) -> Unit)? = null,
 ) {
     private val out = ByteArrayOutputStream()
     private var stamp = ""
     private val splitter = LineSplitter { line ->
-        rewrite(line)?.let { out.write("$stamp $it\n".toByteArray()) }
+        out.write("$stamp $line\n".toByteArray())
         mirror?.invoke(line)
     }
 

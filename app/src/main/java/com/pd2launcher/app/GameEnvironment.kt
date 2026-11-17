@@ -84,6 +84,8 @@ class GameEnvironment(
     @Volatile private var relay: OwnedProcess? = null
     private var screen: Framebuffer? = null
     private var relaySocket: ParcelFileDescriptor? = null
+    /** The app's copy of the X socket, from its bind until Xvfb has it ([XSocket]). */
+    private var listener: ParcelFileDescriptor? = null
     private var audio: GameAudio? = null
     @Volatile private var inBackground = false
     @Volatile private var soundInBackground = true
@@ -142,13 +144,17 @@ class GameEnvironment(
                 GraphicsRoute.VIRGL -> startVirglServer()
                 else -> null
             }
-            val xvfbArguments = listOf(
-                "Xvfb", DISPLAY, "-screen", "0", "${width}x${height}x24",
-            ) + (if (memory != null) listOf("-fbfd", "${Framebuffer.XVFB_DESCRIPTOR}") else listOf("-fbdir", paths.framebufferDir.path)) + listOf(
-                "-extension", "MIT-SHM",
-                "-nolock", "-nolisten", "tcp",
-                "-xkbdir", File(paths.userland, "usr/share/X11/xkb").path,
+            // Xvfb's first inherited descriptor: the X socket, bound here before any client looks
+            // for it; the next: the framebuffer's memfd.
+            val socket = XSocket.listen(paths.xSocket).also { listener = it }
+            val inherited = listOfNotNull(socket, memory)
+            val xvfbArguments = xvfbArguments(
+                width, height,
+                framebuffer = if (memory != null) "-fbfd" to "${Spawner.FIRST_INHERITED + 1}" else "-fbdir" to paths.framebufferDir.path,
+                listenDescriptor = Spawner.FIRST_INHERITED,
+                xkbDir = File(paths.userland, "usr/share/X11/xkb"),
             )
+            val xvfbEnv = xvfbEnvironment(env)
             // On the little cores (Android's taskset sets its own affinity, which Xvfb keeps):
             // copying every frame there leaves the big cores' cache to the game. Some firmware
             // refuses taskset that affinity: then Xvfb starts without it ([LittleCoresStart]).
@@ -162,10 +168,12 @@ class GameEnvironment(
                 else -> TASKSET to listOf("taskset", littleCores, xvfbPath) + xvfbArguments.drop(1)
             }
             val x = littleCoresStart.start(pinned, xvfbPath to xvfbArguments, log, start = { program, arguments ->
-                starter.start("xvfb", program, arguments, env, fd3 = memory, rewrite = XvfbListenerLines()::rewrite) { process, _ ->
+                starter.start("xvfb", program, arguments, xvfbEnv, inherited = inherited) { process, _ ->
                     if (xvfb == process) xvfb = null
                 }.also { xvfb = it }
             }) { awaitFramebuffer(it, framebuffer) }
+            // Xvfb holds the socket now: when it ends, a client is refused at once instead of waiting.
+            closeListener()
             _framebuffer.value = framebuffer
 
             // Before any Wine process of the game: Wine's ALSA output finds its configuration and the ring.
@@ -201,7 +209,7 @@ class GameEnvironment(
         val r = try {
             starter.start(
                 "x-input-relay", File(bin, "x-input-relay").path, listOf("x-input-relay"),
-                env.filterNot { it.startsWith("DISPLAY=") } + "DISPLAY=$DISPLAY", pair.child,
+                env.filterNot { it.startsWith("DISPLAY=") } + "DISPLAY=${XSocket.display(paths.xSocket)}", pair.child,
             ) { process, _ -> if (relay == process) relay = null }
         } catch (error: IOException) {
             pair.app.close()
@@ -372,6 +380,7 @@ class GameEnvironment(
         PresentServer.stopCurrent()
         FrameClock.stop()
         closeScreen()
+        removeXSocket()
         val owned = listOfNotNull(relay, xvfb, vtest)
         if (owned.isEmpty()) {
             stopServerChildren()
@@ -393,6 +402,7 @@ class GameEnvironment(
         PresentServer.stopCurrent()
         FrameClock.stop()
         closeScreen()
+        removeXSocket()
         relay = null
         xvfb = null
         vtest = null
@@ -404,6 +414,20 @@ class GameEnvironment(
         pictureSource = null
         screen?.close()
         screen = null
+    }
+
+    private fun closeListener() {
+        try {
+            listener?.close()
+        } catch (_: IOException) {
+        }
+        listener = null
+    }
+
+    /** No client finds the X screen any more (Xvfb never removes the socket's file). */
+    private fun removeXSocket() {
+        closeListener()
+        paths.xSocket.delete()
     }
 
     private fun stopAudio() {
@@ -445,11 +469,20 @@ class GameEnvironment(
 
     companion object {
         /**
-         * Xvfb's display: `:0` for the release app, `:1` for the development build (app/build.gradle.kts),
-         * as its userland.env says, so both apps' game environments can run at once (Xvfb's abstract socket
-         * `@/tmp/.X11-unix/X<n>` is shared by every app on the device).
+         * Xvfb's command line: its only listener the inherited X socket [listenDescriptor]
+         * ([XSocket]; the display number then names nothing), the [framebuffer] option and its
+         * value (`-fbfd` and a descriptor, or `-fbdir` and a folder).
          */
-        const val DISPLAY = BuildConfig.X_DISPLAY
+        internal fun xvfbArguments(width: Int, height: Int, framebuffer: Pair<String, String>, listenDescriptor: Int, xkbDir: File): List<String> =
+            listOf(
+                "Xvfb", ":0", "-listenfd", "$listenDescriptor", "-screen", "0", "${width}x${height}x24",
+                framebuffer.first, framebuffer.second,
+                "-extension", "MIT-SHM",
+                "-xkbdir", xkbDir.path,
+            )
+
+        /** Xvfb's environment: [env] without DISPLAY, which Xvfb would take as its socket's name (os/connection.c ListenOnOpenFD). */
+        internal fun xvfbEnvironment(env: List<String>): List<String> = env.filterNot { it.startsWith("DISPLAY=") }
         private const val TASKSET = LittleCores.TASKSET
         /** A `NAME=value` line of the debug file for the vtest server ([systemDriverDebugValues]). */
         private val DEBUG_VALUE = Regex("^[A-Za-z_][A-Za-z0-9_]*=.*$")
@@ -487,29 +520,3 @@ class GameEnvironment(
 
 /** The system-driver mode's vtest server did not start ([GameEnvironment.start]). */
 class SystemDriverStartFailed(message: String, cause: Throwable) : IOException(message, cause)
-/**
- * Xvfb's four lines at each start about the folder `/tmp/.X11-unix`, which it cannot make (no
- * app may write to `/tmp` on Android; the X screen listens on its abstract socket), as one line
- * in `xvfb.log` ([ProcessStarter.start]'s rewrite): one object for each start.
- */
-class XvfbListenerLines {
-    private var said = false
-
-    /** [line] as the log writes it: the first of the four as [LINE], the others left out, any other line as it is. */
-    fun rewrite(line: String): String? {
-        if (EXPECTED.none { line.startsWith(it) }) return line
-        if (said) return null
-        said = true
-        return LINE
-    }
-
-    companion object {
-        const val LINE = "Xvfb: no /tmp/.X11-unix listener (expected on Android)"
-        private val EXPECTED = listOf(
-            "_XSERVTransmkdir: ERROR: euid != 0,directory /tmp/.X11-unix will not be created.",
-            "_XSERVTransmkdir: ERROR: Cannot create /tmp/.X11-unix",
-            "_XSERVTransSocketUNIXCreateListener: mkdir(/tmp/.X11-unix) failed",
-            "_XSERVTransMakeAllCOTSServerListeners: failed to create listener for unix",
-        )
-    }
-}

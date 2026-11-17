@@ -1,8 +1,10 @@
 package com.pd2launcher.app
 
 import android.os.ParcelFileDescriptor
+import android.system.Os
 import android.util.Log
 import androidx.annotation.Keep
+import java.io.File
 import java.io.IOException
 
 /** How a spawned process ended: [code] when it exited, [signal] when a signal killed it. */
@@ -24,6 +26,9 @@ object Spawner {
     private val lock = Any()
     private val callbacks = HashMap<Int, (ExitStatus) -> Unit>()
 
+    /** A child's first inherited descriptor ([spawn]'s `inherited`): after standard input, output and error. */
+    const val FIRST_INHERITED = 3
+
     init {
         System.loadLibrary("spawner")
     }
@@ -35,14 +40,14 @@ object Spawner {
         envp: Array<String>,
         stdinFd: Int,
         outputFd: Int,
-        fd3: Int,
+        inherited: IntArray,
     ): Int
 
     @JvmStatic
     private external fun nativeMemfd(name: String): Int
 
     /**
-     * A new, empty memfd named [name], close-on-exec (a child gets it only as [spawn]'s `fd3`), sealed
+     * A new, empty memfd named [name], close-on-exec (a child gets it only as one of [spawn]'s `inherited`), sealed
      * against shrinking (it may only grow).
      */
     fun memfd(name: String): ParcelFileDescriptor {
@@ -54,6 +59,19 @@ object Spawner {
     @JvmStatic
     private external fun nativeSocketPair(): IntArray?
 
+    @JvmStatic
+    private external fun nativeListen(path: String, backlog: Int): Int
+
+    /**
+     * A listening Unix socket bound to [file], close-on-exec (a child gets it only as one of
+     * [spawn]'s `inherited`); a file left at that path is removed first.
+     */
+    fun listen(file: File, backlog: Int): ParcelFileDescriptor {
+        val fd = nativeListen(file.path, backlog)
+        if (fd < 0) throw IOException("listening socket $file: ${Os.strerror(-fd)}")
+        return ParcelFileDescriptor.adoptFd(fd)
+    }
+
     /** A connected socket pair; both ends close on exec. */
     fun socketPair(): SocketPair {
         val fds = nativeSocketPair() ?: throw IOException("socketpair failed")
@@ -63,8 +81,8 @@ object Spawner {
     /**
      * Start [path] with exactly [argv] and [envp]; returns its pid. [onExit] runs on
      * the child's reaper thread when it ends. [output] becomes both standard output
-     * and error, [fd3] (when given) its descriptor 3. The caller still owns [stdin], [output]
-     * and [fd3] and closes its copies once the child has them.
+     * and error, [inherited] its descriptors 3, 4, ... in that order. The caller still owns
+     * [stdin], [output] and [inherited] and closes its copies once the child has them.
      */
     fun spawn(
         path: String,
@@ -72,12 +90,13 @@ object Spawner {
         envp: List<String>,
         stdin: ParcelFileDescriptor,
         output: ParcelFileDescriptor,
-        fd3: ParcelFileDescriptor? = null,
+        inherited: List<ParcelFileDescriptor> = emptyList(),
         onExit: (ExitStatus) -> Unit = {},
     ): Int = synchronized(lock) {
         // Held across the spawn, so the reaper cannot report before the callback is in place.
         val pid = nativeSpawn(
-            path, argv.toTypedArray(), envp.toTypedArray(), stdin.fd, output.fd, fd3?.fd ?: -1,
+            path, argv.toTypedArray(), envp.toTypedArray(), stdin.fd, output.fd,
+            inherited.map { it.fd }.toIntArray(),
         )
         if (pid < 0) throw IOException("posix_spawn $path failed: errno ${-pid}")
         callbacks[pid] = onExit

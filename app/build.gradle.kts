@@ -135,12 +135,11 @@ android {
     // The debug build type is the development build: its own application id, so it installs
     // beside the release app, and its own name and launcher mark (src/debug/res). Both carry the
     // same App userland, which each rewrites for its own data folder as it unpacks it.
-    // X_DISPLAY is the game environment's X display, apart for the apps because Xvfb's abstract
-    // socket is device-wide. This line's development build (0.3) is com.pd2launcher.app.dev3,
-    // "PD2 Launcher Dev 0.3", on display :2, so it also installs beside the 0.2 line's development
-    // build (com.pd2launcher.app.dev). With the Gradle property pd2.asFexDev=true
-    // (build.sh: PD2_DEV_AS_FEX_DEV=1) it builds as com.pd2launcher.app.dev, "PD2 Launcher Dev",
-    // display :1, to install over that build: an update in place from it (docs/BUILDING.md).
+    // This line's development build (0.3) is com.pd2launcher.app.dev3, "PD2 Launcher Dev 0.3", so
+    // it also installs beside the 0.2 line's development build (com.pd2launcher.app.dev). With the
+    // Gradle property pd2.asFexDev=true (build.sh: PD2_DEV_AS_FEX_DEV=1) it builds as
+    // com.pd2launcher.app.dev, "PD2 Launcher Dev", to install over that build: an update in place
+    // from it (docs/BUILDING.md).
     val asFexDev = providers.gradleProperty("pd2.asFexDev").map { it.toBoolean() }.getOrElse(false)
     val devName = if (asFexDev) "PD2 Launcher Dev" else "PD2 Launcher Dev 0.3"
     // R8 (code shrinking) for the release build: Android keeps the app's dex code in memory, and
@@ -153,7 +152,6 @@ android {
     buildTypes {
         getByName("debug") {
             applicationIdSuffix = if (asFexDev) ".dev" else ".dev3"
-            buildConfigField("String", "X_DISPLAY", if (asFexDev) "\":1\"" else "\":2\"")
             resValue("string", "app_name", devName)
             resValue("string", "files_root_title", devName)
             if (devR8) {
@@ -162,7 +160,6 @@ android {
             }
         }
         getByName("release") {
-            buildConfigField("String", "X_DISPLAY", "\":0\"")
             signingConfig = signingConfigs.findByName("release")
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
