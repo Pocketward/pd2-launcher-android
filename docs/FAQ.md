@@ -168,7 +168,15 @@ Yes. A USB or Bluetooth mouse moves the game's cursor. Its left, right and middl
 
 ### How do I paste a trade message into the chat?
 
-Use the clipboard of Android's keyboard. Android's keyboard types the text that you paste into the game, the same as when you type it yourself.
+The game reads Android's clipboard, as on a PC:
+
+1. In a different app, for example Discord or a browser, copy the message.
+2. Go back to the game and open the chat line: **Enter** on a keyboard, or Android's keyboard from the in-game menu.
+3. Right-click in the chat line: a two-finger tap with touch. The message appears in the line. Ctrl+V on a keyboard works too.
+
+What the game copies goes to Android's clipboard too, for example an item that you copy with Ctrl+C in the inventory.
+
+You can also paste with the clipboard of Android's keyboard. Android's keyboard types the text that you paste into the game, the same as when you type it yourself.
 
 1. In a different app, for example Discord or a browser, copy the message.
 2. Go back to the game. In the in-game menu, tap **Keyboard**.

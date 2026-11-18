@@ -10,7 +10,8 @@ import java.nio.ByteOrder
 /**
  * One event for x-input-relay, the userland program that injects pointer and keys into the X
  * screen through XTEST. The format is defined in userland/x-input-relay.c
- * (`struct relay_event`): 12 bytes, little endian, `u32 type, i32 a, i32 b`.
+ * (`struct relay_event`): 12 bytes, little endian, `u32 type, i32 a, i32 b`; a [Clipboard]'s text
+ * follows its 12 bytes.
  */
 sealed class RelayEvent(val type: Int, val a: Int, val b: Int) {
     /** The pointer to ([x], [y]) on the X screen. */
@@ -40,6 +41,44 @@ sealed class RelayEvent(val type: Int, val a: Int, val b: Int) {
     data class Area(val rect: GameResolution.PictureRect) :
         RelayEvent(AREA, rect.left or (rect.top shl 16), rect.width or (rect.height shl 16))
 
+    /**
+     * Android's clipboard text for the game, [bytes] of UTF-8 (a = their count, 0 to
+     * [CLIPBOARD_MAX]), after the event's 12 bytes: x-input-relay owns the X screen's CLIPBOARD
+     * with it, which Wine gives the game's paste (userland/x-input-relay-clipboard.h). [of] makes
+     * one from a text.
+     */
+    class Clipboard(val bytes: ByteArray) : RelayEvent(CLIPBOARD, bytes.size, 0) {
+        init {
+            require(bytes.size <= CLIPBOARD_MAX) { "a clipboard text of ${bytes.size} bytes is over $CLIPBOARD_MAX" }
+        }
+
+        /** The text's length in characters (UTF-16 units), for the log. */
+        val length: Int get() = String(bytes, Charsets.UTF_8).length
+
+        override fun encode(): ByteArray = super.encode() + bytes
+
+        companion object {
+            /** [text] as UTF-8, cut after the last whole character that fits in [CLIPBOARD_MAX] bytes. */
+            fun of(text: String): Clipboard {
+                var end = 0
+                var size = 0
+                while (end < text.length) {
+                    val point = text.codePointAt(end)
+                    val bytes = when {
+                        point < 0x80 -> 1
+                        point < 0x800 -> 2
+                        point < 0x10000 -> 3
+                        else -> 4
+                    }
+                    if (size + bytes > CLIPBOARD_MAX) break
+                    size += bytes
+                    end += Character.charCount(point)
+                }
+                return Clipboard(text.substring(0, end).toByteArray(Charsets.UTF_8))
+            }
+        }
+    }
+
     companion object {
         const val SIZE = 12
         const val MOTION = 1
@@ -48,6 +87,10 @@ sealed class RelayEvent(val type: Int, val a: Int, val b: Int) {
         const val KEY = 4
         const val FOCUS = 5
         const val AREA = 6
+        const val CLIPBOARD = 7
+
+        /** The most bytes of clipboard text each way (CLIPBOARD_MAX in x-input-relay-clipboard.h). */
+        const val CLIPBOARD_MAX = 65536
 
         const val LEFT = 1
         const val MIDDLE = 2
@@ -56,7 +99,7 @@ sealed class RelayEvent(val type: Int, val a: Int, val b: Int) {
         const val WHEEL_DOWN = 5
     }
 
-    fun encode(): ByteArray =
+    open fun encode(): ByteArray =
         ByteBuffer.allocate(SIZE).order(ByteOrder.LITTLE_ENDIAN).putInt(type).putInt(a).putInt(b).array()
 }
 
@@ -103,6 +146,9 @@ sealed interface RelayWord {
 
     /** 'P': the pointer's hot spot is at [x], [y] on the X screen, while it shows. */
     data class PointerAt(val x: Int, val y: Int) : RelayWord
+
+    /** 'T': the game copied [text] (Wine took the X screen's CLIPBOARD), for Android's clipboard. */
+    data class ClipboardText(val text: String) : RelayWord
 }
 
 /**
@@ -111,7 +157,8 @@ sealed interface RelayWord {
  * the X screen (or none is named yet), and 'F' and six little-endian i32, the game's window alone
  * and where it is ([GameWindow]); on the X screen's pointer, 'I' its image ([PointerImage]: four
  * little-endian i32, then its pixels as little-endian u32), 'H' it shows nothing, and 'P' and two
- * little-endian i32, where it is.
+ * little-endian i32, where it is; on the clipboard, 'T', a little-endian u32 length (1 to
+ * [RelayEvent.CLIPBOARD_MAX]) and that many bytes of UTF-8, the game's copy.
  */
 object RelayWords {
     const val NOT_ALONE = 'C'.code
@@ -119,13 +166,15 @@ object RelayWords {
     const val POINTER = 'I'.code
     const val POINTER_HIDDEN = 'H'.code
     const val POINTER_AT = 'P'.code
+    const val CLIPBOARD_TEXT = 'T'.code
 
     /** The largest pointer image each way (POINTER_MAX in x-input-relay.c). */
     const val POINTER_MAX = 128
 
     /**
      * The next word on [input]. A byte that starts no word is skipped. Throws [IOException] at the
-     * end of the stream (the relay has gone), and for a pointer image of a size the relay never sends.
+     * end of the stream (the relay has gone), and for a pointer image or a clipboard text of a size
+     * the relay never sends.
      */
     fun read(input: InputStream): RelayWord {
         while (true) {
@@ -153,20 +202,31 @@ object RelayWords {
                     val b = numbers(input, 2)
                     return RelayWord.PointerAt(b.int, b.int)
                 }
+                CLIPBOARD_TEXT -> {
+                    val length = numbers(input, 1).int
+                    if (length !in 1..RelayEvent.CLIPBOARD_MAX) {
+                        throw IOException("x-input-relay's clipboard text of $length bytes is not 1 to ${RelayEvent.CLIPBOARD_MAX}")
+                    }
+                    return RelayWord.ClipboardText(String(bytes(input, length), Charsets.UTF_8))
+                }
             }
         }
     }
 
     /** The next [count] little-endian 32-bit numbers on [input], whole. */
-    private fun numbers(input: InputStream, count: Int): ByteBuffer {
-        val bytes = ByteArray(count * 4)
+    private fun numbers(input: InputStream, count: Int): ByteBuffer =
+        ByteBuffer.wrap(bytes(input, count * 4)).order(ByteOrder.LITTLE_ENDIAN)
+
+    /** The next [count] bytes on [input], whole. */
+    private fun bytes(input: InputStream, count: Int): ByteArray {
+        val bytes = ByteArray(count)
         var have = 0
         while (have < bytes.size) {
             val n = input.read(bytes, have, bytes.size - have)
             if (n < 0) throw IOException("x-input-relay's socket closed in a word")
             have += n
         }
-        return ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
+        return bytes
     }
 }
 
@@ -180,8 +240,13 @@ class RelaySender(private val out: OutputStream) {
     @Synchronized
     fun send(events: List<RelayEvent>) {
         if (events.isEmpty()) return
-        val bytes = ByteArray(events.size * RelayEvent.SIZE)
-        events.forEachIndexed { i, e -> e.encode().copyInto(bytes, i * RelayEvent.SIZE) }
+        val encoded = events.map(RelayEvent::encode)
+        val bytes = ByteArray(encoded.sumOf { it.size })
+        var at = 0
+        for (event in encoded) {
+            event.copyInto(bytes, at)
+            at += event.size
+        }
         out.write(bytes)
     }
 }

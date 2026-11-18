@@ -46,6 +46,9 @@
  *   RELAY_FOCUS    a = 1 the game is on the app's screen again, 0 it is not (b unused)
  *   RELAY_AREA     a = left | top << 16, b = width | height << 16 (each a u16): the pointer area
  *                  on the X screen; a width or height of 0 removes it
+ *   RELAY_CLIPBOARD a = a length, 0 to CLIPBOARD_MAX (b unused), then that many bytes: Android's
+ *                  clipboard text, UTF-8, for the game (x-input-relay-clipboard.h). The one event
+ *                  longer than 12 bytes.
  *
  * RELAY_AREA gives the pointer area: the game's picture on the X screen (the app's
  * GameResolution.pointerArea), where the game draws its cursor. While an area is set, each
@@ -81,6 +84,11 @@
  * Should something move the window back each time, the relay stops after LAUNCHER_MOVES moves
  * until the next release. The launcher's files do not change: it keeps the middle as its place.
  *
+ * It also carries the clipboard both ways (x-input-relay-clipboard.h): it owns the X screen's
+ * CLIPBOARD with the text of each RELAY_CLIPBOARD, which Wine gives the game, and when the game
+ * copies (Wine takes CLIPBOARD) it tells the app the text:
+ *   'T'  then a little-endian u32, the length (1 to CLIPBOARD_MAX), then that many bytes of UTF-8
+ *
  * Its log (standard error, which the app writes to x-input-relay.log with a time on each line)
  * also counts three things that the app cannot see (x-input-relay-counts.h): the moves by a
  * distance that the pointer area's edges stopped, one line at most each 5 s with the count by edge
@@ -112,6 +120,7 @@
 #include <X11/extensions/Xfixes.h>
 #include <X11/keysym.h>
 
+#include "x-input-relay-clipboard.h"
 #include "x-input-relay-counts.h"
 
 struct relay_event {
@@ -128,6 +137,7 @@ enum {
     RELAY_KEY = 4,
     RELAY_FOCUS = 5,
     RELAY_AREA = 6,
+    RELAY_CLIPBOARD = 7,
 };
 
 static Display *display;
@@ -165,11 +175,17 @@ static Window launcher_moved; /* the window launcher_moves counts for */
 static Window launcher_seen; /* the launcher window the last look found, or None */
 static int launcher_size_told; /* a PD2Launcher.exe window of another size was logged */
 
-/* Reads one whole event; 0 at end of stream, -1 on error or a partial event. */
-static int read_event(struct relay_event *event) {
+/* The clipboard both ways (x-input-relay-clipboard.h). */
+static struct clipboard clipboard;
+/* A RELAY_CLIPBOARD's text, payload_length bytes, as read_event() read it. */
+static unsigned char payload[CLIPBOARD_MAX];
+static size_t payload_length;
+
+/* Reads [length] whole bytes into [into]; 0 at end of stream before the first, -1 on error or a part. */
+static int read_whole(void *into, size_t length) {
     size_t have = 0;
-    while (have < sizeof *event) {
-        ssize_t n = read(0, (char *)event + have, sizeof *event - have);
+    while (have < length) {
+        ssize_t n = read(0, (char *)into + have, length - have);
         if (n == 0) return have == 0 ? 0 : -1;
         if (n < 0) {
             if (errno == EINTR) continue;
@@ -178,6 +194,19 @@ static int read_event(struct relay_event *event) {
         have += (size_t)n;
     }
     return 1;
+}
+
+/* Reads one whole event, with a RELAY_CLIPBOARD's text into payload; 0 at end of stream, -1 on
+ * error, a partial event or a text longer than CLIPBOARD_MAX. */
+static int read_event(struct relay_event *event) {
+    int got = read_whole(event, sizeof *event);
+    if (got <= 0 || event->type != RELAY_CLIPBOARD) return got;
+    if (event->a < 0 || event->a > CLIPBOARD_MAX) {
+        fprintf(stderr, "x-input-relay: a clipboard text of %d bytes\n", event->a);
+        return -1;
+    }
+    payload_length = (size_t)event->a;
+    return payload_length == 0 || read_whole(payload, payload_length) > 0 ? 1 : -1;
 }
 
 /* The highest keycode that carries no keysym, or 0. */
@@ -380,6 +409,17 @@ static void tell(const unsigned char *bytes, size_t length, const char *what) {
         }
         sent += (size_t)n;
     }
+}
+
+/* Tells the app 'T' and the game's clipboard text ([length] bytes, 1 to CLIPBOARD_MAX). */
+static void tell_text(const unsigned char *bytes, size_t length) {
+    static unsigned char word[1 + sizeof(uint32_t) + CLIPBOARD_MAX];
+    if (length == 0 || length > CLIPBOARD_MAX) return;
+    uint32_t n = (uint32_t)length;
+    word[0] = 'T';
+    memcpy(word + 1, &n, sizeof n);
+    memcpy(word + 1 + sizeof n, bytes, length);
+    tell(word, 1 + sizeof n + length, "the game's clipboard text");
 }
 
 /* Tells the app 'C', or 'F' and where (above), when it changed. */
@@ -765,6 +805,9 @@ static void inject(const struct relay_event *event) {
     case RELAY_FOCUS:
         focus(event->a != 0);
         break;
+    case RELAY_CLIPBOARD:
+        clipboard_offer(&clipboard, payload, payload_length);
+        break;
     default:
         fprintf(stderr, "x-input-relay: unknown event type %u\n", event->type);
         break;
@@ -808,6 +851,7 @@ int main(int argc, char **argv) {
         fixes_event = -1;
         fprintf(stderr, "x-input-relay: the X screen has no XFIXES: the app does not draw its pointer\n");
     }
+    clipboard_init(&clipboard, display, fixes_event);
     tell_cover();
     if (fixes_event >= 0) tell_pointer();
     XFlush(display);
@@ -820,7 +864,9 @@ int main(int argc, char **argv) {
             while (XPending(display)) {
                 XEvent x;
                 XNextEvent(display, &x);
-                if (fixes_event >= 0 && x.type == fixes_event + XFixesCursorNotify) {
+                if (clipboard_event(&clipboard, &x, tell_text)) {
+                    /* The clipboard's: answered or told there. */
+                } else if (fixes_event >= 0 && x.type == fixes_event + XFixesCursorNotify) {
                     pointer = 1;
                 } else {
                     windows = 1;

@@ -17,7 +17,7 @@ import java.util.Locale
  *   dispatch ([InputDispatch]), whether the app is
  *   the top resumed activity, why the game is told that it is away or back, the overlays over the
  *   game, the controller's mode, the app's pointer and the pointer area, the screen's rates and
- *   the clock ([GameViewLines]);
+ *   the clock, the clipboard's lengths each way (never its text) ([GameViewLines]);
  * - `input.log`: while Detailed logging is on (from the moment it is turned on), the controller's
  *   keys and the states the game's pad gets ([PadKeyLines], [PadStateLines]); never a key of a
  *   keyboard or of Android's keyboard. A file of its own, so its many lines never rotate the
@@ -93,6 +93,11 @@ object GameViewLines {
 
     fun topResumed(top: Boolean) =
         if (top) "game view: the app is the top resumed activity" else "game view: the app is not the top resumed activity (another display or app has the input)"
+
+    /** Clipboard text of [characters] went to the game ([toGame], from Android's clipboard) or from it to Android's: the length only, never the text. */
+    fun clipboard(toGame: Boolean, characters: Int) =
+        if (toGame) "game view: clipboard: $characters characters from Android's clipboard to the game"
+        else "game view: clipboard: $characters characters the game copied to Android's clipboard"
 
     /** x-input-relay tells the game that it is [away] or back on the screen ([RelayEvent.Focus]), for the reason [why]. */
     fun told(away: Boolean, why: String) = "game view: the game is told it is ${if (away) "away" else "back"} ($why)"

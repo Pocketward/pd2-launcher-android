@@ -1,0 +1,16 @@
+Backport of upstream Wine commit a33000a6a0fec3cf295fe20821aa62779ddaea8c (Wine 11.14),
+"winex11.drv: Flush display in acquire_selection()" by Paul Gofman. Without the flush, the
+clipboard thread's XSetSelectionOwner stays in Xlib's buffer until the next X event comes, so a
+copy in the game reaches the X screen's CLIPBOARD (and Android's clipboard) late or not at all.
+
+diff --git a/dlls/winex11.drv/clipboard.c b/dlls/winex11.drv/clipboard.c
+--- a/dlls/winex11.drv/clipboard.c
++++ b/dlls/winex11.drv/clipboard.c
+@@ -1921,6 +1921,7 @@ static void acquire_selection( Display *display )
+ 
+     XSetSelectionOwner( display, x11drv_atom(CLIPBOARD), selection_window, CurrentTime );
+     if (use_primary_selection) XSetSelectionOwner( display, XA_PRIMARY, selection_window, CurrentTime );
++    XFlush( display );
+     TRACE( "win %lx\n", selection_window );
+ }
+ 

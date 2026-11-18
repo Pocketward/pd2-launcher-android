@@ -18,6 +18,7 @@ Basic logs are enough to tell us what kind of problem you have, and to set up yo
 | The display's statistics | No | Every 5 s |
 | Where the pointer's delay goes | No | Yes |
 | Your controller's keys and the pointer's moves (never a keyboard's keys) | No | Yes |
+| The length of each text copied between Android and the game (never the text) | Yes | Yes |
 | D2GL's settings at each change | No | Yes |
 | Each file that the save sync copies (a character's name shows as `<name>`) | No | Yes |
 | Wine's and Box64's own logs, and the game's network events | No | Yes, from the next **Play** |

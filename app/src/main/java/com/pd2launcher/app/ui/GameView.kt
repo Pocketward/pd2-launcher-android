@@ -114,6 +114,7 @@ import com.pd2launcher.app.Shown
 import com.pd2launcher.app.XwdHeader
 import com.pd2launcher.app.input.Controls
 import com.pd2launcher.app.input.ControlsStore
+import com.pd2launcher.app.input.GameClipboard
 import com.pd2launcher.app.input.Keys
 import com.pd2launcher.app.input.CustomButtons
 import com.pd2launcher.app.input.GamePicture
@@ -248,6 +249,14 @@ fun GameView(
     val controls by ControlsStore.current.collectAsState()
     val input by GameEnvironment.input.collectAsState()
     var surface by remember { mutableStateOf<GameSurface?>(null) }
+    // The clipboard between Android and the game: the Game view sends Android's text, the game's copies come here.
+    val clipboard = remember { GameClipboard(context) }
+    LaunchedEffect(clipboard) {
+        GameEnvironment.clipboardFromGame.collect { text ->
+            clipboard.fromGame(text)
+            GameViewLog.line(GameViewLines.clipboard(toGame = false, text.length))
+        }
+    }
     var layer by remember(preview) { mutableStateOf(preview ?: GameLayer.NONE) }
     // When the layer that shows came, for the line of its change in game-view.log.
     var layerSince by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
@@ -420,6 +429,7 @@ fun GameView(
                         it.onOverlayKey = shoulder
                         it.onCardKey = cardKey
                         it.controls = controls
+                        it.clipboard = clipboard
                         it.input = input
                         it.tellBackground = app.lowFrameRateInBackground
                         it.touchMode = app.touchMode
@@ -1010,10 +1020,15 @@ private class GameSurface(
             pad?.controls = value
         }
 
+    /** The clipboard between Android and the game ([offerClipboard]). */
+    var clipboard: GameClipboard? = null
+
     var input: GameInput? = null
         set(value) {
             if (value === field) return
             field = value
+            // Copied before the game's input was there: the game gets it now.
+            offerClipboard()
             pad = value?.let { game ->
                 PadInput(
                     pad = { state ->
@@ -1120,9 +1135,23 @@ private class GameSurface(
         keysDown.clear()
     }
 
+    /**
+     * Android's clipboard text to the game when it is new ([GameClipboard.toGame]): each time the
+     * window gets the focus back (a copy in another app), as the view opens and as the game's input
+     * comes (a copy before the game started); Android lets the app read the clipboard only while it
+     * has the focus. game-view.log has its length, never the text.
+     */
+    private fun offerClipboard() {
+        if (input == null || !hasWindowFocus()) return
+        val event = clipboard?.toGame() ?: return
+        send(listOf(event))
+        GameViewLog.line(GameViewLines.clipboard(toGame = true, event.length))
+    }
+
     override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
         super.onWindowFocusChanged(hasWindowFocus)
         GameViewLog.line(GameViewLines.focus(hasWindowFocus, display?.displayId, GameViewLog.topResumed))
+        if (hasWindowFocus) offerClipboard()
         // The game runs on in the background: nothing stays held there (a running character).
         if (!hasWindowFocus) {
             pad?.releaseAll()
@@ -1284,6 +1313,8 @@ private class GameSurface(
         viewTreeObserver.addOnGlobalFocusChangeListener(focusMoved)
         GameViewLog.line(GameViewLines.inputDispatch(unbuffered))
         if (BuildConfig.DEBUG) ScriptedPad.target = scriptedTarget
+        // A window that has the focus already gives no focus change: the clipboard goes once it is attached.
+        handler.post { offerClipboard() }
     }
 
     // The controller's clock ([frame]) runs only while the window shows (clock): in the background

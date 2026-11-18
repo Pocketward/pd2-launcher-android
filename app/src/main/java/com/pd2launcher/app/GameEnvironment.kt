@@ -5,6 +5,7 @@ import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import android.system.ErrnoException
 import android.system.Os
+import com.pd2launcher.app.input.GameClipboard
 import com.pd2launcher.app.input.GameWindow
 import com.pd2launcher.app.input.GamepadFile
 import com.pd2launcher.app.input.PointerBounds
@@ -15,8 +16,12 @@ import com.pd2launcher.app.input.RelayWords
 import java.io.File
 import java.io.FileInputStream
 import java.io.IOException
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /** What the Game view drives: the X screen (and the pointer area its relay has, [pointer]) and the game's pad. */
@@ -222,8 +227,8 @@ class GameEnvironment(
      * screen's windows, the game's window alone and where it is, or not alone (the game's own
      * buffers show only while it is alone, where it is: [PresentServer.setGameWindow], [gameWindow]);
      * on the X screen's pointer, its image while it shows ([pointer]) and where it is ([pointerAt]),
-     * which the Game view draws over the game's own buffers. Ends with the socket, leaving the X
-     * screen to show and no pointer.
+     * which the Game view draws over the game's own buffers; the game's copies ([clipboardFromGame]).
+     * Ends with the socket, leaving the X screen to show and no pointer.
      */
     private fun watchWindows(socket: ParcelFileDescriptor) {
         val input = FileInputStream(socket.fileDescriptor)
@@ -244,6 +249,7 @@ class GameEnvironment(
                             _pointerAt.value = null
                         }
                         is RelayWord.PointerAt -> _pointerAt.value = word
+                        is RelayWord.ClipboardText -> _clipboardFromGame.tryEmit(word.text)
                     }
                 }
             } catch (_: IOException) {
@@ -479,6 +485,10 @@ class GameEnvironment(
         private val _pointerAt = MutableStateFlow<RelayWord.PointerAt?>(null)
         /** Where the X screen's pointer is while it shows (x-input-relay's 'P'); null before the first place, or while it shows nothing. */
         val pointerAt: StateFlow<RelayWord.PointerAt?> = _pointerAt.asStateFlow()
+
+        private val _clipboardFromGame = MutableSharedFlow<String>(extraBufferCapacity = 4, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+        /** Each text the game copies (x-input-relay's 'T'), for Android's clipboard ([GameClipboard.fromGame]). */
+        val clipboardFromGame: SharedFlow<String> = _clipboardFromGame.asSharedFlow()
 
         /** The gamepad file, named to the game's XInput bridge in `PD2_GAMEPAD_FILE`. */
         fun gamepadFile(paths: SessionPaths) = File(paths.files, "gamepad.bin")
