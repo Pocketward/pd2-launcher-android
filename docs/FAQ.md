@@ -172,9 +172,9 @@ The game reads Android's clipboard, as on a PC:
 
 1. In a different app, for example Discord or a browser, copy the message.
 2. Go back to the game and open the chat line: **Enter** on a keyboard, or Android's keyboard from the in-game menu.
-3. Right-click in the chat line: a two-finger tap with touch. The message appears in the line. Ctrl+V on a keyboard works too.
+3. In the in-game menu, tap **Paste Text**. The menu closes and the message appears in the line. A right-click in the chat line (a two-finger tap with touch) or Ctrl+V on a keyboard works too.
 
-What the game copies goes to Android's clipboard too, for example an item that you copy with Ctrl+C in the inventory.
+What the game copies goes to Android's clipboard too. To copy an item, put the pointer on it, then tap **Copy Item** in the in-game menu (or press Ctrl+C on a keyboard).
 
 You can also paste with the clipboard of Android's keyboard. Android's keyboard types the text that you paste into the game, the same as when you type it yourself.
 

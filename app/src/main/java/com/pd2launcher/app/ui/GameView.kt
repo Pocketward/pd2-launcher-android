@@ -115,6 +115,7 @@ import com.pd2launcher.app.XwdHeader
 import com.pd2launcher.app.input.Controls
 import com.pd2launcher.app.input.ControlsStore
 import com.pd2launcher.app.input.GameClipboard
+import com.pd2launcher.app.input.GameShortcut
 import com.pd2launcher.app.input.Keys
 import com.pd2launcher.app.input.CustomButtons
 import com.pd2launcher.app.input.GamePicture
@@ -200,7 +201,7 @@ enum class GameLayer {
 
 /**
  * The Game view: the X screen ([framebuffer]) copied into a SurfaceView every display frame,
- * placed as Display says ([GameDisplay], from Settings or the in-game menu, followed live;
+ * placed as Display says ([GameDisplay], from Settings, followed live;
  * [GameResolution.viewGeometry]): with Fit to screen what PD2 shows (its 4:3 menu while
  * [GamePicture] says MENU, else its 16:9 game picture), or the official launcher's 800 x 600
  * window in the middle ([GameResolution.LAUNCHER_WINDOW]), as large as the screen allows, the X
@@ -477,7 +478,6 @@ fun GameView(
                     launcher = launcher,
                     onScreen = onScreen,
                     showFps = app.showFps,
-                    display = app.gameDisplay,
                     keyboard = keyboard,
                     frameRate = frameRateLabel(app.frameRate, panel),
                     slowerInBackground = app.lowFrameRateInBackground,
@@ -488,12 +488,18 @@ fun GameView(
                     onClose = { go(GameLayer.NONE, "the menu's close button") },
                     onOnScreen = { ControlsStore.save(context, controls.withOnScreen(it)) },
                     onShowFps = { value -> AppSettingsStore.update(context) { it.copy(showFps = value) } },
-                    // At once, the menu open: the Game view follows the setting.
-                    onDisplay = { AppSettingsStore.update(context) { it.copy(gameDisplay = it.gameDisplay.other) } },
                     onKeyboard = { on ->
                         // Typing needs the game: the menu closes as the keyboard opens; it stays as the keyboard closes.
                         if (on) go(GameLayer.NONE, "the keyboard opens")
                         surface?.showKeyboard(on)
+                    },
+                    onCopyItem = {
+                        go(GameLayer.NONE, "Copy Item")
+                        surface?.press(GameShortcut.COPY)
+                    },
+                    onPasteText = {
+                        go(GameLayer.NONE, "Paste Text")
+                        surface?.press(GameShortcut.PASTE)
                     },
                     onFrameRate = { frameRateInput = true },
                     onControls = { go(GameLayer.CONTROLS) },
@@ -1071,7 +1077,30 @@ private class GameSurface(
             }
             // After the releases above, which the game's window takes while it has the focus.
             overlayFocus()
+            // A Quick tile's shortcut: after the focus is back, which its keys need.
+            if (!value) shortcutAfterOverlay?.let {
+                shortcutAfterOverlay = null
+                pressNow(it)
+            }
         }
+
+    /** A Quick tile's shortcut, pressed as the overlay closes ([press]). */
+    private var shortcutAfterOverlay: GameShortcut? = null
+
+    /** [shortcut] in the game: at once, or while an overlay shows, as it closes. */
+    fun press(shortcut: GameShortcut) {
+        if (suspended) shortcutAfterOverlay = shortcut else pressNow(shortcut)
+    }
+
+    private fun pressNow(shortcut: GameShortcut) {
+        send(shortcut.down())
+        keysDown += shortcut.keysyms
+        handler.postDelayed({
+            // Only what is still held: an overlay or the focus's loss lets go of all keys first (releaseKeys).
+            val held = shortcut.keysyms.filter(keysDown::remove)
+            send(GameShortcut.up(held))
+        }, GameShortcut.HOLD_MS)
+    }
 
     /** The controller's mode changed: mouse mode on or off. */
     var onMouseMode: (Boolean) -> Unit = {}

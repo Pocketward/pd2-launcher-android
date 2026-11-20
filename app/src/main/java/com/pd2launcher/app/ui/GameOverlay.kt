@@ -90,7 +90,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.pd2launcher.app.FpsReading
-import com.pd2launcher.app.GameDisplay
 import com.pd2launcher.app.LauncherStart
 import com.pd2launcher.app.R
 import kotlinx.coroutines.delay
@@ -372,23 +371,27 @@ internal enum class MenuStop {
     }
 }
 
-/** A quick tile: one state that a press changes at once, the menu open. */
-internal enum class QuickTile { ON_SCREEN, FPS, DISPLAY, KEYBOARD }
+/**
+ * A quick tile, in the Quick tab's order: a switch that a press changes at once, the menu open
+ * (On-screen controls, Keyboard, FPS counter); a key press for the game, which closes the menu
+ * first (Copy Item: Ctrl+C on the item under the pointer; Paste Text: Ctrl+V of Android's
+ * clipboard into the open chat line); or Frame rate, whose press opens its input.
+ */
+internal enum class QuickTile { ON_SCREEN, KEYBOARD, COPY_ITEM, PASTE_TEXT, FRAME_RATE, FPS }
 
 /**
- * What the menu offers over what runs. Over the game: the four tiles, Frame rate and the
- * Controls screen. Over the official PD2 [launcher], a mouse and touch window with no on-screen
- * controls, no game fps and no controller to set up: the Display tile (the game's Display, which
- * shows the launcher's window too) and the Keyboard tile. The Settings tab is the same for both;
- * its Stop closes the launcher there.
+ * What the menu offers over what runs. Over the game: the six tiles and the Controls screen. Over
+ * the official PD2 [launcher], a mouse and touch window with no on-screen controls, no item, no
+ * game fps and no controller to set up: the Keyboard and Paste Text tiles. The Settings tab is
+ * the same for both; its Stop closes the launcher there.
  */
-internal data class MenuItems(val tiles: List<QuickTile>, val frameRate: Boolean, val controls: Boolean) {
+internal data class MenuItems(val tiles: List<QuickTile>, val controls: Boolean) {
     companion object {
         fun of(launcher: Boolean): MenuItems =
             if (launcher) {
-                MenuItems(listOf(QuickTile.DISPLAY, QuickTile.KEYBOARD), frameRate = false, controls = false)
+                MenuItems(listOf(QuickTile.KEYBOARD, QuickTile.PASTE_TEXT), controls = false)
             } else {
-                MenuItems(QuickTile.entries, frameRate = true, controls = true)
+                MenuItems(QuickTile.entries, controls = true)
             }
     }
 }
@@ -417,7 +420,6 @@ internal data class MenuState(
     val launcher: Boolean,
     val onScreen: Boolean,
     val showFps: Boolean,
-    val display: GameDisplay,
     /** Android's keyboard is up. */
     val keyboard: Boolean,
     /** The game's frame rate as the player reads it: a number of frames a second. */
@@ -433,8 +435,9 @@ internal class MenuActions(
     val onClose: () -> Unit,
     val onOnScreen: (Boolean) -> Unit,
     val onShowFps: (Boolean) -> Unit,
-    val onDisplay: () -> Unit,
     val onKeyboard: (Boolean) -> Unit,
+    val onCopyItem: () -> Unit,
+    val onPasteText: () -> Unit,
     val onFrameRate: () -> Unit,
     val onControls: () -> Unit,
     val onSlowerInBackground: (Boolean) -> Unit,
@@ -593,7 +596,7 @@ private fun BoxScope.Pane(shown: Boolean, content: @Composable ColumnScope.(show
 /** Laid out for its room, but unseen and without semantics (its rows take no focus or touch themselves). */
 internal fun Modifier.unseen(): Modifier = alpha(0f).clearAndSetSemantics { testTag = UNSEEN_TAG }
 
-/** Quick: the tiles that apply, two by two, then Frame rate. */
+/** Quick: the tiles that apply, two by two. */
 @Composable
 private fun ColumnScope.QuickPane(items: MenuItems, state: MenuState, actions: MenuActions, shown: Boolean, first: FocusRequester) {
     items.tiles.chunked(2).forEachIndexed { index, row ->
@@ -605,10 +608,6 @@ private fun ColumnScope.QuickPane(items: MenuItems, state: MenuState, actions: M
             if (row.size == 1) Spacer(Modifier.weight(1f))
         }
     }
-    if (items.frameRate) {
-        Spacer(Modifier.height(8.dp))
-        LinkRow(stringResource(R.string.settings_frame_rate), state.frameRate, actions.onFrameRate, shown, oneLine = true)
-    }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -616,44 +615,50 @@ private fun ColumnScope.QuickPane(items: MenuItems, state: MenuState, actions: M
 private fun RowScope.QuickTileView(tile: QuickTile, state: MenuState, actions: MenuActions, shown: Boolean, focus: FocusRequester?) {
     val on = stringResource(R.string.game_menu_on)
     val off = stringResource(R.string.game_menu_off)
-    val fit = stringResource(R.string.game_menu_display_fit)
-    val center = stringResource(R.string.game_menu_display_center)
+    fun switch(value: Boolean) = TileWord.Switch(value, on, off)
     when (tile) {
-        QuickTile.ON_SCREEN -> Tile(R.drawable.ic_tile_on_screen, stringResource(R.string.on_screen_controls), state.onScreen, on, off, shown, focus) {
+        QuickTile.ON_SCREEN -> Tile(R.drawable.ic_tile_on_screen, stringResource(R.string.on_screen_controls), switch(state.onScreen), shown, focus) {
             actions.onOnScreen(!state.onScreen)
         }
-        QuickTile.FPS -> Tile(R.drawable.ic_tile_fps, stringResource(R.string.game_menu_fps_counter), state.showFps, on, off, shown, focus) {
+        QuickTile.COPY_ITEM -> Tile(R.drawable.ic_tile_copy, stringResource(R.string.game_menu_copy_item), TileWord.None, shown, focus, onPress = actions.onCopyItem)
+        QuickTile.PASTE_TEXT -> Tile(R.drawable.ic_tile_paste, stringResource(R.string.game_menu_paste_text), TileWord.None, shown, focus, onPress = actions.onPasteText)
+        QuickTile.FRAME_RATE -> Tile(
+            R.drawable.ic_tile_frame_rate, stringResource(R.string.settings_frame_rate), TileWord.Value(state.frameRate), shown, focus,
+            onPress = actions.onFrameRate,
+        )
+        QuickTile.FPS -> Tile(R.drawable.ic_tile_fps_counter, stringResource(R.string.game_menu_fps_counter), switch(state.showFps), shown, focus) {
             actions.onShowFps(!state.showFps)
         }
-        // A choice of two, not on or off: never tinted; its word is the one in use.
-        QuickTile.DISPLAY -> Tile(
-            R.drawable.ic_tile_display, stringResource(R.string.game_menu_display), null,
-            if (state.display == GameDisplay.FIT) fit else center, if (state.display == GameDisplay.FIT) center else fit, shown, focus,
-        ) { actions.onDisplay() }
         QuickTile.KEYBOARD -> {
             // With Android's keyboard up the menu may not fit above it: it scrolls to this tile, which hides it.
             val inView = remember { BringIntoViewRequester() }
             LaunchedEffect(state.keyboard, shown) { if (state.keyboard && shown) runCatching { inView.bringIntoView() } }
             Tile(
-                R.drawable.ic_tile_keyboard, stringResource(R.string.game_view_keyboard), state.keyboard, on, off, shown, focus,
+                R.drawable.ic_tile_keyboard, stringResource(R.string.game_view_keyboard), switch(state.keyboard), shown, focus,
                 Modifier.bringIntoViewRequester(inView),
             ) { actions.onKeyboard(!state.keyboard) }
         }
     }
 }
 
-/**
- * A quick tile: its icon and state word on top, its label below. [on] null: a choice of two
- * ([word] the one in use, [other] the one a press picks); else on or off, tinted while on. The
- * word keeps the room of the longer of the two, so a press never changes the tile's size.
- */
+/** What a quick tile shows beside its icon. */
+private sealed interface TileWord {
+    /** On or off, tinted while on; the word keeps the room of the longer of the two, so a press never changes the tile's size. */
+    data class Switch(val on: Boolean, val onWord: String, val offWord: String) : TileWord
+
+    /** The value a press changes elsewhere (Frame rate's input). */
+    data class Value(val word: String) : TileWord
+
+    /** No word: a press does one thing in the game. */
+    data object None : TileWord
+}
+
+/** A quick tile: its icon and [word] on top, its label below. */
 @Composable
 private fun RowScope.Tile(
     @DrawableRes icon: Int,
     label: String,
-    on: Boolean?,
-    onWord: String,
-    offWord: String,
+    word: TileWord,
     shown: Boolean,
     focus: FocusRequester?,
     modifier: Modifier = Modifier,
@@ -661,13 +666,18 @@ private fun RowScope.Tile(
 ) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
-    val lit = on == true
-    val word = if (on == false) offWord else onWord
-    val other = if (on == false) onWord else offWord
+    val lit = word is TileWord.Switch && word.on
+    // The word shown, and an unseen one that keeps the room of a switch's other word.
+    val (shownWord, other) = when (word) {
+        is TileWord.Switch -> if (word.on) word.onWord to word.offWord else word.offWord to word.onWord
+        is TileWord.Value -> word.word to ""
+        TileWord.None -> "" to ""
+    }
     val press = when {
         !shown -> Modifier
-        on == null -> Modifier.clickable(interaction, LocalIndication.current, role = Role.Button, onClick = onPress).semantics { stateDescription = word }
-        else -> Modifier.toggleable(on, interaction, LocalIndication.current, role = Role.Switch) { onPress() }
+        word is TileWord.Switch -> Modifier.toggleable(word.on, interaction, LocalIndication.current, role = Role.Switch) { onPress() }
+        word is TileWord.Value -> Modifier.clickable(interaction, LocalIndication.current, role = Role.Button, onClick = onPress).semantics { stateDescription = word.word }
+        else -> Modifier.clickable(interaction, LocalIndication.current, role = Role.Button, onClick = onPress)
     }
     Column(
         modifier.weight(1f).fillMaxHeight().heightIn(min = MenuSize.TILE_HEIGHT).focusOn(focus)
@@ -693,7 +703,7 @@ private fun RowScope.Tile(
             Box(Modifier.clearAndSetSemantics {}, contentAlignment = Alignment.CenterEnd) {
                 val style = Type.Hint.copy(fontWeight = FontWeight.SemiBold)
                 Text(other, style = style, color = Color.Transparent, maxLines = 1, softWrap = false, modifier = Modifier.clearAndSetSemantics {})
-                Text(word, style = style, color = Palette.Text, maxLines = 1, softWrap = false, textAlign = TextAlign.End)
+                Text(shownWord, style = style, color = Palette.Text, maxLines = 1, softWrap = false, textAlign = TextAlign.End)
             }
         }
         Spacer(Modifier.height(8.dp))
@@ -791,12 +801,9 @@ private fun StopRow(label: String, shown: Boolean, onClick: () -> Unit) {
     }
 }
 
-/**
- * A row that opens something: its label, its value in the text colour, a chevron. [oneLine]: the
- * label never wraps, so the row asks for its whole width (the menu widens for it).
- */
+/** A row that opens something: its label, its value in the text colour, a chevron. */
 @Composable
-internal fun LinkRow(label: String, value: String?, onClick: () -> Unit, enabled: Boolean = true, focus: FocusRequester? = null, oneLine: Boolean = false) {
+internal fun LinkRow(label: String, value: String?, onClick: () -> Unit, enabled: Boolean = true, focus: FocusRequester? = null) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
     Row(
@@ -806,11 +813,7 @@ internal fun LinkRow(label: String, value: String?, onClick: () -> Unit, enabled
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        // One line: the label asks for its whole width also where the menu measures its least width.
-        Text(
-            label, style = Type.Body, color = Palette.Text, softWrap = !oneLine,
-            modifier = Modifier.weight(1f).then(if (oneLine) Modifier.width(IntrinsicSize.Max) else Modifier),
-        )
+        Text(label, style = Type.Body, color = Palette.Text, modifier = Modifier.weight(1f))
         // A text that never wraps still reports its longest word as its least width: the whole value counts.
         if (value != null) Text(value, style = Type.Body, color = Palette.Text, maxLines = 1, softWrap = false, modifier = Modifier.width(IntrinsicSize.Max))
         Icon(painterResource(R.drawable.ic_chevron_right), null, Modifier.size(20.dp), tint = Palette.Muted)

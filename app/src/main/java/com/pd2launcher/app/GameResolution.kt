@@ -240,7 +240,7 @@ object GameResolution {
 
 /**
  * How the Game view shows the X screen, the same for the game and the official launcher's window
- * (Settings → Display → Display, the in-game menu; [AppSettings.gameDisplay]): [title] and [body] as
+ * (Settings → Display → Display; [AppSettings.gameDisplay]): [title] and [body] as
  * Settings says them.
  */
 enum class GameDisplay(@param:StringRes val title: Int, @param:StringRes val body: Int) {
@@ -250,7 +250,4 @@ enum class GameDisplay(@param:StringRes val title: Int, @param:StringRes val bod
     /** One X screen pixel to one display pixel, in the middle, black around it; [FIT] where the view cannot hold it. */
     CENTER(R.string.settings_display_center, R.string.settings_display_center_body),
     ;
-
-    /** The other way, for the in-game menu's Display row. */
-    val other: GameDisplay get() = if (this == FIT) CENTER else FIT
 }

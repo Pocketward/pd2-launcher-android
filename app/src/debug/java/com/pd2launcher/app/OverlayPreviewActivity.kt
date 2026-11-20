@@ -289,7 +289,7 @@ private val MENU = PreviewStep.Click(R.string.game_view_menu)
 private val SCREENS: Map<String, PreviewScreen> = linkedMapOf(
     // Over the game: the menu glyph, the on-screen controls and the fps counter.
     "ingame" to PreviewScreen(GameLayer.NONE),
-    // The menu's Quick tab: Display Fit, Frame rate the screen's most (Full), FPS counter on.
+    // The menu's Quick tab: Frame rate the screen's most (Full), FPS counter on.
     "quick" to PreviewScreen(GameLayer.MENU),
     "quick-on" to PreviewScreen(GameLayer.MENU, tilesOn = true, frameRate = 60),
     "quick-launcher" to PreviewScreen(GameLayer.MENU, launcher = true),
@@ -369,7 +369,6 @@ private fun OverlayPreview(screen: PreviewScreen, onScreenAtStart: Boolean, pref
     var keyboard by remember { mutableStateOf(screen.tilesOn) }
     var onScreen by remember { mutableStateOf(onScreenAtStart || screen.tilesOn) }
     var showFps by remember { mutableStateOf(true) }
-    var display by remember { mutableStateOf(GameDisplay.FIT) }
     var frameRate by remember { mutableIntStateOf(screen.frameRate) }
     var frameRateInput by remember { mutableStateOf(screen.frameRateInput) }
     var slower by remember { mutableStateOf(true) }
@@ -424,7 +423,6 @@ private fun OverlayPreview(screen: PreviewScreen, onScreenAtStart: Boolean, pref
                     launcher = screen.launcher,
                     onScreen = onScreen,
                     showFps = showFps,
-                    display = display,
                     keyboard = keyboard,
                     frameRate = frameRateLabel(frameRate, panel),
                     slowerInBackground = slower,
@@ -435,7 +433,8 @@ private fun OverlayPreview(screen: PreviewScreen, onScreenAtStart: Boolean, pref
                     onClose = { go(GameLayer.NONE) },
                     onOnScreen = { onScreen = it },
                     onShowFps = { showFps = it },
-                    onDisplay = { display = display.other },
+                    onCopyItem = { go(GameLayer.NONE) },
+                    onPasteText = { go(GameLayer.NONE) },
                     onKeyboard = { on ->
                         keyboard = on
                         if (on) go(GameLayer.NONE)
